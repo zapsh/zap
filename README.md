@@ -66,7 +66,7 @@ ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免�
 | 防火墙 | firewalld / ufw / nftables / iptables 统一抽象，面板端口防自锁 |
 | 系统配置 | 时间同步、时区、主机名、DNS Resolver、IP 池、环境变量 |
 | 服务管理 | systemd 服务状态与进程管理 |
-| 备份升级 | 面板备份 / 还原，在线一键升级（zapupgrade 原子替换） |
+| 备份升级 | 面板备份 / 还原；面板一键升级或命令行升级（zapupgrade：下载校验 → 备份 → 原子替换 → 重启 → 可回滚） |
 
 ### 多用户与分销能力
 
@@ -101,7 +101,7 @@ ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免�
 | **zapexec** | `root` | 特权守护进程：白名单动词执行系统变更，**不提供任意 shell 执行入口** |
 | **zap-proto** | — | 共享协议库：长度前缀 JSON 帧编解码 + HMAC-SHA256 挑战/响应认证 |
 | **zapctl** | `root` | 命令行运维工具：服务管理、备份还原、用户管理、配置读写 |
-| **zapupgrade** | `root`（一次性） | 升级器：校验 → 备份 → 原子替换 → 重启服务 |
+| **zapupgrade** | `root`（一次性） | 系统升级器：下载校验 → 备份 → 原子替换 → 重启服务 → 失败回滚；支持面板触发与命令行 `upgrade` / `rollback` |
 
 ### 特权调用链路
 
@@ -140,7 +140,12 @@ ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免�
 wget -O install.sh https://mirrors.zap.cn/zap/install.sh && bash install.sh
 ```
 
+脚本幂等：检测到 `/usr/local/zap/zapd` 已存在时按**升级**处理（覆盖二进制与脚本资源，保留数据与配置）。
+也支持 `bash install.sh v1.0.12` 指定版本。
+
 安装完成后访问 `https://<服务器IP>:2600`，按引导初始化管理员账号。
+
+后续升级推荐 `zapupgrade upgrade`（自带备份与回滚），用法见下方[系统升级](#系统升级zapupgrade)或 [UPGRADE_zh-CN.md](./UPGRADE_zh-CN.md)。
 
 ### 命令行运维（zapctl）
 
@@ -174,6 +179,31 @@ zapctl cred ls                    # 列出已保存凭据
 - 卸载对应应用时（`uninstall.sh`）会一并删除其凭据；
 - `zapctl backup zap` 归档内含主密钥 `secret.key` 与凭据目录，支持整机迁移；还原时以归档密钥覆盖本机密钥（还原前自动备份当前状态，可回滚）。
 
+### 系统升级（zapupgrade）
+
+三种入口共用同一套替换流程（备份 → 原子替换 → 先 `zapexec` 后 `zapd` 重启 → 失败自动回滚），区别只在谁去下载发行包：
+
+| 方式 | 适用场景 | 入口 |
+| --- | --- | --- |
+| 面板 | 日常升级：进度、历史记录、可配自动更新 | 系统设置 → 系统更新 |
+| 命令行 | 面板打不开 / 服务起不来 / 批量运维 | `zapupgrade upgrade --to latest` |
+| 安装脚本 | 首次部署、离线、已有发行包 | `bash scripts/install.sh [版本]` |
+
+```bash
+zapupgrade upgrade                     # 升级到最新版
+zapupgrade upgrade --to v1.0.12        # 升级到指定版本
+zapupgrade upgrade --to 1.0.12 --force # 已是该版本也要重装
+
+zapupgrade rollback --list             # 列出可回滚的备份
+zapupgrade rollback                    # 回滚到最近一次备份
+zapupgrade rollback --to 1712345678-v1.0.12   # 回滚到指定备份
+```
+
+- 需要 root（写 `/usr/local/zap` 并重启服务），`--dir` 可换安装根，`--channel` 可换更新渠道
+- 升级前自动备份旧二进制到 `/usr/local/zap/data/upgrade/backup/{时间戳}-{版本}/`，回滚即从此处取回
+- 升级过程中面板会短暂不可用（`zapd` 最后重启）；非 systemd 环境（docker / `rundev.sh`）需手动重启
+- 完整说明见 [UPGRADE_zh-CN.md](./UPGRADE_zh-CN.md)
+
 ### 本地开发
 
 ```bash
@@ -205,7 +235,7 @@ zap-rs/
 ├── zapexec/        # root 特权守护进程（白名单动词执行）
 ├── zap-proto/      # zapd ↔ zapexec 共享协议（帧编解码 + HMAC 认证）
 ├── zapctl/         # 命令行运维工具
-├── zapupgrade/     # 在线升级器
+├── zapupgrade/     # 系统升级器（面板触发 / 命令行 upgrade、rollback）
 ├── web/            # Vue 3 前端
 ├── scripts/        # 安装/卸载脚本、systemd 单元、服务配置模板
 ├── conf/           # 开发用配置与自签证书
@@ -285,7 +315,7 @@ scripts:
 - [x] Web SSH 终端、文件管理、计划任务
 - [x] 防火墙、服务配置、系统监控
 - [x] 多用户 / 角色 / 套餐 / 分销体系
-- [x] 在线升级与备份还原
+- [x] 在线 / 命令行升级、备份还原与回滚
 - [x] TOTP 两步验证、审计日志
 - [ ] **Docker 容器管理**：镜像、容器、网络、卷、Compose 编排与容器化站点托管
 - [ ] 集群管理：多机统一纳管与批量运维
