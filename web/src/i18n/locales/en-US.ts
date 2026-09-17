@@ -2451,6 +2451,7 @@ const enUS: Messages = {
     leDnsProvider: 'DNS Provider',
     leDnsProviderPlaceholder: 'Select a configured DNS provider',
     leDnsProviderHint: 'Not configured yet? Add API credentials on the "DNS Providers" page',
+    leGoDnsProviders: 'Configure now',
     leStepApply: 'Request',
     leStepAuth: 'Validation',
     leStepDone: 'Result',

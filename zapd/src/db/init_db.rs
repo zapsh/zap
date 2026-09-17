@@ -15,6 +15,8 @@ pub async fn init_schema() {
     init_roles_table().await;
     init_menus_table().await;
     init_role_menus_table().await;
+    // 老库补入口：新增菜单对已存在的库同样生效（见函数注释）
+    sync_added_menus().await;
     // 动作级权限点（请求级鉴权依据；role_menus 仅用于菜单渲染）
     init_role_permissions_table().await;
     init_audit_table().await;
@@ -289,6 +291,37 @@ async fn init_roles_table() {
 
 // ── menus ──────────────────────────────────────────────────
 
+/// 幂等补齐「后续版本新增」的菜单入口。
+///
+/// `init_menus_table` 只在建表时跑一次，老库升级后拿不到新功能的入口，
+/// 于是新页面做了也看不见（侧边栏由 menus 表驱动）。这里只 INSERT 缺失项：
+///
+/// - 菜单：父菜单存在才补；
+/// - 授权：已拥有同级菜单（SSL 证书）的角色一并获得新入口，
+///   免得老安装升级后管理员还得手工去「角色权限」里勾。
+///
+/// 重复执行无副作用（主键 / UNIQUE(role_id, menu_id) 冲突即忽略）。
+async fn sync_added_menus() {
+    let pool = get_db_pool().await;
+    // SSL/TLS → DNS 服务商（ACME DNS-01 自动模式的服务商凭据）
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO menus
+            (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+         SELECT 112, 11, 'ssl-dns-providers', 'dns-providers', 'ssl-tls/dns-providers/index',
+                'menu', 'DNS服务商', 'material-symbols:dns', 0, 'admin,user', 2, 1,
+                strftime('%s','now'), strftime('%s','now')
+         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 11)",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+         SELECT role_id, 112 FROM role_menus WHERE menu_id = 111",
+    )
+    .execute(pool)
+    .await;
+}
+
 async fn init_menus_table() {
     if table_exists("menus").await {
         return;
@@ -412,6 +445,8 @@ async fn init_menus_table() {
     VALUES (11, 0, 'ssl-tls', '/ssl-tls', 'Layout', '/ssl-tls/certs', 'dir', 'SSL/TLS', 'material-symbols:lock', 1, 'admin,user', 6, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (111, 11, 'ssl-certs', 'certs', 'ssl-tls/certs/index', 'menu', 'SSL证书', 'material-symbols:lock', 1, 'admin,user', 1, 1, strftime('%s','now'), strftime('%s','now'));
+    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+    VALUES (112, 11, 'ssl-dns-providers', 'dns-providers', 'ssl-tls/dns-providers/index', 'menu', 'DNS服务商', 'material-symbols:dns', 0, 'admin,user', 2, 1, strftime('%s','now'), strftime('%s','now'));
 
     -- AppStore (Layout + children)
     INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
@@ -559,8 +594,10 @@ async fn init_role_menus_table() {
     -- SSL/TLS：admin / user
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 11);
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 111);
+    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 112);
     INSERT INTO role_menus (role_id, menu_id) VALUES (2, 11);
     INSERT INTO role_menus (role_id, menu_id) VALUES (2, 111);
+    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 112);
     -- 服务配置（Nginx/PHP/MySQL 与 MariaDB 合一/Docker）：仅 admin
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 13);
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 131);

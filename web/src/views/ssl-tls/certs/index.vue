@@ -438,6 +438,9 @@
               />
             </el-select>
             <span class="form-hint">{{ t('sslCerts.leDnsProviderHint') }}</span>
+            <el-button link type="primary" size="small" @click="goDnsProviders">{{
+              t('sslCerts.leGoDnsProviders')
+            }}</el-button>
           </el-form-item>
           <el-form-item :label="t('sslCerts.certName')">
             <el-input
@@ -621,6 +624,7 @@ import {
 } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { http } from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 import {
@@ -648,6 +652,7 @@ import {
 } from '@/api/ssl'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const nowTs = ref(Math.floor(Date.now() / 1000))
 const loading = ref(false)
@@ -1152,6 +1157,12 @@ async function loadDnsProviders() {
   } finally {
     dnsProvidersLoading.value = false
   }
+}
+
+/** 跳到 DNS 服务商管理页：配完回来刷新下拉即可选中 */
+function goDnsProviders() {
+  leVisible.value = false
+  router.push('/ssl-tls/dns-providers')
 }
 
 /** 域名里含通配符时强制切到 DNS 验证（HTTP-01 不支持，后端也会拦，这里即时提示） */

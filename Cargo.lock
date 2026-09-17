@@ -6334,6 +6334,10 @@ name = "zapupgrade"
 version = "1.0.11"
 dependencies = [
  "clap",
+ "flate2",
+ "sha2 0.10.9",
+ "tar",
+ "ureq",
 ]
 
 [[package]]

@@ -11,3 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+# 命令行模式（upgrade --to）自行下载发行包：与 zapd updater 用同一套依赖与用法
+ureq = "2.12"
+tar = "0.4"
+flate2 = "1.0"
+sha2 = "0.10"

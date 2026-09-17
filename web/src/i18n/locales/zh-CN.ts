@@ -2430,6 +2430,7 @@ export default {
     leDnsProvider: 'DNS 服务商',
     leDnsProviderPlaceholder: '请选择已配置的 DNS 服务商',
     leDnsProviderHint: '尚未配置？请到「DNS 服务商」页面添加 API 凭据',
+    leGoDnsProviders: '前往配置',
     leStepApply: '填写申请',
     leStepAuth: '域名验证',
     leStepDone: '签发结果',
