@@ -11,7 +11,7 @@ use tower_http::compression::CompressionLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tower_service::Service;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
@@ -33,6 +33,13 @@ struct Cli {
 const DEFAULT_LOG: &str = "zapd=debug,tower_http=debug,axum::rejection=trace";
 #[cfg(not(debug_assertions))]
 const DEFAULT_LOG: &str = "zapd=info,tower_http=info";
+
+/// 等待 TLS ClientHello 首字节的上限。
+///
+/// 探测扫描、浏览器预连接、被中间设备掐断的握手都会出现「TCP 连上了却不发数据」，
+/// 而 `peek` 会一直等到有数据或对方关闭。留一点余量后直接断开，避免这类连接
+/// 长期占着 fd（配合下面的「每连接独立任务」，单个坏连接不会拖慢其它连接）。
+const PEEK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() {
@@ -163,27 +170,47 @@ async fn main() {
         #[allow(deprecated)]
         stream.set_linger(Some(Duration::from_secs(30))).ok();
 
-        // A TLS ClientHello always starts with byte 0x16.
-        // Peek one byte to tell HTTPS from plain HTTP on the same port.
-        let mut buf = [0; 1];
-        let n = match stream.peek(&mut buf).await {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
+        // 「读首字节 + 分发」必须放进独立任务：peek 会一直等到对端发来第一个字节，
+        // 若放在 accept 循环里，一个只建 TCP 不发数据的连接（端口探测、预连接、
+        // 被中断的握手）就会把整个 accept 循环挂住，表现为所有请求一起超时。
+        let tls_acceptor = tls_acceptor.clone();
+        let app = app.clone();
+        tokio::spawn(async move {
+            serve_connection(stream, client_addr, tls_acceptor, app).await;
+        });
+    }
+}
 
-        if n > 0 && buf[0] == 0x16 {
-            let tls_acceptor = tls_acceptor.clone();
-            let app = app.clone();
-            tokio::spawn(async move {
-                serve_tls_connection(stream, client_addr, tls_acceptor, app).await;
-            });
-        } else {
-            tokio::spawn(async move {
-                if let Err(e) = serve_plain_http(stream, client_addr).await {
-                    warn!("Error serving plain HTTP from {}: {}", client_addr, e);
-                }
-            });
+/// 单连接的分发：先看首字节区分 HTTPS / 明文 HTTP，再交给对应的处理函数。
+///
+/// 在独立任务里执行（见 main 的 accept 循环），因此某个连接卡在 `peek` 上
+/// 不会影响其它连接；`peek` 超时（对端始终不发数据）则直接断开。
+async fn serve_connection(
+    stream: tokio::net::TcpStream,
+    client_addr: std::net::SocketAddr,
+    acceptor: Arc<TlsAcceptor>,
+    app: Router,
+) {
+    // A TLS ClientHello always starts with byte 0x16.
+    // Peek one byte to tell HTTPS from plain HTTP on the same port.
+    let mut buf = [0; 1];
+    let n = match tokio::time::timeout(PEEK_TIMEOUT, stream.peek(&mut buf)).await {
+        Ok(Ok(n)) => n,
+        Ok(Err(_)) => return,
+        Err(_) => {
+            debug!(
+                "客户端 {} 建连后 {} 秒内未发送任何数据，断开连接",
+                client_addr,
+                PEEK_TIMEOUT.as_secs()
+            );
+            return;
         }
+    };
+
+    if n > 0 && buf[0] == 0x16 {
+        serve_tls_connection(stream, client_addr, acceptor, app).await;
+    } else if let Err(e) = serve_plain_http(stream, client_addr).await {
+        warn!("Error serving plain HTTP from {}: {}", client_addr, e);
     }
 }
 
