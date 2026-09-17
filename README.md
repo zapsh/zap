@@ -18,7 +18,7 @@
 
 ## 项目简介
 
-ZAP 是一套面向 **Linux 服务器与 VPS** 的现代化主机控制面板，定位为 cPanel / WHM、Plesk、宝塔 的轻量替代方案。
+ZAP 是一套面向 **Linux 服务器与 VPS** 的现代化主机控制面板。
 
 后端以 **Rust** 编写（Axum + Tokio + SQLx），前端采用 **Vue 3 + Element Plus**，编译时通过 `rust-embed` 将前端产物嵌入单一二进制，最终以 **一个可执行文件** 交付，无需 PHP / Python / Node 运行时，内存与 CPU 占用远低于传统面板。
 
