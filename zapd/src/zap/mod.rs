@@ -5,6 +5,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod acme;
 pub mod appstore;
 pub mod audit;
 pub mod auto_update;

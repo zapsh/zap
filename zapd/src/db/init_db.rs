@@ -39,6 +39,10 @@ pub async fn init_schema() {
     init_api_token_table().await;
     // SSL/TLS 证书管理表
     init_ssl_cert_table().await;
+    // SSL/TLS：ACME 账户 / 订单 / DNS 服务商凭据（Let's Encrypt 申请）
+    init_ssl_acme_account_table().await;
+    init_ssl_acme_order_table().await;
+    init_ssl_acme_dns_provider_table().await;
     // 老库补列：新增列自动 ALTER 到已有表，避免每次加列都必须重建数据库
     migrate_add_columns().await;
 }
@@ -959,6 +963,94 @@ async fn init_ssl_cert_table() {
         updated_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_ssl_cert_user ON ssl_cert(user_id);
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+// ── SSL/TLS：ACME（Let's Encrypt）配套表 ──────────────────────
+//
+// 三张表围绕「异步订单」设计：
+//   account     —— 复用 ACME 账户，避免每次申请都注册新账户（LE 有 rate limit）
+//   order       —— 订单全流程落库，进程重启 / 前端刷新都能接着走
+//   dns_provider—— DNS 服务商 API 凭据（DNS-01 自动模式），凭据一律加密存储
+
+/// ssl_acme_account：ACME 账户（按 用户 + 邮箱 + 环境 唯一）。
+async fn init_ssl_acme_account_table() {
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS ssl_acme_account (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL DEFAULT 0,
+        -- letsencrypt | letsencrypt-staging
+        directory TEXT NOT NULL DEFAULT 'letsencrypt',
+        email TEXT NOT NULL DEFAULT '',
+        -- AccountCredentials JSON（zap-crypto 加密后存储）
+        credentials TEXT NOT NULL DEFAULT '',
+        account_url TEXT NOT NULL DEFAULT '',
+        created_at INTEGER,
+        updated_at INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ssl_acme_account_uniq
+        ON ssl_acme_account(user_id, directory, email);
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+/// ssl_acme_order：ACME 订单与其挑战明细。
+async fn init_ssl_acme_order_table() {
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS ssl_acme_order (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL DEFAULT 0,
+        account_id INTEGER NOT NULL DEFAULT 0,
+        -- 签发成功后回填 ssl_cert.id
+        cert_id INTEGER NOT NULL DEFAULT 0,
+        -- 证书名（签发后写入 ssl_cert.name）
+        name TEXT NOT NULL DEFAULT '',
+        domains TEXT NOT NULL DEFAULT '',
+        -- let's encrypt 环境同 account.directory
+        directory TEXT NOT NULL DEFAULT 'letsencrypt',
+        -- pending | processing | issued | failed | cancelled | expired
+        status TEXT NOT NULL DEFAULT 'pending',
+        -- http-01 | dns-01
+        challenge_type TEXT NOT NULL DEFAULT 'http-01',
+        -- 仅 dns-01 有意义：manual（用户自行解析）| auto（调 DNS API）
+        dns_mode TEXT NOT NULL DEFAULT 'manual',
+        dns_provider_id INTEGER NOT NULL DEFAULT 0,
+        -- 订单 URL：配合账户凭据即可用 Account::order(url) 恢复句柄
+        order_url TEXT NOT NULL DEFAULT '',
+        -- 私钥 PEM（zap-crypto 加密存）；签发后明文转入 ssl_cert.key_content
+        key_pem TEXT NOT NULL DEFAULT '',
+        -- JSON 数组：[{domain, status, challenge_url, token, key_auth, dns_host, dns_value,
+        --             dns_record_id, propagated}]
+        challenges TEXT NOT NULL DEFAULT '[]',
+        error TEXT NOT NULL DEFAULT '',
+        expires_at INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER,
+        updated_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_ssl_acme_order_user ON ssl_acme_order(user_id);
+    CREATE INDEX IF NOT EXISTS idx_ssl_acme_order_status ON ssl_acme_order(status);
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+/// ssl_acme_dns_provider：DNS 服务商 API 凭据（DNS-01 自动验证用）。
+async fn init_ssl_acme_dns_provider_table() {
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS ssl_acme_dns_provider (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL DEFAULT 0,
+        name TEXT NOT NULL DEFAULT '',
+        -- cloudflare | dnspod（与 zap::acme::dns::providers() 保持一致）
+        provider TEXT NOT NULL DEFAULT '',
+        -- 各服务商所需字段的 JSON（zap-crypto 加密后存储），读接口一律脱敏
+        credentials TEXT NOT NULL DEFAULT '',
+        remark TEXT NOT NULL DEFAULT '',
+        status INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER,
+        updated_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_ssl_acme_dns_provider_user ON ssl_acme_dns_provider(user_id);
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }

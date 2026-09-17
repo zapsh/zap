@@ -1,4 +1,4 @@
 [submodule "data/appstore/repos/zap-appstore"]
 	path = data/appstore/repos/zap-appstore
-	url = git@github.com:zapj/zap-appstore.git
+	url = git@github.com:zapsh/zap-appstore.git
 	branch = main

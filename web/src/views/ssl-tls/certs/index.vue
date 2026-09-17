@@ -15,6 +15,11 @@
             <el-button type="success" :icon="MagicStick" @click="openLetsEncrypt">{{
               t('sslCerts.letsEncryptBtn')
             }}</el-button>
+            <el-badge :value="orders.length" :hidden="!orders.length" type="primary">
+              <el-button :icon="Loading" @click="openOrders">{{
+                t('sslCerts.leOrdersBtn')
+              }}</el-button>
+            </el-badge>
           </div>
         </div>
       </template>
@@ -371,53 +376,233 @@
       </template>
     </el-dialog>
 
-    <!-- Let's Encrypt -->
-    <el-dialog v-model="leVisible" :title="t('sslCerts.leTitle')" width="620px">
-      <el-alert type="info" :closable="false" show-icon :description="t('sslCerts.leAlert')" />
-      <el-form label-width="90px" style="margin-top: 12px" @submit.prevent>
-        <el-form-item :label="t('sslCerts.domains')">
-          <el-input v-model="leForm.domains" :placeholder="t('sslCerts.leDomainsPlaceholder')" />
-        </el-form-item>
-        <el-form-item :label="t('sslCerts.leEmail')">
-          <el-input v-model="leForm.email" :placeholder="t('sslCerts.leEmailPlaceholder')" />
-        </el-form-item>
-        <el-form-item :label="t('sslCerts.certName')">
-          <el-input
-            v-model="leForm.name"
-            :placeholder="t('sslCerts.leNamePlaceholder')"
-            maxlength="80"
-          />
-        </el-form-item>
-        <el-form-item v-if="canManageAll" :label="t('sslCerts.ownerLabel')">
-          <el-select
-            v-model="leForm.user_id"
-            filterable
-            :loading="ownersLoading"
-            :placeholder="t('sslCerts.ownerLabel')"
-            style="width: 100%"
-          >
-            <el-option
-              v-for="o in ownerOptions"
-              :key="o.id"
-              :label="`${o.nickname || o.username} (${o.username})`"
-              :value="o.id"
+    <!-- Let's Encrypt 申请向导：填写 → 域名验证 → 结果 -->
+    <el-dialog
+      v-model="leVisible"
+      :title="t('sslCerts.leTitle')"
+      width="820px"
+      top="4vh"
+      :close-on-click-modal="false"
+      @closed="onLeClosed"
+    >
+      <el-steps :active="leStep" finish-status="success" align-center class="le-steps">
+        <el-step :title="t('sslCerts.leStepApply')" />
+        <el-step :title="t('sslCerts.leStepAuth')" />
+        <el-step :title="t('sslCerts.leStepDone')" />
+      </el-steps>
+
+      <!-- 第一步：申请信息 -->
+      <div v-show="leStep === 0">
+        <el-alert type="info" :closable="false" show-icon :description="t('sslCerts.leAlert')" />
+        <el-form label-width="118px" class="le-form" @submit.prevent>
+          <el-form-item :label="t('sslCerts.domains')">
+            <el-input
+              v-model="leForm.domains"
+              :placeholder="t('sslCerts.leDomainsPlaceholder')"
+              @input="leWildcardHint"
             />
-          </el-select>
-        </el-form-item>
-        <el-form-item :label="t('sslCerts.leStaging')">
-          <el-switch v-model="leForm.staging" />
-          <span class="form-hint">{{ t('sslCerts.leStagingHint') }}</span>
-        </el-form-item>
-        <el-form-item :label="t('sslCerts.colRemark')">
-          <el-input v-model="leForm.remark" maxlength="200" />
-        </el-form-item>
-      </el-form>
+            <span class="form-hint">{{ t('sslCerts.leWildcardHint') }}</span>
+          </el-form-item>
+          <el-form-item :label="t('sslCerts.leEmail')">
+            <el-input v-model="leForm.email" :placeholder="t('sslCerts.leEmailPlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('sslCerts.leValidation')">
+            <el-radio-group v-model="leForm.validation">
+              <el-radio value="dns">{{ t('sslCerts.leValidationDns') }}</el-radio>
+              <el-radio value="http">{{ t('sslCerts.leValidationHttp') }}</el-radio>
+            </el-radio-group>
+            <span class="form-hint">{{ t('sslCerts.leValidationHint') }}</span>
+          </el-form-item>
+          <el-form-item v-if="leForm.validation === 'dns'" :label="t('sslCerts.leDnsMode')">
+            <el-radio-group v-model="leForm.dns_mode">
+              <el-radio value="manual">{{ t('sslCerts.leDnsManual') }}</el-radio>
+              <el-radio value="auto">{{ t('sslCerts.leDnsAuto') }}</el-radio>
+            </el-radio-group>
+            <span class="form-hint">{{ t('sslCerts.leDnsModeHint') }}</span>
+          </el-form-item>
+          <el-form-item
+            v-if="leForm.validation === 'dns' && leForm.dns_mode === 'auto'"
+            :label="t('sslCerts.leDnsProvider')"
+          >
+            <el-select
+              v-model="leForm.dns_provider_id"
+              :placeholder="t('sslCerts.leDnsProviderPlaceholder')"
+              :loading="dnsProvidersLoading"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="p in dnsProviders"
+                :key="p.id"
+                :label="`${p.name}（${providerLabel(p.provider)}）`"
+                :value="p.id"
+              />
+            </el-select>
+            <span class="form-hint">{{ t('sslCerts.leDnsProviderHint') }}</span>
+          </el-form-item>
+          <el-form-item :label="t('sslCerts.certName')">
+            <el-input
+              v-model="leForm.name"
+              :placeholder="t('sslCerts.leNamePlaceholder')"
+              maxlength="80"
+            />
+          </el-form-item>
+          <el-form-item v-if="canManageAll" :label="t('sslCerts.ownerLabel')">
+            <el-select
+              v-model="leForm.user_id"
+              filterable
+              :loading="ownersLoading"
+              :placeholder="t('sslCerts.ownerLabel')"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="o in ownerOptions"
+                :key="o.id"
+                :label="`${o.nickname || o.username} (${o.username})`"
+                :value="o.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="t('sslCerts.leStaging')">
+            <el-switch v-model="leForm.staging" />
+            <span class="form-hint">{{ t('sslCerts.leStagingHint') }}</span>
+          </el-form-item>
+          <el-form-item :label="t('sslCerts.colRemark')">
+            <el-input v-model="leForm.remark" maxlength="200" />
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <!-- 第二步：DNS-01 手动 → 展示待解析记录；其余方式 → 后台自动校验 -->
+      <div v-show="leStep === 1">
+        <template v-if="leOrder?.dns_mode === 'manual' && leOrder.challenge_type === 'dns-01'">
+          <el-alert
+            type="warning"
+            :closable="false"
+            show-icon
+            :title="t('sslCerts.leManualTitle')"
+            :description="t('sslCerts.leManualAlert')"
+          />
+          <el-table :data="leOrder?.todos || []" size="small" class="le-todos">
+            <el-table-column :label="t('sslCerts.colDomains')" width="180">
+              <template #default="{ row }">{{ row.domain }}</template>
+            </el-table-column>
+            <el-table-column :label="t('sslCerts.leRecordType')" width="90">
+              <template #default>TXT</template>
+            </el-table-column>
+            <el-table-column :label="t('sslCerts.leRecordHost')" min-width="200">
+              <template #default="{ row }">
+                <span class="mono">{{ row.dns_host }}</span>
+                <el-button link type="primary" size="small" @click="copyText(row.dns_host, '')"
+                  >{{ t('sslCerts.copy') }}</el-button
+                >
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('sslCerts.leRecordValue')" min-width="260">
+              <template #default="{ row }">
+                <span class="mono">{{ row.dns_value }}</span>
+                <el-button link type="primary" size="small" @click="copyText(row.dns_value, '')">{{
+                  t('sslCerts.copy')
+                }}</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('sslCerts.lePropagated')" width="110">
+              <template #default="{ row }">
+                <el-tag v-if="row.propagated" type="success" size="small">{{
+                  t('sslCerts.lePropagatedYes')
+                }}</el-tag>
+                <el-tag v-else type="info" size="small">{{ t('sslCerts.lePropagatedNo') }}</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
+
+        <!-- 自动模式：展示后端给出的阶段说明 -->
+        <div v-else class="le-progress">
+          <el-icon v-if="lePolling" class="is-loading le-spin"><Loading /></el-icon>
+          <span>{{ leOrder?.stage || leStatusText }}</span>
+        </div>
+
+        <el-alert
+          v-if="leOrder && leOrder.status === 'failed'"
+          type="error"
+          :closable="false"
+          show-icon
+          class="le-error"
+          :description="leOrder.error || t('sslCerts.leFailedFallback')"
+        />
+      </div>
+
+      <!-- 第三步：结果 -->
+      <div v-show="leStep === 2" class="le-result">
+        <template v-if="leOrder?.status === 'issued'">
+          <div class="le-result-line">
+            <el-icon class="is-ok"><CircleCheckFilled /></el-icon>
+            <span>{{ t('sslCerts.leDoneOk') }}</span>
+          </div>
+          <el-button type="primary" link @click="openIssuedCert">{{
+            t('sslCerts.leViewCert')
+          }}</el-button>
+        </template>
+        <div v-else class="le-result-line">
+          <el-icon class="is-bad"><CircleCloseFilled /></el-icon>
+          <span>{{ leOrder?.error || leStatusText }}</span>
+          <el-button size="small" text type="primary" @click="restartWizard">{{
+            t('sslCerts.leRetry')
+          }}</el-button>
+        </div>
+      </div>
+
       <template #footer>
-        <el-button @click="leVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="success" :loading="leBusy" @click="submitLetsEncrypt">{{
+        <el-button @click="onLeCancel">{{ t('common.cancel') }}</el-button>
+        <el-button v-if="leStep === 0" type="success" :loading="leBusy" @click="submitLetsEncrypt">{{
           t('sslCerts.startApply')
         }}</el-button>
+        <el-button
+          v-else-if="leStep === 1 && leOrder?.dns_mode === 'manual' && leOrder.challenge_type === 'dns-01'"
+          type="primary"
+          :loading="leBusy"
+          @click="submitVerify"
+          >{{ t('sslCerts.leVerifyBtn') }}</el-button
+        >
+        <el-button v-else-if="leStep === 2" type="primary" @click="leVisible = false">{{
+          t('sslCerts.close')
+        }}</el-button>
       </template>
+    </el-dialog>
+
+    <!-- 进行中的申请 -->
+    <el-dialog v-model="ordersVisible" :title="t('sslCerts.leOrdersTitle')" width="760px">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        :description="t('sslCerts.leOrdersAlert')"
+        style="margin-bottom: 10px"
+      />
+      <el-table :data="orders" v-loading="ordersLoading" size="small">
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column :label="t('sslCerts.colDomains')" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">{{ (row.domains || []).join(', ') }}</template>
+        </el-table-column>
+        <el-table-column :label="t('sslCerts.leChallenge')" width="110">
+          <template #default="{ row }">{{ challengeLabel(row) }}</template>
+        </el-table-column>
+        <el-table-column :label="t('sslCerts.colStatus')" min-width="180">
+          <template #default="{ row }">
+            <el-tag size="small" :type="orderTagType(row.status)">{{ row.stage }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('common.operation')" width="170" fixed="right">
+          <template #default="{ row }">
+            <el-button type="primary" link @click="trackOrder(row)">{{
+              t('sslCerts.leTrack')
+            }}</el-button>
+            <el-button type="danger" link @click="cancelOrder(row)">{{
+              t('sslCerts.leCancelOrder')
+            }}</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-dialog>
   </div>
 </template>
@@ -447,10 +632,19 @@ import {
   selfSignCert,
   letsEncryptCert,
   parseCert,
+  getAcmeOrders,
+  getAcmeOrderStatus,
+  verifyAcmeOrder,
+  cancelAcmeOrder,
+  getAcmeDnsProviders,
+  getAcmeDnsList,
   type SslCertItem,
   type SslCertDetail,
   type SslCertParseResult,
   type OwnerOption,
+  type AcmeOrder,
+  type AcmeDnsProviderItem,
+  type AcmeDnsProviderMeta,
 } from '@/api/ssl'
 
 const { t } = useI18n()
@@ -911,17 +1105,59 @@ async function submitSelfSign() {
   }
 }
 
-// ── Let's Encrypt ───────────────────────────────────────────
+// ── Let's Encrypt 申请向导 ──────────────────────────────────
 const leVisible = ref(false)
 const leBusy = ref(false)
+const leStep = ref(0)
+const lePolling = ref(false)
+const leStatusText = ref('')
+const leOrder = ref<AcmeOrder>()
 const leForm = reactive<{
   domains: string
   email: string
   name: string
   staging: boolean
   remark: string
+  validation: 'dns' | 'http'
+  dns_mode: 'manual' | 'auto'
+  dns_provider_id?: number
   user_id?: number
-}>({ domains: '', email: '', name: '', staging: false, remark: '', user_id: undefined })
+}>({
+  domains: '',
+  email: '',
+  name: '',
+  staging: false,
+  remark: '',
+  validation: 'dns',
+  dns_mode: 'manual',
+  dns_provider_id: undefined,
+  user_id: undefined,
+})
+
+// DNS 服务商下拉（DNS-01 自动模式）
+const dnsProviders = ref<AcmeDnsProviderItem[]>([])
+const dnsProviderMetas = ref<AcmeDnsProviderMeta[]>([])
+const dnsProvidersLoading = ref(false)
+const providerLabel = (kind: string) =>
+  dnsProviderMetas.value.find((m) => m.kind === kind)?.label || kind
+
+async function loadDnsProviders() {
+  dnsProvidersLoading.value = true
+  try {
+    const [metas, list] = await Promise.all([getAcmeDnsProviders(), getAcmeDnsList()])
+    dnsProviderMetas.value = metas.data ?? []
+    dnsProviders.value = list.data ?? []
+  } catch {
+    /* handled */
+  } finally {
+    dnsProvidersLoading.value = false
+  }
+}
+
+/** 域名里含通配符时强制切到 DNS 验证（HTTP-01 不支持，后端也会拦，这里即时提示） */
+function leWildcardHint(v: string) {
+  if (String(v || '').includes('*.')) leForm.validation = 'dns'
+}
 
 function openLetsEncrypt() {
   leForm.domains = ''
@@ -929,8 +1165,70 @@ function openLetsEncrypt() {
   leForm.name = ''
   leForm.staging = false
   leForm.remark = ''
+  leForm.validation = 'dns'
+  leForm.dns_mode = 'manual'
+  leForm.dns_provider_id = dnsProviders.value[0]?.id
   leForm.user_id = canManageAll.value ? myUserId.value : undefined
+  leStep.value = 0
+  leOrder.value = undefined
+  leStatusText.value = ''
+  if (!dnsProviders.value.length) loadDnsProviders()
   leVisible.value = true
+}
+
+let pollTimer: ReturnType<typeof setInterval> | undefined
+function stopPoll() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = undefined
+  }
+  lePolling.value = false
+}
+
+/** 轮询订单直到签发 / 失败：这里的等待可能长达数分钟，不能靠单个请求干等 */
+function startPoll(orderId: number) {
+  stopPoll()
+  lePolling.value = true
+  pollTimer = setInterval(async () => {
+    try {
+      const res = await getAcmeOrderStatus(orderId)
+      const o = res.data
+      leOrder.value = o
+      if (o.status === 'pending' && o.dns_mode === 'manual' && o.challenge_type === 'dns-01') {
+        // 仍在等用户解析：停留在第二步
+        return
+      }
+      if (o.status === 'processing') return
+      stopPoll()
+      if (o.status === 'issued') {
+        leStep.value = 2
+        loadList()
+      } else if (o.status === 'failed' || o.status === 'cancelled') {
+        leStep.value = 2
+      }
+    } catch {
+      /* 单次轮询失败不打断整体等待，下轮继续 */
+    }
+  }, 3000)
+}
+
+/** 走完第二步后继续轮询（自动模式与手动模式只是「谁来加 TXT」不同，后续一致） */
+function maybeAutoAdvance(o: AcmeOrder) {
+  if (o.dns_mode === 'manual' && o.challenge_type === 'dns-01') {
+    leStep.value = 1
+    lePolling.value = false
+    return
+  }
+  leStep.value = 1
+  startPoll(o.id)
+}
+
+function onLeClosed() {
+  stopPoll()
+}
+function onLeCancel() {
+  stopPoll()
+  leVisible.value = false
 }
 
 async function submitLetsEncrypt() {
@@ -942,25 +1240,135 @@ async function submitLetsEncrypt() {
     ElMessage.warning(t('sslCerts.leEmailRequired'))
     return
   }
+  if (leForm.validation === 'dns' && leForm.dns_mode === 'auto' && !leForm.dns_provider_id) {
+    ElMessage.warning(t('sslCerts.leProviderRequired'))
+    return
+  }
   leBusy.value = true
   try {
     const res = await letsEncryptCert({
       domains: leForm.domains.trim(),
       email: leForm.email.trim(),
+      validation: leForm.validation,
+      ...(leForm.validation === 'dns' ? { dns_mode: leForm.dns_mode } : {}),
+      ...(leForm.validation === 'dns' && leForm.dns_mode === 'auto'
+        ? { dns_provider_id: leForm.dns_provider_id }
+        : {}),
       name: leForm.name.trim() || undefined,
       staging: leForm.staging,
       remark: leForm.remark.trim() || undefined,
       ...(canManageAll.value ? { user_id: leForm.user_id || undefined } : {}),
     })
-    ElMessage.success(t('sslCerts.leOk'))
-    leVisible.value = false
-    loadList()
+    const order = res.data
+    leOrder.value = order
+    maybeAutoAdvance(order)
+    loadOrders()
   } catch {
     /* handled */
   } finally {
     leBusy.value = false
   }
 }
+
+/** DNS-01 手动模式下用户点「我已添加解析」 */
+async function submitVerify() {
+  if (!leOrder.value) return
+  leBusy.value = true
+  try {
+    const res = await verifyAcmeOrder(leOrder.value.id)
+    leOrder.value = res.data
+    startPoll(res.data.id)
+  } catch {
+    /* handled */
+  } finally {
+    leBusy.value = false
+  }
+}
+
+function restartWizard() {
+  stopPoll()
+  leStep.value = 0
+  leOrder.value = undefined
+}
+
+async function openIssuedCert() {
+  const id = leOrder.value?.cert_id
+  leVisible.value = false
+  if (!id) return
+  try {
+    const res = await getCertDetail(id)
+    detail.value = res.data
+    detailVisible.value = true
+  } catch {
+    /* handled */
+  }
+}
+
+// ── 进行中的申请（跨会话可续）──────────────────────────────
+const ordersVisible = ref(false)
+const ordersLoading = ref(false)
+const orders = ref<AcmeOrder[]>([])
+
+async function loadOrders() {
+  ordersLoading.value = true
+  try {
+    const res = await getAcmeOrders()
+    orders.value = res.data ?? []
+  } catch {
+    /* handled */
+  } finally {
+    ordersLoading.value = false
+  }
+}
+
+function openOrders() {
+  ordersVisible.value = true
+  loadOrders()
+}
+
+/** 从列表接管某个订单：DNS 手动模式回到第二步，其余直接开始轮询 */
+function trackOrder(row: AcmeOrder) {
+  leOrder.value = row
+  leForm.domains = (row.domains || []).join(', ')
+  leForm.validation = row.challenge_type === 'http-01' ? 'http' : 'dns'
+  leForm.dns_mode = row.dns_mode
+  ordersVisible.value = false
+  maybeAutoAdvance(row)
+  if (row.status === 'processing') startPoll(row.id)
+  leVisible.value = true
+}
+
+async function cancelOrder(row: AcmeOrder) {
+  try {
+    await ElMessageBox.confirm(t('sslCerts.leCancelConfirm'), t('sslCerts.leCancelTitle'), {
+      type: 'warning',
+      confirmButtonText: t('sslCerts.confirmDelete'),
+    })
+  } catch {
+    return
+  }
+  try {
+    await cancelAcmeOrder(row.id)
+    ElMessage.success(t('sslCerts.leCancelOk'))
+    loadOrders()
+  } catch {
+    /* handled */
+  }
+}
+
+const orderTagType = (s: string): 'info' | 'primary' | 'success' | 'danger' | 'warning' => {
+  if (s === 'issued') return 'success'
+  if (s === 'failed') return 'danger'
+  if (s === 'processing') return 'primary'
+  if (s === 'pending') return 'warning'
+  return 'info'
+}
+const challengeLabel = (row: AcmeOrder) =>
+  row.challenge_type === 'http-01'
+    ? t('sslCerts.leValidationHttp')
+    : row.dns_mode === 'auto'
+      ? t('sslCerts.leDnsAuto')
+      : t('sslCerts.leDnsManual')
 
 function fmtTime(ts: number) {
   return ts ? new Date(ts * 1000).toLocaleString() : '-'
@@ -969,6 +1377,7 @@ function fmtTime(ts: number) {
 onMounted(() => {
   loadList()
   loadOwners()
+  loadOrders()
   setInterval(() => {
     nowTs.value = Math.floor(Date.now() / 1000)
   }, 30000)
@@ -976,6 +1385,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (parseTimer) clearTimeout(parseTimer)
+  stopPoll()
 })
 </script>
 
@@ -1103,6 +1513,49 @@ onBeforeUnmount(() => {
 }
 .detail-toolbar {
   margin-bottom: 8px;
+}
+.le-steps {
+  margin-bottom: 18px;
+}
+.le-form {
+  margin-top: 14px;
+}
+.le-todos {
+  margin-top: 12px;
+}
+.le-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0;
+  justify-content: center;
+  color: var(--el-text-color-regular);
+}
+.le-spin {
+  font-size: 18px;
+  color: var(--el-color-primary);
+}
+.le-error {
+  margin-top: 12px;
+}
+.le-result {
+  padding: 24px 0;
+  text-align: center;
+}
+.le-result-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.le-result-line .is-ok {
+  color: #67c23a;
+  font-size: 22px;
+}
+.le-result-line .is-bad {
+  color: var(--el-color-danger);
+  font-size: 22px;
 }
 .pem-view {
   max-height: 300px;

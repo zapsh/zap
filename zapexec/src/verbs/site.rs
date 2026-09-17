@@ -24,6 +24,32 @@ pub(super) fn zap_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"))
 }
 
+/// ACME HTTP-01 验证根目录（面板自管，与维护页同级的 `_zap/` 下）：
+/// `{ZAP_PATH}/data/www/_zap/acme`，真正的挑战文件位于其下的
+/// `.well-known/acme-challenge/{token}`。
+///
+/// 由 zapd（`acme.http_write` / `acme.http_clear` 动词）写入，本模块负责在 vhost
+/// 里渲染对应的 `location`，两者必须始终使用同一路径。
+pub(super) fn acme_webroot() -> PathBuf {
+    zap_path().join("data/www/_zap/acme")
+}
+
+/// 渲染进每个 vhost 的 ACME HTTP-01 location 片段。
+///
+/// `^~` 前缀匹配优先于用户自定义 location 与反代正则路径，因此反代站点同样能被验证；
+/// 面板（zapd）只负责往验证根里增删 token 文件，无需重载 nginx。
+fn render_acme_location() -> String {
+    let root = acme_webroot();
+    format!(
+        "\n    # ACME HTTP-01 域名验证（面板统一托管，请勿手工修改）\n\
+         \x20   location ^~ /.well-known/acme-challenge/ {{\n\
+         \x20       alias {root}/.well-known/acme-challenge/;\n\
+         \x20       default_type \"text/plain\";\n\
+         \x20   }}\n",
+        root = root.display()
+    )
+}
+
 // ── Nginx 探测 ───────────────────────────────────────────────
 
 /// 查找已部署 Nginx 的主配置 conf/nginx.conf：
@@ -582,6 +608,9 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
     }
     // 端口内容体（root / 日志 / 伪静态 / PHP / location），80 与 443 共用一份
     let mut core = String::new();
+    // ACME HTTP-01：所有站点一律带上验证路径（含反代站点），
+    // 面板随时可签发证书，不必先建 CA 无关的临时站点
+    core.push_str(&render_acme_location());
     if s_type != "proxy" {
         core.push_str(&format!("    root {root};\n"));
         if let Some(p) = access_log {
@@ -2195,6 +2224,71 @@ mod tests {
         assert!(s.contains("alias /home/u/www/p-3/static;"));
         assert!(!s.contains("root "), "proxy 类型不应渲染 root");
         assert!(!s.contains("fastcgi"));
+    }
+
+    /// 反代站点同样要能签发证书：`^~` 的 ACME location 必须优先于用户自定义 location，
+    /// 否则 HTTP-01 验证请求会被代理到后端而永远拿不到 token 文件。
+    #[test]
+    fn acme_location_rendered_for_every_site_type() {
+        let expect = |s: &str, kind: &str| {
+            let root = acme_webroot();
+            assert!(
+                s.contains("location ^~ /.well-known/acme-challenge/ {"),
+                "{kind} 站点缺少 ACME location"
+            );
+            assert!(
+                s.contains(&format!(
+                    "alias {}/.well-known/acme-challenge/;",
+                    root.display()
+                )),
+                "{kind} 站点的 ACME alias 未指向验证根"
+            );
+        };
+        expect(
+            &render_default(
+                4,
+                "blog",
+                &["a.com".into()],
+                "/zap/www/blog-4",
+                None,
+                None,
+                None,
+            ),
+            "静态",
+        );
+        let ups = vec![UpstreamSpec {
+            name: "b".into(),
+            servers_ext: vec![sv("127.0.0.1:9000", 0)],
+            ..Default::default()
+        }];
+        let locs = vec![LocationSpec {
+            path: "/".into(),
+            kind: "proxy".into(),
+            target: "b".into(),
+            ..Default::default()
+        }];
+        expect(
+            &render_vhost_full(VhostRenderSpec {
+                site_id: 5,
+                name: "p",
+                domains: &["p.com".into()],
+                root: "",
+                php_socket: None,
+                access_log: None,
+                error_log: None,
+                site_type: "proxy",
+                pseudo_static: "none",
+                pseudo_custom: "",
+                upstreams: &ups,
+                locations: &locs,
+                ssl_files: None,
+                force_https: false,
+                ssl_tls: None,
+                listen_ipv4: "",
+                listen_ipv6: "",
+            }),
+            "反代",
+        );
     }
 
     #[test]

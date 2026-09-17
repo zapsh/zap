@@ -1,3 +1,4 @@
+mod acme;
 mod appstore;
 mod cred;
 mod cron;
@@ -384,6 +385,9 @@ pub async fn dispatch(req: Request) -> Response {
             kind,
             log_path,
         } => cron::run(run_id, linux_user, home_dir, command, kind, log_path).await,
+        // ACME HTTP-01 验证文件托管（Let's Encrypt 申请流程）
+        Request::AcmeHttpWrite { entries } => acme::http_write(entries).await,
+        Request::AcmeHttpClear { tokens } => acme::http_clear(tokens).await,
     }
 }
 

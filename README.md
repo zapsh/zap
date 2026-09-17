@@ -43,7 +43,7 @@ ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免�
 
 - 手动导入证书（PEM 粘贴上传，自动解析域名与有效期）
 - 一键自签名证书（rcgen）
-- **Let's Encrypt** 自动签发（ACME HTTP-01，acme-lib）
+- **Let's Encrypt** 自动签发（ACME HTTP-01 / DNS-01，含泛域名与 DNS 服务商 API 自动处理）
 - 证书列表、详情、续期、删除，到期预警
 
 ### 应用商店（AppStore）
@@ -120,7 +120,7 @@ ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免�
 
 ### 技术栈
 
-**后端**：Rust 2024 · Axum 0.8 · Tokio · SQLx(SQLite) · OpenSSL(vendored) / rcgen / acme-lib · ssh2 · jsonwebtoken / bcrypt · sysinfo / systemstat · tokio-cron-scheduler · rust-embed
+**后端**：Rust 2024 · Axum 0.8 · Tokio · SQLx(SQLite) · Rustls / ring · rcgen / instant-acme(ACME HTTP-01 / DNS-01) · ssh2 · jsonwebtoken / bcrypt · sysinfo / systemstat · tokio-cron-scheduler · rust-embed
 
 **前端**：Vue 3.5 · TypeScript · Vite · Element Plus · Pinia · UnoCSS · xterm.js · CodeMirror 6 · Chart.js · Axios
 

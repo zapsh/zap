@@ -16,6 +16,16 @@ fn default_log_lines() -> usize {
     200
 }
 
+/// ACME HTTP-01 的一条验证材料：`token` 决定验证文件名，
+/// `key_auth` 是 validation 服务端期望的响应体内容。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AcmeChallengeEntry {
+    /// 挑战 token（文件名固定为该值）
+    pub token: String,
+    /// token + 账户指纹，验证端点取到的内容须与之一致
+    pub key_auth: String,
+}
+
 /// 反代 upstream 定义：vhost 渲染为 nginx `upstream <name> { ... }` 块。
 /// server 行一律以 `servers_ext` 表单字段维护（开发期不兼容旧版文本 servers）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -799,6 +809,19 @@ pub enum Request {
         kind: String,
         log_path: String,
     },
+    /// 写入 ACME HTTP-01 验证文件（root 特权，供 Let's Encrypt 自动验证）。
+    ///
+    /// 落盘到面板自管的验证根
+    /// `{ZAP_PATH}/data/www/_zap/acme/.well-known/acme-challenge/{token}`；
+    /// 站点 vhost 里固定渲染了
+    /// `location ^~ /.well-known/acme-challenge/ { alias <验证根>/.well-known/acme-challenge/; }`，
+    /// 因此无需重启 / 重载 nginx 即可生效。
+    /// token 仅允许 `[A-Za-z0-9_-]`（防路径穿越），文件 0644、目录 0755。
+    #[serde(rename = "acme.http_write")]
+    AcmeHttpWrite { entries: Vec<AcmeChallengeEntry> },
+    /// 清理 ACME HTTP-01 验证文件（幂等）。订单成功 / 失败 / 取消后都应收尾调用。
+    #[serde(rename = "acme.http_clear")]
+    AcmeHttpClear { tokens: Vec<String> },
 }
 
 /// `zapexec` -> `zapd` 的响应。

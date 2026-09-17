@@ -625,7 +625,18 @@ fn api_routers() -> Router {
         .route("/ssl/cert/update", post(ssl::cert_update))
         .route("/ssl/cert/delete", post(ssl::cert_delete))
         .route("/ssl/cert/self-sign", post(ssl::cert_self_sign))
-        .route("/ssl/cert/letsencrypt", post(ssl::cert_letsencrypt))
+        // SSL/TLS：Let's Encrypt 异步订单（下单 → 验证 → 签发）
+        .route("/ssl/letsencrypt", post(ssl::cert_letsencrypt))
+        .route("/ssl/letsencrypt/orders", get(ssl::letsencrypt_orders))
+        .route("/ssl/letsencrypt/status", get(ssl::letsencrypt_status))
+        .route("/ssl/letsencrypt/verify", post(ssl::letsencrypt_verify))
+        .route("/ssl/letsencrypt/cancel", post(ssl::letsencrypt_cancel))
+        // SSL/TLS：ACME 的 DNS 服务商凭据（DNS-01 自动验证）
+        .route("/ssl/acme/dns/providers", get(ssl::acme_dns_providers))
+        .route("/ssl/acme/dns/list", get(ssl::acme_dns_list))
+        .route("/ssl/acme/dns/save", post(ssl::acme_dns_save))
+        .route("/ssl/acme/dns/delete", post(ssl::acme_dns_delete))
+        .route("/ssl/acme/dns/test", post(ssl::acme_dns_test))
         // 开发：API Token 管理 + API 文档
         .route("/dev/api-token/list", get(dev::api_token_list))
         .route("/dev/api-token/create", post(dev::api_token_create))

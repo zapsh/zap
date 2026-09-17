@@ -173,6 +173,12 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/ssl-tls/certs/index.vue'),
         meta: { title: 'SSL 证书', icon: 'material-symbols:lock', affix: true },
       },
+      {
+        path: 'dns-providers',
+        name: 'SslDnsProviders',
+        component: () => import('@/views/ssl-tls/dns-providers/index.vue'),
+        meta: { title: 'DNS 服务商', icon: 'material-symbols:dns' },
+      },
     ],
   },
   // 服务配置（各运行服务的配置：应用商店安装后可用；未安装时页面引导）

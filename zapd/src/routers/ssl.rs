@@ -7,26 +7,21 @@
 //!   - csr         ：证书签名请求（手动导入或自签名生成时产生）
 //!
 //! 功能：手动添加 / 修改 / 删除 / 查看；rcgen 生成自签名证书；
-//! acme-lib 走 ACME HTTP-01 向 Let's Encrypt 申请（需 80 端口可达）。
+//! instant-acme 以「异步订单」方式向 Let's Encrypt 申请
+//! （HTTP-01 走面板自管的 well-known 验证根，DNS-01 支持手动解析与服务商 API 自动处理）。
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 
 use axum::Json;
-use axum::body::Body as AxBody;
 use axum::extract::{Extension, Query};
-use hyper::body::Incoming;
-use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
 use serde::Deserialize;
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::{
     db,
     zap::jwt::ValidatedClaims,
-    zap::{ZapError, ZapJsonResult, audit, jwt},
+    zap::{ZapError, ZapJsonResult, acme, audit, crypto, jwt},
 };
 
 // ── 行结构 ───────────────────────────────────────────────────
@@ -882,7 +877,7 @@ fn default_sign_days() -> i64 {
 }
 
 /// 拆分逗号 / 空格 / 换行分隔的域名列表。
-fn split_domains(raw: &str) -> Vec<String> {
+pub(crate) fn split_domains(raw: &str) -> Vec<String> {
     raw.split([',', ' ', '\t', '\n', '\r', ';'])
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -991,7 +986,11 @@ pub async fn cert_self_sign(
     ))
 }
 
-// ── Let's Encrypt 申请（ACME HTTP-01）────────────────────────
+// ── Let's Encrypt 申请（ACME 异步订单）──────────────────────
+//
+// 一个订单代表一次申请：下单后服务端只把订单句柄与各个域名的验证材料落库，
+// 后续（用户去解析 DNS / 后台自动校验签发）都围绕这个订单记录展开。
+// 前端拿到 order_id 后轮询 status 即可，不必长时间挂起某个 HTTP 请求。
 
 #[derive(Debug, Deserialize)]
 pub struct CertLetsEncryptPayload {
@@ -1006,10 +1005,428 @@ pub struct CertLetsEncryptPayload {
     pub staging: Option<bool>,
     #[serde(default)]
     pub remark: Option<String>,
+    /// 验证方式：`http`（自动写验证文件）| `dns`（默认）
+    #[serde(default)]
+    pub validation: Option<String>,
+    /// dns-01 的子模式：`manual`（默认，用户自行解析）| `auto`（调 DNS 服务商 API）
+    #[serde(default)]
+    pub dns_mode: Option<String>,
+    /// dns-01 自动模式使用的 DNS 服务商 id
+    #[serde(default)]
+    pub dns_provider_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LetsEncryptQuery {
+    pub order_id: i64,
+}
+
+/// 下单创建 ACME 订单。
+///
+/// - `dns` + `manual`（默认）：返回待添加的 TXT 记录，用户解析完后调 `/letsencrypt/verify`；
+/// - `dns` + `auto`、`http`：后台任务自动推进到签发，返回 `order_id` 供轮询。
+pub async fn cert_letsencrypt(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<CertLetsEncryptPayload>,
+) -> ZapJsonResult {
+    let email = payload.email.trim().to_string();
+    if email.is_empty() {
+        return Err(ZapError::New(-1, "请填写 ACME 账户邮箱".to_string()));
+    }
+    let domains = split_domains(&payload.domains);
+    if domains.is_empty() {
+        return Err(ZapError::New(-1, "请填写至少一个域名".to_string()));
+    }
+    // 归属用户：admin / reseller 可指定（resolve_cert_owner 校验范围）；普通用户强制自己
+    let owner_user = match payload.user_id {
+        Some(t) => {
+            resolve_cert_owner(&claims, t).await?;
+            t
+        }
+        None => claims.id as i64,
+    };
+
+    let kind = acme::ChallengeKind::parse(payload.validation.as_deref().unwrap_or_default());
+    let is_dns = kind == acme::ChallengeKind::Dns01;
+    let dns_mode = acme::DnsMode::parse(payload.dns_mode.as_deref().unwrap_or_default(), is_dns);
+    let dns_provider_id = payload.dns_provider_id.unwrap_or(0);
+
+    // 自动模式必须先把「哪个服务商、用谁的凭据」讲清楚，避免后台线程里才发现权限不对
+    if dns_mode == acme::DnsMode::Auto {
+        if dns_provider_id <= 0 {
+            return Err(ZapError::New(
+                -1,
+                "请选择 DNS 服务商（自动 DNS 验证需要调用其 API 添加 TXT 记录）".to_string(),
+            ));
+        }
+        let provider = acme::dns_in_scope(&claims, dns_provider_id).await?;
+        if provider.user_id != owner_user && !jwt::is_admin(&claims) {
+            return Err(ZapError::New(
+                -1,
+                "DNS 服务商凭据与证书归属用户不一致，请调整归属或改用手动 DNS 验证".to_string(),
+            ));
+        }
+    }
+
+    let staging = payload.staging.unwrap_or(false);
+    let name = payload
+        .name
+        .clone()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| domains[0].clone());
+    let remark = payload
+        .remark
+        .as_deref()
+        .unwrap_or("Let's Encrypt 自动申请")
+        .trim()
+        .to_string();
+
+    let order = acme::create_order(acme::CreateParams {
+        user_id: owner_user,
+        email,
+        domains: domains.clone(),
+        name,
+        remark,
+        staging,
+        challenge: kind,
+        dns_mode,
+        dns_provider_id,
+    })
+    .await
+    .map_err(|e| ZapError::New(-1, e))?;
+
+    let domains_str = domains.join(", ");
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_cert_letsencrypt",
+        &domains_str,
+        &format!(
+            "order_id={}, kind={}, dns_mode={}, staging={}",
+            order.id, order.challenge_type, order.dns_mode, staging
+        ),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": order })))
+}
+
+/// 轮询订单状态：`pending` / `processing` / `issued` / `failed` / `cancelled`。
+pub async fn letsencrypt_status(
+    Query(q): Query<LetsEncryptQuery>,
+    claims: ValidatedClaims,
+) -> ZapJsonResult {
+    let row = acme::order_in_scope(&claims, q.order_id).await?;
+    Ok(Json(
+        json!({ "code": 0, "message": "OK", "data": acme::view(row.id).await.map_err(|e| ZapError::New(-1, e))? }),
+    ))
+}
+
+/// 触发域名验证：DNS 手动模式下用户完成解析后点击；自动 / HTTP 模式幂等无副作用。
+pub async fn letsencrypt_verify(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<LetsEncryptQuery>,
+) -> ZapJsonResult {
+    let row = acme::order_in_scope(&claims, payload.order_id).await?;
+    let view = acme::trigger(row.id)
+        .await
+        .map_err(|e| ZapError::New(-1, e))?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_cert_letsencrypt_verify",
+        &view.domains.join(", "),
+        &format!("order_id={}", view.id),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": view })))
+}
+
+/// 取消订单：清理已落的验证文件 / DNS 记录，订单置为 cancelled。
+pub async fn letsencrypt_cancel(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<LetsEncryptQuery>,
+) -> ZapJsonResult {
+    let row = acme::order_in_scope(&claims, payload.order_id).await?;
+    let view = acme::cancel(row.id)
+        .await
+        .map_err(|e| ZapError::New(-1, e))?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_cert_letsencrypt_cancel",
+        &view.domains.join(", "),
+        &format!("order_id={}", view.id),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": view })))
+}
+
+/// 未完成的订单列表：前端重进页面后可以直接接着走（不用重新填一遍域名）。
+pub async fn letsencrypt_orders(claims: ValidatedClaims) -> ZapJsonResult {
+    let orders = acme::list_orders(&claims)
+        .await
+        .map_err(|e| ZapError::New(-1, e))?;
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": orders })))
+}
+
+// ── ACME 的 DNS 服务商凭据管理 ─────────────────────────────
+
+/// 支持的服务商及其凭据字段定义（前端据此动态渲染表单，后端不再硬编码）。
+pub async fn acme_dns_providers(_claims: ValidatedClaims) -> ZapJsonResult {
+    Ok(Json(
+        json!({ "code": 0, "message": "OK", "data": acme::dns::providers() }),
+    ))
+}
+
+/// 凭据列表（凭据内容一律脱敏）。
+pub async fn acme_dns_list(claims: ValidatedClaims) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let rows: Vec<(i64, i64, String, String, String, String, i64)> = if jwt::is_admin(&claims) {
+        sqlx::query_as(
+            "SELECT id, user_id, name, provider, credentials, remark, status
+             FROM ssl_acme_dns_provider ORDER BY id DESC",
+        )
+        .fetch_all(pool)
+        .await?
+    } else if jwt::is_reseller(&claims) {
+        sqlx::query_as(
+            "SELECT id, user_id, name, provider, credentials, remark, status
+             FROM ssl_acme_dns_provider
+             WHERE user_id = ? OR user_id IN (SELECT id FROM user WHERE owner_id = ?)
+             ORDER BY id DESC",
+        )
+        .bind(claims.id as i64)
+        .bind(claims.id as i64)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as(
+            "SELECT id, user_id, name, provider, credentials, remark, status
+             FROM ssl_acme_dns_provider WHERE user_id = ? ORDER BY id DESC",
+        )
+        .bind(claims.id as i64)
+        .fetch_all(pool)
+        .await?
+    };
+
+    let data: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(
+            |(id, user_id, name, provider, credentials, remark, status)| {
+                let plain = crypto::decrypt(&credentials).unwrap_or_default();
+                let creds: serde_json::Value = serde_json::from_str(&plain).unwrap_or_default();
+                json!({
+                    "id": id,
+                    "user_id": user_id,
+                    "name": name,
+                    "provider": provider,
+                    "credentials": acme::dns::mask(&provider, &creds),
+                    "remark": remark,
+                    "status": status,
+                })
+            },
+        )
+        .collect();
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": data })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcmeDnsSavePayload {
+    /// 传 id 为更新：未提供的凭据字段保持原值（编辑时不强制重填）
+    #[serde(default)]
+    pub id: Option<i64>,
+    pub name: String,
+    pub provider: String,
+    /// 各服务商所需字段，见 `/ssl/acme/dns/providers`
+    #[serde(default)]
+    pub credentials: Option<serde_json::Value>,
+    #[serde(default)]
+    pub remark: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<i64>,
+}
+
+/// 新增 / 更新 DNS 服务商凭据。凭据经 AES-256-GCM 加密入库。
+pub async fn acme_dns_save(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<AcmeDnsSavePayload>,
+) -> ZapJsonResult {
+    let name = payload.name.trim().to_string();
+    if name.is_empty() {
+        return Err(ZapError::New(-1, "请填写服务商名称".to_string()));
+    }
+    let provider = payload.provider.trim().to_string();
+    if !acme::dns::providers().iter().any(|p| p.kind == provider) {
+        return Err(ZapError::New(
+            -1,
+            format!("不支持的 DNS 服务商：{provider}"),
+        ));
+    }
+    let given = payload.credentials.unwrap_or_default();
+
+    let pool = db::get_db_pool().await;
+    let now = chrono::Utc::now().timestamp();
+    let saved_id = if let Some(id) = payload.id {
+        // 更新：先把库里已有的凭据读出来，只覆盖本次提交的字段
+        let row = acme::dns_in_scope(&claims, id).await?;
+        let plain = crypto::decrypt(&row.credentials).unwrap_or_default();
+        let mut creds: serde_json::Value = serde_json::from_str(&plain)
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+        if let serde_json::Value::Object(map) = given.clone() {
+            for (k, v) in map {
+                // 空值的输入框视为「不修改」
+                let empty = v.as_str().map(|s| s.trim().is_empty()).unwrap_or(false);
+                if !empty {
+                    creds[k] = v;
+                }
+            }
+        }
+        // 落库前自检：字段缺失时在这里就报错，而不是等到签发时才失败
+        acme::dns::build(&provider, &creds).map_err(|e| ZapError::New(-1, e))?;
+        let enc = crypto::encrypt(&creds.to_string())
+            .map_err(|e| ZapError::New(-1, format!("凭据加密失败: {e}")))?;
+        sqlx::query(
+            "UPDATE ssl_acme_dns_provider SET name = ?, provider = ?, credentials = ?, remark = ?,
+                    updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(&name)
+        .bind(&provider)
+        .bind(&enc)
+        .bind(payload.remark.as_deref().unwrap_or_default().trim())
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        id
+    } else {
+        acme::dns::build(&provider, &given).map_err(|e| ZapError::New(-1, e))?;
+        let owner = match payload.user_id {
+            Some(t) => {
+                // 归属规则与 SSL 证书一致：reseller 只能选自己或名下客户
+                crate::routers::site::resolve_target_user(&claims, t).await?;
+                t
+            }
+            None => claims.id as i64,
+        };
+        let enc = crypto::encrypt(&given.to_string())
+            .map_err(|e| ZapError::New(-1, format!("凭据加密失败: {e}")))?;
+        let r = sqlx::query(
+            "INSERT INTO ssl_acme_dns_provider
+                (user_id, name, provider, credentials, remark, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+        )
+        .bind(owner)
+        .bind(&name)
+        .bind(&provider)
+        .bind(&enc)
+        .bind(payload.remark.as_deref().unwrap_or_default().trim())
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await?;
+        r.last_insert_rowid()
+    };
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_acme_dns_save",
+        &name,
+        &format!("provider={provider}, id={saved_id}"),
+    )
+    .await;
+    Ok(Json(
+        json!({ "code": 0, "message": "OK", "data": { "id": saved_id } }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcmeDnsIdPayload {
+    pub id: i64,
+}
+
+/// 删除 DNS 服务商凭据：被进行中的订单引用时拒绝删除。
+pub async fn acme_dns_delete(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<AcmeDnsIdPayload>,
+) -> ZapJsonResult {
+    let row = acme::dns_in_scope(&claims, payload.id).await?;
+    let (busy,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM ssl_acme_order
+         WHERE dns_provider_id = ? AND status IN ('pending','processing')",
+    )
+    .bind(payload.id)
+    .fetch_one(db::get_db_pool().await)
+    .await?;
+    if busy > 0 {
+        return Err(ZapError::New(
+            -1,
+            "有进行中的证书申请正在使用该服务商，请先取消对应订单".to_string(),
+        ));
+    }
+    sqlx::query("DELETE FROM ssl_acme_dns_provider WHERE id = ?")
+        .bind(payload.id)
+        .execute(db::get_db_pool().await)
+        .await?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_acme_dns_delete",
+        &row.name,
+        &format!("id={}, provider={}", row.id, row.provider),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK" })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcmeDnsTestPayload {
+    provider: String,
+    #[serde(default)]
+    credentials: serde_json::Value,
+    /// 传 id 表示「用已保存的凭据测试」：缺失字段自动取库里的值，密钥本身不出网
+    #[serde(default)]
+    id: Option<i64>,
+}
+
+/// 连通性测试：不修改任何数据，用来在保存前 / 编辑后确认凭据有效。
+pub async fn acme_dns_test(
+    claims: ValidatedClaims,
+    Json(payload): Json<AcmeDnsTestPayload>,
+) -> ZapJsonResult {
+    let mut creds = payload.credentials.clone();
+    if let Some(id) = payload.id {
+        let row = acme::dns_in_scope(&claims, id).await?;
+        let plain = crypto::decrypt(&row.credentials).unwrap_or_default();
+        let stored: serde_json::Value = serde_json::from_str(&plain).unwrap_or_default();
+        if let serde_json::Value::Object(map) = stored {
+            for (k, v) in map {
+                // 本次提交的字段优先（用户可能还没保存就想试新密钥）
+                if creds.get(&k).is_none() {
+                    creds[k] = v;
+                }
+            }
+        }
+    }
+    let provider = acme::dns::build(&payload.provider, &creds).map_err(|e| ZapError::New(-1, e))?;
+    let detail = provider
+        .ping()
+        .await
+        .map_err(|e| ZapError::New(-1, format!("连接测试失败：{e}")))?;
+    Ok(Json(
+        json!({ "code": 0, "message": "OK", "data": { "message": detail } }),
+    ))
 }
 
 /// 将 PEM 证书链拆为（叶子证书, 中间链），供 crt / ca-bundle 分列存储。
-fn split_leaf_chain(pem: &str) -> (String, String) {
+pub(crate) fn split_leaf_chain(pem: &str) -> (String, String) {
     const END: &str = "-----END CERTIFICATE-----";
     let mut blocks: Vec<String> = Vec::new();
     for part in pem.split(END) {
@@ -1028,225 +1445,6 @@ fn split_leaf_chain(pem: &str) -> (String, String) {
     (leaf, ca)
 }
 
-/// 同步执行 ACME 订单流程（HTTP-01）。map 用于向临时验证服务器注入 token→keyAuth。
-/// 成功返回 (fullchain_pem, private_key_pem, 剩余天数)。
-fn run_acme_order(
-    email: &str,
-    primary: &str,
-    alt: &[String],
-    staging: bool,
-    map: &Arc<Mutex<HashMap<String, String>>>,
-) -> Result<(String, String, i64), String> {
-    use acme_lib::persist::MemoryPersist;
-    use acme_lib::{Directory, DirectoryUrl};
-
-    let url = if staging {
-        DirectoryUrl::LetsEncryptStaging
-    } else {
-        DirectoryUrl::LetsEncrypt
-    };
-    let persist = MemoryPersist::new();
-    let dir = Directory::from_url(persist, url).map_err(|e| e.to_string())?;
-    let acc = dir.account(email).map_err(|e| e.to_string())?;
-    let alt_refs: Vec<&str> = alt.iter().map(|s| s.as_str()).collect();
-    let mut ord_new = acc
-        .new_order(primary, &alt_refs)
-        .map_err(|e| e.to_string())?;
-
-    let ord_csr = loop {
-        if let Some(o) = ord_new.confirm_validations() {
-            break o;
-        }
-        let auths = ord_new.authorizations().map_err(|e| e.to_string())?;
-        for auth in auths.iter() {
-            let chall = auth.http_challenge();
-            let token = chall.http_token().to_string();
-            let proof = chall.http_proof().to_string();
-            if let Ok(mut m) = map.lock() {
-                m.insert(token.clone(), proof);
-            }
-            info!(token = %token, "ACME HTTP-01 等待域名验证");
-            chall.validate(8000).map_err(|e| e.to_string())?;
-        }
-        ord_new.refresh().map_err(|e| e.to_string())?;
-    };
-
-    let pkey = acme_lib::create_p384_key();
-    let ord_cert = ord_csr
-        .finalize_pkey(pkey, 8000)
-        .map_err(|e| e.to_string())?;
-    let cert = ord_cert
-        .download_and_save_cert()
-        .map_err(|e| e.to_string())?;
-    Ok((
-        cert.certificate().to_string(),
-        cert.private_key().to_string(),
-        cert.valid_days_left(),
-    ))
-}
-
-pub async fn cert_letsencrypt(
-    claims: ValidatedClaims,
-    Extension(client_addr): Extension<SocketAddr>,
-    Json(payload): Json<CertLetsEncryptPayload>,
-) -> ZapJsonResult {
-    let email = payload.email.trim().to_string();
-    if email.is_empty() {
-        return Err(ZapError::New(-1, "请填写 ACME 账户邮箱".to_string()));
-    }
-    let domains = split_domains(&payload.domains);
-    if domains.is_empty() {
-        return Err(ZapError::New(-1, "请填写至少一个域名".to_string()));
-    }
-    // 域名不能是纯 IP（LE 仅支持域名）。
-    for d in &domains {
-        if d.parse::<std::net::IpAddr>().is_ok() {
-            return Err(ZapError::New(
-                -1,
-                format!("Let's Encrypt 不支持 IP 地址申请：{d}"),
-            ));
-        }
-    }
-    let staging = payload.staging.unwrap_or(false);
-    let primary = domains[0].clone();
-    let alt: Vec<String> = domains[1..].to_vec();
-
-    // 1) 启动临时 HTTP-01 验证服务器（Let's Encrypt 固定访问 80 端口）
-    let map: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", 80))
-        .await
-        .map_err(|e| {
-            ZapError::New(
-                -1,
-                format!("无法监听 80 端口以完成域名验证：{e}（需 root 权限且 80 端口未被占用）"),
-            )
-        })?;
-    let map_srv = map.clone();
-    let srv = tokio::spawn(async move {
-        loop {
-            let (stream, _peer) = match listener.accept().await {
-                Ok(s) => s,
-                Err(_) => break,
-            };
-            let map_conn = map_srv.clone();
-            tokio::spawn(async move {
-                let io = hyper_util::rt::TokioIo::new(stream);
-                let svc = service_fn(move |req: Request<Incoming>| {
-                    let map_req = map_conn.clone();
-                    async move {
-                        let path = req.uri().path().to_string();
-                        if let Some(token) = path.strip_prefix("/.well-known/acme-challenge/")
-                            && let Some(proof) = map_req.lock().unwrap().get(token).cloned()
-                        {
-                            return Ok::<_, std::convert::Infallible>(Response::new(AxBody::from(
-                                proof,
-                            )));
-                        }
-                        Ok(Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .body(AxBody::from("not found"))
-                            .unwrap())
-                    }
-                });
-                let _ = hyper_util::server::conn::auto::Builder::new(
-                    hyper_util::rt::TokioExecutor::new(),
-                )
-                .serve_connection(io, svc)
-                .await;
-            });
-        }
-    });
-
-    // 2) 在阻塞线程执行 ACME 流程（内部会轮询等待验证结果）
-    let map_acme = map.clone();
-    let email_acme = email.clone();
-    let primary_acme = primary.clone();
-    let alt_acme = alt.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        run_acme_order(&email_acme, &primary_acme, &alt_acme, staging, &map_acme)
-    })
-    .await
-    .map_err(|e| ZapError::New(-1, format!("ACME 任务执行异常: {e}")))?;
-
-    srv.abort();
-
-    let (fullchain_pem, key_pem, days_left) = match result {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(ZapError::New(-1, format!("Let's Encrypt 申请失败：{e}")));
-        }
-    };
-
-    // 3) 拆分叶子证书与中间链后入库
-    let (leaf, ca) = split_leaf_chain(&fullchain_pem);
-    let cert_type = if staging {
-        "letsencrypt-staging"
-    } else {
-        "letsencrypt"
-    };
-    let remark = format!(
-        "{}（{} 天有效）",
-        payload
-            .remark
-            .as_deref()
-            .unwrap_or("Let's Encrypt 自动申请"),
-        days_left.max(0)
-    );
-    let name = payload
-        .name
-        .clone()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| primary.clone());
-
-    let pool = db::get_db_pool().await;
-    let now = chrono::Utc::now().timestamp();
-    let not_after = if days_left > 0 {
-        now + days_left * 86400
-    } else {
-        0
-    };
-    // 归属用户：admin / reseller 可指定（resolve_cert_owner 校验范围）；普通用户强制自己
-    let owner_user = match payload.user_id {
-        Some(t) => {
-            resolve_cert_owner(&claims, t).await?;
-            t
-        }
-        None => claims.id as i64,
-    };
-    let domains_str = domains.join(", ");
-    let r = sqlx::query(
-        "INSERT INTO ssl_cert
-            (user_id, name, domains, cert_type, cert_content, key_content, ca_bundle, csr,
-             not_after, status, remark, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, 1, ?, ?, ?)",
-    )
-    .bind(owner_user)
-    .bind(&name)
-    .bind(&domains_str)
-    .bind(cert_type)
-    .bind(&leaf)
-    .bind(&key_pem)
-    .bind(&ca)
-    .bind(not_after)
-    .bind(&remark)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    let id = r.last_insert_rowid();
-    audit::log(
-        Some(&claims),
-        Some(client_addr.ip().to_string().as_str()),
-        "ssl_cert_letsencrypt",
-        &name,
-        &format!("id={id}, domains={domains_str}, staging={staging}"),
-    )
-    .await;
-    Ok(Json(
-        json!({ "code": 0, "message": "OK", "data": { "id": id, "cert_type": cert_type } }),
-    ))
-}
 #[cfg(test)]
 mod tests {
     use super::*;

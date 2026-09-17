@@ -11,8 +11,8 @@ pub mod frame;
 pub mod types;
 
 pub use types::{
-    HeaderSpec, LocationSpec, Message, Request, Response, UpstreamServer, UpstreamSpec,
-    linux_username, sanitize_site_name,
+    AcmeChallengeEntry, HeaderSpec, LocationSpec, Message, Request, Response, UpstreamServer,
+    UpstreamSpec, linux_username, sanitize_site_name,
 };
 
 /// base64 编码（文件内容传输用）。

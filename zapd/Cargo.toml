@@ -50,7 +50,27 @@ hex = "0.4"
 rust-embed = "8.7.2"
 mime_guess = "2.0.5"
 rcgen = "0.13"
-acme-lib = "0.9"
+# ACME 客户端（Let's Encrypt）：异步 API，HTTP 客户端走 hyper-rustls（rustls + ring）。
+#
+# 注意两点，否则 OpenSSL / aws-lc-rs 会被重新拖进依赖树：
+#   - 必须 default-features = false：默认 feature 是 aws-lc-rs（需要 cmake / C 编译器）；
+#   - `rcgen` feature 让 instant-acme 自己按需生成 CSR 与私钥 PEM（内部 rcgen 0.14，
+#     与面板自签名用的 rcgen 0.13 互不干扰）。
+instant-acme = { version = "0.8", default-features = false, features = [
+    "hyper-rustls",
+    "ring",
+    "rcgen",
+] }
+# DNS 服务商 API 探针 / Google DNS-over-HTTPS 传播检测用。
+# 同理必须 default-features = false：默认 `default-tls` 会引入 native-tls → OpenSSL。
+# `query` / `form` 在 reqwest 里是可选 feature，DNS 服务商 API 要用 GET 查询串与表单 POST。
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "query",
+    "form",
+    "rustls",
+] }
+async-trait = "0.1"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
     "std",
