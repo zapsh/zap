@@ -8,7 +8,7 @@
 
 [![Rust](https://img.shields.io/badge/Rust-2024%20Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen?logo=vue.js)](https://vuejs.org)
-[![Version](https://img.shields.io/badge/version-1.0.3-blue)](https://github.com/zapj/zap-rs)
+[![Version](https://img.shields.io/badge/version-1.0.3-blue)](https://github.com/zapsh/zap)
 [![Platform](https://img.shields.io/badge/platform-Linux%20amd64%20%7C%20arm64-lightgrey?logo=linux)](https://www.kernel.org)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue)](./LICENSE)
 
@@ -18,11 +18,13 @@
 
 ## 项目简介
 
-ZAP 是一套面向 **Linux 服务器与 VPS** 的现代化主机控制面板。
+**ZAP 是一套面向 Linux 服务器与 VPS 的现代化虚拟主机管理系统。**
 
-后端以 **Rust** 编写（Axum + Tokio + SQLx），前端采用 **Vue 3 + Element Plus**，编译时通过 `rust-embed` 将前端产物嵌入单一二进制，最终以 **一个可执行文件** 交付，无需 PHP / Python / Node 运行时，内存与 CPU 占用远低于传统面板。
+它将网站、域名、SSL 证书、Nginx、PHP-FPM、MySQL、Docker、文件和服务器运维能力集中到一个简洁的管理面板中，帮助个人开发者、团队与服务商更高效地部署和维护网站。无论是创建 Nginx 虚拟主机、切换 PHP 版本、管理数据库与 Docker 服务，还是通过浏览器在线编辑网站文件，ZAP 都提供统一、直观的操作体验。
 
-ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免费使用、修改与分发全部功能，商用部署同样无需付费。
+ZAP 的后端以 **Rust** 编写（Axum + Tokio + SQLx），前端采用 **Vue 3 + Element Plus**，并通过现代化文件管理器提供在线浏览、编辑、上传下载、新建、重命名与删除等能力。编译时使用 `rust-embed` 将前端产物嵌入单一二进制，最终以 **一个可执行文件** 交付，部署轻量，资源占用低。
+
+ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免费使用。
 
 > 演示与下载：<https://zap.cn> ｜ 文档建设中
 
@@ -126,7 +128,7 @@ ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免�
 
 ---
 
-## 快速开始
+## Quick Start
 
 ### 环境要求
 
@@ -134,7 +136,7 @@ ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免�
 - 全新安装，建议使用干净的 minimal 系统
 - root 权限；防火墙需放行面板端口
 
-### 一键安装
+### Install
 
 ```bash
 wget -O install.sh https://mirrors.zap.cn/zap/install.sh && bash install.sh
@@ -204,10 +206,10 @@ zapupgrade rollback --to 1712345678-v1.0.12   # 回滚到指定备份
 - 升级过程中面板会短暂不可用（`zapd` 最后重启）；非 systemd 环境（docker / `rundev.sh`）需手动重启
 - 完整说明见 [UPGRADE_zh-CN.md](./UPGRADE_zh-CN.md)
 
-### 本地开发
+### Development
 
 ```bash
-git clone https://github.com/zapj/zap-rs.git && cd zap-rs
+git clone https://github.com/zapsh/zap.git && cd zap
 
 ./rundev.sh                 # 构建前端 + 后端并启动（https://127.0.0.1:2600）
 ./rundev.sh --release       # release 模式
@@ -227,7 +229,7 @@ COS_ID=xxx COS_KEY=xxx ./build.sh
 
 ---
 
-## 目录结构
+## Directory Structure
 
 ```
 zap-rs/
@@ -274,15 +276,13 @@ db:
 
 ---
 
-## AppStore 应用商店
+## AppStore
 
 ```
 data/appstore/
 ├── repos.yaml     # Git 源配置列表（多源：id / 名称 / 地址 / 同步状态）
 ├── repos/         # 所有 Git 源（一个源一个目录，目录名 = 源 id）
 │   └── zap-appstore/   # 内置官方源（可更新、不可删除）
-├── custom/        # 用户自定义包与脚本（升级永不覆盖）
-│   └── scripts/{username}/   # 按用户隔离
 ├── cache/ tmp/    # 下载缓存与原子升级暂存
 └── logs/          # run-{id}.log 运行日志
 ```
@@ -309,7 +309,7 @@ scripts:
 
 ---
 
-## 路线图
+## Roadmap
 
 - [x] 站点管理、SSL 证书、应用商店
 - [x] Web SSH 终端、文件管理、计划任务
@@ -320,7 +320,7 @@ scripts:
 - [ ] **Docker 容器管理**：镜像、容器、网络、卷、Compose 编排与容器化站点托管
 - [ ] 集群管理：多机统一纳管与批量运维
 - [ ] 应用市场插件生态
-- [ ] 多语言（i18n）与移动端适配
+- [x] 多语言支持
 
 ---
 
@@ -346,15 +346,3 @@ ZAP 采用 **[GNU General Public License v3.0](./LICENSE)**（GPL-3.0）开源�
 
 - 许可正文：[LICENSE](./LICENSE)（GPL-3.0 全文）
 
-据此你可以：
-
-- 免费将 ZAP 用于个人或商业场景，部署到任意数量的服务器；
-- 修改源码并分发，用于研究、二次开发或商业化定制。
-
-据此你须：
-
-- 分发（convey）ZAP 本体或其衍生作品时，一并开放完整对应源码；
-- 衍生作品整体以 GPL-3.0 授权，不得附加额外限制；
-- 保留原有版权与许可声明，并注明修改。
-
-> 本说明仅为概要，不构成法律意见；完整权利义务以 [LICENSE](./LICENSE) 原文为准。
