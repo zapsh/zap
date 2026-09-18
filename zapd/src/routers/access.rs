@@ -1089,7 +1089,8 @@ const MAX_INHERIT_DEPTH: usize = 4;
 
 /// `user.id → 生效权限点集合`。
 ///
-/// 生效 = 自身（角色授予 ∪ 个人附加）∪ 父账号继承（成员） − 父账号收紧（perm_deny）。
+/// 生效 = 自身（角色授予 ∪ 个人附加）∪ 父账号继承（成员） − 父账号收紧（perm_deny）；
+/// 只读账号（`user.read_only=1`）再收敛为仅查看类权限点（`{ns}:view`）。
 type UserPermMap = HashMap<i64, HashSet<String>>;
 static USER_PERM_CACHE: OnceLock<RwLock<Option<Arc<UserPermMap>>>> = OnceLock::new();
 
@@ -1140,22 +1141,27 @@ async fn load_user_perm_map() -> UserPermMap {
     let Some(pool) = crate::db::get_db_pool_opt().await else {
         return UserPermMap::new();
     };
-    let rows: Vec<(i64, String, String, i64, i32, String)> =
-        sqlx::query_as("SELECT id, roles, permissions, owner_id, user_kind, perm_deny FROM user")
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
+    let rows: Vec<(i64, String, String, i64, i32, String, i32)> = sqlx::query_as(
+        "SELECT id, roles, permissions, owner_id, user_kind, perm_deny, read_only FROM user",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
 
     let role_perms = perm_map().await;
     let mut own: UserPermMap = UserPermMap::new();
     // 成员 → 父账号；仅 user_kind=1 且 owner_id 有效时登记
     let mut parent_of: HashMap<i64, i64> = HashMap::new();
     let mut deny_of: HashMap<i64, HashSet<String>> = HashMap::new();
-    for (id, roles, permissions, owner_id, user_kind, perm_deny) in rows {
+    let mut readonly: HashSet<i64> = HashSet::new();
+    for (id, roles, permissions, owner_id, user_kind, perm_deny, read_only) in rows {
         own.insert(id, own_perms(&role_perms, &roles, &permissions));
         if user_kind == USER_KIND_MEMBER && owner_id > 0 && owner_id != id {
             parent_of.insert(id, owner_id);
             deny_of.insert(id, split_keys(&perm_deny));
+        }
+        if read_only != 0 {
+            readonly.insert(id);
         }
     }
 
@@ -1184,6 +1190,15 @@ async fn load_user_perm_map() -> UserPermMap {
         }
         if !changed {
             break;
+        }
+    }
+
+    // 只读账号：共享可见但不可改 —— 只保留查看类权限点（{ns}:view）
+    if !readonly.is_empty() {
+        for (id, set) in eff.iter_mut() {
+            if readonly.contains(id) {
+                set.retain(|k| k.ends_with(":view"));
+            }
         }
     }
     eff

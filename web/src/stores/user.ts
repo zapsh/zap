@@ -31,6 +31,8 @@ export const useUserStore = defineStore(
     const permissions = ref<string[]>([])
     /** 当前账号类型：0=普通用户/客户 / 1=成员（子账号，共享父账号的家目录与系统账号） */
     const userKind = ref<number>(0)
+    /** 只读账号：共享可见但不可改（后端只放行查看类权限点） */
+    const readOnly = ref<boolean>(false)
     const email = ref('')
     const phone = ref('')
     const nickname = ref('')
@@ -45,6 +47,8 @@ export const useUserStore = defineStore(
       permissions: permissions.value,
       /** 账号类型：成员（子账号）不能再建成员，也不显示部分账号级功能 */
       user_kind: userKind.value,
+      /** 只读账号：页面可据此隐藏写操作，后端也会直接拒绝 */
+      read_only: readOnly.value,
       email: email.value || '',
       phone: phone.value || '',
       introduction: t('app.welcome'),
@@ -78,6 +82,7 @@ export const useUserStore = defineStore(
           roles.value = res.data.roles
           permissions.value = res.data.permissions
           userKind.value = res.data.user_kind ?? 0
+          readOnly.value = res.data.read_only ?? false
           email.value = res.data.email ?? ''
           phone.value = res.data.phone ?? ''
           return Promise.resolve(res)
@@ -120,6 +125,7 @@ export const useUserStore = defineStore(
         roles.value = []
         permissions.value = []
         userKind.value = 0
+        readOnly.value = false
         removeToken()
         ElMessage({ type: 'success', message: t('app.logoutSuccess') })
         return Promise.resolve()
@@ -140,6 +146,7 @@ export const useUserStore = defineStore(
       roles.value = []
       permissions.value = []
       userKind.value = 0
+      readOnly.value = false
       removeToken()
       return Promise.resolve()
     }
@@ -150,6 +157,7 @@ export const useUserStore = defineStore(
       avatar,
       roles,
       permissions,
+      readOnly,
       userInfo, // 导出计算属性
       login: loginAction,
       getInfoAction,

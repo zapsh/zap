@@ -387,6 +387,8 @@ export default {
     denyPerm: '收紧权限',
     denyPermPlaceholder: '从该成员收回的权限点（可选）',
     denyPermTip: '成员默认继承父账号的全部权限点；勾选的权限会被收回（高危权限不会自动继承）',
+    readOnly: '只读',
+    readOnlyTip: '开启后该账号只能查看：共享可见但不能做任何修改',
   },
 
   /** 团队成员（子账号） */
@@ -412,6 +414,8 @@ export default {
       '成员默认拥有你的全部权限点；下面勾选的权限将被收回。高危权限（如 docker:build）不会自动继承，须单独授予',
     denyPerm: '收紧权限',
     denyPermPlaceholder: '选择要从该成员收回的权限点（可选）',
+    readOnly: '只读',
+    readOnlyTip: '开启后该成员只能查看：共享可见但不能做任何修改（新增 / 修改 / 删除一律拒绝）',
     sshTip:
       '成员与你共用系统账号：其 SSH / 终端操作在系统层都记录为你的账号，且可在你的家目录留下凭据',
     deleteConfirm: '确认删除成员「{name}」？',

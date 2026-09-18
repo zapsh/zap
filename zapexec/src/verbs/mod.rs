@@ -303,6 +303,7 @@ pub async fn dispatch(req: Request) -> Response {
             log_roots,
         } => site::data_remove(web_roots, log_roots).await,
         Request::FsBrowseDirs { base } => fs::browse_dirs(base).await,
+        Request::FsDiskUsage { paths } => fs::disk_usage(paths).await,
         Request::SiteLogRotate {
             log_roots,
             keep_days,

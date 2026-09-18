@@ -36,6 +36,8 @@ struct UserInfo {
     user_kind: i32,
     /// 父账号对该成员收紧（取消）的权限点，逗号分隔；仅成员生效
     perm_deny: String,
+    /// 只读账号：1=共享可见但不可改（生效权限只保留 `{ns}:view`）
+    read_only: i32,
     package_id: i64,
     /// 家目录磁盘用量（字节，定时任务 du 采集；0 = 未采集）
     disk_used_bytes: i64,
@@ -74,6 +76,10 @@ pub struct CreateUserPayload {
     /// 父账号对该成员收紧（取消）的权限点（逗号分隔或数组）；仅成员生效
     #[serde(default)]
     pub perm_deny: Option<PermissionInput>,
+    /// 只读账号：`true` 时该用户只能查看（生效权限收敛为 `{ns}:view`），
+    /// 用于「共享可见但不能改」的成员 / 客户
+    #[serde(default)]
+    pub read_only: Option<bool>,
 }
 
 /// 附加权限入参：兼容数组与逗号分隔字符串两种写法。
@@ -125,6 +131,9 @@ pub struct UpdateUserPayload {
     /// 父账号对该成员收紧（取消）的权限点（不传 = 不改动；传空 = 取消全部收紧）
     #[serde(default)]
     pub perm_deny: Option<PermissionInput>,
+    /// 只读账号开关（不传 = 不改动）
+    #[serde(default)]
+    pub read_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,6 +390,8 @@ pub async fn user_info(claims: Claims) -> Json<Value> {
                 "owner_id": user.owner_id,
                 // 父账号对该成员收紧的权限点（仅成员有值）
                 "perm_deny": user.perm_deny.split(',').filter(|s| !s.is_empty()).collect::<Vec<&str>>(),
+                // 只读账号：共享可见但不可改
+                "read_only": user.read_only != 0,
                 // 套餐信息：package_bound 标记是否绑定自己的套餐（false = 回退全局默认）
                 "package_bound": bound,
                 "package": pkg.map(|p| json!({
@@ -549,6 +560,8 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
                 // 成员（子账号）标记与父账号收紧清单
                 "user_kind": user.user_kind,
                 "perm_deny": user.perm_deny.split(',').filter(|s| !s.is_empty()).collect::<Vec<&str>>(),
+                // 只读账号：共享可见但不可改
+                "read_only": user.read_only != 0,
                 "package_id": user.package_id,
                 "package_name": pkg_names
                     .get(&user.package_id)
@@ -733,7 +746,7 @@ async fn create_user_inner(
 
     let pool = db::get_db_pool().await;
     let result = sqlx::query(
-        "INSERT INTO user (username, home_dir, linux_user, fpm_pool, fpm_spec_ref, password, email, phone, nickname, roles, permissions, owner_id, user_kind, perm_deny, package_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        "INSERT INTO user (username, home_dir, linux_user, fpm_pool, fpm_spec_ref, password, email, phone, nickname, roles, permissions, owner_id, user_kind, perm_deny, read_only, package_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
     )
     .bind(&payload.username)
     .bind(&home_dir)
@@ -749,6 +762,8 @@ async fn create_user_inner(
     .bind(owner_id)
     .bind(if is_member_create { USER_KIND_MEMBER } else { 0 })
     .bind(&denied_perms)
+    // 只读：共享可见但不可改（生效权限只保留 {ns}:view）
+    .bind(if payload.read_only.unwrap_or(false) { 1 } else { 0 })
     .bind(package_id)
     .bind(now)
     .bind(now)
@@ -765,14 +780,22 @@ async fn create_user_inner(
                 &format!("username={}", payload.username),
             )
             .await;
-            // 建号即带附加权限 / 收紧清单 → 单独审计 + 权限缓存立即失效
-            if payload.permissions.is_some() || payload.perm_deny.is_some() {
+            // 建号即带附加权限 / 收紧清单 / 只读标记 → 单独审计 + 权限缓存立即失效
+            if payload.permissions.is_some()
+                || payload.perm_deny.is_some()
+                || payload.read_only.is_some()
+            {
                 crate::routers::access::invalidate_user_perm_cache();
                 audit_permissions_set(
                     claims,
                     ip,
                     r.last_insert_rowid(),
-                    &format!("grant=[{}] deny=[{}]", granted_perms, denied_perms),
+                    &format!(
+                        "grant=[{}] deny=[{}] read_only={}",
+                        granted_perms,
+                        denied_perms,
+                        payload.read_only.unwrap_or(false)
+                    ),
                 )
                 .await;
             }
@@ -914,7 +937,8 @@ async fn update_user_inner(
         || payload.fpm_spec_ref.is_some()
         || payload.package_id.is_some()
         || payload.permissions.is_some()
-        || payload.perm_deny.is_some();
+        || payload.perm_deny.is_some()
+        || payload.read_only.is_some();
 
     if !has_any_field {
         return Err(ZapError::New(-1, "没有需要更新的字段".to_string()));
@@ -958,6 +982,11 @@ async fn update_user_inner(
         separated
             .push("perm_deny = ")
             .push_bind_unseparated(deny.normalize());
+    }
+    if let Some(ro) = payload.read_only {
+        separated
+            .push("read_only = ")
+            .push_bind_unseparated(if ro { 1 } else { 0 });
     }
     if let Some(status) = payload.status {
         separated.push("status = ").push_bind_unseparated(status);
@@ -1025,16 +1054,16 @@ async fn update_user_inner(
     )
     .await;
 
-    // 附加权限 / 收紧清单变更：单独审计 + 权限缓存立即失效
+    // 附加权限 / 收紧清单 / 只读标记变更：单独审计 + 权限缓存立即失效
     // （收紧清单会改变成员的生效权限，必须立刻失效，不能等缓存过期）
-    if payload.permissions.is_some() || payload.perm_deny.is_some() {
+    if payload.permissions.is_some() || payload.perm_deny.is_some() || payload.read_only.is_some() {
         crate::routers::access::invalidate_user_perm_cache();
         audit_permissions_set(
             claims,
             ip,
             payload.id,
             &format!(
-                "grant=[{}] deny=[{}]",
+                "grant=[{}] deny=[{}] read_only={}",
                 payload
                     .permissions
                     .as_ref()
@@ -1045,6 +1074,7 @@ async fn update_user_inner(
                     .as_ref()
                     .map(|p| p.normalize())
                     .unwrap_or_default(),
+                payload.read_only.unwrap_or(false),
             ),
         )
         .await;
@@ -1224,6 +1254,9 @@ pub struct TeamAddPayload {
     /// 父账号对该成员收紧（取消）的权限点（逗号分隔或数组）
     #[serde(default)]
     pub perm_deny: Option<PermissionInput>,
+    /// 只读成员：可见但不可改（生效权限只保留 `{ns}:view`）
+    #[serde(default)]
+    pub read_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1237,6 +1270,9 @@ pub struct TeamUpdatePayload {
     /// 收紧清单（不传 = 不改动；传空数组/空串 = 取消全部收紧）
     #[serde(default)]
     pub perm_deny: Option<PermissionInput>,
+    /// 只读开关（不传 = 不改动）
+    #[serde(default)]
+    pub read_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1249,7 +1285,7 @@ pub async fn team_list(claims: Claims) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
     let rows: Vec<TeamRow> = sqlx::query_as(
         "SELECT id, username, nickname, email, phone, status, roles, permissions, perm_deny, \
-                home_dir, linux_user, last_login_time, last_login_ip, created_at, updated_at \
+                read_only, home_dir, linux_user, last_login_time, last_login_ip, created_at, updated_at \
          FROM user WHERE owner_id = ? AND user_kind = 1 ORDER BY id DESC",
     )
     .bind(claims.id as i64)
@@ -1270,6 +1306,8 @@ pub async fn team_list(claims: Claims) -> ZapJsonResult {
                 "roles": r.roles.split(',').collect::<Vec<&str>>(),
                 "permissions": r.permissions.split(',').filter(|s| !s.is_empty()).collect::<Vec<&str>>(),
                 "perm_deny": r.perm_deny.split(',').filter(|s| !s.is_empty()).collect::<Vec<&str>>(),
+                // 只读成员：共享可见但不可改
+                "read_only": r.read_only != 0,
                 // 共享父账号的家目录与系统账号（展示用：说明成员不单独建账号）
                 "home_dir": r.home_dir,
                 "linux_user": r.linux_user,
@@ -1294,6 +1332,8 @@ struct TeamRow {
     roles: String,
     permissions: String,
     perm_deny: String,
+    /// 只读成员标记：1=只能查看
+    read_only: i32,
     home_dir: String,
     linux_user: String,
     last_login_time: i64,
@@ -1322,6 +1362,7 @@ pub async fn team_add(
         permissions: None,
         user_kind: Some(USER_KIND_MEMBER),
         perm_deny: payload.perm_deny,
+        read_only: payload.read_only,
     };
     create_user_inner(&claims, &client_addr.ip().to_string(), inner).await
 }
@@ -1345,6 +1386,7 @@ pub async fn team_update(
         package_id: None,
         permissions: None,
         perm_deny: payload.perm_deny,
+        read_only: payload.read_only,
     };
     update_user_inner(&claims, &client_addr.ip().to_string(), inner).await
 }

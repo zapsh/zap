@@ -564,6 +564,15 @@ pub enum Request {
     /// 仅返回目录名（不含点目录），路径必须为绝对路径且存在。
     #[serde(rename = "fs.browse_dirs")]
     FsBrowseDirs { base: String },
+    /// 批量统计目录占用的字节数（root 特权）：`du -sb`。
+    /// zapd 以 zapadm 运行，而用户家目录多为 0700（属主为各自的 Linux 账号），
+    /// 面板进程 du 读不到，必须由 root 代跑。
+    /// 返回 `data.usage`：`{ 绝对路径: 字节数 }`；读不到的路径（不存在 / 统计失败）不出现在结果里。
+    #[serde(rename = "fs.disk_usage")]
+    FsDiskUsage {
+        /// 待统计的目录（绝对路径；非法 / 越权路径会被执行端直接丢弃）
+        paths: Vec<String>,
+    },
     /// 站点 nginx 日志轮转（root）：按天把 access.log / error.log 切割为
     /// `{kind}.log-YYYYMMDD` 并 gzip 归档，清理超期归档，最后通知 nginx 重新打开日志。
     #[serde(rename = "site.log_rotate")]

@@ -92,6 +92,8 @@ async fn migrate_add_columns() {
     // user：子账号（成员）支持
     ensure_column("user", "user_kind", "INTEGER NOT NULL DEFAULT 0").await;
     ensure_column("user", "perm_deny", "TEXT NOT NULL DEFAULT ''").await;
+    // user：只读账号（共享可见但不可改）
+    ensure_column("user", "read_only", "INTEGER NOT NULL DEFAULT 0").await;
 }
 
 // ── user ───────────────────────────────────────────────────
@@ -128,6 +130,9 @@ async fn init_system_user_table_schema() {
         user_kind INTEGER NOT NULL DEFAULT 0,
         -- perm_deny：父账号对该成员取消（收紧）的权限点，逗号分隔；仅 user_kind=1 生效
         perm_deny TEXT NOT NULL DEFAULT '',
+        -- read_only：只读账号（1=是）。生效权限一律只保留查看类（{ns}:view），
+        --   用于「共享可见但不能改」的成员 / 客户（新建用户时勾选即可）
+        read_only INTEGER NOT NULL DEFAULT 0,
         package_id INTEGER NOT NULL DEFAULT 0,
         totp_secret TEXT NOT NULL DEFAULT '',
         totp_enabled INTEGER NOT NULL DEFAULT 0,

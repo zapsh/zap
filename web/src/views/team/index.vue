@@ -55,6 +55,14 @@
             <span v-if="!row.perm_deny?.length" class="muted">-</span>
           </template>
         </el-table-column>
+        <el-table-column :label="t('team.readOnly')" width="90">
+          <template #default="{ row }">
+            <el-tag v-if="row.read_only" size="small" type="info" effect="plain">
+              {{ t('team.readOnly') }}
+            </el-tag>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('common.status')" width="80">
           <template #default="{ row }">
             <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
@@ -124,6 +132,11 @@
         </el-form-item>
         <el-form-item :label="t('team.nickname')">
           <el-input v-model="form.nickname" :placeholder="t('users.nicknameTip')" />
+        </el-form-item>
+        <!-- 只读：共享可见但不可改（后端收敛为只保留 {ns}:view 权限点） -->
+        <el-form-item :label="t('team.readOnly')">
+          <el-switch v-model="form.read_only" />
+          <div class="form-tip">{{ t('team.readOnlyTip') }}</div>
         </el-form-item>
         <el-form-item :label="t('team.denyPerm')">
           <el-select
@@ -227,6 +240,7 @@ const form = reactive({
   phone: '',
   nickname: '',
   perm_deny: [] as string[],
+  read_only: false,
 })
 
 const rules = computed<FormRules>(() => {
@@ -258,6 +272,7 @@ function resetForm() {
   form.phone = ''
   form.nickname = ''
   form.perm_deny = []
+  form.read_only = false
   editingId.value = 0
 }
 
@@ -279,6 +294,7 @@ async function handleEdit(row: TeamMemberItem) {
   form.phone = row.phone ?? ''
   form.nickname = row.nickname ?? ''
   form.perm_deny = [...(row.perm_deny ?? [])]
+  form.read_only = !!row.read_only
   dialogVisible.value = true
 }
 
@@ -299,6 +315,7 @@ async function handleSubmit() {
         phone: form.phone || undefined,
         nickname: form.nickname || undefined,
         perm_deny: form.perm_deny,
+        read_only: form.read_only,
       })
       ElMessage.success(t('team.createSuccess'))
     } else {
@@ -308,6 +325,7 @@ async function handleSubmit() {
         phone: form.phone || undefined,
         nickname: form.nickname || undefined,
         perm_deny: form.perm_deny,
+        read_only: form.read_only,
       }
       if (form.password) payload.password = form.password
       await updateTeamMember(payload as never)

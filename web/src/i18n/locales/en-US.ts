@@ -356,6 +356,8 @@ const enUS: Messages = {
     kindMemberTip: 'Shares the home dir and system account of {owner}; permissions inherit from it',
     denyPerm: 'Revoke',
     denyPermPlaceholder: 'Permissions revoked from this member (optional)',
+    readOnly: 'Read-only',
+    readOnlyTip: 'When enabled this account can only view: shared resources are visible but not editable',
     denyPermTip:
       'Members inherit all permissions of the parent by default; checked ones are revoked (high-risk permissions are never inherited)',
   },
@@ -384,6 +386,9 @@ const enUS: Messages = {
       'Members get all your permissions by default; checked ones are revoked. High-risk permissions (e.g. docker:build) are never inherited',
     denyPerm: 'Revoke',
     denyPermPlaceholder: 'Pick permissions to revoke from this member (optional)',
+    readOnly: 'Read-only',
+    readOnlyTip:
+      'When enabled the member can only view: shared resources are visible but all create / update / delete actions are denied',
     sshTip:
       'Members share your Linux account: their SSH / terminal actions are logged as your account and they can leave credentials in your home directory',
     deleteConfirm: 'Delete member "{name}"?',

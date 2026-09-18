@@ -1,7 +1,9 @@
 //! 用户资源用量采集（磁盘 / 带宽）与站点流量分析。
 //!
-//! - **磁盘**：定时对 `user.home_dir` 执行 `du -sb`，写回
+//! - **磁盘**：定时对 `user.home_dir` 统计占用，写回
 //!   `user.disk_used_bytes` / `disk_stat_at`；
+//!   面板以 `zapadm` 运行，用户家目录多为 0700（属主为各自的 Linux 账号），
+//!   因此统一委托 `zapexec`（root）执行 `du`，本地 du 仅作兜底；
 //! - **带宽**：增量解析站点 `access.log`（nginx main / combined 的
 //!   `$body_bytes_sent`），按站点记 `site.traffic_*`，再按归属用户汇总
 //!   写入 `user.bandwidth_used_bytes`（按月，`bandwidth_period` 为 YYYYMM）；
@@ -20,6 +22,7 @@ use tokio::process::Command;
 use tracing::{debug, warn};
 
 use crate::db::get_db_pool;
+use zap_proto::Request;
 
 /// 统计周期（YYYYMM）：跨月自动重置本月计数
 fn period_now() -> String {
@@ -135,7 +138,10 @@ struct LogAgg {
     paths: HashMap<(String, String), (u64, u64)>,
 }
 
-/// 目录字节数：`du -sb` 优先，不支持 `-b` 时回退 `du -sk` × 1024
+/// 目录字节数（本地 `du`）：`du -sb` 优先，不支持 `-b` 时回退 `du -sk` × 1024。
+///
+/// 仅作兜底：面板以 zapadm 运行，用户家目录（0700）读不到，
+/// 正常路径走 [`du_batch_root`]（root 执行）。
 async fn du_bytes(dir: &str) -> Option<u64> {
     async fn run(args: [&str; 2]) -> Option<String> {
         let out = Command::new("du").args(args).output().await.ok()?;
@@ -155,6 +161,47 @@ async fn du_bytes(dir: &str) -> Option<u64> {
     Some(kb.saturating_mul(1024))
 }
 
+/// 单批路径上限：与 `zapexec` 的 `DISK_USAGE_MAX` 对齐并留余量
+const DU_BATCH: usize = 200;
+
+/// 委托 `zapexec`（root）批量统计目录占用：返回「目录 → 字节数」。
+///
+/// 面板（zapd）以 zapadm 运行，用户家目录 0700 读不到，`du` 必须由 root 执行；
+/// 失败时返回空 map，调用方逐目录回退本地 `du_bytes`。
+async fn du_batch_root(dirs: &[String]) -> HashMap<String, u64> {
+    let Ok(resp) = crate::zapexec::call(Request::FsDiskUsage {
+        paths: dirs.to_vec(),
+    })
+    .await
+    else {
+        return HashMap::new();
+    };
+    if resp.code != 0 {
+        warn!("磁盘用量采集（root）失败: {}", resp.message);
+        return HashMap::new();
+    }
+    let Some(obj) = resp
+        .data
+        .as_ref()
+        .and_then(|d| d.get("usage"))
+        .and_then(|v| v.as_object())
+    else {
+        return HashMap::new();
+    };
+    obj.iter()
+        .filter_map(|(k, v)| Some((k.clone(), v.as_u64()?)))
+        .collect()
+}
+
+/// 分批（每批 ≤ `DU_BATCH`）委托 root 统计，避免单次请求路径过多被截断。
+async fn du_batch_root_all(dirs: &[String]) -> HashMap<String, u64> {
+    let mut out = HashMap::new();
+    for chunk in dirs.chunks(DU_BATCH) {
+        out.extend(du_batch_root(chunk).await);
+    }
+    out
+}
+
 /// 采集全部用户的家目录磁盘用量
 pub async fn collect_disk_usage() {
     let pool = get_db_pool().await;
@@ -165,12 +212,24 @@ pub async fn collect_disk_usage() {
             .await
             .unwrap_or_default();
     let now = Local::now().timestamp();
+    // 家目录多为 0700（属主为各自 Linux 账号），zapadm 读不到 → 委托 root 一次统计完
+    let homes: Vec<String> = rows
+        .iter()
+        .filter(|(_, h)| Path::new(h).exists())
+        .map(|(_, h)| h.clone())
+        .collect();
+    let root_usage = du_batch_root_all(&homes).await;
 
     for (id, home_dir) in rows {
         if !Path::new(&home_dir).exists() {
             continue;
         }
-        match du_bytes(&home_dir).await {
+        // root 未覆盖（zapexec 不可用 / du 报错）时回退本地 du
+        let bytes = match root_usage.get(&home_dir) {
+            Some(v) => Some(*v),
+            None => du_bytes(&home_dir).await,
+        };
+        match bytes {
             Some(bytes) => {
                 let _ = sqlx::query(
                     "UPDATE user SET disk_used_bytes = ?, disk_stat_at = ? WHERE id = ?",
@@ -230,6 +289,13 @@ pub async fn collect_site_disk() {
             .await
             .unwrap_or_default();
     let now = Local::now().timestamp();
+    // 站点目录位于用户家目录下（0700），同样委托 root 批量统计
+    let dirs: Vec<String> = rows
+        .iter()
+        .flat_map(|(_, w, l)| [w.clone(), l.clone()])
+        .filter(|d| !d.trim().is_empty())
+        .collect();
+    let root_usage = du_batch_root_all(&dirs).await;
 
     for (id, web_root, log_root) in rows {
         let mut total: u64 = 0;
@@ -238,7 +304,11 @@ pub async fn collect_site_disk() {
             if dir.trim().is_empty() {
                 continue;
             }
-            if let Some(v) = du_bytes(dir).await {
+            let v = match root_usage.get(dir) {
+                Some(v) => Some(*v),
+                None => du_bytes(dir).await,
+            };
+            if let Some(v) = v {
                 total = total.saturating_add(v);
                 sampled = true;
             }

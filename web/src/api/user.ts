@@ -47,6 +47,8 @@ export interface UserListItem {
   user_kind: number
   /** 父账号对该成员收紧（取消）的权限点；仅成员有值 */
   perm_deny: string[]
+  /** 只读账号：共享可见但不可改（生效权限只保留查看类） */
+  read_only: boolean
   /** 绑定的套餐 id；0 = 未绑定套餐 */
   package_id: number
   /** 套餐名（未绑定时为空串） */
@@ -101,6 +103,8 @@ export interface CreateUserPayload {
   user_kind?: number
   /** 父账号对该成员收紧（取消）的权限点；仅成员生效 */
   perm_deny?: string[]
+  /** 只读账号：开启后只能查看，不能做任何修改 */
+  read_only?: boolean
 }
 
 /** 新增用户（返回 id / 家目录 / Linux 账号） */
@@ -132,6 +136,8 @@ export interface UpdateUserPayload {
   permissions?: string[]
   /** 父账号对该成员收紧（取消）的权限点；传空数组 = 取消全部收紧 */
   perm_deny?: string[]
+  /** 只读开关：开启后只能查看，不能做任何修改 */
+  read_only?: boolean
 }
 
 /** 更新用户结果 */
@@ -169,6 +175,8 @@ export interface TeamMemberItem {
   permissions: string[]
   /** 父账号收紧（收回）的权限点 */
   perm_deny: string[]
+  /** 只读成员：共享可见但不可改 */
+  read_only: boolean
   /** 共享的家目录与系统账号（取自父账号，成员不单独建） */
   home_dir: string
   linux_user: string
@@ -186,6 +194,8 @@ export interface TeamAddPayload {
   phone?: string
   nickname?: string
   perm_deny?: string[]
+  /** 只读成员：可见但不可改 */
+  read_only?: boolean
 }
 
 /** 修改成员参数 */
@@ -197,6 +207,8 @@ export interface TeamUpdatePayload {
   status?: number
   password?: string
   perm_deny?: string[]
+  /** 只读开关（不传 = 不改动） */
+  read_only?: boolean
 }
 
 /** 团队成员列表（当前用户名下的成员） */

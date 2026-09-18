@@ -77,6 +77,9 @@
             <el-tag v-else size="small" type="info" effect="plain">
               {{ t('users.kindCustomer') }}
             </el-tag>
+            <el-tag v-if="row.read_only" size="small" type="info" effect="plain">
+              {{ t('users.readOnly') }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column :label="t('users.fpmSpec')" width="170" show-overflow-tooltip>
@@ -249,6 +252,11 @@
             </el-option-group>
           </el-select>
           <div class="form-tip">{{ t('users.denyPermTip') }}</div>
+        </el-form-item>
+        <!-- 只读：共享可见但不可改（后端收敛为只保留 {ns}:view 权限点） -->
+        <el-form-item v-if="form.user_kind === 1" :label="t('users.readOnly')">
+          <el-switch v-model="form.read_only" />
+          <div class="form-tip">{{ t('users.readOnlyTip') }}</div>
         </el-form-item>
         <el-form-item v-if="isAdmin && dialogType === 'add'" :label="t('users.owner')">
           <el-select v-model="form.owner_id" @change="onOwnerChange">
@@ -634,6 +642,8 @@ interface FormData {
   user_kind: number
   /** 父账号对该成员收紧（取消）的权限点；仅成员生效 */
   perm_deny: string[]
+  /** 只读账号：开启后只能查看，不能做任何修改 */
+  read_only: boolean
 }
 
 const defaultForm = (): FormData => ({
@@ -649,6 +659,7 @@ const defaultForm = (): FormData => ({
   permissions: [],
   user_kind: 0,
   perm_deny: [],
+  read_only: false,
 })
 
 const form = reactive<FormData>(defaultForm())
@@ -699,6 +710,7 @@ function handleEdit(row: UserListItem) {
     permissions: (row.permissions ?? []).filter(Boolean),
     user_kind: row.user_kind ?? 0,
     perm_deny: (row.perm_deny ?? []).filter(Boolean),
+    read_only: !!row.read_only,
   })
   fpmMode.value = fpmEditInitial(row)
   fpmCustomJson.value = row.fpm_pool && row.fpm_pool.trim() ? row.fpm_pool : ''
@@ -755,6 +767,7 @@ async function submitForm() {
       if (form.user_kind === 1) {
         payload.user_kind = 1
         payload.perm_deny = form.perm_deny
+        payload.read_only = form.read_only
       } else {
         payload.package_id = form.package_id || 0
         if (fpmPayload.fpm_spec_ref !== undefined) {
@@ -784,6 +797,7 @@ async function submitForm() {
       // 成员只下发收紧清单（套餐 / FPM 由父账号决定）
       if (form.user_kind === 1) {
         payload.perm_deny = form.perm_deny
+        payload.read_only = form.read_only
       } else {
         payload.package_id = form.package_id || 0
         if (fpmPayload.fpm_spec_ref !== undefined) {
