@@ -9,6 +9,9 @@
 //! - POST /docker/container/action      容器批量动作（body: ids, action）
 //! - GET  /docker/images                镜像列表
 //! - POST /docker/image/action          镜像动作 pull / remove / prune（body: id, action）
+//! - GET  /docker/image/inspect         镜像详情 inspect + 构建历史（Query: id）
+//! - POST /docker/image/build           用 Containerfile 构建镜像（长任务，返回 run_id）
+//! - POST /docker/container/run         从镜像快启容器（等价 docker run -d）
 //! - GET  /docker/volumes               数据卷列表
 //! - POST /docker/volume/action         卷动作 create / remove / prune（body: name, action）
 //! - GET  /docker/networks              网络列表
@@ -43,7 +46,9 @@ use zap_proto::types::Message as ExecMessage;
 use crate::config;
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
+use crate::zap::appstore as ast;
 use crate::zap::audit;
+use crate::zap::docker_build;
 use crate::zap::jwt::Claims;
 use crate::zap::jwt::ValidatedClaims;
 use crate::zap::jwt::is_admin;
@@ -192,9 +197,40 @@ pub async fn container_action(
     .await
 }
 
+/// 是否持有某个动作级权限点（与访问守卫同源，避免两处判定不一致）。
+async fn has_perm(claims: &ValidatedClaims, key: &str) -> bool {
+    let role_map = crate::routers::access::perm_map().await;
+    if crate::routers::access::role_has_perm(role_map.as_ref(), claims, key) {
+        return true;
+    }
+    let user_map = crate::routers::access::user_perm_map().await;
+    crate::routers::access::user_has_perm(user_map.as_ref(), claims.id, key)
+}
+
+/// 镜像构建的门槛：admin 直通，其余需要**显式授予**的 `docker:build`。
+///
+/// 为什么不像容器操作那样一刀切限死 admin：多用户面板里，镜像命名空间已经按
+/// `<用户名>/...` 隔离（见 `zap::docker_build::scope_tags`），构建上下文也被收敛在
+/// 各自家目录内，所以可以按角色放开。但要注意：能构建镜像就等于能跑宿主机的
+/// root 命令（Containerfile 的 `RUN` 就是 root shell），因此 `docker:build`
+/// **不在任何内置角色的默认权限里**，必须由管理员在「角色权限」里手动勾选。
+async fn require_builder(claims: &ValidatedClaims) -> Result<(), ZapError> {
+    if is_demo(claims) {
+        return Err(ZapError::New(-1, "演示账号不支持镜像相关操作".to_string()));
+    }
+    if is_admin(claims) || has_perm(claims, "docker:build").await {
+        Ok(())
+    } else {
+        Err(ZapError::New(-1, "未授予镜像构建权限".to_string()))
+    }
+}
+
 /// GET /docker/images
+///
+/// 放宽到 `docker:build`：普通用户构建完得能看到自己的镜像。
+/// 容器 / 卷 / 网络 / Compose 仍然限 admin（那些操作直接动的是运行中的服务）。
 pub async fn images(claims: ValidatedClaims) -> ZapJsonResult {
-    require_admin(&claims)?;
+    require_builder(&claims).await?;
     exec(Request::DockerImages).await
 }
 
@@ -222,6 +258,200 @@ pub async fn image_action(
         Request::DockerImageAction {
             id: body.id.clone(),
             action: body.action.clone(),
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageInspectQuery {
+    pub id: String,
+}
+
+/// GET /docker/image/inspect —— 镜像详情：inspect 原文 + 构建历史 + 摘要。
+pub async fn image_inspect(
+    claims: ValidatedClaims,
+    Query(q): Query<ImageInspectQuery>,
+) -> ZapJsonResult {
+    require_builder(&claims).await?;
+    exec(Request::DockerImageInspect { id: q.id }).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageBuildArgBody {
+    pub key: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageBuildBody {
+    /// 构建上下文目录（普通用户必须是自家目录内的绝对路径）
+    pub context_dir: String,
+    /// Containerfile 路径；留空则自动找上下文里的 Dockerfile / Containerfile
+    #[serde(default)]
+    pub containerfile: String,
+    /// 目标镜像名（可带 tag）。非 admin 会被强制加上 `<用户名>/` 前缀
+    pub name: String,
+    /// 额外 tag（同一个镜像多打几个名字）
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub build_args: Vec<ImageBuildArgBody>,
+    /// 目标平台，如 `linux/amd64`；空 = 跟随宿主架构
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub no_cache: bool,
+    #[serde(default)]
+    pub pull: bool,
+}
+
+/// POST /docker/image/build
+///
+/// 长任务：登记运行记录后立刻返回 `run_id`，真正干活的是 zapexec 后台进程，
+/// 日志实时写 `data/users/<用户名>/docker-build-logs/run-<run_id>.log`，
+/// 前端用 `/appstore/ws/{run_id}` 看实时输出。
+///
+/// 两条多用户边界在这里收敛（实现见 `zap::docker_build`）：
+/// 非 admin 的镜像名强制 `<用户名>/...` 命名空间，构建路径限定在自己家目录内。
+pub async fn image_build(
+    claims: ValidatedClaims,
+    addr: Extension<SocketAddr>,
+    Json(body): Json<ImageBuildBody>,
+) -> ZapJsonResult {
+    require_builder(&claims).await?;
+    let username = claims.sub.clone();
+
+    // 先做能同步给出的校验：镜像名、路径边界，避免白起一个必然失败的进程
+    let tags = docker_build::scope_tags(&claims, &body.name, &body.tags)?;
+    let (home_dir, _linux_user) = volume_owner(&claims).await;
+    let paths =
+        docker_build::resolve_paths(&claims, &home_dir, &body.context_dir, &body.containerfile)?;
+
+    let build_args: Vec<zap_proto::DockerBuildArg> = body
+        .build_args
+        .iter()
+        .filter(|a| !a.key.trim().is_empty())
+        .map(|a| zap_proto::DockerBuildArg {
+            key: a.key.trim().to_string(),
+            value: a.value.clone(),
+        })
+        .collect();
+
+    let run_id = ast::generate_run_id();
+    let log = docker_build::log_path(&username, &run_id);
+    let pkg = tags.first().cloned().unwrap_or_default();
+    ast::register_run_with_key(
+        &run_id,
+        docker_build::RUN_ACTION,
+        &pkg,
+        &username,
+        &log,
+        &docker_build::job_key(&username),
+    )
+    .await?;
+
+    let resp = crate::zapexec::call(Request::DockerImageBuild {
+        run_id: run_id.clone(),
+        log_path: log.clone(),
+        context_dir: paths.context.to_string_lossy().into_owned(),
+        containerfile: paths.containerfile.to_string_lossy().into_owned(),
+        tags: tags.clone(),
+        build_args,
+        platform: body.platform.trim().to_string(),
+        no_cache: body.no_cache,
+        pull: body.pull,
+    })
+    .await?;
+    if resp.code != 0 {
+        // 起进程失败（docker 缺失、日志目录不可写…）：把记录标失败，别让它挂着
+        ast::finish_run(&run_id, "failed", resp.code as i64).await;
+        let msg = if resp.message.is_empty() {
+            "镜像构建未能启动".to_string()
+        } else {
+            resp.message
+        };
+        return Err(ZapError::New(resp.code, msg));
+    }
+    // 兜底轮询完成标记：没人开日志抽屉时也能把状态落定
+    docker_build::watch_run(run_id.clone(), log.clone());
+
+    audit::log(
+        Some(&claims),
+        Some(addr.ip().to_string().as_str()),
+        "docker_image_build",
+        &format!(
+            "{} ← {} （{}）",
+            tags.join(", "),
+            paths.context.display(),
+            paths.containerfile.display()
+        ),
+        &run_id,
+    )
+    .await;
+
+    Ok(Json(json!({
+        "code": 0,
+        "message": "镜像构建已开始",
+        "data": {
+            "run_id": run_id,
+            "tags": tags,
+            "log": log,
+            "context_dir": paths.context.to_string_lossy(),
+            "containerfile": paths.containerfile.to_string_lossy(),
+        }
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ContainerRunBody {
+    /// 镜像引用（列表里点的那一行）
+    pub image: String,
+    /// 容器名，留空由 docker 自动起名
+    #[serde(default)]
+    pub name: String,
+    /// 端口映射，如 `8080:80`、`127.0.0.1:8080:80`、`53:53/udp`
+    #[serde(default)]
+    pub ports: Vec<String>,
+    /// 重启策略：空 / no / always / unless-stopped / on-failure
+    #[serde(default)]
+    pub restart: String,
+}
+
+/// POST /docker/container/run —— 镜像列表的「启动」按钮，等价 `docker run -d`。
+///
+/// 这一步直接让镜像里的进程跑在宿主机内核上（还可能挂载宿主目录），
+/// 所以不跟着 `docker:build` 放开，仍然限 admin。
+pub async fn container_run(
+    claims: ValidatedClaims,
+    addr: Extension<SocketAddr>,
+    Json(body): Json<ContainerRunBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    exec_audited(
+        &claims,
+        &addr,
+        "docker_container_run",
+        format!(
+            "镜像 {} → 启动容器 {}（{}）",
+            body.image,
+            if body.name.is_empty() {
+                "自动命名"
+            } else {
+                body.name.as_str()
+            },
+            if body.ports.is_empty() {
+                "默认网络".to_string()
+            } else {
+                body.ports.join(", ")
+            }
+        ),
+        Request::DockerContainerRun {
+            image: body.image.clone(),
+            name: body.name.clone(),
+            ports: body.ports.clone(),
+            restart: body.restart.clone(),
         },
     )
     .await

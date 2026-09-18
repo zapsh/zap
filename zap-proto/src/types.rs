@@ -26,6 +26,15 @@ pub struct AcmeChallengeEntry {
     pub key_auth: String,
 }
 
+/// 镜像构建参数：`--build-arg KEY=VALUE`。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DockerBuildArg {
+    /// 参数名（`[A-Za-z_][A-Za-z0-9_]*`，由调用方校验）
+    pub key: String,
+    #[serde(default)]
+    pub value: String,
+}
+
 /// 反代 upstream 定义：vhost 渲染为 nginx `upstream <name> { ... }` 块。
 /// server 行一律以 `servers_ext` 表单字段维护（开发期不兼容旧版文本 servers）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -832,6 +841,21 @@ pub enum Request {
     /// 容器批量动作：start / stop / restart / pause / unpause / kill / remove。
     #[serde(rename = "docker.container_action")]
     DockerContainerAction { ids: Vec<String>, action: String },
+    /// 容器快启：等价 `docker run -d`（创建 + 启动一步到位），返回新容器 ID。
+    ///
+    /// 供镜像列表的「启动」按钮使用 —— 只透传白名单字段，参数走 Engine API 而不拼命令。
+    /// `name` 为空时由 daemon 自动起名；`ports` 支持 `[IP:]宿主机端口:容器端口[/udp]`。
+    #[serde(rename = "docker.container_run")]
+    DockerContainerRun {
+        image: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        ports: Vec<String>,
+        /// 重启策略：空 / no / always / unless-stopped / on-failure
+        #[serde(default)]
+        restart: String,
+    },
     /// 容器详情：透传 `docker container inspect` 的原始 JSON 对象。
     #[serde(rename = "docker.container_inspect")]
     DockerContainerInspect { id: String },
@@ -852,6 +876,34 @@ pub enum Request {
     /// 镜像动作：pull（id 为仓库引用）/ remove（id 为镜像 ID 或引用）/ prune。
     #[serde(rename = "docker.image_action")]
     DockerImageAction { id: String, action: String },
+    /// 镜像详情：`inspect` 原始 JSON + 构建历史（每层对应的构建指令）。
+    #[serde(rename = "docker.image_inspect")]
+    DockerImageInspect { id: String },
+    /// 用 Containerfile / Dockerfile 构建镜像。
+    ///
+    /// 构建是长任务，因此和其它运行记录一样「先登记、后后台执行」：stdout / stderr
+    /// 逐行追加写入 `log_path`，进程退出后追加 `__ZAP_DONE__ <code>`，
+    /// 前端用 `/appstore/ws/{run_id}` 看实时日志。
+    #[serde(rename = "docker.image_build")]
+    DockerImageBuild {
+        run_id: String,
+        log_path: String,
+        /// 构建上下文目录（绝对路径）
+        context_dir: String,
+        /// Containerfile 绝对路径，必须位于上下文目录之内
+        containerfile: String,
+        /// 目标镜像名（含 tag），可多个
+        tags: Vec<String>,
+        #[serde(default)]
+        build_args: Vec<DockerBuildArg>,
+        /// 目标平台（如 linux/amd64）；空 = 跟随宿主架构
+        #[serde(default)]
+        platform: String,
+        #[serde(default)]
+        no_cache: bool,
+        #[serde(default)]
+        pull: bool,
+    },
     /// 数据卷列表。
     #[serde(rename = "docker.volumes")]
     DockerVolumes,
@@ -1033,6 +1085,59 @@ pub fn linux_username(username: &str) -> String {
         base.truncate(24);
     }
     base
+}
+
+/// docker 镜像引用白名单：`[命名空间/]名称[:tag]`（zapd 与 zapexec 共用）。
+///
+/// 只允许小写字母数字与 `. _ - /`（docker 本身也拒绝大写仓库名，提前拦一次能给出
+/// 中文提示而不是 daemon 的英文长串），tag 部分额外允许大写。
+pub fn valid_image_ref(s: &str) -> bool {
+    if s.is_empty() || s.len() > 200 {
+        return false;
+    }
+    let (name, tag) = match s.split_once(':') {
+        Some((n, t)) => (n, Some(t)),
+        None => (s, None),
+    };
+    if let Some(t) = tag
+        && (t.is_empty()
+            || t.len() > 128
+            || !t
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
+    {
+        return false;
+    }
+    if name.is_empty() || name.starts_with('/') || name.ends_with('/') || name.contains("//") {
+        return false;
+    }
+    name.split('/').all(|seg| {
+        !seg.is_empty()
+            && !seg.starts_with('.')
+            && seg.chars().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')
+            })
+    })
+}
+
+/// 补全默认 tag：`nginx` → `nginx:latest`（docker 的默认行为，显式化便于展示 / 去重）。
+pub fn normalize_image_tag(tag: &str) -> String {
+    let tag = tag.trim();
+    let last = tag.rsplit('/').next().unwrap_or(tag);
+    if last.contains(':') {
+        tag.to_string()
+    } else {
+        format!("{tag}:latest")
+    }
+}
+
+/// 面板用户名 → docker 命名空间前缀（多用户隔离用）。
+///
+/// 直接复用 [`linux_username`] 的派生规则：它已经保证「小写 + 仅 `[a-z0-9_-]`」，
+/// 且不含 `.`（首段带点会被 docker 当成 registry 主机名）。这样
+/// 「面板账号 / 家目录 / 系统账号 / 镜像命名空间」四者是同一个名字，用户好记。
+pub fn docker_namespace(username: &str) -> String {
+    linux_username(username)
 }
 
 #[cfg(test)]

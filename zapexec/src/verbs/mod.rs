@@ -402,6 +402,12 @@ pub async fn dispatch(req: Request) -> Response {
         Request::DockerContainerAction { ids, action } => {
             docker::container_action(&ids, &action).await
         }
+        Request::DockerContainerRun {
+            image,
+            name,
+            ports,
+            restart,
+        } => docker::container_run(&image, &name, &ports, &restart).await,
         Request::DockerContainerInspect { id } => docker::container_inspect(&id).await,
         Request::DockerContainerLogs {
             id,
@@ -412,6 +418,31 @@ pub async fn dispatch(req: Request) -> Response {
         Request::DockerStats => docker::stats().await,
         Request::DockerImages => docker::images().await,
         Request::DockerImageAction { id, action } => docker::image_action(&id, &action).await,
+        Request::DockerImageInspect { id } => docker::image_inspect(&id).await,
+        Request::DockerImageBuild {
+            run_id,
+            log_path,
+            context_dir,
+            containerfile,
+            tags,
+            build_args,
+            platform,
+            no_cache,
+            pull,
+        } => {
+            docker::image_build(
+                run_id,
+                log_path,
+                context_dir,
+                containerfile,
+                tags,
+                build_args,
+                platform,
+                no_cache,
+                pull,
+            )
+            .await
+        }
         Request::DockerVolumes => docker::volumes().await,
         Request::DockerVolumeAction {
             name,

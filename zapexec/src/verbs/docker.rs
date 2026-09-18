@@ -22,16 +22,16 @@ use bollard::container::LogOutput;
 use bollard::errors::Error as DockerError;
 use bollard::models::{NetworkCreateRequest, Volume, VolumeCreateRequest};
 use bollard::query_parameters::{
-    CreateImageOptions, KillContainerOptions, ListContainersOptions, ListImagesOptions,
-    ListNetworksOptions, ListVolumesOptions, LogsOptions, PruneImagesOptions, PruneVolumesOptions,
-    RemoveContainerOptions, RemoveImageOptions, RemoveVolumeOptions, RestartContainerOptions,
-    StatsOptions, StopContainerOptions,
+    CreateContainerOptions, CreateImageOptions, KillContainerOptions, ListContainersOptions,
+    ListImagesOptions, ListNetworksOptions, ListVolumesOptions, LogsOptions, PruneImagesOptions,
+    PruneVolumesOptions, RemoveContainerOptions, RemoveImageOptions, RemoveVolumeOptions,
+    RestartContainerOptions, StatsOptions, StopContainerOptions,
 };
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::process::Command;
 use tokio::time::timeout;
-use zap_proto::Response;
+use zap_proto::{DockerBuildArg, Response, normalize_image_tag, valid_image_ref};
 
 /// 把日志 / exec 的输出帧统一取出字节（三种变体都是同一载荷）。
 pub fn log_bytes(chunk: LogOutput) -> Vec<u8> {
@@ -158,7 +158,7 @@ fn action_response(result: Result<String, String>) -> Response {
 async fn compose_available() -> bool {
     let Ok(out) = timeout(
         CALL_TIMEOUT,
-        docker_cmd(&["compose", "version", "--short"]).output(),
+        docker_cmd(["compose", "version", "--short"]).output(),
     )
     .await
     else {
@@ -658,6 +658,535 @@ pub async fn image_action(id: &str, action: &str) -> Response {
     action_response(result)
 }
 
+// ── 容器快启 / 镜像详情 / 镜像构建 ───────────────────────
+
+/// 容器名白名单：字母或数字开头，其余为字母数字与 `. _ -`，最长 63。
+fn valid_container_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 63
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// 解析端口映射：`[IP:]宿主机端口:容器端口[/tcp|udp|sctp]`。
+///
+/// 宿主机端口允许留空（由 daemon 随机分配），与 `docker run -p` 的语义保持一致。
+/// 返回 `(容器侧 "port/proto", PortBinding)`。
+fn parse_port_spec(spec: &str) -> Result<(String, bollard::models::PortBinding), String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Err("端口映射不能为空".into());
+    }
+    let (body, proto) = match spec.split_once('/') {
+        Some((b, p)) => {
+            let p = p.to_ascii_lowercase();
+            if !matches!(p.as_str(), "tcp" | "udp" | "sctp") {
+                return Err(format!("不支持的端口协议: {spec}"));
+            }
+            (b, p)
+        }
+        None => (spec, "tcp".to_string()),
+    };
+    let parts: Vec<&str> = body.split(':').collect();
+    let (ip, host, container) = match parts.as_slice() {
+        // 只写容器端口时宿主机端口留空，由 daemon 随机分配（同 `docker run -p 80`）
+        [c] => (None, "", *c),
+        [h, c] => (None, *h, *c),
+        [i, h, c] => (Some(*i), *h, *c),
+        _ => {
+            return Err(format!(
+                "端口映射格式应为 [IP:]宿主机端口:容器端口，收到: {spec}"
+            ));
+        }
+    };
+    let container = container.trim();
+    if container.is_empty() || container.parse::<u16>().is_err() {
+        return Err(format!("容器端口不合法: {spec}"));
+    }
+    let host = host.trim();
+    if !host.is_empty() && host.parse::<u16>().is_err() {
+        return Err(format!("宿主机端口不合法: {spec}"));
+    }
+    if let Some(ip) = ip {
+        let ip = ip.trim();
+        if ip.is_empty() {
+            return Err(format!("绑定地址不合法: {spec}"));
+        }
+        // 只接受点分 IPv4 / 简单 IPv6，避免塞入奇怪字符
+        if !ip
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || matches!(c, '.' | ':'))
+        {
+            return Err(format!("绑定地址不合法: {spec}"));
+        }
+    }
+    Ok((
+        format!("{container}/{proto}"),
+        bollard::models::PortBinding {
+            host_ip: ip.map(|s| s.trim().to_string()),
+            host_port: (!host.is_empty()).then(|| host.to_string()),
+        },
+    ))
+}
+
+/// 重启策略白名单。
+fn parse_restart_policy(restart: &str) -> Result<Option<bollard::models::RestartPolicy>, String> {
+    use bollard::models::{RestartPolicy, RestartPolicyNameEnum};
+    let name = match restart.trim() {
+        "" => return Ok(None),
+        "no" => RestartPolicyNameEnum::NO,
+        "always" => RestartPolicyNameEnum::ALWAYS,
+        "unless-stopped" => RestartPolicyNameEnum::UNLESS_STOPPED,
+        "on-failure" => RestartPolicyNameEnum::ON_FAILURE,
+        other => return Err(format!("不支持的重启策略: {other}")),
+    };
+    Ok(Some(RestartPolicy {
+        name: Some(name),
+        maximum_retry_count: None,
+    }))
+}
+
+/// 容器快启：等价 `docker run -d`（创建 + 启动一步到位），返回新容器 ID。
+///
+/// 面板「镜像」列表的启动按钮用。只接受白名单参数，参数走 Engine API 而不拼命令：
+/// 端口映射解析成 `HostConfig.port_bindings`，`name` 只作为创建参数。
+pub async fn container_run(image: &str, name: &str, ports: &[String], restart: &str) -> Response {
+    let result = async {
+        use bollard::models::{ContainerCreateBody, HostConfig, PortMap};
+
+        let d = docker()?;
+        let image = image.trim();
+        if image.is_empty() {
+            return Err("镜像不能为空".to_string());
+        }
+        let name = name.trim();
+        if !name.is_empty() && !valid_container_name(name) {
+            return Err("容器名不合法（字母数字开头，可含 . _ -，最长 63 字符）".to_string());
+        }
+        if ports.len() > 32 {
+            return Err("端口映射过多（上限 32 条）".to_string());
+        }
+
+        let mut exposed_ports: Vec<String> = Vec::new();
+        let mut port_bindings: PortMap = HashMap::new();
+        for spec in ports {
+            let (key, binding) = parse_port_spec(spec)?;
+            if !exposed_ports.contains(&key) {
+                exposed_ports.push(key.clone());
+            }
+            let entry = port_bindings.entry(key).or_insert_with(|| Some(Vec::new()));
+            if let Some(list) = entry.as_mut() {
+                list.push(binding);
+            }
+        }
+        let policy = parse_restart_policy(restart)?;
+
+        let config = ContainerCreateBody {
+            image: Some(image.to_string()),
+            exposed_ports: (!exposed_ports.is_empty()).then_some(exposed_ports),
+            host_config: Some(HostConfig {
+                port_bindings: (!port_bindings.is_empty()).then_some(port_bindings),
+                restart_policy: policy,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let created = call(
+            ACTION_TIMEOUT,
+            "创建容器",
+            d.create_container(
+                Some(CreateContainerOptions {
+                    name: (!name.is_empty()).then(|| name.to_string()),
+                    ..Default::default()
+                }),
+                config,
+            ),
+        )
+        .await?;
+        let id = created.id;
+        if id.is_empty() {
+            return Err("daemon 未返回容器 ID".to_string());
+        }
+        call(ACTION_TIMEOUT, "启动容器", d.start_container(&id, None)).await?;
+
+        Ok(json!({
+            "id": id,
+            "name": if name.is_empty() { short_id(&id) } else { name.to_string() },
+            "image": image,
+        }))
+    }
+    .await;
+
+    match result {
+        Ok(v) => Response::ok("容器已启动", Some(v)),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+/// 容器 ID 短形式（12 位，和 `docker ps` 的观感一致）。
+fn short_id(id: &str) -> String {
+    id.chars().take(12).collect()
+}
+
+/// 镜像详情：原始 inspect JSON + 构建历史 + 一份前端直接可用的摘要。
+///
+/// inspect 整份透传（体积大但一次拿全，前端「Inspect」页签要的就是原文），
+/// 摘要字段从 JSON 里取，避免绑定 bollard 各版本的模型字段类型。
+pub async fn image_inspect(id: &str) -> Response {
+    let result = async {
+        let d = docker()?;
+        let id = id.trim();
+        if id.is_empty() {
+            return Err("镜像 ID 不能为空".to_string());
+        }
+        let insp = call(CALL_TIMEOUT, "查询镜像详情", d.inspect_image(id)).await?;
+        let insp = serde_json::to_value(&insp)
+            .map_err(|e| format!("序列化镜像详情失败: {e}"))?;
+        let history = call(CALL_TIMEOUT, "查询镜像历史", d.image_history(id)).await?;
+
+        let str_of = |v: &Value, key: &str| -> String {
+            v.get(key)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let size = insp.get("Size").and_then(|v| v.as_i64()).unwrap_or(0);
+        let created = str_of(&insp, "Created");
+        let config = insp.get("Config").cloned().unwrap_or(Value::Null);
+        let cmd = config
+            .get("Cmd")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        let entrypoint = config
+            .get("Entrypoint")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        let layers = insp
+            .get("RootFS")
+            .and_then(|v| v.get("Layers"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+
+        let history: Vec<Value> = history
+            .iter()
+            .map(|h| {
+                json!({
+                    "Id": h.id,
+                    "Created": h.created,
+                    "CreatedAt": fmt_time(h.created),
+                    "CreatedBy": h.created_by,
+                    "Tags": h.tags.join(", "),
+                    "Size": h.size.max(0) as u64,
+                    "SizeText": human_size(h.size.max(0) as u64),
+                    "Comment": h.comment,
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "inspect": insp,
+            "history": history,
+            "summary": {
+                "id": str_of(&insp, "Id"),
+                "tags": insp.get("RepoTags").and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+                "size": size.max(0) as u64,
+                "sizeText": human_size(size.max(0) as u64),
+                "created": created,
+                "architecture": str_of(&insp, "Architecture"),
+                "os": str_of(&insp, "Os"),
+                "dockerVersion": str_of(&insp, "DockerVersion"),
+                "author": str_of(&insp, "Author"),
+                "comment": str_of(&insp, "Comment"),
+                "cmd": cmd,
+                "entrypoint": entrypoint,
+                "workdir": config.get("WorkingDir").and_then(|v| v.as_str()).unwrap_or_default(),
+                "env": config.get("Env").cloned().unwrap_or(Value::Array(vec![])),
+                "exposedPorts": config.get("ExposedPorts").cloned().unwrap_or(Value::Object(Default::default())),
+                "labels": config.get("Labels").cloned().unwrap_or(Value::Object(Default::default())),
+                "layers": layers,
+            }
+        }))
+    }
+    .await;
+
+    match result {
+        Ok(v) => Response::ok("ok", Some(v)),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+/// build-arg 名字白名单：`[A-Za-z_][A-Za-z0-9_]*`。
+fn valid_build_arg_key(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    !bytes.is_empty()
+        && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+}
+
+/// 平台串白名单：`os/arch[/variant]`，仅允许小写字母数字与 `/ . _ -`。
+fn valid_platform(p: &str) -> bool {
+    !p.is_empty()
+        && p.len() <= 64
+        && p.contains('/')
+        && p.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '/' | '.' | '_' | '-')
+        })
+}
+
+fn now_stamp() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// 用 Containerfile / Dockerfile 构建镜像（长任务，后台执行）。
+///
+/// 校验全部前置完成后才起进程，之后接口立即返回；输出逐行落到 `log_path`，
+/// 进程退出时追加 `__ZAP_DONE__ <exit_code>`（与 `cron::run` 同一套约定），
+/// 前端据此看实时日志 / 判定成败。
+///
+/// 为什么用 CLI 而不是 Engine API：构建要走 BuildKit，Engine API 的 build 端点
+/// 需要 SDK 侧拼 tar 上下文，代价大且拿不到和 `docker build` 一致的输出流。
+#[allow(clippy::too_many_arguments)]
+pub async fn image_build(
+    run_id: String,
+    log_path: String,
+    context_dir: String,
+    containerfile: String,
+    tags: Vec<String>,
+    build_args: Vec<DockerBuildArg>,
+    platform: String,
+    no_cache: bool,
+    pull: bool,
+) -> Response {
+    use std::io::Write;
+
+    // ── 校验（失败直接同步返回，前端能立刻看到原因）──
+    let log_path = match super::cron::safe_log_path(&log_path) {
+        Ok(p) => p,
+        Err(e) => return Response::err(-1, e),
+    };
+    if tags.is_empty() {
+        return err_response("至少需要一个镜像名（tag）");
+    }
+    if tags.len() > 8 {
+        return err_response("镜像名过多（上限 8 个）");
+    }
+    for t in &tags {
+        if !valid_image_ref(t) {
+            return err_response(&format!(
+                "镜像名不合法: {t}（只允许小写字母数字与 . _ - /，可带 :tag）"
+            ));
+        }
+    }
+    if !platform.trim().is_empty() && !valid_platform(platform.trim()) {
+        return err_response(&format!("构建平台不合法: {platform}"));
+    }
+    if build_args.len() > 64 {
+        return err_response("构建参数过多（上限 64 个）");
+    }
+    for a in &build_args {
+        if !valid_build_arg_key(&a.key) {
+            return err_response(&format!("构建参数名不合法: {}", a.key));
+        }
+        if a.value.len() > 8192 || a.value.contains('\0') {
+            return err_response(&format!("构建参数值过长或含非法字符: {}", a.key));
+        }
+    }
+
+    // 上下文 / Containerfile：绝对路径、无 `..`、真实存在，且 Containerfile 必须在上下文内
+    let ctx = match safe_existing_dir(&context_dir) {
+        Ok(p) => p,
+        Err(e) => return err_response(&e),
+    };
+    let file = match safe_existing_file(&containerfile) {
+        Ok(p) => p,
+        Err(e) => return err_response(&e),
+    };
+    if !file.starts_with(&ctx) {
+        return err_response("Containerfile 必须位于构建上下文目录内");
+    }
+
+    // `safe_log_path` 已保证父目录在 data/users 下，这里只是补建出来
+    if let Some(parent) = log_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return Response::err(-1, format!("创建日志目录失败: {e}"));
+    }
+
+    // ── 组装参数（全部作为独立 argv 传递，无 shell 参与，无注入面）──
+    let tags: Vec<String> = tags.iter().map(|t| normalize_image_tag(t)).collect();
+    // `--progress=plain` 只在 BuildKit 下有效，用环境变量表达更稳妥
+    let mut args: Vec<String> = vec!["build".to_string()];
+    args.push("--file".to_string());
+    args.push(file.to_string_lossy().to_string());
+    for t in &tags {
+        args.push("--tag".to_string());
+        args.push(t.clone());
+    }
+    for a in &build_args {
+        args.push("--build-arg".to_string());
+        args.push(format!("{}={}", a.key, a.value));
+    }
+    if !platform.trim().is_empty() {
+        args.push("--platform".to_string());
+        args.push(platform.trim().to_string());
+    }
+    if no_cache {
+        args.push("--no-cache".to_string());
+    }
+    if pull {
+        args.push("--pull".to_string());
+    }
+    args.push(ctx.to_string_lossy().to_string());
+
+    // ── 打开日志并起进程 ──
+    let mut log = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(f) => f,
+        Err(e) => return Response::err(-1, format!("打开日志失败: {e}")),
+    };
+    let _ = writeln!(log, "=== [{}] docker image build {run_id} ===", now_stamp());
+    let _ = writeln!(log, "context : {}", ctx.display());
+    let _ = writeln!(log, "file    : {}", file.display());
+    let _ = writeln!(log, "tags    : {}", tags.join(", "));
+    if !build_args.is_empty() {
+        // 只记参数名：build-arg 的值常常是密钥，不落盘（docker 自己的输出里若回显，需自行注意）
+        let keys: Vec<&str> = build_args.iter().map(|a| a.key.as_str()).collect();
+        let _ = writeln!(log, "args    : {}", keys.join(", "));
+    }
+    if !platform.trim().is_empty() {
+        let _ = writeln!(log, "platform: {}", platform.trim());
+    }
+    let _ = writeln!(log, "cmd     : docker {}", args.join(" "));
+    let _ = writeln!(log, "---");
+    let _ = log.flush();
+    let log_stderr = match log.try_clone() {
+        Ok(f) => f,
+        Err(e) => return Response::err(-1, format!("准备日志失败: {e}")),
+    };
+
+    let child = docker_cmd(args)
+        .env("BUILDKIT_PROGRESS", "plain")
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_stderr))
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = if e.kind() == std::io::ErrorKind::NotFound {
+                "未检测到 docker 命令，请先在宿主机安装 Docker".to_string()
+            } else {
+                format!("启动 docker build 失败: {e}")
+            };
+            append_log(&log_path, &format!("\n!!! {msg}"), Some(-1));
+            return Response::err(-1, msg);
+        }
+    };
+    let pid = child.id().unwrap_or(0);
+
+    // 等待进程结束并落完成标记：前端 / zapd 都靠它判定状态
+    let log_for_done = log_path.clone();
+    tokio::spawn(async move {
+        let code = match child.wait().await {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(_) => -1,
+        };
+        append_log(&log_for_done, "", Some(code));
+    });
+
+    Response::ok(
+        "镜像构建已开始",
+        Some(json!({
+            "run_id": run_id,
+            "pid": pid,
+            "log": log_path.to_string_lossy(),
+            "tags": tags,
+        })),
+    )
+}
+
+/// 统一的错误返回（构建校验阶段用，避免到处写 `Response::err`）。
+fn err_response(msg: &str) -> Response {
+    Response::err(-1, msg.to_string())
+}
+
+/// 追加一段文本与完成标记（`code` 为 None 时只追加文本）。
+fn append_log(path: &Path, text: &str, code: Option<i32>) {
+    use std::io::Write;
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    if !text.is_empty() {
+        let _ = write!(f, "{text}");
+    }
+    if let Some(code) = code {
+        let _ = writeln!(f, "\n__ZAP_DONE__ {code}");
+    }
+    let _ = f.flush();
+}
+
+/// 校验绝对目录：无 `..`、存在且为目录。
+fn safe_existing_dir(path: &str) -> Result<PathBuf, String> {
+    let p = safe_abs_path(path)?;
+    if !p.is_dir() {
+        return Err(format!("路径不存在或不是目录: {}", p.display()));
+    }
+    Ok(p)
+}
+
+/// 校验绝对文件：无 `..`、存在且为普通文件。
+fn safe_existing_file(path: &str) -> Result<PathBuf, String> {
+    let p = safe_abs_path(path)?;
+    if !p.is_file() {
+        return Err(format!("文件不存在: {}", p.display()));
+    }
+    Ok(p)
+}
+
+/// 绝对路径基础校验（不解析符号链接：调用方随后会做前缀包含判断）。
+fn safe_abs_path(path: &str) -> Result<PathBuf, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("路径不能为空".to_string());
+    }
+    let p = PathBuf::from(path);
+    if !p.is_absolute() {
+        return Err(format!("路径必须是绝对路径: {path}"));
+    }
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("路径不合法: {path}"));
+    }
+    Ok(p)
+}
+
 // ── 数据卷 ───────────────────────────────────────────────
 
 /// 数据卷列表。
@@ -917,7 +1446,14 @@ pub async fn network_action(name: &str, action: &str, driver: Option<&str>) -> R
 // ── Compose（CLI 插件，Engine API 无对应端点）──────────────
 
 /// 构造一个清空环境、仅带安全 PATH 的 docker 命令。
-fn docker_cmd(args: &[&str]) -> Command {
+///
+/// 参数写成泛型是为了让「参数需要动态拼接」的场景（如 `docker build` 的多个
+/// `--tag` / `--build-arg`）能直接传 `Vec<String>`，而固定子命令仍可传字面量数组。
+fn docker_cmd<I, S>(args: I) -> Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     let mut cmd = Command::new("docker");
     // 清空环境：不受调用方 `DOCKER_*` / `PATH` 影响，避免被注入额外行为
     cmd.args(args).kill_on_drop(true).env_clear().env(
@@ -1068,7 +1604,10 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_bind_dir;
+    use super::{
+        parse_port_spec, prepare_bind_dir, valid_build_arg_key, valid_container_name,
+        valid_platform,
+    };
 
     /// 卷名会被拼进宿主机路径，穿越必须挡住（这些用例都在建目录之前就返回，不碰文件系统）
     #[test]
@@ -1088,6 +1627,73 @@ mod tests {
                 prepare_bind_dir(home, "data", "u").is_err(),
                 "应拒绝家目录 {home:?}"
             );
+        }
+    }
+
+    /// 容器名会被 daemon 用作路径与 DNS 名，字符集要收紧
+    #[test]
+    fn container_name_whitelist() {
+        for name in [
+            "",
+            ".bad",
+            "_bad",
+            "/bad",
+            "bad name",
+            "bad/ok",
+            &"x".repeat(64),
+        ] {
+            assert!(!valid_container_name(name), "应拒绝容器名 {name:?}");
+        }
+        for name in ["nginx", "my_app", "my.app", "a-b-1", &"x".repeat(63)] {
+            assert!(valid_container_name(name), "应接受容器名 {name:?}");
+        }
+    }
+
+    /// 端口映射语法：`[IP:]宿主机端口:容器端口[/协议]`
+    #[test]
+    fn port_spec_parsing() {
+        let (key, binding) = parse_port_spec("8080:80").unwrap();
+        assert_eq!(key, "80/tcp");
+        assert_eq!(binding.host_port.as_deref(), Some("8080"));
+        assert_eq!(binding.host_ip, None);
+
+        // 只写容器端口：交给 daemon 随机分配宿主机端口
+        let (key, binding) = parse_port_spec("80").unwrap();
+        assert_eq!(key, "80/tcp");
+        assert_eq!(binding.host_port, None);
+
+        let (key, binding) = parse_port_spec("127.0.0.1:5353:53/udp").unwrap();
+        assert_eq!(key, "53/udp");
+        assert_eq!(binding.host_ip.as_deref(), Some("127.0.0.1"));
+
+        // 宿主机端口留空（含 `80` 与 `:80` 两种写法）都表示「随机分配」，不是错误
+        assert!(parse_port_spec(":80").is_ok());
+
+        for bad in [
+            "",
+            "   ",
+            "abc:80",
+            "8080:abc",
+            "1:2:3:4",
+            "80/http",
+            "1:2/99999",
+        ] {
+            assert!(parse_port_spec(bad).is_err(), "应拒绝端口映射 {bad:?}");
+        }
+    }
+
+    #[test]
+    fn platform_and_arg_whitelist() {
+        assert!(valid_platform("linux/amd64"));
+        assert!(valid_platform("linux/arm64/v8"));
+        for bad in ["linux", "linux/amd64;rm -rf /", "", &"x".repeat(65)] {
+            assert!(!valid_platform(bad), "应拒绝平台 {bad:?}");
+        }
+
+        assert!(valid_build_arg_key("VERSION"));
+        assert!(valid_build_arg_key("_v1"));
+        for bad in ["", "1abc", "a-b", "a b", "A$B"] {
+            assert!(!valid_build_arg_key(bad), "应拒绝参数名 {bad:?}");
         }
     }
 }

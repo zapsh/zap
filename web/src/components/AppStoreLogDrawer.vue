@@ -9,6 +9,7 @@
           t('runLogDrawer.exitCode', { code: exitCode })
         }}</span>
         <el-button
+          v-if="!simple"
           size="small"
           type="danger"
           plain
@@ -19,7 +20,7 @@
           {{ t('runLogDrawer.stop') }}
         </el-button>
         <div class="toolbar-spacer" />
-        <template v-if="isAdmin && failedState && probed && snapshotReady">
+        <template v-if="isAdmin && !simple && failedState && probed && snapshotReady">
           <el-button size="small" type="warning" plain :loading="probeLoading" @click="openEditor">
             {{ t('runLogDrawer.editScript') }}
           </el-button>
@@ -31,7 +32,7 @@
           {{ t('runLogDrawer.scrollBottom') }}
         </el-button>
       </div>
-      <div v-if="failedState && probed && !snapshotReady" class="snap-hint">
+      <div v-if="failedState && probed && !snapshotReady && !simple" class="snap-hint">
         <el-icon><InfoFilled /></el-icon>
         <span>{{ t('runLogDrawer.noSnapshotHint') }}</span>
       </div>
@@ -126,6 +127,14 @@ import {
 } from '@/api/appstore'
 import { useUserStore } from '@/stores/user'
 import CodeEditor from '@/components/CodeEditor.vue'
+
+/**
+ * `simple`：只做日志展示，隐藏「停止 / 编辑脚本 / 重跑」。
+ *
+ * 非脚本类运行（如镜像构建）复用本抽屉时没有可终止的任务句柄，
+ * 也拿不到 appstore 的运行快照，留着这些按钮只会报错。
+ */
+const props = withDefaults(defineProps<{ simple?: boolean }>(), { simple: false })
 
 const { t } = useI18n()
 const userStore = useUserStore()

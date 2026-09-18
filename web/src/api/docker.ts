@@ -153,6 +153,105 @@ export function imageAction(id: string, action: string) {
   return http.post<Api<DockerActionResult>>('/docker/image/action', { id, action })
 }
 
+// ── 镜像详情 / 构建 / 快启容器 ──────────────────────────────
+
+/** 构建历史的一层（对应 docker 的一条构建指令） */
+export interface DockerImageHistoryItem {
+  Id: string
+  Created: number
+  CreatedAt: string
+  CreatedBy: string
+  Tags: string
+  Size: number
+  SizeText: string
+  Comment: string
+}
+
+/** 镜像摘要（后端从 inspect 里挑出来的常用字段，供 UI 直接绑定） */
+export interface DockerImageSummary {
+  id: string
+  tags: string[]
+  size: number
+  sizeText: string
+  created: string
+  architecture: string
+  os: string
+  dockerVersion: string
+  author: string
+  comment: string
+  cmd: string
+  entrypoint: string
+  workdir: string
+  env: string[]
+  exposedPorts: Record<string, unknown>
+  labels: Record<string, string>
+  layers: number
+}
+
+export interface DockerImageInspect {
+  /** inspect 原文，UI 按 JSON 展示 / 复制 */
+  inspect: Record<string, unknown>
+  history: DockerImageHistoryItem[]
+  summary: DockerImageSummary
+}
+
+export function imageInspect(id: string) {
+  return http.get<Api<DockerImageInspect>>('/docker/image/inspect', { params: { id } })
+}
+
+/** 构建参数 `--build-arg KEY=VALUE` */
+export interface DockerBuildArgPayload {
+  key: string
+  value: string
+}
+
+export interface DockerImageBuildPayload {
+  /** 构建上下文目录（绝对路径） */
+  context_dir: string
+  /** Containerfile 绝对路径；留空由后端在上下文里找 Dockerfile / Containerfile */
+  containerfile?: string
+  /** 目标镜像名（可带 tag）；非管理员会被后端加上 `<用户名>/` 前缀 */
+  name: string
+  tags?: string[]
+  build_args?: DockerBuildArgPayload[]
+  /** 目标平台，如 linux/amd64；空 = 跟随宿主架构 */
+  platform?: string
+  no_cache?: boolean
+  pull?: boolean
+}
+
+export interface DockerImageBuildResult {
+  run_id: string
+  tags: string[]
+  log: string
+  context_dir: string
+  containerfile: string
+}
+
+/**
+ * 构建镜像（长任务）。
+ *
+ * 后端登记运行记录后立刻返回 `run_id`，真正干活的是后台 `docker build`；
+ * 实时日志复用 appstore 的 WebSocket（`/appstore/ws/{run_id}`）查看。
+ */
+export function imageBuild(payload: DockerImageBuildPayload) {
+  return http.post<Api<DockerImageBuildResult>>('/docker/image/build', payload)
+}
+
+/**
+ * 从镜像快启容器（等价 `docker run -d`）。
+ *
+ * `ports` 支持 `[IP:]宿主机端口:容器端口[/udp]`；`name` / `restart` 留空则用 docker 默认值。
+ */
+export function containerRun(payload: {
+  image: string
+  name?: string
+  ports?: string[]
+  restart?: string
+}) {
+  return http.post<Api<{ id: string; name: string; image: string }>>('/docker/container/run', payload)
+}
+
 // ── 数据卷 ───────────────────────────────────────────────
 
 export function listVolumes() {

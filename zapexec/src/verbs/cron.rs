@@ -47,7 +47,10 @@ fn user_exists(name: &str) -> bool {
 }
 
 /// 日志路径校验：绝对路径、无 `..`、位于 `{ZAP_PATH}/data/users/` 之下且以 `.log` 结尾。
-fn safe_log_path(path: &str) -> Result<PathBuf, String> {
+///
+/// `pub(super)`：镜像构建（`docker::image_build`）等长任务共用同一套约定 ——
+/// 运行日志只允许落在面板自管的 `data/users/` 之下，避免被诱导写任意文件。
+pub(super) fn safe_log_path(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
     if !p.is_absolute() {
         return Err("日志路径必须是绝对路径".into());

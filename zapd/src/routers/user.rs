@@ -8,8 +8,9 @@ use tracing::{info, warn};
 use crate::{
     db,
     zap::{
-        ZapError, ZapJsonResult, audit,
+        ZapError, ZapJsonResult, appstore as ast, audit,
         jwt::{self, Claims, ValidatedClaims},
+        user_cron,
     },
 };
 
@@ -1077,5 +1078,152 @@ pub async fn user_home_sync(
         "code": 0,
         "message": format!("运行实体同步完成：成功 {}，失败 {}", ok_items.len(), fail_items.len()),
         "data": { "ok": ok_items, "fail": fail_items, "mode": "system" }
+    })))
+}
+
+// ── 家目录备份 ────────────────────────────────────────────
+// 把某个面板用户的家目录整体打包成 `{home}/backups/home_backup_<时间戳>.tar.gz`
+// （排除 `backups` 目录自身，避免把上一份备份再套进去）。
+//
+// 打包以该用户的 Linux 账号身份执行（复用 crontab 的 CronRun 动词），产出文件
+// 自然归该用户所有；过程可能持续很久，故走后台 run + 日志的形式，接口只返回
+// `run_id`，前端轮询通用运行记录判断成败。
+
+#[derive(Debug, Deserialize)]
+pub struct BackupHomePayload {
+    /// 目标面板用户名（留空 = 自己）；非 admin 只能备份自己
+    pub username: Option<String>,
+}
+
+/// 家目录备份的运行记录归类键（同一用户的历史备份串在一起）。
+fn backup_run_key(username: &str) -> String {
+    format!("home_backup:{username}")
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// zapexec 在任务结束时追加的完成标记：`__ZAP_DONE__ <exit_code>`。
+async fn read_done_marker(log: &str) -> Option<i64> {
+    let content = tokio::fs::read_to_string(log).await.ok()?;
+    content.lines().rev().find_map(|line| {
+        line.trim()
+            .strip_prefix("__ZAP_DONE__ ")?
+            .trim()
+            .parse::<i64>()
+            .ok()
+    })
+}
+
+/// 后台盯住日志文件，出现完成标记（或超时）即落定运行记录状态。
+fn watch_home_backup(run_id: String, log: String) {
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
+        loop {
+            if let Some(code) = read_done_marker(&log).await {
+                ast::finish_run(&run_id, if code == 0 { "success" } else { "failed" }, code).await;
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                ast::finish_run(&run_id, "failed", -1).await;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
+}
+
+/// POST /system/user/backup-home
+pub async fn backup_home(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<BackupHomePayload>,
+) -> ZapJsonResult {
+    let target = payload
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .unwrap_or(&claims.sub)
+        .to_string();
+    // 代客备份限管理员：普通账号只碰得动自己的家目录
+    if target != claims.sub && !jwt::is_admin(&claims) {
+        return Err(ZapError::New(-1, "只能备份自己的家目录".to_string()));
+    }
+
+    let pool = db::get_db_pool().await;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT home_dir, linux_user FROM user WHERE username = ?")
+            .bind(&target)
+            .fetch_optional(pool)
+            .await?;
+    let Some((home, linux_user)) = row else {
+        return Err(ZapError::New(-1, format!("用户 {target} 不存在")));
+    };
+    if home.is_empty() {
+        return Err(ZapError::New(
+            -1,
+            format!("用户 {target} 的家目录尚未初始化"),
+        ));
+    }
+    if linux_user.is_empty() {
+        return Err(ZapError::New(
+            -1,
+            format!("用户 {target} 尚未创建 Linux 运行账号"),
+        ));
+    }
+
+    let home = home.trim_end_matches('/').to_string();
+    let backups_dir = format!("{home}/backups");
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let dest = format!("{backups_dir}/home_backup_{stamp}.tar.gz");
+    let command = format!(
+        "mkdir -p {} && tar -czf {} -C {} --exclude=./backups .",
+        sh_quote(&backups_dir),
+        sh_quote(&dest),
+        sh_quote(&home)
+    );
+
+    let run_id = ast::generate_run_id();
+    let log = user_cron::log_path(&target, &run_id);
+    ast::register_run_with_key(
+        &run_id,
+        "home-backup",
+        "home-backup",
+        &target,
+        &log,
+        &backup_run_key(&target),
+    )
+    .await?;
+
+    let resp = crate::zapexec::call(zap_proto::types::Request::CronRun {
+        run_id: run_id.clone(),
+        linux_user,
+        home_dir: home.clone(),
+        command,
+        kind: String::new(),
+        log_path: log.clone(),
+    })
+    .await?;
+    if resp.code != 0 {
+        ast::finish_run(&run_id, "failed", resp.code as i64).await;
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    watch_home_backup(run_id.clone(), log.clone());
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "home_backup",
+        &format!("{target}: {home} → {dest}"),
+        &run_id,
+    )
+    .await;
+
+    Ok(Json(json!({
+        "code": 0,
+        "message": "家目录备份已开始",
+        "data": { "run_id": run_id, "username": target, "path": dest, "log": log }
     })))
 }

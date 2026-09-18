@@ -256,6 +256,8 @@ fn api_routers() -> Router {
         .route("/system/user/delete", post(user::user_delete))
         .route("/system/user/resellers", get(user::reseller_list))
         .route("/system/user/home_sync", post(user::user_home_sync))
+        // 家目录备份：把用户家目录打包进 {home}/backups/（自己 / admin 可触发）
+        .route("/system/user/backup-home", post(user::backup_home))
         // 仪表盘统计卡片（按角色可见范围统计用户 / 站点 / 数据库数量）
         .route("/dashboard/counts", get(dashboard::counts))
         // 套餐（Packages）：创建客户时选择的资源套餐
@@ -481,6 +483,9 @@ fn api_routers() -> Router {
         .route("/docker/container/action", post(docker::container_action))
         .route("/docker/images", get(docker::images))
         .route("/docker/image/action", post(docker::image_action))
+        .route("/docker/image/inspect", get(docker::image_inspect))
+        .route("/docker/image/build", post(docker::image_build))
+        .route("/docker/container/run", post(docker::container_run))
         .route("/docker/volumes", get(docker::volumes))
         .route("/docker/volume/action", post(docker::volume_action))
         .route("/docker/networks", get(docker::networks))

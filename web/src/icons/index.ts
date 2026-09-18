@@ -94,6 +94,7 @@ import IconHelp from '~icons/material-symbols/help'
 import IconHelpOutline from '~icons/material-symbols/help-outline'
 import IconUpgrade from '~icons/material-symbols/upgrade'
 import IconArrowBack from '~icons/material-symbols/arrow-back'
+import IconPlayArrow from '~icons/material-symbols/play-arrow'
 import IconElectricBoltOutline from '~icons/material-symbols/electric-bolt-outline' 
 
 /** 路由 / 数据库菜单里图标名的集合前缀 */
@@ -260,6 +261,10 @@ export const ArrowBack = IconArrowBack
 
 // Logo Icon
 export const ElectricBoltOutline = IconElectricBoltOutline
+
+/** 「构建镜像」与「镜像列表行内启动」两个按钮用：Material Symbols 的“扳手”与“播放” */
+export const Play = IconPlayArrow
+export const Build = IconBuild
 
 /**
  * 解析图标名 → 组件。

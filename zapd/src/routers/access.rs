@@ -1,9 +1,5 @@
 //! 路由 → 角色 权限矩阵中间件（fail-closed）。
 //!
-//! 背景：角色校验原先散落在各 handler 里手写 `require_admin(&claims)`，
-//! `system_config` / `system_job` / `system_info` 等端点漏做校验，导致任意已登录
-//! 的普通用户都能改主机名/时区、启停或安装 sshd、kill 任意进程、改 DNS resolver、
-//! 启停全局定时任务。
 //!
 //! 这里把「路径前缀 → 所需角色」收敛成一张表，由中间件统一执行：
 //!
@@ -493,6 +489,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Admin,
         Some(Perm::action("system.user", "sync")),
     ),
+    // 家目录备份：任意登录用户可备份自己的家目录，目标用户名在 handler 内收敛
+    (
+        "/system/user/backup-home",
+        Required::User,
+        Some(Perm::action("system.user", "backup")),
+    ),
     (
         "/system/role/list",
         Required::Admin,
@@ -729,7 +731,43 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     ("/database", Required::User, Some(Perm::module("database"))),
     // 容器管理：整机资源（启停容器、拉镜像、删卷），仅管理员
     ("/docker", Required::Admin, Some(Perm::module("docker"))),
+    // 镜像构建 / 详情 / 列表：可以按角色放开（多用户场景）。
+    //
+    // 这几条写在 `/docker` 之后，靠「更长前缀优先」覆盖模块级门禁：
+    // 普通用户拿到 `docker:build` 后能构建自己的镜像、看镜像详情，
+    // 但容器 / 卷 / 网络 / Compose 仍然只有 admin 能动。
+    (
+        "/docker/image/build",
+        Required::User,
+        Some(Perm::action("docker", "build")),
+    ),
+    (
+        "/docker/image/inspect",
+        Required::User,
+        Some(Perm::action("docker", "build")),
+    ),
+    // 环境探测只回有没有装 Docker / 版本号，对构建者可见更合理：
+    // 否则镜像页顶部的探测条会因 403 显示成「未检测到 Docker」。
+    (
+        "/docker/status",
+        Required::User,
+        Some(Perm::action("docker", "build")),
+    ),
+    (
+        "/docker/images",
+        Required::User,
+        Some(Perm::action("docker", "build")),
+    ),
 ];
+
+/// **只允许显式授予**的权限点：内置角色初始化时不会自动带上（admin 除外）。
+///
+/// 规则里写了 `Required::User` 只代表「这条接口的角色下限是普通用户」，
+/// 不代表「普通用户默认就该有这个能力」。凡是「拿到之后等于拿到宿主机 root」的
+/// 能力都登记在这里，由管理员在「角色权限」里逐个勾选，默认关闭：
+///
+/// - `docker:build`：构建镜像 = 让 Containerfile 里的 `RUN` 以 root 跑在宿主机上。
+const EXPLICIT_ONLY_PERMS: &[&str] = &["docker:build"];
 
 /// 权限点命名空间的中文名（用于角色权限配置页与权限目录接口）。
 const NS_LABELS: &[(&str, &str)] = &[
@@ -785,6 +823,7 @@ const ACTION_LABELS: &[(&str, &str)] = &[
     ("process", "进程管理"),
     ("ssh", "SSH 服务"),
     ("firewall", "防火墙"),
+    ("build", "构建"),
 ];
 
 /// 未知动作用原样兜底（新增动作忘了登记中文名时，界面至少能看清是什么）。
@@ -952,6 +991,9 @@ pub fn all_perm_keys() -> HashSet<String> {
 ///
 /// 逐条推导（而非按模块整包）可以避免给普通用户塞入用不上的动作：
 /// 例如 `appstore:retry` 对应的是 admin-only 规则，普通用户不该出现在他的清单里。
+///
+/// [`EXPLICIT_ONLY_PERMS`] 里的权限点不参与推导（admin 除外）：它们的规则下限是
+/// `Required::User`，但能力本身太重，只能由管理员逐角色勾选，默认关闭。
 pub fn default_permissions_for(role_key: &str) -> Vec<String> {
     let is_admin = role_key == "admin";
     let is_reseller = role_key == "reseller";
@@ -964,15 +1006,14 @@ pub fn default_permissions_for(role_key: &str) -> Vec<String> {
         if !reachable {
             continue;
         }
-        match perm.action {
-            Some(a) => {
-                set.insert(format!("{}:{a}", perm.ns));
-            }
-            None => {
-                set.insert(format!("{}:view", perm.ns));
-                set.insert(format!("{}:edit", perm.ns));
-            }
+        let mut keys: Vec<String> = match perm.action {
+            Some(a) => vec![format!("{}:{a}", perm.ns)],
+            None => vec![format!("{}:view", perm.ns), format!("{}:edit", perm.ns)],
+        };
+        if !is_admin {
+            keys.retain(|k| !EXPLICIT_ONLY_PERMS.contains(&k.as_str()));
         }
+        set.extend(keys);
     }
 
     let mut out: Vec<String> = set.into_iter().collect();
@@ -1494,6 +1535,35 @@ mod tests {
         assert_eq!(required_for("/auth/totp/setup"), Required::User);
         assert_eq!(required_for("/user/info"), Required::User);
         assert_eq!(required_for("/user/notices/read"), Required::User);
+    }
+
+    /// 镜像构建相关接口按「更长前缀覆盖」把角色下限放宽到普通用户，
+    /// 但容器 / 卷 / 网络 / Compose 仍须 admin：否则多用户面板里等于送人宿主机 root。
+    #[test]
+    fn image_build_paths_relax_to_user() {
+        assert_eq!(required_for("/docker/image/build"), Required::User);
+        assert_eq!(required_for("/docker/image/inspect"), Required::User);
+        assert_eq!(required_for("/docker/images"), Required::User);
+        assert_eq!(required_for("/docker/status"), Required::User);
+        // 落在 /docker 模块规则上：只有 admin
+        assert_eq!(required_for("/docker/containers"), Required::Admin);
+        assert_eq!(required_for("/docker/container/run"), Required::Admin);
+        assert_eq!(required_for("/docker/image/action"), Required::Admin);
+        assert_eq!(required_for("/docker/volumes"), Required::Admin);
+        assert_eq!(required_for("/docker/network/action"), Required::Admin);
+        assert_eq!(required_for("/docker/compose/action"), Required::Admin);
+    }
+
+    /// `docker:build` 需要显式勾选：内置角色初始化时不自动带上（admin 除外）。
+    #[test]
+    fn explicit_only_perms_are_not_default() {
+        assert!(default_permissions_for("admin").contains(&"docker:build".to_string()));
+        for role in ["user", "reseller", "demo"] {
+            assert!(
+                !default_permissions_for(role).contains(&"docker:build".to_string()),
+                "{role} 不该默认拥有 docker:build"
+            );
+        }
     }
 
     #[test]

@@ -223,3 +223,26 @@ export function getMyPrefs() {
 export function saveMyPrefs(data: NoticePrefs) {
   return http.post<ApiResponse<NoticePrefs>>('/user/prefs', data)
 }
+
+// ── 家目录备份 ────────────────────────────────────────────
+
+export interface HomeBackupData {
+  /** 后台任务 id，用 `/appstore/runs` 轮询成败 */
+  run_id: string
+  username: string
+  /** 产出压缩包路径：`{home}/backups/home_backup_<时间戳>.tar.gz` */
+  path: string
+  log: string
+}
+
+/**
+ * 把家目录打包进 `{home}/backups/`。
+ *
+ * 打包可能耗时很久，故只返回 run_id（任务在服务端后台跑），调用方轮询
+ * 运行记录判断成败；`username` 留空即备份当前登录用户自己。
+ */
+export function backupHome(username?: string) {
+  return http.post<ApiResponse<HomeBackupData>>('/system/user/backup-home', {
+    ...(username ? { username } : {}),
+  })
+}

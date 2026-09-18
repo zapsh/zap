@@ -11,8 +11,9 @@ pub mod frame;
 pub mod types;
 
 pub use types::{
-    AcmeChallengeEntry, HeaderSpec, LocationSpec, Message, Request, Response, UpstreamServer,
-    UpstreamSpec, linux_username, sanitize_site_name,
+    AcmeChallengeEntry, DockerBuildArg, HeaderSpec, LocationSpec, Message, Request, Response,
+    UpstreamServer, UpstreamSpec, docker_namespace, linux_username, normalize_image_tag,
+    sanitize_site_name, valid_image_ref,
 };
 
 /// base64 编码（文件内容传输用）。
