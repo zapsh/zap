@@ -37,7 +37,7 @@
 
       <el-table-column :label="t('docker.network.ipv6')" width="100">
         <template #default="{ row }">
-          <el-tag v-if="row.IPv6 === 'true'" size="small" type="success" effect="plain">IPv6</el-tag>
+          <el-tag v-if="row.IPv6" size="small" type="success" effect="plain">IPv6</el-tag>
           <span v-else>—</span>
         </template>
       </el-table-column>

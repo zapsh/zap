@@ -64,7 +64,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search } from '@/icons'
@@ -76,7 +76,7 @@ const emit = defineEmits<{ count: [number]; refresh: [] }>()
 const { t } = useI18n()
 
 /** 由父页面注入的 Docker 环境信息，用于提示 compose 插件是否可用 */
-const env = inject<{ value: DockerEnvStatus | null }>('docker-env', { value: null })
+const env = inject<Ref<DockerEnvStatus | null>>('docker-env', ref(null))
 
 const loading = ref(false)
 const rows = ref<DockerComposeProject[]>([])

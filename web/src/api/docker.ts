@@ -1,10 +1,10 @@
 import { http } from '@/utils/request'
 
 // ── 数据模型 ─────────────────────────────────────────────
-// 以下字段直接来自 `docker ... --format '{{json .}}'` 输出，首字母大写是 docker 的规范，
-// 后端原样透传（避免二次映射导致版本兼容问题）。
+// 后端走 Docker Engine API，字段名沿用 docker CLI 的大写风格（前端已按此绑定）。
+// 标 `?` 的字段取决于 API 版本 / 查询参数，可能缺席，UI 上不做强依赖。
 
-/** 容器行（`docker container ls`） */
+/** 容器行 */
 export interface DockerContainer {
   ID: string
   Image: string
@@ -13,54 +13,57 @@ export interface DockerContainer {
   Status: string
   Ports: string
   CreatedAt: string
-  RunningFor: string
-  Size: string
-  Labels: string
+  RunningFor?: string
+  Size?: string
+  Labels?: string
   /** 后端从 compose label 解析出的项目名称（可能为空串） */
   project: string
 }
 
-/** 资源快照行（`docker stats --no-stream`） */
+/** 资源快照行 */
 export interface DockerStat {
-  ID: string
+  ID?: string
   Name: string
   CPUPerc: string
   MemUsage: string
   MemPerc: string
-  NetIO: string
-  BlockIO: string
-  PIDs: string
+  NetIO?: string
+  BlockIO?: string
+  PIDs?: string
 }
 
-/** 镜像行（`docker image ls`） */
+/** 镜像行 */
 export interface DockerImage {
   ID: string
   Repository: string
   Tag: string
-  Digest: string
+  Digest?: string
   Size: string
   CreatedAt: string
-  CreatedSince: string
+  CreatedSince?: string
   Containers: string
 }
 
-/** 数据卷行（`docker volume ls`） */
+/** 数据卷行 */
 export interface DockerVolume {
   Name: string
   Driver: string
   Mountpoint: string
   Scope: string
-  Labels: string
+  Labels?: string
+  CreatedAt?: string
 }
 
-/** 网络行（`docker network ls`） */
+/** 网络行 */
 export interface DockerNetwork {
   ID: string
   Name: string
   Driver: string
   Scope: string
-  IPv6: string
-  Internal: string
+  /** Engine API 直接给布尔值 */
+  IPv6: boolean
+  Internal?: boolean
+  CreatedAt?: string
 }
 
 /** Compose 项目（`docker compose ls`） */
@@ -177,3 +180,13 @@ export function listComposeProjects() {
 export function composeAction(project: string, action: string) {
   return http.post<Api<DockerActionResult>>('/docker/compose/action', { project, action })
 }
+
+// ── 容器终端（WebSocket）─────────────────────────────────
+
+/**
+ * 后端白名单内的 shell（与 zapd 的 `ALLOWED_SHELLS` 一致）。
+ * 传别的后端直接 400——容器里跑什么解释器不能被前端随意指定。
+ */
+export const DOCKER_SHELLS = ['sh', 'bash', 'ash', 'zsh'] as const
+
+export type DockerShell = (typeof DOCKER_SHELLS)[number]

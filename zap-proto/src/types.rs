@@ -876,6 +876,20 @@ pub enum Request {
     /// 项目配置文件从 `compose ls` 结果中反查，避免前端直接传任意路径。
     #[serde(rename = "docker.compose_action")]
     DockerComposeAction { project: String, action: String },
+    /// 容器内交互式终端（`docker exec -it` 的等价物）。
+    ///
+    /// 这是**长会话**：stdin 需要持续输入、stdout 需要增量回传，
+    /// 因此不走普通 `Request` 的一问一答，而是由 `Message::StreamOpen` 承载。
+    /// `cmd` 为空时退回 `sh`。
+    #[serde(rename = "docker.container_exec")]
+    DockerContainerExec {
+        id: String,
+        cmd: Vec<String>,
+        /// 容器内执行用户（`user[:group]`），为空用镜像默认用户
+        user: Option<String>,
+        cols: u16,
+        rows: u16,
+    },
 }
 
 /// `zapexec` -> `zapd` 的响应。
@@ -924,6 +938,27 @@ pub enum Message {
     Request(Box<Request>),
     /// server -> client：响应
     Response(Box<Response>),
+    // ── 流式会话（容器 exec 终端）─────────────────────────
+    //
+    // 一问一答的 `Request` / `Response` 承载不了交互式终端：stdin 要持续输入、
+    // stdout 要增量回传。这里复用**同一条已认证的 Unix 连接**跑会话，
+    // 由 `id` 区分（理论上可并发多路，目前 exec 一路一连接）。
+    /// client -> server：开启会话
+    StreamOpen { id: String, req: Box<Request> },
+    /// client -> server：会话输入（**base64** 编码的字节，JSON 无法直接承载二进制）
+    StreamIn { id: String, data: String },
+    /// client -> server：TTY 窗口尺寸变更
+    StreamResize { id: String, cols: u16, rows: u16 },
+    /// client -> server：关闭会话（关闭 stdin，等待命令退出）
+    StreamClose { id: String },
+    /// server -> client：会话就绪（可以开始收发数据）
+    StreamReady { id: String },
+    /// server -> client：会话输出（base64）
+    StreamOut { id: String, data: String },
+    /// server -> client：会话正常结束；`code` 为容器内命令退出码
+    StreamEnd { id: String, code: i32 },
+    /// server -> client：会话异常结束（容器不存在 / 未运行 / 无该 shell …）
+    StreamError { id: String, message: String },
 }
 
 /// 站点/目录名安全规范化（zapd 与 zapexec 共用）：

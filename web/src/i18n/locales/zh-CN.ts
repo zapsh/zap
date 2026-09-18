@@ -2322,6 +2322,18 @@ export default {
       copy: '复制 JSON',
       copied: '已复制到剪贴板',
     },
+    exec: {
+      title: '容器终端',
+      shell: 'Shell',
+      connecting: '正在连接容器…',
+      connected: '已连接',
+      closed: '会话已结束',
+      reconnect: '重连',
+      exit: '命令已退出（退出码 {code}）',
+      error: '连接异常：{message}',
+      openFailed: '无法建立终端连接',
+      needRunning: '只有运行中的容器才能打开终端',
+    },
     image: {
       name: '镜像',
       tag: '标签',

@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use tokio::net::UnixStream;
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 use crate::zap::ZapError;
 use zap_proto::{
@@ -83,6 +84,22 @@ impl ExecClient {
             _ => Err(ZapError::Error("zapexec 协议错误".to_string())),
         }
     }
+
+    /// 拆成读写两半：流式会话（容器 exec 终端）要一边收服务端帧、一边发 stdin，
+    /// 由调用方自己调度（例如 axum WebSocket 的双向转发）。
+    pub fn into_parts(self) -> (OwnedReadHalf, OwnedWriteHalf) {
+        (self.rd, self.wr)
+    }
+}
+
+/// 在已认证连接上发送一帧（流式会话用）。
+pub async fn send(wr: &mut OwnedWriteHalf, msg: &Message) -> Result<(), ZapError> {
+    frame::send(wr, msg).await.map_err(io_err)
+}
+
+/// 从已认证连接读取一帧（流式会话用）。
+pub async fn recv(rd: &mut OwnedReadHalf) -> Result<Message, ZapError> {
+    frame::recv(rd).await.map_err(io_err)
 }
 
 fn io_err(e: std::io::Error) -> ZapError {

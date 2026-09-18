@@ -3,6 +3,7 @@ mod appstore;
 mod cred;
 mod cron;
 mod docker;
+mod docker_exec;
 mod env;
 mod file;
 mod firewall;
@@ -24,8 +25,13 @@ mod user;
 mod webconf;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use tokio::net::unix::OwnedWriteHalf;
+use tokio::sync::{Mutex, mpsc};
 use zap_proto::{Request, Response};
+
+use crate::stream::StreamSink;
 
 /// 软件安装根目录：第三方软件本体安装到此处（与 zap 面板数据解耦）。
 /// 默认 `/usr/local/apps`；可用环境变量 `ZAP_APPS_DIR` 覆盖
@@ -416,6 +422,40 @@ pub async fn dispatch(req: Request) -> Response {
         Request::DockerComposeList => docker::compose_list().await,
         Request::DockerComposeAction { project, action } => {
             docker::compose_action(&project, &action).await
+        }
+        // 交互式终端是长会话，只能走 `dispatch_stream`（StreamOpen），
+        // 一问一答的通道承载不了 stdin / stdout 双向流。
+        Request::DockerContainerExec { .. } => {
+            Response::err(-1, "容器终端请使用流式会话".to_string())
+        }
+    }
+}
+
+/// 开启一个流式会话（当前只有容器 exec 终端）。
+///
+/// 会话任务直接往 `wr` 写输出帧，主循环负责把 stdin / resize 转发进来；
+/// `stdin_rx` / `resize_rx` 被丢弃即代表客户端断开，会话随之结束。
+pub async fn dispatch_stream(
+    id: String,
+    req: Request,
+    stdin_rx: mpsc::Receiver<Vec<u8>>,
+    resize_rx: mpsc::Receiver<(u16, u16)>,
+    wr: Arc<Mutex<OwnedWriteHalf>>,
+) {
+    match req {
+        Request::DockerContainerExec {
+            id: container,
+            cmd,
+            user,
+            cols,
+            rows,
+        } => {
+            let sink = StreamSink::new(&id, wr);
+            docker_exec::run(container, cmd, user, cols, rows, stdin_rx, resize_rx, sink).await;
+        }
+        other => {
+            let sink = StreamSink::new(&id, wr);
+            sink.error(format!("该请求不支持流式会话: {other:?}")).await;
         }
     }
 }

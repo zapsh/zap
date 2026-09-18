@@ -1,11 +1,15 @@
+use std::collections::HashMap;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use std::sync::Arc;
 
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, info, warn};
 
 use zap_proto::{auth, frame, types::Message};
 
+use crate::stream::decode_input;
 use crate::verbs;
 
 #[derive(Clone, Copy, Debug)]
@@ -89,21 +93,62 @@ async fn handle_conn(stream: UnixStream, secret: &[u8], expected_uid: u32) -> st
     }
     frame::send(&mut wr, &Message::Welcome).await?;
 
-    // 3) 请求/响应循环
+    // 3) 消息循环
     //
-    // 客户端（zapd 的 `zapexec::call`、zapctl）是"单请求-断开"模型：
-    // 完成一次握手与一个请求后即关闭连接，因此读到 EOF 是预期的正常结束。
+    // 两种负载共用同一条已认证连接：
+    // - `Request` / `Response`：一问一答（zapd 的 `zapexec::call`、zapctl），
+    //   其客户端是"单请求-断开"模型，读到 EOF 是预期的正常结束。
+    // - `StreamOpen` …：长会话（容器 exec 终端）。stdin / resize 由本循环转发给
+    //   会话任务，stdout 由会话任务直接写回同一条连接，因此写端需要共享。
+    let wr = Arc::new(Mutex::new(wr));
+    let mut streams: HashMap<String, SessionHandle> = HashMap::new();
+
     loop {
         match frame::recv(&mut rd).await {
             Ok(Message::Request(req)) => {
                 let resp = verbs::dispatch(*req).await;
-                if frame::send(&mut wr, &Message::Response(Box::new(resp)))
+                let mut w = wr.lock().await;
+                if frame::send(&mut *w, &Message::Response(Box::new(resp)))
                     .await
                     .is_err()
                 {
                     break;
                 }
             }
+            Ok(Message::StreamOpen { id, req }) => {
+                let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>(64);
+                let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>(8);
+                streams.insert(
+                    id.clone(),
+                    SessionHandle {
+                        stdin_tx,
+                        resize_tx,
+                    },
+                );
+                let wr = wr.clone();
+                tokio::spawn(async move {
+                    verbs::dispatch_stream(id, *req, stdin_rx, resize_rx, wr).await;
+                });
+            }
+            // 终端按键：base64 承载二进制
+            Ok(Message::StreamIn { id, data }) => {
+                if let Some(h) = streams.get(&id)
+                    && h.stdin_tx.send(decode_input(&data)).await.is_err()
+                {
+                    // 会话已结束（任务退出），清掉残留 handle
+                    streams.remove(&id);
+                }
+            }
+            Ok(Message::StreamResize { id, cols, rows }) => {
+                if let Some(h) = streams.get(&id) {
+                    let _ = h.resize_tx.send((cols, rows)).await;
+                }
+            }
+            Ok(Message::StreamClose { id }) => {
+                // 丢弃 handle 即关闭 stdin 通道，会话任务随后收尾并结束 exec
+                streams.remove(&id);
+            }
+            // 其余帧（Response / StreamOut / …）不该由客户端发来
             Ok(_) => break,
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 // 对端正常断开，不属于错误，静默结束连接
@@ -115,7 +160,16 @@ async fn handle_conn(stream: UnixStream, secret: &[u8], expected_uid: u32) -> st
             }
         }
     }
+
+    // 连接断开：丢弃全部 handle → 会话任务的 stdin 通道关闭 → exec 结束，不会遗留孤儿进程
+    drop(streams);
     Ok(())
+}
+
+/// 一个活跃流式会话的输入侧（stdin / resize 由消息循环转发）。
+struct SessionHandle {
+    stdin_tx: mpsc::Sender<Vec<u8>>,
+    resize_tx: mpsc::Sender<(u16, u16)>,
 }
 
 fn peer_uid(fd: std::os::unix::io::RawFd) -> Option<u32> {

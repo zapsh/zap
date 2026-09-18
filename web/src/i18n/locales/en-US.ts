@@ -2338,6 +2338,18 @@ const enUS: Messages = {
       copy: 'Copy JSON',
       copied: 'Copied to clipboard',
     },
+    exec: {
+      title: 'Container terminal',
+      shell: 'Shell',
+      connecting: 'Connecting to container…',
+      connected: 'Connected',
+      closed: 'Session closed',
+      reconnect: 'Reconnect',
+      exit: 'Command exited (code {code})',
+      error: 'Connection error: {message}',
+      openFailed: 'Cannot open terminal connection',
+      needRunning: 'Only running containers can open a terminal',
+    },
     image: {
       name: 'Image',
       tag: 'Tag',

@@ -1,85 +1,138 @@
 //! Docker 容器管理动词（面板「容器」页面的执行后端）。
 //!
-//! 与其余动词一致：**只提供白名单子命令**，不接受任意 shell 片段。
-//! 每个动作显式枚举 docker 子命令与参数，容器 / 镜像 id 仅作为被操作对象传入，
-//! 不参与命令构造。
+//! 走 **Docker Engine API**（[`bollard`]）而不是 `docker` CLI：
+//! - 不要求宿主机安装 docker 客户端，只要 daemon 与其 socket 可达（zapexec 以 root 运行）
+//! - 结构化数据直接来自 Engine API，不解析 `--format` 文本，不受 CLI 版本/列宽差异影响
+//! - exec 终端能拿到真正的双向流（见 [`crate::verbs::docker_exec`]）
+//! - 依旧是白名单动作：容器 / 镜像 id 只作为**被操作对象**传入，不参与命令构造
 //!
-//! 数据一律通过 `docker ... --format json`（或 `--format {{json .}}`）取结构化输出，
-//! 不解析人类可读表格，避免列宽变化、版本差异导致字段错位。
+//! 例外：`docker compose` 是 CLI 插件，Engine API 没有对应端点，
+//! 因此 compose 段仍调用 CLI，且只调用固定子命令（见文件末尾）。
 
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use bollard::API_DEFAULT_VERSION;
+use bollard::Docker;
+use bollard::container::LogOutput;
+use bollard::errors::Error as DockerError;
+use bollard::models::{NetworkCreateRequest, VolumeCreateRequest};
+use bollard::query_parameters::{
+    CreateImageOptions, KillContainerOptions, ListContainersOptions, ListImagesOptions,
+    ListNetworksOptions, ListVolumesOptions, LogsOptions, PruneImagesOptions, PruneVolumesOptions,
+    RemoveContainerOptions, RemoveImageOptions, RemoveVolumeOptions, RestartContainerOptions,
+    StatsOptions, StopContainerOptions,
+};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::process::Command;
+use tokio::time::timeout;
 use zap_proto::Response;
 
-/// 常规查询命令超时（列表 / inspect / 日志）
-const SHORT_TIMEOUT: Duration = Duration::from_secs(20);
-/// 常规写动作超时（启停 / 删除 / 创建）
-const ACTION_TIMEOUT: Duration = Duration::from_secs(60);
-/// 耗时动作超时（镜像拉取、compose up/pull）
-const LONG_TIMEOUT: Duration = Duration::from_secs(600);
-
-/// 构造一个清空环境、仅带安全 PATH 的 docker 命令。
-///
-/// 不继承面板进程的环境变量（其中可能含业务配置项），且 docker CLI 不依赖 HOME。
-fn docker_cmd(args: &[&str]) -> Command {
-    let mut cmd = Command::new("docker");
-    cmd.args(args).kill_on_drop(true).env_clear().env(
-        "PATH",
-        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    );
-    cmd
-}
-
-/// 执行 docker 子命令，返回 `(是否成功, stdout, stderr)`。
-///
-/// 超时与「docker 不存在」统一收敛成 `Err`，由上层决定是返回 0 还是错误码。
-async fn run(args: &[&str], timeout: Duration) -> Result<(bool, String, String), String> {
-    let out = tokio::time::timeout(timeout, docker_cmd(args).output())
-        .await
-        .map_err(|_| "命令执行超时".to_string())?;
-
-    let out = match out {
-        Ok(o) => o,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err("未检测到 docker 命令，请先安装 Docker".to_string());
-        }
-        Err(e) => return Err(format!("命令执行失败: {e}")),
+/// 把日志 / exec 的输出帧统一取出字节（三种变体都是同一载荷）。
+pub fn log_bytes(chunk: LogOutput) -> Vec<u8> {
+    let (LogOutput::StdOut { message }
+    | LogOutput::StdErr { message }
+    | LogOutput::Console { message }) = chunk
+    else {
+        return Vec::new();
     };
-
-    Ok((
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
-    ))
+    message.to_vec()
 }
 
-/// 逐行 JSON（`{{json .}}`）输出解析。
-fn json_lines(raw: &str) -> Result<Vec<Value>, String> {
-    let mut items = Vec::new();
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Value>(line) {
-            Ok(v) => items.push(v),
-            Err(e) => return Err(format!("解析 docker 输出失败: {e}")),
-        }
+/// 默认 daemon socket；可用 `DOCKER_HOST` 覆盖（`unix://` / `tcp://`）。
+const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
+/// 查询类调用超时
+const CALL_TIMEOUT: Duration = Duration::from_secs(20);
+/// 写动作超时（启停 / 删除 / 创建）
+const ACTION_TIMEOUT: Duration = Duration::from_secs(60);
+/// 耗时动作超时（镜像拉取）
+const LONG_TIMEOUT: Duration = Duration::from_secs(600);
+/// compose 动作超时（up / pull 需要拉镜像）
+const COMPOSE_TIMEOUT: Duration = Duration::from_secs(600);
+
+static DOCKER: OnceLock<Docker> = OnceLock::new();
+
+/// 取 daemon 客户端（进程内复用一个连接池）。
+fn docker() -> Result<&'static Docker, String> {
+    client()
+}
+
+/// 对外暴露的客户端（exec 会话复用到同一个连接池）。
+pub fn client() -> Result<&'static Docker, String> {
+    if let Some(d) = DOCKER.get() {
+        return Ok(d);
     }
-    Ok(items)
+    let host = std::env::var("DOCKER_HOST").unwrap_or_default();
+    let d = if let Some(path) = host.strip_prefix("unix://") {
+        Docker::connect_with_unix(path, CALL_TIMEOUT.as_secs(), API_DEFAULT_VERSION)
+    } else if !host.is_empty() {
+        Docker::connect_with_host(&host)
+    } else {
+        Docker::connect_with_unix(DEFAULT_SOCKET, CALL_TIMEOUT.as_secs(), API_DEFAULT_VERSION)
+    }
+    .map_err(|e| format!("连接 Docker daemon 失败: {e}"))?;
+    Ok(DOCKER.get_or_init(|| d))
 }
 
-/// 从 docker 的 label 串（`k1=v1,k2=v2`）里取值。
-fn label_value(labels: &str, key: &str) -> Option<String> {
-    labels.split(',').find_map(|kv| {
-        let (k, v) = kv.split_once('=')?;
-        (k.trim() == key).then(|| v.to_string())
-    })
+/// daemon socket 路径（用于「是否已安装 / 可访问」探测）。
+fn socket_path() -> String {
+    let host = std::env::var("DOCKER_HOST").unwrap_or_default();
+    if let Some(p) = host.strip_prefix("unix://") {
+        return p.to_string();
+    }
+    DEFAULT_SOCKET.to_string()
 }
 
-/// 把列表接口变成 `Response`：`Ok(items)` → `{"items": [...]}`。
+/// 统一超时 + 错误文案：bollard 的错误里已带 daemon 给出的原始原因。
+async fn call<T, F>(dur: Duration, what: &str, fut: F) -> Result<T, String>
+where
+    F: Future<Output = Result<T, DockerError>>,
+{
+    match timeout(dur, fut).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(format!("{what}失败: {e}")),
+        Err(_) => Err(format!("{what}超时")),
+    }
+}
+
+/// 字节数转人类可读（与 `docker ls` 的观感保持一致）。
+fn human_size(n: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = n as f64;
+    if b >= KB * KB * KB {
+        format!("{:.2}GB", b / (KB * KB * KB))
+    } else if b >= KB * KB {
+        format!("{:.2}MB", b / (KB * KB))
+    } else if b >= KB {
+        format!("{:.2}KB", b / KB)
+    } else {
+        format!("{n}B")
+    }
+}
+
+/// unix 秒 → 本地时间字符串。
+fn fmt_time(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// 把任意 serde 值转成字符串（用于枚举字段，避免绑定具体模型类型）。
+fn as_text(v: &impl serde::Serialize) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|x| x.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// 列表响应：{"items": [...]}。
 fn list_response(result: Result<Vec<Value>, String>) -> Response {
     match result {
         Ok(items) => Response::ok("ok", Some(json!({ "items": items }))),
@@ -87,21 +140,701 @@ fn list_response(result: Result<Vec<Value>, String>) -> Response {
     }
 }
 
-/// 把 stdout / stderr 合并成的文本动作结果变成 `Response`。
-fn action_response(result: Result<(bool, String, String), String>) -> Response {
+/// 动作响应：{"output": ...}。
+fn action_response(result: Result<String, String>) -> Response {
     match result {
-        Ok((true, stdout, stderr)) => Response::ok(
-            "ok",
-            Some(json!({ "output": merge_output(&stdout, &stderr) })),
-        ),
-        Ok((false, stdout, stderr)) => {
-            Response::err(-1, trim_output(&merge_output(&stdout, &stderr)))
-        }
+        Ok(output) => Response::ok("ok", Some(json!({ "output": output }))),
         Err(e) => Response::err(-1, e),
     }
 }
 
-/// 合并输出优先看 stdout（成功信息），失败时通常只有 stderr。
+// ── 环境探测 ──────────────────────────────────────────────
+
+/// compose 插件是否可用（`docker compose version --short`）。
+///
+/// compose 是 CLI 插件，Engine API 没有等价端点，只能这样探测。
+async fn compose_available() -> bool {
+    let Ok(out) = timeout(
+        CALL_TIMEOUT,
+        docker_cmd(&["compose", "version", "--short"]).output(),
+    )
+    .await
+    else {
+        return false;
+    };
+    matches!(out, Ok(o) if o.status.success())
+}
+
+/// GET 环境状态：socket 是否可达、daemon 是否在跑、compose 插件是否可用。
+///
+/// 探测失败也是**正常返回**（`installed` / `daemon` = false），前端据此展示引导，
+/// 而不是弹一个看不懂的错误。
+pub async fn status() -> Response {
+    // socket 不存在基本等于「没装 Docker / 没启动」，先给出这个判断，
+    // 再尝试连一次拿到真实原因（权限被拒、daemon 未启动…）。
+    let installed = std::path::Path::new(&socket_path()).exists();
+
+    let version = match docker() {
+        Ok(d) => call(CALL_TIMEOUT, "读取 Docker 版本", d.version()).await,
+        Err(e) => Err(e),
+    };
+
+    match version {
+        Ok(v) => Response::ok(
+            "ok",
+            Some(json!({
+                "installed": true,
+                "daemon": true,
+                "version": v.version,
+                "api_version": v.api_version,
+                "compose": compose_available().await,
+                "error": "",
+            })),
+        ),
+        Err(e) => Response::ok(
+            "ok",
+            Some(json!({
+                "installed": installed,
+                "daemon": false,
+                "version": "",
+                "api_version": "",
+                "compose": false,
+                "error": e,
+            })),
+        ),
+    }
+}
+
+// ── 容器 ─────────────────────────────────────────────────
+
+/// 端口映射的文本形式（`0.0.0.0:8080->80/tcp`），无宿主机端口时只显示容器端口。
+fn ports_text(ports: &Option<Vec<bollard::models::PortSummary>>) -> String {
+    let Some(ports) = ports else {
+        return String::new();
+    };
+    ports
+        .iter()
+        .map(|p| {
+            let proto = as_text(&p.typ);
+            match (p.ip.as_deref().filter(|s| !s.is_empty()), p.public_port) {
+                (Some(ip), Some(public)) => {
+                    format!("{ip}:{public}->{}/{}", p.private_port, proto)
+                }
+                (None, Some(public)) => format!("{public}->{}/{}", p.private_port, proto),
+                _ => format!("{}/{}", p.private_port, proto),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// 容器列表（`all = true` 含已停止的）。
+///
+/// 额外补 `project` 字段：从 compose label 取所属项目，供前端分组筛选。
+pub async fn containers(all: bool) -> Response {
+    let result = async {
+        let d = docker()?;
+        let list = call(
+            CALL_TIMEOUT,
+            "查询容器列表",
+            d.list_containers(Some(ListContainersOptions {
+                all,
+                ..Default::default()
+            })),
+        )
+        .await?;
+
+        Ok(list
+            .iter()
+            .map(|c| {
+                // 名称带前导 `/`（历史原因），去掉后前端直接展示
+                let names: Vec<String> = c
+                    .names
+                    .clone()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|n| n.trim_start_matches('/').to_string())
+                    .collect();
+                let project = c
+                    .labels
+                    .as_ref()
+                    .and_then(|m| m.get("com.docker.compose.project"))
+                    .cloned()
+                    .unwrap_or_default();
+                json!({
+                    "ID": c.id,
+                    "Names": names.join(","),
+                    "Image": c.image,
+                    "State": as_text(&c.state),
+                    "Status": c.status,
+                    "Ports": ports_text(&c.ports),
+                    "CreatedAt": c.created.map(fmt_time).unwrap_or_default(),
+                    "project": project,
+                })
+            })
+            .collect::<Vec<Value>>())
+    }
+    .await;
+    list_response(result)
+}
+
+/// 单个容器动作（白名单）。
+async fn container_one(id: &str, action: &str) -> Result<String, String> {
+    let d = docker()?;
+    match action {
+        "start" => call(ACTION_TIMEOUT, "启动容器", d.start_container(id, None)).await,
+        // 先发 SIGTERM 等 10 秒，超时才由 daemon 强杀；`signal` 留空即走默认行为
+        "stop" => {
+            call(
+                ACTION_TIMEOUT,
+                "停止容器",
+                d.stop_container(
+                    id,
+                    Some(StopContainerOptions {
+                        t: Some(10),
+                        ..Default::default()
+                    }),
+                ),
+            )
+            .await
+        }
+        "restart" => {
+            call(
+                ACTION_TIMEOUT,
+                "重启容器",
+                d.restart_container(
+                    id,
+                    Some(RestartContainerOptions {
+                        t: Some(10),
+                        ..Default::default()
+                    }),
+                ),
+            )
+            .await
+        }
+        "pause" => call(ACTION_TIMEOUT, "暂停容器", d.pause_container(id)).await,
+        "unpause" => call(ACTION_TIMEOUT, "恢复容器", d.unpause_container(id)).await,
+        "kill" => {
+            call(
+                ACTION_TIMEOUT,
+                "强制停止容器",
+                d.kill_container(
+                    id,
+                    Some(KillContainerOptions {
+                        signal: "SIGKILL".to_string(),
+                    }),
+                ),
+            )
+            .await
+        }
+        // 面板上删除的多半是运行中的容器，force 省掉「先停再删」两步
+        "remove" => {
+            call(
+                ACTION_TIMEOUT,
+                "删除容器",
+                d.remove_container(
+                    id,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                ),
+            )
+            .await
+        }
+        _ => Err(format!("不支持的容器操作: {action}")),
+    }?;
+    Ok(id.to_string())
+}
+
+/// 批量容器动作：逐个执行，返回失败明细（一个失败不影响其余）。
+pub async fn container_action(ids: &[String], action: &str) -> Response {
+    let mut failed: Vec<Value> = Vec::new();
+    let mut succeeded = 0usize;
+
+    for id in ids {
+        match container_one(id, action).await {
+            Ok(_) => succeeded += 1,
+            Err(e) => failed.push(json!({ "id": id, "error": e })),
+        }
+    }
+
+    Response::ok(
+        "ok",
+        Some(json!({ "succeeded": succeeded, "failed": failed })),
+    )
+}
+
+/// 容器详情：透传 `inspect` 的原始 JSON 对象。
+pub async fn container_inspect(id: &str) -> Response {
+    let result = async {
+        let d = docker()?;
+        let info = call(CALL_TIMEOUT, "查询容器详情", d.inspect_container(id, None)).await?;
+        serde_json::to_value(info).map_err(|e| format!("序列化容器详情失败: {e}"))
+    }
+    .await;
+    match result {
+        Ok(v) => Response::ok("ok", Some(v)),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+/// 把 `--since` 的相对时间（10m / 1h / 24h）换算成 unix 秒。
+fn since_to_unix(since: &str) -> i32 {
+    let s = since.trim();
+    let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+    let Ok(n) = num.parse::<i64>() else {
+        return 0;
+    };
+    let secs = match unit {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        "d" => n * 86400,
+        _ => n * 60, // 无单位按分钟处理，与 docker CLI 的默认行为一致
+    };
+    (chrono::Utc::now().timestamp() - secs) as i32
+}
+
+/// 容器日志尾部（一次性拉取；前端按需轮询实现跟随）。
+pub async fn container_logs(
+    id: &str,
+    tail: Option<u32>,
+    since: Option<&str>,
+    timestamps: bool,
+) -> Response {
+    let result = async {
+        let d = docker()?;
+        let opts = LogsOptions {
+            stdout: true,
+            stderr: true,
+            timestamps,
+            tail: tail.unwrap_or(200).to_string(),
+            since: since.map(since_to_unix).unwrap_or(0),
+            ..Default::default()
+        };
+        let mut stream = d.logs(id, Some(opts));
+        let mut buf: Vec<u8> = Vec::new();
+        while let Some(item) = timeout(CALL_TIMEOUT, stream.next())
+            .await
+            .map_err(|_| "读取容器日志超时".to_string())?
+        {
+            // 只要进程还在输出就续等，超时按「单帧等待」计
+            match item {
+                Ok(chunk) => buf.extend_from_slice(&log_bytes(chunk)),
+                Err(e) => return Err(format!("读取容器日志失败: {e}")),
+            }
+        }
+        Ok(String::from_utf8_lossy(&buf).to_string())
+    }
+    .await;
+    match result {
+        Ok(log) => Response::ok("ok", Some(json!({ "log": log }))),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+/// 实时资源快照：对每个运行中的容器取一次 `stats`（等价 `docker stats --no-stream`）。
+///
+/// CPU 百分比按「自容器启动以来的累计占用」计算——与 `docker stats --no-stream`
+/// 的首帧口径一致（CLI 也是拿不到上一次采样，只能算累计值）。
+pub async fn stats() -> Response {
+    let result = async {
+        let d = docker()?;
+        let running = call(
+            CALL_TIMEOUT,
+            "查询运行中的容器",
+            d.list_containers(Some(ListContainersOptions::default())),
+        )
+        .await?;
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for c in running {
+            let id = match c.id.clone() {
+                Some(id) => id,
+                None => continue,
+            };
+            let name = c
+                .names
+                .clone()
+                .unwrap_or_default()
+                .first()
+                .map(|n| n.trim_start_matches('/').to_string())
+                .unwrap_or_else(|| id.clone());
+            let d = d.clone();
+            tasks.spawn(async move {
+                let mut stream = d.stats(
+                    &id,
+                    Some(StatsOptions {
+                        stream: false,
+                        one_shot: false,
+                    }),
+                );
+                let one = stream.next().await;
+                (name, one)
+            });
+        }
+
+        let mut items: Vec<Value> = Vec::new();
+        while let Some(res) = tasks.join_next().await {
+            let Ok((name, one)) = res else { continue };
+            let Some(Ok(s)) = one else { continue };
+            // 走 JSON 取值：不绑定具体模型字段，API 版本差异不会编译失败
+            let v = serde_json::to_value(&s).unwrap_or_default();
+            let cpu = {
+                let total = v["cpu_stats"]["cpu_usage"]["total_usage"]
+                    .as_u64()
+                    .unwrap_or(0);
+                let system = v["cpu_stats"]["system_cpu_usage"].as_u64().unwrap_or(0);
+                let cpus = v["cpu_stats"]["online_cpus"].as_u64().unwrap_or(1).max(1);
+                if system > 0 {
+                    total as f64 / system as f64 * cpus as f64 * 100.0
+                } else {
+                    0.0
+                }
+            };
+            let mem = v["memory_stats"]["usage"].as_u64().unwrap_or(0);
+            let limit = v["memory_stats"]["limit"].as_u64().unwrap_or(0);
+            let mem_perc = if limit > 0 {
+                mem as f64 / limit as f64 * 100.0
+            } else {
+                0.0
+            };
+            items.push(json!({
+                "Name": name,
+                "CPUPerc": format!("{cpu:.2}%"),
+                "MemUsage": format!("{} / {}", human_size(mem), human_size(limit)),
+                "MemPerc": format!("{mem_perc:.2}%"),
+            }));
+        }
+        Ok(items)
+    }
+    .await;
+    list_response(result)
+}
+
+// ── 镜像 ─────────────────────────────────────────────────
+
+/// 镜像列表（含悬空镜像）。
+pub async fn images() -> Response {
+    let result = async {
+        let d = docker()?;
+        let list = call(
+            CALL_TIMEOUT,
+            "查询镜像列表",
+            d.list_images(Some(ListImagesOptions {
+                all: true,
+                ..Default::default()
+            })),
+        )
+        .await?;
+        // API 不直接给「被多少容器使用」，用容器列表统计
+        let containers = call(
+            CALL_TIMEOUT,
+            "查询容器列表",
+            d.list_containers(Some(ListContainersOptions {
+                all: true,
+                ..Default::default()
+            })),
+        )
+        .await?;
+
+        Ok(list
+            .iter()
+            .map(|img| {
+                let short = img.id.strip_prefix("sha256:").unwrap_or(img.id.as_str());
+                let (repo, tag) = img
+                    .repo_tags
+                    .iter()
+                    .find(|t| !t.starts_with("<none>"))
+                    .and_then(|t| t.rsplit_once(':'))
+                    .map(|(r, t)| (r.to_string(), t.to_string()))
+                    .unwrap_or_else(|| ("<none>".to_string(), "<none>".to_string()));
+                let in_use = containers
+                    .iter()
+                    .filter(|c| {
+                        c.image_id.as_deref() == Some(img.id.as_str())
+                            || c.image
+                                .as_deref()
+                                .map(|s| {
+                                    s == short
+                                        || s.strip_prefix("sha256:")
+                                            .unwrap_or(s)
+                                            .starts_with(&short[..short.len().min(12)])
+                                })
+                                .unwrap_or(false)
+                    })
+                    .count();
+                json!({
+                    "ID": img.id,
+                    "Repository": repo,
+                    "Tag": tag,
+                    "Size": human_size(img.size as u64),
+                    "CreatedAt": fmt_time(img.created),
+                    "Containers": in_use.to_string(),
+                })
+            })
+            .collect::<Vec<Value>>())
+    }
+    .await;
+    list_response(result)
+}
+
+/// 镜像动作：pull（引用）/ remove（镜像 ID 或引用）/ prune（清理悬空镜像）。
+pub async fn image_action(id: &str, action: &str) -> Response {
+    let result = async {
+        let d = docker()?;
+        match action {
+            "pull" => {
+                let (from_image, tag) = match id.rsplit_once(':') {
+                    // 注意区分 `nginx:latest` 与 `host:5000/nginx`（后者带端口，不是 tag）
+                    Some((img, t)) if !t.contains('/') => (img.to_string(), t.to_string()),
+                    _ => (id.to_string(), "latest".to_string()),
+                };
+                let mut stream = d.create_image(
+                    Some(CreateImageOptions {
+                        from_image: Some(from_image),
+                        tag: Some(tag),
+                        ..Default::default()
+                    }),
+                    None,
+                    None,
+                );
+                let mut last = String::new();
+                while let Some(item) = timeout(LONG_TIMEOUT, stream.next())
+                    .await
+                    .map_err(|_| "拉取镜像超时".to_string())?
+                {
+                    match item {
+                        Ok(info) => {
+                            if let Some(status) = info.status {
+                                last = status;
+                            }
+                        }
+                        Err(e) => return Err(format!("拉取镜像失败: {e}")),
+                    }
+                }
+                Ok(last)
+            }
+            "remove" => {
+                call(
+                    ACTION_TIMEOUT,
+                    "删除镜像",
+                    d.remove_image(
+                        id,
+                        Some(RemoveImageOptions {
+                            force: true,
+                            ..Default::default()
+                        }),
+                        None,
+                    ),
+                )
+                .await?;
+                Ok(String::new())
+            }
+            "prune" => {
+                let mut filters = HashMap::new();
+                filters.insert("dangling".to_string(), vec!["true".to_string()]);
+                let res = call(
+                    ACTION_TIMEOUT,
+                    "清理悬空镜像",
+                    d.prune_images(Some(PruneImagesOptions {
+                        filters: Some(filters),
+                    })),
+                )
+                .await?;
+                let deleted = res.images_deleted.map(|v| v.len()).unwrap_or(0);
+                Ok(format!(
+                    "已清理 {deleted} 个悬空镜像，释放 {}",
+                    human_size(res.space_reclaimed.unwrap_or(0) as u64)
+                ))
+            }
+            _ => Err(format!("不支持的镜像操作: {action}")),
+        }
+    }
+    .await;
+    action_response(result)
+}
+
+// ── 数据卷 ───────────────────────────────────────────────
+
+/// 数据卷列表。
+pub async fn volumes() -> Response {
+    let result = async {
+        let d = docker()?;
+        let resp = call(
+            CALL_TIMEOUT,
+            "查询数据卷列表",
+            d.list_volumes(Some(ListVolumesOptions::default())),
+        )
+        .await?;
+        Ok(resp
+            .volumes
+            .unwrap_or_default()
+            .iter()
+            .map(|v| {
+                json!({
+                    "Name": v.name,
+                    "Driver": v.driver,
+                    "Mountpoint": v.mountpoint,
+                    "Scope": as_text(&v.scope),
+                    "CreatedAt": v.created_at.as_ref().map(|t| t.to_string()).unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<Value>>())
+    }
+    .await;
+    list_response(result)
+}
+
+/// 数据卷动作：create / remove / prune（清理未使用的卷）。
+pub async fn volume_action(name: &str, action: &str) -> Response {
+    let result = async {
+        let d = docker()?;
+        match action {
+            "create" => {
+                let v = call(
+                    ACTION_TIMEOUT,
+                    "创建数据卷",
+                    d.create_volume(VolumeCreateRequest {
+                        name: Some(name.to_string()),
+                        ..Default::default()
+                    }),
+                )
+                .await?;
+                Ok(format!("已创建数据卷 {}", v.name))
+            }
+            "remove" => {
+                call(
+                    ACTION_TIMEOUT,
+                    "删除数据卷",
+                    d.remove_volume(name, None::<RemoveVolumeOptions>),
+                )
+                .await?;
+                Ok(String::new())
+            }
+            "prune" => {
+                let res = call(
+                    ACTION_TIMEOUT,
+                    "清理未使用数据卷",
+                    d.prune_volumes(None::<PruneVolumesOptions>),
+                )
+                .await?;
+                let deleted = res.volumes_deleted.map(|v| v.len()).unwrap_or(0);
+                Ok(format!(
+                    "已清理 {deleted} 个数据卷，释放 {}",
+                    human_size(res.space_reclaimed.unwrap_or(0) as u64)
+                ))
+            }
+            _ => Err(format!("不支持的数据卷操作: {action}")),
+        }
+    }
+    .await;
+    action_response(result)
+}
+
+// ── 网络 ─────────────────────────────────────────────────
+
+/// 网络列表。
+pub async fn networks() -> Response {
+    let result = async {
+        let d = docker()?;
+        let list = call(
+            CALL_TIMEOUT,
+            "查询网络列表",
+            d.list_networks(Some(ListNetworksOptions::default())),
+        )
+        .await?;
+        Ok(list
+            .iter()
+            .map(|n| {
+                json!({
+                    "Name": n.name,
+                    "ID": n.id,
+                    "Driver": n.driver,
+                    "Scope": n.scope,
+                    "IPv6": n.enable_ipv6.unwrap_or(false),
+                    "CreatedAt": n.created.as_ref().map(|t| t.to_string()).unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<Value>>())
+    }
+    .await;
+    list_response(result)
+}
+
+/// 网络动作：create（可指定 driver）/ remove / prune。
+pub async fn network_action(name: &str, action: &str, driver: Option<&str>) -> Response {
+    let result = async {
+        let d = docker()?;
+        match action {
+            "create" => {
+                let res = call(
+                    ACTION_TIMEOUT,
+                    "创建网络",
+                    d.create_network(NetworkCreateRequest {
+                        name: name.to_string(),
+                        driver: Some(
+                            driver
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or("bridge")
+                                .to_string(),
+                        ),
+                        ..Default::default()
+                    }),
+                )
+                .await?;
+                Ok(format!("已创建网络 {}", res.id))
+            }
+            "remove" => {
+                call(ACTION_TIMEOUT, "删除网络", d.remove_network(name)).await?;
+                Ok(String::new())
+            }
+            "prune" => {
+                let res = call(ACTION_TIMEOUT, "清理未使用网络", d.prune_networks(None)).await?;
+                let deleted = res.networks_deleted.map(|v| v.len()).unwrap_or(0);
+                Ok(format!("已清理 {deleted} 个网络"))
+            }
+            _ => Err(format!("不支持的网络操作: {action}")),
+        }
+    }
+    .await;
+    action_response(result)
+}
+
+// ── Compose（CLI 插件，Engine API 无对应端点）──────────────
+
+/// 构造一个清空环境、仅带安全 PATH 的 docker 命令。
+fn docker_cmd(args: &[&str]) -> Command {
+    let mut cmd = Command::new("docker");
+    // 清空环境：不受调用方 `DOCKER_*` / `PATH` 影响，避免被注入额外行为
+    cmd.args(args).kill_on_drop(true).env_clear().env(
+        "PATH",
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    );
+    cmd
+}
+
+/// 执行 compose 子命令，返回 `(是否成功, stdout, stderr)`。
+async fn run_compose(args: &[&str], dur: Duration) -> Result<(bool, String, String), String> {
+    let out = timeout(dur, docker_cmd(args).output())
+        .await
+        .map_err(|_| "命令执行超时".to_string())?;
+    let out = match out {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err("未检测到 docker 命令，请先安装 Docker".to_string());
+        }
+        Err(e) => return Err(format!("命令执行失败: {e}")),
+    };
+    Ok((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    ))
+}
+
 fn merge_output(stdout: &str, stderr: &str) -> String {
     let stdout = stdout.trim();
     let stderr = stderr.trim();
@@ -114,319 +847,33 @@ fn merge_output(stdout: &str, stderr: &str) -> String {
     }
 }
 
-fn trim_output(s: &str) -> String {
-    s.trim().to_string()
-}
-
-// ── 环境探测 ──────────────────────────────────────────────
-
-/// `docker --version` 的版本号；命令不存在时返回 Err。
-async fn cli_version() -> Result<String, String> {
-    let (ok, stdout, stderr) = run(&["--version"], SHORT_TIMEOUT).await?;
-    if !ok {
-        return Err(trim_output(&merge_output(&stdout, &stderr)));
-    }
-    Ok(stdout.trim().to_string())
-}
-
-/// compose 插件是否可用（`docker compose version`）。
-async fn compose_available() -> bool {
-    run(&["compose", "version", "--short"], SHORT_TIMEOUT)
-        .await
-        .is_ok_and(|(ok, _, _)| ok)
-}
-
-/// GET 环境状态：Docker 是否安装、守护进程是否在运行、compose 是否可用。
-///
-/// 探测失败也是**正常返回**（installed / daemon = false），前端据此展示引导，
-/// 而不是弹一个看不懂的错误。
-pub async fn status() -> Response {
-    let cli = cli_version().await;
-
-    let (installed, cli_version) = match cli {
-        Ok(v) => (true, v),
-        Err(e) => {
-            return Response::ok(
-                "ok",
-                Some(json!({
-                    "installed": false,
-                    "daemon": false,
-                    "version": "",
-                    "compose": false,
-                    "error": e,
-                })),
-            );
-        }
-    };
-
-    // server 版本拿不到 = daemon 没起来（典型报错：permission denied / connection refused）
-    let (daemon, server_version, error) = match run(
-        &["version", "--format", "{{.Server.Version}}"],
-        SHORT_TIMEOUT,
-    )
-    .await
-    {
-        Ok((true, stdout, _)) => (true, stdout.trim().to_string(), String::new()),
-        Ok((false, _, stderr)) => (false, String::new(), trim_output(&stderr)),
-        Err(e) => (false, String::new(), e),
-    };
-
-    Response::ok(
-        "ok",
-        Some(json!({
-            "installed": installed,
-            "daemon": daemon,
-            "version": if daemon { server_version } else { cli_version },
-            "compose": daemon && compose_available().await,
-            "error": error,
-        })),
-    )
-}
-
-// ── 容器 ─────────────────────────────────────────────────
-
-/// 容器列表（`docker container ls`，`all` 含已停止的）。
-///
-/// 额外补 `project` 字段：从 compose label 里取出所属项目，供前端分组筛选。
-pub async fn containers(all: bool) -> Response {
-    let mut args = vec!["container", "ls", "--no-trunc", "--format", "{{json .}}"];
-    if all {
-        args.insert(2, "--all");
-    }
-
-    match run(&args, SHORT_TIMEOUT).await {
-        Ok((true, stdout, _)) => match json_lines(&stdout) {
-            Ok(mut items) => {
-                for item in &mut items {
-                    let project = item
-                        .get("Labels")
-                        .and_then(|v| v.as_str())
-                        .and_then(|l| label_value(l, "com.docker.compose.project"))
-                        .unwrap_or_default();
-                    if let Some(obj) = item.as_object_mut() {
-                        obj.insert("project".to_string(), json!(project));
-                    }
-                }
-                list_response(Ok(items))
-            }
-            Err(e) => Response::err(-1, e),
-        },
+fn compose_response(result: Result<(bool, String, String), String>) -> Response {
+    match result {
+        Ok((true, stdout, stderr)) => Response::ok(
+            "ok",
+            Some(json!({ "output": merge_output(&stdout, &stderr) })),
+        ),
         Ok((false, stdout, stderr)) => {
-            Response::err(-1, trim_output(&merge_output(&stdout, &stderr)))
+            Response::err(-1, merge_output(&stdout, &stderr).trim().to_string())
         }
         Err(e) => Response::err(-1, e),
     }
 }
-
-/// 容器动作的docker 参数表：只接受白名单动作。
-fn container_args<'a>(action: &'a str, id: &'a str) -> Option<Vec<&'a str>> {
-    let args = match action {
-        "start" => vec!["container", "start", id],
-        "stop" => vec!["container", "stop", id],
-        "restart" => vec!["container", "restart", id],
-        "pause" => vec!["container", "pause", id],
-        "unpause" => vec!["container", "unpause", id],
-        "kill" => vec!["container", "kill", id],
-        // 面板上删除的多半是运行中的容器，-f 省掉「先停再删」两步
-        "remove" => vec!["container", "rm", "-f", id],
-        _ => return None,
-    };
-    Some(args)
-}
-
-/// 批量容器动作：逐个执行，返回失败明细（一个失败不影响其余）。
-pub async fn container_action(ids: &[String], action: &str) -> Response {
-    let mut failed: Vec<Value> = Vec::new();
-    let mut succeeded = 0usize;
-
-    for id in ids {
-        let Some(args) = container_args(action, id) else {
-            return Response::err(-1, format!("不支持的容器操作: {action}"));
-        };
-        match run(&args, ACTION_TIMEOUT).await {
-            Ok((true, _, _)) => succeeded += 1,
-            Ok((false, stdout, stderr)) => failed.push(json!({
-                "id": id,
-                "error": trim_output(&merge_output(&stdout, &stderr)),
-            })),
-            Err(e) => failed.push(json!({ "id": id, "error": e })),
-        }
-    }
-
-    Response::ok(
-        "ok",
-        Some(json!({ "succeeded": succeeded, "failed": failed })),
-    )
-}
-
-/// 容器详情（`docker container inspect`，透传第一个对象的原始 JSON）。
-pub async fn container_inspect(id: &str) -> Response {
-    match run(&["container", "inspect", id], SHORT_TIMEOUT).await {
-        Ok((true, stdout, _)) => match serde_json::from_str::<Vec<Value>>(&stdout) {
-            Ok(items) => match items.into_iter().next() {
-                Some(obj) => Response::ok("ok", Some(obj)),
-                None => Response::err(-1, "容器不存在".to_string()),
-            },
-            Err(e) => Response::err(-1, format!("解析 inspect 结果失败: {e}")),
-        },
-        Ok((false, stdout, stderr)) => {
-            Response::err(-1, trim_output(&merge_output(&stdout, &stderr)))
-        }
-        Err(e) => Response::err(-1, e),
-    }
-}
-
-/// 容器日志尾部：`docker container logs --tail N [--since T] [--timestamps] <id>`。
-pub async fn container_logs(
-    id: &str,
-    tail: Option<u32>,
-    since: Option<&str>,
-    timestamps: bool,
-) -> Response {
-    let tail_arg = tail.unwrap_or(200).to_string();
-    let mut args = vec!["container", "logs", "--tail", tail_arg.as_str()];
-    if let Some(s) = since
-        && !s.trim().is_empty()
-    {
-        args.push("--since");
-        args.push(s);
-    }
-    if timestamps {
-        args.push("--timestamps");
-    }
-    args.push(id);
-
-    match run(&args, SHORT_TIMEOUT).await {
-        // docker logs 把容器侧 stdout/stderr 都并到自身的 stdout/stderr 上，
-        // 成功与否都可能有内容，统一按文本回传。
-        Ok((_, stdout, stderr)) => {
-            Response::ok("ok", Some(json!({ "log": merge_output(&stdout, &stderr) })))
-        }
-        Err(e) => Response::err(-1, e),
-    }
-}
-
-/// 实时资源占用（`docker stats --no-stream`）。
-pub async fn stats() -> Response {
-    match run(
-        &[
-            "stats",
-            "--no-stream",
-            "--no-trunc",
-            "--format",
-            "{{json .}}",
-        ],
-        SHORT_TIMEOUT,
-    )
-    .await
-    {
-        Ok((true, stdout, _)) => list_response(json_lines(&stdout)),
-        Ok((false, stdout, stderr)) => {
-            Response::err(-1, trim_output(&merge_output(&stdout, &stderr)))
-        }
-        Err(e) => Response::err(-1, e),
-    }
-}
-
-// ── 镜像 ─────────────────────────────────────────────────
-
-/// 镜像列表（含悬空镜像）。
-pub async fn images() -> Response {
-    match run(
-        &["image", "ls", "--all", "--format", "{{json .}}"],
-        SHORT_TIMEOUT,
-    )
-    .await
-    {
-        Ok((true, stdout, _)) => list_response(json_lines(&stdout)),
-        Ok((false, stdout, stderr)) => {
-            Response::err(-1, trim_output(&merge_output(&stdout, &stderr)))
-        }
-        Err(e) => Response::err(-1, e),
-    }
-}
-
-/// 镜像动作：pull（拉取引用）/ remove（删除镜像）/ prune（清理悬空镜像）。
-pub async fn image_action(id: &str, action: &str) -> Response {
-    let result = match action {
-        "pull" => run(&["image", "pull", id], LONG_TIMEOUT).await,
-        "remove" => run(&["image", "rm", "-f", id], ACTION_TIMEOUT).await,
-        "prune" => run(&["image", "prune", "-f"], ACTION_TIMEOUT).await,
-        _ => return Response::err(-1, format!("不支持的镜像操作: {action}")),
-    };
-    action_response(result)
-}
-
-// ── 数据卷 ───────────────────────────────────────────────
-
-/// 数据卷列表。
-pub async fn volumes() -> Response {
-    match run(&["volume", "ls", "--format", "{{json .}}"], SHORT_TIMEOUT).await {
-        Ok((true, stdout, _)) => list_response(json_lines(&stdout)),
-        Ok((false, stdout, stderr)) => {
-            Response::err(-1, trim_output(&merge_output(&stdout, &stderr)))
-        }
-        Err(e) => Response::err(-1, e),
-    }
-}
-
-/// 数据卷动作：create / remove / prune（清理未使用的卷）。
-pub async fn volume_action(name: &str, action: &str) -> Response {
-    let result = match action {
-        "create" => run(&["volume", "create", name], ACTION_TIMEOUT).await,
-        "remove" => run(&["volume", "rm", "-f", name], ACTION_TIMEOUT).await,
-        "prune" => run(&["volume", "prune", "-f"], ACTION_TIMEOUT).await,
-        _ => return Response::err(-1, format!("不支持的数据卷操作: {action}")),
-    };
-    action_response(result)
-}
-
-// ── 网络 ─────────────────────────────────────────────────
-
-/// 网络列表。
-pub async fn networks() -> Response {
-    match run(&["network", "ls", "--format", "{{json .}}"], SHORT_TIMEOUT).await {
-        Ok((true, stdout, _)) => list_response(json_lines(&stdout)),
-        Ok((false, stdout, stderr)) => {
-            Response::err(-1, trim_output(&merge_output(&stdout, &stderr)))
-        }
-        Err(e) => Response::err(-1, e),
-    }
-}
-
-/// 网络动作：create（可指定 driver）/ remove / prune。
-pub async fn network_action(name: &str, action: &str, driver: Option<&str>) -> Response {
-    let result = match action {
-        "create" => match driver {
-            Some(d) if !d.trim().is_empty() => {
-                run(&["network", "create", "--driver", d, name], ACTION_TIMEOUT).await
-            }
-            _ => run(&["network", "create", name], ACTION_TIMEOUT).await,
-        },
-        "remove" => run(&["network", "rm", name], ACTION_TIMEOUT).await,
-        "prune" => run(&["network", "prune", "-f"], ACTION_TIMEOUT).await,
-        _ => return Response::err(-1, format!("不支持的网络操作: {action}")),
-    };
-    action_response(result)
-}
-
-// ── Compose ──────────────────────────────────────────────
 
 /// Compose 项目列表（`docker compose ls -a`）。
 pub async fn compose_list() -> Response {
-    match run(
+    match run_compose(
         &["compose", "ls", "--all", "--format", "json"],
-        SHORT_TIMEOUT,
+        CALL_TIMEOUT,
     )
     .await
     {
         Ok((true, stdout, _)) => match serde_json::from_str::<Vec<Value>>(stdout.trim()) {
             Ok(items) => list_response(Ok(items)),
-            // compose v1（`docker-compose`）不支持 `--format json`，给出可操作的提示
             Err(e) => Response::err(-1, format!("解析 compose 列表失败: {e}")),
         },
         Ok((false, stdout, stderr)) => {
-            Response::err(-1, trim_output(&merge_output(&stdout, &stderr)))
+            Response::err(-1, merge_output(&stdout, &stderr).trim().to_string())
         }
         Err(e) => Response::err(-1, e),
     }
@@ -437,13 +884,13 @@ pub async fn compose_list() -> Response {
 /// 只从 `compose ls` 的结果里反查，不接受前端传入任意路径：
 /// 否则就成了「指定任意文件启动容器」的提权口子。
 async fn compose_config_file(project: &str) -> Result<String, String> {
-    let (ok, stdout, stderr) = run(
+    let (ok, stdout, stderr) = run_compose(
         &["compose", "ls", "--all", "--format", "json"],
-        SHORT_TIMEOUT,
+        CALL_TIMEOUT,
     )
     .await?;
     if !ok {
-        return Err(trim_output(&merge_output(&stdout, &stderr)));
+        return Err(merge_output(&stdout, &stderr).trim().to_string());
     }
     let items: Vec<Value> =
         serde_json::from_str(stdout.trim()).map_err(|e| format!("解析 compose 列表失败: {e}"))?;
@@ -452,17 +899,16 @@ async fn compose_config_file(project: &str) -> Result<String, String> {
         if item.get("Name").and_then(|v| v.as_str()) != Some(project) {
             continue;
         }
-        // ConfigFiles 可能含多个文件（`-f a -f b`），这里取第一个即可，
+        // ConfigFiles 可能含多个文件（`-f a -f b`），取第一个即可，
         // compose 会自行加载同一目录剩余文件。
-        if let Some(files) = item.get("ConfigFiles").and_then(|v| v.as_str()) {
-            if let Some(first) = files
+        if let Some(files) = item.get("ConfigFiles").and_then(|v| v.as_str())
+            && let Some(first) = files
                 .split(',')
                 .next()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-            {
-                return Ok(first.to_string());
-            }
+        {
+            return Ok(first.to_string());
         }
         return Err(format!("项目 {project} 未登记配置文件"));
     }
@@ -470,9 +916,6 @@ async fn compose_config_file(project: &str) -> Result<String, String> {
 }
 
 /// Compose 动作：up / down / start / stop / restart / pull。
-///
-/// 用 `-f <配置文件> --project-directory <所在目录>` 定位项目，
-/// 与「面板手动 docker compose up」的行为保持一致。
 pub async fn compose_action(project: &str, action: &str) -> Response {
     let args_tail: Vec<&str> = match action {
         "up" => vec!["up", "-d"],
@@ -504,10 +947,10 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
     ];
     args.extend(args_tail);
 
-    let timeout = if matches!(action, "up" | "pull") {
-        LONG_TIMEOUT
+    let dur = if matches!(action, "up" | "pull") {
+        COMPOSE_TIMEOUT
     } else {
         ACTION_TIMEOUT
     };
-    action_response(run(&args, timeout).await)
+    compose_response(run_compose(&args, dur).await)
 }

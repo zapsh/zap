@@ -6,6 +6,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod client;
 mod server;
+mod stream;
 mod verbs;
 
 use server::ClientIdentity;

@@ -99,6 +99,7 @@
           <el-button v-else link type="warning" @click="single(row, 'stop', true)">
             {{ t('docker.container.stop') }}
           </el-button>
+          <el-button link type="primary" @click="openExec(row)">{{ t('docker.exec.title') }}</el-button>
           <el-button link type="primary" @click="openLogs(row)">{{ t('docker.container.logs') }}</el-button>
           <el-button link type="primary" @click="openInspect(row)">{{ t('docker.container.inspect') }}</el-button>
           <el-dropdown trigger="click" @command="(cmd: string) => more(row, cmd)">
@@ -129,6 +130,7 @@
 
     <LogsDrawer v-model="logsVisible" :container-id="activeId" :container-name="activeName" />
     <InspectDrawer v-model="inspectVisible" :container-id="activeId" :container-name="activeName" />
+    <ExecTerminal v-model="execVisible" :container-id="activeId" :container-name="activeName" />
   </div>
 </template>
 
@@ -139,6 +141,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Refresh, Search } from '@/icons'
 import LogsDrawer from '../components/LogsDrawer.vue'
 import InspectDrawer from '../components/InspectDrawer.vue'
+import ExecTerminal from '../components/ExecTerminal.vue'
 import {
   containerAction,
   containerStats,
@@ -162,6 +165,7 @@ const projectFilter = ref('')
 
 const logsVisible = ref(false)
 const inspectVisible = ref(false)
+const execVisible = ref(false)
 const activeId = ref('')
 const activeName = ref('')
 
@@ -303,6 +307,17 @@ function openLogs(row: DockerContainer) {
   activeId.value = row.ID
   activeName.value = displayName(row)
   logsVisible.value = true
+}
+
+/** exec 需要容器处于运行状态：停止的容器 attach 上去只会立刻报错 */
+function openExec(row: DockerContainer) {
+  if (row.State !== 'running') {
+    ElMessage.warning(t('docker.exec.needRunning'))
+    return
+  }
+  activeId.value = row.ID
+  activeName.value = displayName(row)
+  execVisible.value = true
 }
 
 function openInspect(row: DockerContainer) {
