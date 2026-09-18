@@ -780,7 +780,11 @@ async fn create_user_inner(
                 &format!("username={}", payload.username),
             )
             .await;
-            // 建号即带附加权限 / 收紧清单 / 只读标记 → 单独审计 + 权限缓存立即失效
+            // 生效权限缓存是全量加载的：新建的用户不在缓存里，必须立即失效，
+            // 否则 `/user/info` 回给它空权限，前端 v-permission 会把它的按钮
+            // （SSL 等模块）全判成无权限，直到下次用户变更或重启才恢复
+            crate::routers::access::invalidate_user_perm_cache();
+            // 建号即带附加权限 / 收紧清单 / 只读标记 → 单独审计
             if payload.permissions.is_some()
                 || payload.perm_deny.is_some()
                 || payload.read_only.is_some()
@@ -1054,10 +1058,14 @@ async fn update_user_inner(
     )
     .await;
 
-    // 附加权限 / 收紧清单 / 只读标记变更：单独审计 + 权限缓存立即失效
-    // （收紧清单会改变成员的生效权限，必须立刻失效，不能等缓存过期）
-    if payload.permissions.is_some() || payload.perm_deny.is_some() || payload.read_only.is_some() {
+    // 附加权限 / 收紧清单 / 只读标记变更：单独审计；这几项与角色都会改变生效权限，
+    // 必须立刻失效缓存（收紧清单会改变成员的生效权限，不能等缓存过期）
+    let perm_changed =
+        payload.permissions.is_some() || payload.perm_deny.is_some() || payload.read_only.is_some();
+    if perm_changed || payload.roles.is_some() {
         crate::routers::access::invalidate_user_perm_cache();
+    }
+    if perm_changed {
         audit_permissions_set(
             claims,
             ip,

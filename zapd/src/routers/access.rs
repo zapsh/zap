@@ -225,6 +225,61 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("ssl", "delete")),
     ),
+    // ── Let's Encrypt 订单（异步流程：提交 → 轮询 → 验证 / 取消）──
+    // 子路径必须逐条登记：前缀规则是「最长命中」，漏一条就会继承父路径的动作。
+    (
+        "/ssl/letsencrypt",
+        Required::User,
+        Some(Perm::action("ssl", "create")),
+    ),
+    (
+        "/ssl/letsencrypt/orders",
+        Required::User,
+        Some(Perm::action("ssl", "view")),
+    ),
+    (
+        "/ssl/letsencrypt/status",
+        Required::User,
+        Some(Perm::action("ssl", "view")),
+    ),
+    (
+        "/ssl/letsencrypt/verify",
+        Required::User,
+        Some(Perm::action("ssl", "create")),
+    ),
+    (
+        "/ssl/letsencrypt/cancel",
+        Required::User,
+        Some(Perm::action("ssl", "create")),
+    ),
+    // ── ACME DNS-01 服务商凭据（证书页加载即拉清单，必须对用户可见）──
+    (
+        "/ssl/acme/dns/providers",
+        Required::User,
+        Some(Perm::action("ssl", "view")),
+    ),
+    (
+        "/ssl/acme/dns/list",
+        Required::User,
+        Some(Perm::action("ssl", "view")),
+    ),
+    // save 为 upsert（新增与编辑同一入口），按修改授权
+    (
+        "/ssl/acme/dns/save",
+        Required::User,
+        Some(Perm::action("ssl", "update")),
+    ),
+    (
+        "/ssl/acme/dns/delete",
+        Required::User,
+        Some(Perm::action("ssl", "delete")),
+    ),
+    // POST 但只做连通性验证，按读取授权
+    (
+        "/ssl/acme/dns/test",
+        Required::User,
+        Some(Perm::action("ssl", "view")),
+    ),
     // ── 文件管理：view / write / delete（handler 内按 home 收敛）──
     (
         "/system/files/list",
@@ -248,6 +303,17 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     ),
     (
         "/system/files/write",
+        Required::User,
+        Some(Perm::action("system.file", "write")),
+    ),
+    // 打包下载是读取的另一种形式；复制会落地新文件，按写入授权
+    (
+        "/system/files/archive",
+        Required::User,
+        Some(Perm::action("system.file", "view")),
+    ),
+    (
+        "/system/files/copy",
         Required::User,
         Some(Perm::action("system.file", "write")),
     ),
@@ -638,6 +704,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     // ── 只读监控 / 审计 ──────────────────────────────────────
     (
         "/system/info",
+        Required::User,
+        Some(Perm::action("system.monitor", "view")),
+    ),
+    // 「关于」页只有面板自身的版本信息，不存在泄露面（admin 专属的是 /system/status）
+    (
+        "/system/about",
         Required::User,
         Some(Perm::action("system.monitor", "view")),
     ),
@@ -1224,8 +1296,14 @@ pub fn user_has_perm(map: &UserPermMap, uid: u64, key: &str) -> bool {
 
 /// 某用户的生效权限点（排序后）：供 `/user/info` 回传前端做按钮级控制。
 pub async fn effective_permissions_of(uid: u64) -> Vec<String> {
-    let mut out: Vec<String> = user_perm_map()
-        .await
+    let mut map = user_perm_map().await;
+    // 缓存里查不到该用户（新建账号后缓存未失效）：重算一次再回。
+    // 否则前端拿到空权限数组，所有 v-permission 按钮都被判成无权限。
+    if !map.contains_key(&(uid as i64)) {
+        invalidate_user_perm_cache();
+        map = user_perm_map().await;
+    }
+    let mut out: Vec<String> = map
         .get(&(uid as i64))
         .map(|set| set.iter().cloned().collect())
         .unwrap_or_default();
@@ -1707,6 +1785,36 @@ mod tests {
         // 云存储：配置与桶内对象同属用户级（各自只看自己的目录）
         assert_eq!(required_for("/system/cloud/stores"), Required::User);
         assert_eq!(required_for("/system/cloud/download"), Required::User);
+    }
+
+    /// 路由表必须与权限矩阵对齐：`.route()` 里出现的每一条都得有 RULES 前缀命中。
+    ///
+    /// 漏登记的后果是**静默**的 —— `lookup` 返回默认 Admin 下限，管理员自测一切正常，
+    /// 普通用户 / 成员一进对应页面就吃「权限不足，该操作需要更高角色权限」。
+    #[test]
+    fn every_route_has_an_access_rule() {
+        let src = include_str!("mod.rs");
+        let mut rest = src;
+        let mut checked = 0;
+        while let Some(idx) = rest.find(".route(\"") {
+            let tail = &rest[idx + ".route(\"".len()..];
+            let Some(end) = tail.find('"') else { break };
+            let mut path = &tail[..end];
+            // 与 `normalize` 一致：剥掉可选的前缀与 /api
+            if let Some(r) = path.strip_prefix(&crate::config::url_prefix_path()) {
+                path = if r.is_empty() { "/" } else { r };
+            }
+            if let Some(r) = path.strip_prefix("/api") {
+                path = if r.is_empty() { "/" } else { r };
+            }
+            assert!(
+                RULES.iter().any(|(prefix, _, _)| prefix_hit(path, prefix)),
+                "{path} 未在权限矩阵登记，会默认落到 Admin 下限（普通用户 403）"
+            );
+            checked += 1;
+            rest = &tail[end..];
+        }
+        assert!(checked > 200, "路由解析失败，只扫到 {checked} 条");
     }
 
     #[test]
