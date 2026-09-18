@@ -51,7 +51,8 @@ export interface ServiceConfReadData {
 export interface ServiceConfField {
   key: string
   label: string
-  kind: 'text' | 'number' | 'select' | 'bool'
+  /** list：多行文本，一行一项（如 docker 镜像源 registry-mirrors，配置里是数组） */
+  kind: 'text' | 'number' | 'select' | 'bool' | 'list'
   help: string
   section?: string | null
   options?: string[]

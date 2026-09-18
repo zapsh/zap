@@ -97,6 +97,15 @@
                   clearable
                   class="field-ctrl"
                 />
+                <!-- list：配置里是数组，表单里一行一项 -->
+                <el-input
+                  v-else-if="f.kind === 'list'"
+                  v-model="visual[f.key]"
+                  type="textarea"
+                  :rows="3"
+                  :placeholder="t('servicesCommon.emptyValue')"
+                  class="field-ctrl"
+                />
                 <el-select
                   v-else
                   v-model="visual[f.key]"

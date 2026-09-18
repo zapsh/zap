@@ -30,6 +30,10 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const SCAN_DEPTH: usize = 2;
 /// 服务控制允许的动作。
 const ALLOWED_ACTIONS: &[&str] = &["start", "stop", "restart", "reload"];
+/// 列表型关键项（`FieldKind::List`）的条目数上限。
+const MAX_LIST_ITEMS: usize = 20;
+/// 列表型关键项单项的字符数上限。
+const MAX_ITEM_LEN: usize = 512;
 
 // ── 服务定义 ─────────────────────────────────────────────────
 
@@ -47,6 +51,8 @@ enum FieldKind {
     Number,
     Select,
     Bool,
+    /// 多行列表：配置里是数组（如 docker 的 `registry-mirrors`），表单里一行一项
+    List,
 }
 
 struct FieldDef {
@@ -216,6 +222,15 @@ const MYSQL_FIELDS: &[FieldDef] = &[
 ];
 
 const DOCKER_FIELDS: &[FieldDef] = &[
+    FieldDef {
+        key: "registry_mirrors",
+        label: "镜像加速器",
+        kind: FieldKind::List,
+        help: "每行一个镜像源地址（registry-mirrors），如 https://xxxx.mirror.aliyuncs.com；清空保存即删除该配置。保存后需重启 Docker 生效",
+        section: None,
+        jpath: &["registry-mirrors"],
+        options: &[],
+    },
     FieldDef {
         key: "log_driver",
         label: "日志驱动",
@@ -1042,12 +1057,77 @@ fn json_read_values(
             }
         }
         if found && !cur.is_null() {
-            values.insert(f.key.to_string(), cur.clone());
+            values.insert(f.key.to_string(), json_value_to_text(cur));
         } else {
             values.insert(f.key.to_string(), Value::Null);
         }
     }
     values
+}
+
+/// 关键项取值统一摊平成表单里的字符串：数组（registry-mirrors 之类）一行一项，
+/// 标量与嵌套对象原样保留，交给前端按 kind 渲染。
+fn json_value_to_text(v: &Value) -> Value {
+    let Value::Array(items) = v else {
+        return v.clone();
+    };
+    let lines: Vec<String> = items
+        .iter()
+        .map(|i| match i {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .collect();
+    Value::String(lines.join("\n"))
+}
+
+/// 表单里的一行一项 → 条目列表（同时吃换行和逗号两种分隔）。
+///
+/// 去空白行、去每项首尾空格；超过 `MAX_LIST_ITEMS` 条直接报错，避免把配置文件撑爆。
+fn parse_list_items(raw: &str) -> Result<Vec<String>, String> {
+    let items: Vec<String> = raw
+        .split(['\n', ','])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if items.is_empty() {
+        return Ok(items);
+    }
+    if items.len() > MAX_LIST_ITEMS {
+        return Err(format!("最多 {MAX_LIST_ITEMS} 项，当前 {} 项", items.len()));
+    }
+    for it in &items {
+        if it.len() > MAX_ITEM_LEN {
+            return Err(format!("单项长度不能超过 {MAX_ITEM_LEN} 字符"));
+        }
+    }
+    Ok(items)
+}
+
+/// 删除 JSON 指定路径上的键（清空列表字段时用它，而不是写个空数组进去）。
+fn remove_json_path(obj: &mut Value, path: &[&str]) {
+    if path.is_empty() || !obj.is_object() {
+        return;
+    }
+    let o = obj.as_object_mut().expect("object");
+    if path.len() == 1 {
+        o.remove(path[0]);
+        return;
+    }
+    if let Some(next) = o.get_mut(path[0]) {
+        remove_json_path(next, &path[1..]);
+    }
+}
+
+/// 镜像源地址校验：写进 daemon.json 之前挡一道，
+/// 否则一个手滑的地址会让 dockerd 起不来（且面板拿不到更有用的报错）。
+fn validate_registry_mirrors(items: &[String]) -> Result<(), String> {
+    for it in items {
+        if !it.starts_with("https://") && !it.starts_with("http://") {
+            return Err(format!("镜像源地址必须以 https:// 或 http:// 开头: {it}"));
+        }
+    }
+    Ok(())
 }
 
 fn set_json_path(obj: &mut Value, path: &[&str], value: Value) {
@@ -1440,6 +1520,7 @@ pub async fn keys_get(svc: &str) -> Response {
                     FieldKind::Number => "number",
                     FieldKind::Select => "select",
                     FieldKind::Bool => "bool",
+                    FieldKind::List => "list",
                 };
                 json!({
                     "key": f.key,
@@ -1533,6 +1614,19 @@ pub async fn keys_save(svc: &str, keys: std::collections::BTreeMap<String, Strin
                         let v = match f.kind {
                             FieldKind::Bool => {
                                 Value::Bool(raw.eq_ignore_ascii_case("true") || raw == "1")
+                            }
+                            FieldKind::List => {
+                                // 表单每次都提交全部字段，所以"留空"是用户主动清空：
+                                // 删掉这个键，而不是写个空数组进去
+                                if raw.is_empty() {
+                                    remove_json_path(&mut obj, f.jpath);
+                                    continue;
+                                }
+                                let items = parse_list_items(raw)?;
+                                if f.key == "registry_mirrors" {
+                                    validate_registry_mirrors(&items)?;
+                                }
+                                Value::Array(items.into_iter().map(Value::String).collect())
                             }
                             FieldKind::Number => raw
                                 .parse::<i64>()
@@ -1981,5 +2075,53 @@ mod tests {
         assert!(PHP_DEF.main_candidates.contains(&"/etc/php/*/fpm/php.ini"));
         assert!(PHP_DEF.main_candidates.contains(&"/etc/php.ini"));
         assert!(PHP_DEF.main_candidates.contains(&"/etc/opt/remi/*/php.ini"));
+    }
+
+    /// 列表字段（镜像源）在表单里是文本框，换行和逗号都得认，空行要丢掉
+    #[test]
+    fn list_items_accept_newline_and_comma() {
+        assert_eq!(
+            parse_list_items("https://a.example\nhttps://b.example,https://c.example\n\n").unwrap(),
+            vec![
+                "https://a.example".to_string(),
+                "https://b.example".to_string(),
+                "https://c.example".to_string()
+            ]
+        );
+        assert!(parse_list_items("  \n , ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_items_rejects_overflow() {
+        let many: Vec<String> = (0..MAX_LIST_ITEMS + 1)
+            .map(|i| format!("https://m{i}.example"))
+            .collect();
+        assert!(parse_list_items(&many.join("\n")).is_err());
+    }
+
+    /// 镜像源写错会让 dockerd 起不来，保存前必须挡住
+    #[test]
+    fn mirrors_must_be_http_urls() {
+        assert!(validate_registry_mirrors(&["https://a.mirror.aliyuncs.com".to_string()]).is_ok());
+        assert!(validate_registry_mirrors(&["ftp://x.example".to_string()]).is_err());
+        assert!(validate_registry_mirrors(&["a.mirror.aliyuncs.com".to_string()]).is_err());
+    }
+
+    /// registry-mirrors 在 daemon.json 里是数组，读出来要摊平成多行文本
+    #[test]
+    fn json_array_becomes_multiline_text() {
+        let v = json!({ "registry-mirrors": ["https://a.example", "https://b.example"] });
+        let text = json_value_to_text(v.get("registry-mirrors").unwrap());
+        assert_eq!(text, json!("https://a.example\nhttps://b.example"));
+    }
+
+    /// 清空列表字段 = 删掉这个键，而不是留个空数组
+    #[test]
+    fn remove_json_path_removes_key() {
+        let mut v = json!({ "log-opts": { "max-size": "20m" }, "registry-mirrors": ["https://a"] });
+        remove_json_path(&mut v, &["registry-mirrors"]);
+        assert!(v.get("registry-mirrors").is_none());
+        remove_json_path(&mut v, &["log-opts", "max-size"]);
+        assert_eq!(v.get("log-opts"), Some(&json!({})));
     }
 }
