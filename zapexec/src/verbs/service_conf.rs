@@ -226,7 +226,7 @@ const DOCKER_FIELDS: &[FieldDef] = &[
         key: "registry_mirrors",
         label: "镜像加速器",
         kind: FieldKind::List,
-        help: "每行一个镜像源地址（registry-mirrors），如 https://xxxx.mirror.aliyuncs.com；清空保存即删除该配置。保存后需重启 Docker 生效",
+        help: "清空保存即删除该配置。保存后需重启 Docker 生效",
         section: None,
         jpath: &["registry-mirrors"],
         options: &[],
@@ -274,7 +274,7 @@ const DOCKER_FIELDS: &[FieldDef] = &[
         help: "存储驱动，一般保持 overlay2 即可（改动后已有镜像/容器不可见）",
         section: None,
         jpath: &["storage-driver"],
-        options: &["overlay2", "overlay", "devicemapper", "btrfs", "zfs", "vfs"],
+        options: &["overlay2", "overlay", "btrfs", "zfs", "vfs"],
     },
     FieldDef {
         key: "data_root",

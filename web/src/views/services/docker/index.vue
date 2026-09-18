@@ -261,11 +261,11 @@ const installHint = computed(() => t('servicesDocker.installHint'))
 
 /** 常用镜像加速器：点一下填进列表，剩下的（如阿里云 ID）用户自己替换 */
 const PRESET_MIRRORS = [
+  { name: '腾讯云(内网)', url: 'https://mirror.ccs.tencentyun.com' },
   { name: '阿里云（替换 <ID>）', url: 'https://<ID>.mirror.aliyuncs.com' },
-  { name: '中科大', url: 'https://docker.mirrors.ustc.edu.cn' },
-  { name: '网易', url: 'https://hub-mirror.c.163.com' },
-  { name: '清华大学', url: 'https://docker.mirrors.tuna.tsinghua.edu.cn' },
-  { name: '百度云', url: 'https://mirror.baidubce.com' },
+  { name: 'DaoCloud', url: 'https://docker.m.daocloud.io' },
+  { name: '轩辕镜像（免费版）', url: 'https://docker.xuanyuan.me' },
+  { name: '毫秒镜像', url: 'https://docker.1ms.run' },
 ]
 
 /**
