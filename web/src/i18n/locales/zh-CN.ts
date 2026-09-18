@@ -134,6 +134,9 @@ export default {
     // 容器管理（后端 menus id=17 / 171，位于「计划任务」之下）
     docker: '容器管理',
     'docker-index': '容器',
+    // 团队成员（子账号，后端 menus id=18 / 181）
+    team: '团队成员',
+    'team-index': '团队成员',
     docs: '文档',
     // 二级
     // 备注：这些标题同时被 translateTitle 用作「中文原文 → key」的反查源，
@@ -371,6 +374,54 @@ export default {
     usernameLength: '2-50 个字符',
     nicknameTip: '留空则默认与用户名相同',
     rootProtected: '内置管理员账号受保护：不可删除、不可禁用，仅本人可修改',
+    emailRequired: '请输入邮箱',
+    emailInvalid: '邮箱格式不正确',
+    passwordRequired: '请输入密码',
+    passwordLength: '至少 6 个字符',
+
+    // 用户类型（客户 / 成员）
+    kind: '类型',
+    kindCustomer: '客户',
+    kindMember: '成员',
+    kindMemberTip: '共享 {owner} 的家目录与系统账号，权限默认继承父账号',
+    denyPerm: '收紧权限',
+    denyPermPlaceholder: '从该成员收回的权限点（可选）',
+    denyPermTip: '成员默认继承父账号的全部权限点；勾选的权限会被收回（高危权限不会自动继承）',
+  },
+
+  /** 团队成员（子账号） */
+  team: {
+    title: '团队成员',
+    subtitle:
+      '成员共享你的家目录与 Linux 系统账号，权限默认继承你的账号，可再逐项收紧；成员不能再创建成员',
+    add: '新增成员',
+    edit: '编辑成员',
+    username: '用户名',
+    nickname: '昵称',
+    email: '邮箱',
+    phone: '电话',
+    password: '密码',
+    passwordKeepTip: '留空则保持原密码',
+    status: '状态',
+    lastLogin: '最近登录',
+    neverLogin: '从未登录',
+    sharedHome: '共享家目录',
+    sharedAccount: '共享系统账号',
+    sharedTip: '成员不单独创建系统账号：与你共用 {dir}（SSH / 文件 / PHP-FPM 都以你的账号运行）',
+    inheritTip:
+      '成员默认拥有你的全部权限点；下面勾选的权限将被收回。高危权限（如 docker:build）不会自动继承，须单独授予',
+    denyPerm: '收紧权限',
+    denyPermPlaceholder: '选择要从该成员收回的权限点（可选）',
+    sshTip:
+      '成员与你共用系统账号：其 SSH / 终端操作在系统层都记录为你的账号，且可在你的家目录留下凭据',
+    deleteConfirm: '确认删除成员「{name}」？',
+    deleteTip: '删除成员只删除面板账号，不会删除共享的家目录与系统账号',
+    toggleConfirm: '确认{action}成员「{name}」？',
+    createSuccess: '成员创建成功',
+    updateSuccess: '成员更新成功',
+    deleteSuccess: '成员已删除',
+    usernameRequired: '请输入用户名',
+    usernameLength: '2-50 个字符',
     emailRequired: '请输入邮箱',
     emailInvalid: '邮箱格式不正确',
     passwordRequired: '请输入密码',

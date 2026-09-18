@@ -64,6 +64,21 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column :label="t('users.kind')" width="90">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.user_kind === 1"
+              size="small"
+              type="warning"
+              effect="plain"
+            >
+              {{ t('users.kindMember') }}
+            </el-tag>
+            <el-tag v-else size="small" type="info" effect="plain">
+              {{ t('users.kindCustomer') }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('users.fpmSpec')" width="170" show-overflow-tooltip>
           <template #default="{ row }">
             <el-tag v-if="fpmSpecKind(row) === 'default'" size="small" type="info" effect="plain">
@@ -199,13 +214,53 @@
           </el-select>
           <div class="form-tip">{{ t('users.extraPermTip') }}</div>
         </el-form-item>
+        <!-- 用户类型：成员共享归属用户的家目录与 Linux 系统账号，权限默认继承父账号 -->
+        <el-form-item v-if="dialogType === 'add'" :label="t('users.kind')">
+          <el-radio-group v-model="form.user_kind">
+            <el-radio :value="0">{{ t('users.kindCustomer') }}</el-radio>
+            <el-radio :value="1">{{ t('users.kindMember') }}</el-radio>
+          </el-radio-group>
+          <div v-if="form.user_kind === 1" class="form-tip">
+            {{
+              t('users.kindMemberTip', {
+                owner: form.owner_id ? ownerName(form.owner_id) : t('users.ownerSystem'),
+              })
+            }}
+          </div>
+        </el-form-item>
+        <el-form-item v-if="form.user_kind === 1" :label="t('users.denyPerm')">
+          <el-select
+            v-model="form.perm_deny"
+            multiple
+            filterable
+            clearable
+            collapse-tags
+            collapse-tags-tooltip
+            :placeholder="t('users.denyPermPlaceholder')"
+            style="width: 100%"
+          >
+            <el-option-group v-for="g in permCatalog" :key="g.ns" :label="permGroupLabel(g.ns)">
+              <el-option
+                v-for="a in g.actions"
+                :key="a.key"
+                :label="permKeyLabel(a.key)"
+                :value="a.key"
+              />
+            </el-option-group>
+          </el-select>
+          <div class="form-tip">{{ t('users.denyPermTip') }}</div>
+        </el-form-item>
         <el-form-item v-if="isAdmin && dialogType === 'add'" :label="t('users.owner')">
           <el-select v-model="form.owner_id" @change="onOwnerChange">
             <el-option :label="t('users.ownerSystem')" :value="0" />
             <el-option v-for="r in resellerList" :key="r.id" :label="r.username" :value="r.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="isAdmin || isReseller" :label="t('users.fpmSpec')">
+        <!-- 成员共享父账号的运行实体：套餐 / FPM 规格一律跟随父账号 -->
+        <el-form-item
+          v-if="(isAdmin || isReseller) && form.user_kind !== 1"
+          :label="t('users.fpmSpec')"
+        >
           <el-select
             v-model="fpmMode"
             :loading="fpmLoading"
@@ -244,7 +299,7 @@
             style="margin-top: 8px"
           />
         </el-form-item>
-        <el-form-item :label="t('users.package')">
+        <el-form-item v-if="form.user_kind !== 1" :label="t('users.package')">
           <el-select
             v-model="form.package_id"
             :loading="pkgLoading"
@@ -305,7 +360,7 @@ import { getLocale } from '@/i18n'
 
 const { t } = useI18n()
 
-/** 权限点目录：附加权限下拉用（admin 才加载） */
+/** 权限点目录：附加权限 / 成员收紧权限下拉用（admin 与 reseller 加载） */
 const permCatalog = ref<PermGroupItem[]>([])
 
 const userStore = useUserStore()
@@ -575,6 +630,10 @@ interface FormData {
   package_id: number
   /** 个人附加权限点：在角色权限之外单独授予（只做加法） */
   permissions: string[]
+  /** 用户类型：0=客户（独立家目录与系统账号）/ 1=成员（共享归属用户的家目录与系统账号） */
+  user_kind: number
+  /** 父账号对该成员收紧（取消）的权限点；仅成员生效 */
+  perm_deny: string[]
 }
 
 const defaultForm = (): FormData => ({
@@ -588,6 +647,8 @@ const defaultForm = (): FormData => ({
   fpm_pool: '',
   package_id: 0,
   permissions: [],
+  user_kind: 0,
+  perm_deny: [],
 })
 
 const form = reactive<FormData>(defaultForm())
@@ -636,6 +697,8 @@ function handleEdit(row: UserListItem) {
     fpm_pool: row.fpm_pool ?? '',
     package_id: row.package_id ?? 0,
     permissions: (row.permissions ?? []).filter(Boolean),
+    user_kind: row.user_kind ?? 0,
+    perm_deny: (row.perm_deny ?? []).filter(Boolean),
   })
   fpmMode.value = fpmEditInitial(row)
   fpmCustomJson.value = row.fpm_pool && row.fpm_pool.trim() ? row.fpm_pool : ''
@@ -688,11 +751,17 @@ async function submitForm() {
         payload.owner_id = form.owner_id || 0
         payload.permissions = form.permissions
       }
-      payload.package_id = form.package_id || 0
-      if (fpmPayload.fpm_spec_ref !== undefined) {
-        payload.fpm_spec_ref = fpmPayload.fpm_spec_ref
-      } else if (fpmPayload.fpm_pool !== undefined) {
-        payload.fpm_pool = fpmPayload.fpm_pool
+      // 成员（子账号）：共享归属用户的家目录与系统账号，套餐 / FPM 一律跟随父账号
+      if (form.user_kind === 1) {
+        payload.user_kind = 1
+        payload.perm_deny = form.perm_deny
+      } else {
+        payload.package_id = form.package_id || 0
+        if (fpmPayload.fpm_spec_ref !== undefined) {
+          payload.fpm_spec_ref = fpmPayload.fpm_spec_ref
+        } else if (fpmPayload.fpm_pool !== undefined) {
+          payload.fpm_pool = fpmPayload.fpm_pool
+        }
       }
       const res = await createUser(payload)
       ElMessage.success(
@@ -712,12 +781,17 @@ async function submitForm() {
         payload.roles = form.roles
         payload.permissions = form.permissions
       }
-      payload.package_id = form.package_id || 0
-      if (fpmPayload.fpm_spec_ref !== undefined) {
-        payload.fpm_spec_ref = fpmPayload.fpm_spec_ref
-      }
-      if (fpmPayload.fpm_pool !== undefined) {
-        payload.fpm_pool = fpmPayload.fpm_pool
+      // 成员只下发收紧清单（套餐 / FPM 由父账号决定）
+      if (form.user_kind === 1) {
+        payload.perm_deny = form.perm_deny
+      } else {
+        payload.package_id = form.package_id || 0
+        if (fpmPayload.fpm_spec_ref !== undefined) {
+          payload.fpm_spec_ref = fpmPayload.fpm_spec_ref
+        }
+        if (fpmPayload.fpm_pool !== undefined) {
+          payload.fpm_pool = fpmPayload.fpm_pool
+        }
       }
       await updateUser(payload)
       ElMessage.success(t('common.updateSuccess'))
@@ -790,7 +864,8 @@ function fmtTime(ts: number) {
 }
 
 async function loadPermCatalog() {
-  if (!isAdmin.value || permCatalog.value.length) return
+  // 权限点目录对任意登录用户开放（后端 Required::User）：reseller 建成员时也要选收紧项
+  if ((!isAdmin.value && !isReseller.value) || permCatalog.value.length) return
   try {
     const res = await getPermissionCatalog()
     permCatalog.value = res.data?.groups ?? []

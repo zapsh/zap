@@ -158,8 +158,9 @@ async fn du_bytes(dir: &str) -> Option<u64> {
 /// 采集全部用户的家目录磁盘用量
 pub async fn collect_disk_usage() {
     let pool = get_db_pool().await;
+    // 成员（子账号）共享父账号的家目录：跳过，否则父账号的用量会被重复计数
     let rows: Vec<(i64, String)> =
-        sqlx::query_as("SELECT id, home_dir FROM user WHERE home_dir <> ''")
+        sqlx::query_as("SELECT id, home_dir FROM user WHERE home_dir <> '' AND user_kind <> 1")
             .fetch_all(pool)
             .await
             .unwrap_or_default();

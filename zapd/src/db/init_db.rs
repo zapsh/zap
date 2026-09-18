@@ -89,6 +89,9 @@ async fn migrate_add_columns() {
     // site：磁盘占用（web_root + log_root）
     ensure_column("site", "disk_used_bytes", "INTEGER NOT NULL DEFAULT 0").await;
     ensure_column("site", "disk_stat_at", "INTEGER NOT NULL DEFAULT 0").await;
+    // user：子账号（成员）支持
+    ensure_column("user", "user_kind", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("user", "perm_deny", "TEXT NOT NULL DEFAULT ''").await;
 }
 
 // ── user ───────────────────────────────────────────────────
@@ -119,6 +122,12 @@ async fn init_system_user_table_schema() {
         roles TEXT,
         permissions TEXT,
         owner_id INTEGER DEFAULT 0,
+        -- user_kind：0=普通用户/客户（独立家目录与 Linux 账号）/ 1=成员（子账号）
+        --   成员共享父账号（owner_id）的家目录与 Linux 系统账号，不另建系统账号，
+        --   权限默认继承父账号的生效权限，由父账号通过 perm_deny 再收紧
+        user_kind INTEGER NOT NULL DEFAULT 0,
+        -- perm_deny：父账号对该成员取消（收紧）的权限点，逗号分隔；仅 user_kind=1 生效
+        perm_deny TEXT NOT NULL DEFAULT '',
         package_id INTEGER NOT NULL DEFAULT 0,
         totp_secret TEXT NOT NULL DEFAULT '',
         totp_enabled INTEGER NOT NULL DEFAULT 0,
@@ -354,6 +363,42 @@ async fn sync_added_menus() {
     let _ = sqlx::query(
         "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
          SELECT r.id, 171 FROM roles r WHERE r.role_key = 'admin'",
+    )
+    .execute(pool)
+    .await;
+
+    // 团队成员（子账号）：任意用户管理自己名下的成员，故对 admin/user/reseller 全部开放。
+    // 成员自己登录后端同样会拦（成员不能创建成员），这里只是不显示入口。
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO menus
+            (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+         SELECT 18, 0, 'team', '/team', 'Layout', '/team/index', 'dir', '团队成员',
+                'material-symbols:group', 0, 'admin,user,reseller', 9, 1,
+                strftime('%s','now'), strftime('%s','now')
+         WHERE NOT EXISTS (SELECT 1 FROM menus WHERE id = 18)",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO menus
+            (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+         SELECT 181, 18, 'team-index', 'index', 'team/index', 'menu', '团队成员',
+                'material-symbols:group', 1, 'admin,user,reseller', 1, 1,
+                strftime('%s','now'), strftime('%s','now')
+         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 18)",
+    )
+    .execute(pool)
+    .await;
+    // 侧栏可见性由 role_menus 决定：沿用「站点」菜单（91）的授权集合
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+         SELECT role_id, 18 FROM role_menus WHERE menu_id = 91",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+         SELECT role_id, 181 FROM role_menus WHERE menu_id = 91",
     )
     .execute(pool)
     .await;

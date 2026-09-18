@@ -32,6 +32,10 @@ struct UserInfo {
     roles: String,
     permissions: String,
     owner_id: i64,
+    /// 用户类型：0=普通用户/客户 / 1=成员（子账号，共享父账号家目录与系统账号）
+    user_kind: i32,
+    /// 父账号对该成员收紧（取消）的权限点，逗号分隔；仅成员生效
+    perm_deny: String,
     package_id: i64,
     /// 家目录磁盘用量（字节，定时任务 du 采集；0 = 未采集）
     disk_used_bytes: i64,
@@ -63,6 +67,13 @@ pub struct CreateUserPayload {
     /// 个人附加权限点（逗号分隔或数组；**只做加法**，在角色权限之外临时开小灶）
     #[serde(default)]
     pub permissions: Option<PermissionInput>,
+    /// 用户类型：0=普通用户/客户（默认，独立家目录与 Linux 账号）；
+    /// 1=成员（子账号，共享父账号的家目录与 Linux 账号，权限默认继承父账号）
+    #[serde(default)]
+    pub user_kind: Option<i32>,
+    /// 父账号对该成员收紧（取消）的权限点（逗号分隔或数组）；仅成员生效
+    #[serde(default)]
+    pub perm_deny: Option<PermissionInput>,
 }
 
 /// 附加权限入参：兼容数组与逗号分隔字符串两种写法。
@@ -111,6 +122,9 @@ pub struct UpdateUserPayload {
     /// 个人附加权限点（不传 = 不改动；传空数组/空串 = 清空附加权限）
     #[serde(default)]
     pub permissions: Option<PermissionInput>,
+    /// 父账号对该成员收紧（取消）的权限点（不传 = 不改动；传空 = 取消全部收紧）
+    #[serde(default)]
+    pub perm_deny: Option<PermissionInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,6 +150,48 @@ async fn audit_permissions_set(claims: &jwt::Claims, ip: &str, uid: i64, keys: &
 /// 内置初始管理员（安装时创建的 admin）的用户 ID：
 /// 不可删除、不可禁用、角色不可变更，且除本人外任何人都不能修改其信息/密码。
 const ROOT_ADMIN_ID: i64 = 1;
+
+/// 用户类型：成员（子账号）。与 `access::USER_KIND_MEMBER` 同一取值。
+pub const USER_KIND_MEMBER: i32 = crate::routers::access::USER_KIND_MEMBER;
+
+/// 用户的归属与运行实体信息（成员创建 / 删除时读取父账号用）。
+#[derive(sqlx::FromRow)]
+struct UserAccountRow {
+    home_dir: String,
+    linux_user: String,
+    #[allow(dead_code)]
+    roles: String,
+    package_id: i64,
+    owner_id: i64,
+    user_kind: i32,
+}
+
+/// 读取用户的归属与运行实体信息；不存在返回 None。
+async fn load_account(id: i64) -> Result<Option<UserAccountRow>, ZapError> {
+    let pool = db::get_db_pool().await;
+    let row: Option<UserAccountRow> =
+        sqlx::query_as("SELECT home_dir, linux_user, roles, package_id, owner_id, user_kind FROM user WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row)
+}
+
+/// 该用户是否为成员（子账号）。
+async fn user_is_member(uid: i64) -> bool {
+    matches!(
+        load_account(uid).await,
+        Ok(Some(a)) if a.user_kind == USER_KIND_MEMBER
+    )
+}
+
+/// 目标用户是否可被当前操作者当作「自己的成员」管理。
+async fn is_own_member(claims: &jwt::Claims, target: i64) -> bool {
+    match load_account(target).await {
+        Ok(Some(a)) => a.user_kind == USER_KIND_MEMBER && a.owner_id == claims.id as i64,
+        _ => false,
+    }
+}
 
 /// Require admin role; return error if not admin
 fn require_admin(claims: &jwt::Claims) -> Result<(), ZapError> {
@@ -177,15 +233,24 @@ fn normalize_fpm_spec(raw: Option<String>) -> Result<Option<String>, ZapError> {
 /// 站点同步 / 用户同步 / 新增用户均调用；失败返回 Err 描述。
 pub async fn ensure_user_runtime(uid: i64) -> Result<(), String> {
     let pool = db::get_db_pool().await;
-    let row: Option<(String, String, String)> =
-        sqlx::query_as("SELECT username, home_dir, linux_user FROM user WHERE id = ?")
-            .bind(uid)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-    let Some((username, home_dir, mut linux_user)) = row else {
+    let row: Option<(String, String, String, i64, i32)> = sqlx::query_as(
+        "SELECT username, home_dir, linux_user, owner_id, user_kind FROM user WHERE id = ?",
+    )
+    .bind(uid)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((username, home_dir, mut linux_user, owner_id, user_kind)) = row else {
         return Err(format!("用户 {uid} 不存在"));
     };
+    // 成员（子账号）共享父账号的 Linux 账号与家目录：本身不建系统账号，
+    // 只需保证父账号的运行实体就绪（层级只有一层，递归一次即收敛）。
+    if user_kind == USER_KIND_MEMBER {
+        if owner_id > 0 && owner_id != uid {
+            return Box::pin(ensure_user_runtime(owner_id)).await;
+        }
+        return Ok(());
+    }
     if home_dir.is_empty() {
         return Err(format!("用户 {username} 未配置家目录（home_dir 为空）"));
     }
@@ -224,6 +289,10 @@ pub async fn ensure_user_runtime(uid: i64) -> Result<(), String> {
 /// 按用户当前套餐下发磁盘配额（best-effort：失败仅写日志，不阻断用户创建/编辑）。
 /// 未绑定套餐、套餐未提供配额字段或用户无 Linux 系统账号时跳过。
 pub async fn sync_package_quota(user_id: i64) {
+    // 成员共享父账号的系统账号：配额属于父账号，不能按成员自己的套餐改写
+    if user_is_member(user_id).await {
+        return;
+    }
     let Some(pkg) = crate::routers::package::package_of_user(user_id).await else {
         return;
     };
@@ -279,15 +348,10 @@ pub async fn user_info(claims: Claims) -> Json<Value> {
             Some(p) => Some(p),
             None => crate::routers::package::default_package().await,
         };
-        // 生效权限点：角色权限（role_permissions）∪ 用户个人附加权限（user.permissions）。
+        // 生效权限点：角色权限（role_permissions）∪ 个人附加权限（user.permissions）
+        // ∪ 父账号继承（成员）− 父账号收紧（perm_deny）。
         // 仅用于前端 v-permission 做按钮级体验控制，请求级拦截在 access::guard。
-        let mut perms = crate::routers::access::permissions_of_roles(&user.roles).await;
-        for p in user.permissions.split(',').map(str::trim) {
-            if !p.is_empty() && !perms.iter().any(|x| x == p) {
-                perms.push(p.to_string());
-            }
-        }
-        perms.sort();
+        let perms = crate::routers::access::effective_permissions_of(user.id as u64).await;
 
         return Json(json!({
             "code": 0,
@@ -312,6 +376,11 @@ pub async fn user_info(claims: Claims) -> Json<Value> {
                 "bandwidth_stat_at": user.bandwidth_stat_at,
                 "roles": user.roles.split(',').collect::<Vec<&str>>(),
                 "permissions": perms,
+                // 用户类型与归属：0=普通用户/客户 / 1=成员（子账号）
+                "user_kind": user.user_kind,
+                "owner_id": user.owner_id,
+                // 父账号对该成员收紧的权限点（仅成员有值）
+                "perm_deny": user.perm_deny.split(',').filter(|s| !s.is_empty()).collect::<Vec<&str>>(),
                 // 套餐信息：package_bound 标记是否绑定自己的套餐（false = 回退全局默认）
                 "package_bound": bound,
                 "package": pkg.map(|p| json!({
@@ -452,6 +521,9 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
         .await
         .unwrap_or_default();
     let pkg_names: std::collections::HashMap<i64, String> = pkg_rows.into_iter().collect();
+    // 归属用户名映射：列表里「成员 of X」直接取用，前端不必再查一次
+    let name_of: std::collections::HashMap<i64, String> =
+        users.iter().map(|u| (u.id, u.username.clone())).collect();
 
     Ok(Json(json!({
         "code": 0,
@@ -473,6 +545,10 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
                 "roles": user.roles.split(',').collect::<Vec<&str>>(),
                 "permissions": user.permissions.split(',').collect::<Vec<&str>>(),
                 "owner_id": user.owner_id,
+                "owner_username": name_of.get(&user.owner_id).cloned().unwrap_or_default(),
+                // 成员（子账号）标记与父账号收紧清单
+                "user_kind": user.user_kind,
+                "perm_deny": user.perm_deny.split(',').filter(|s| !s.is_empty()).collect::<Vec<&str>>(),
                 "package_id": user.package_id,
                 "package_name": pkg_names
                     .get(&user.package_id)
@@ -486,15 +562,31 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
     })))
 }
 
-/// Create a new user — admin or reseller (own customer only)
+/// Create a new user — admin or reseller (own customer only)；
+/// 任意登录用户都可创建挂在自己名下的「成员」（子账号，见 `USER_KIND_MEMBER`）。
 pub async fn user_add(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
     Json(payload): Json<CreateUserPayload>,
 ) -> ZapJsonResult {
-    let is_admin = jwt::is_admin(&claims);
-    let is_reseller = jwt::is_reseller(&claims);
-    if !is_admin && !is_reseller {
+    create_user_inner(&claims, &client_addr.ip().to_string(), payload).await
+}
+
+/// 创建用户的实际实现：`/system/user/add` 与 `/user/team/add` 共用。
+async fn create_user_inner(
+    claims: &jwt::Claims,
+    ip: &str,
+    payload: CreateUserPayload,
+) -> ZapJsonResult {
+    let is_admin = jwt::is_admin(claims);
+    let is_reseller = jwt::is_reseller(claims);
+    // 成员（子账号）：共享父账号的家目录与 Linux 系统账号，权限默认继承父账号
+    let is_member_create = payload.user_kind.unwrap_or(0) == USER_KIND_MEMBER;
+    // 层级固定一层：成员不能再建成员
+    if user_is_member(claims.id as i64).await {
+        return Err(ZapError::New(-1, "成员账号不能再创建成员".to_string()));
+    }
+    if !is_member_create && !is_admin && !is_reseller {
         return Err(ZapError::New(-1, "权限不足".to_string()));
     }
 
@@ -508,12 +600,6 @@ pub async fn user_add(
     } else {
         "user".to_string()
     };
-    // reseller 创建的客户归属自己；admin 可指定归属（默认系统直属）
-    let owner_id: i64 = if is_admin {
-        payload.owner_id.unwrap_or(0)
-    } else {
-        claims.id as i64
-    };
     // 昵称可留空（空串/空白同样按未填写处理），默认与用户名同名
     let nickname = payload
         .nickname
@@ -525,65 +611,112 @@ pub async fn user_add(
         .phone
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty());
-    // 套餐：校验可见性（admin 全部；reseller 仅全局与自己名下）
-    let package = match payload.package_id.filter(|v| *v > 0) {
-        Some(pid) => {
-            Some(crate::routers::package::load_for_actor(pid, is_admin, claims.id as i64).await?)
-        }
-        None => None,
-    };
-    let package_id = package.as_ref().map(|p| p.id).unwrap_or(0);
-    // fpm 规格：fpm_pool（旧版自定义 JSON）与 fpm_spec_ref（模板/继承/默认）互斥。
-    // 前端新流程只传 fpm_spec_ref；一旦显式指定引用，不再保留自定义 JSON（避免遮蔽模板）。
-    let mut fpm_pool = normalize_fpm_spec(payload.fpm_pool)?.unwrap_or_default();
-    let mut fpm_spec_ref = payload.fpm_spec_ref.unwrap_or_default().trim().to_string();
-    // 未显式选择模板时继承套餐绑定的 FPM 规格模板
-    if fpm_spec_ref.is_empty()
-        && let Some(p) = &package
-        && !p.fpm_spec_ref.trim().is_empty()
-    {
-        fpm_spec_ref = p.fpm_spec_ref.trim().to_string();
-        // 套餐模板可能由 admin 创建，reseller 使用时同样校验可见性
-        crate::routers::fpm_spec::validate_spec_ref(&fpm_spec_ref, is_admin, &claims.sub).await?;
-    }
-    if !fpm_spec_ref.is_empty() {
-        fpm_pool.clear();
-    }
-    // 引用校验：reseller 只能选自己名下或全局通用模板；admin 校验模板存在性
-    if fpm_spec_ref.is_empty() || fpm_spec_ref == crate::routers::fpm_spec::INHERIT {
-        // '' 与 inherit 恒允许
-    } else if is_admin {
-        crate::routers::fpm_spec::validate_spec_ref(&fpm_spec_ref, true, "").await?;
-    } else {
-        crate::routers::fpm_spec::validate_spec_ref(&fpm_spec_ref, false, &claims.sub).await?;
-    }
 
-    // 家目录 / Linux 账号：{默认挂载点}/{linux_username(username)} 派生，
-    // 站点文档根与站点日志均规划于其下；派生名与已有账号冲突时追加 -n 后缀。
-    // 默认挂载点取自运行环境默认设置（conf: user_home_root，默认 /home）；
-    // /home 磁盘不足时管理员可切换到新挂载点（如 /home2），此后新建用户即落到新挂载点，
-    // 存量用户不受影响（数据迁移请使用「服务器配置 → 数据迁移」）。
-    let lu_base = zap_proto::linux_username(&payload.username);
-    let pool = db::get_db_pool().await;
-    let mut lu = lu_base.clone();
-    let mut n: i64 = 2;
-    loop {
-        let cnt: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM user WHERE linux_user = ? AND linux_user != ''")
-                .bind(&lu)
-                .fetch_one(pool)
-                .await
-                .unwrap_or((0,));
-        if cnt.0 == 0 {
-            break;
+    let mut package = None;
+    let package_id: i64;
+    let mut fpm_pool: String;
+    let mut fpm_spec_ref: String;
+    let home_dir: String;
+    let lu: String;
+    let mut owner_id: i64 = claims.id as i64;
+
+    if is_member_create {
+        // ── 成员分支：共享父账号的家目录 / 系统账号 / 套餐，不建自己的运行实体 ──
+        // 归属默认建在自己名下；admin 可挂到指定用户下
+        if is_admin && let Some(oid) = payload.owner_id.filter(|v| *v > 0) {
+            owner_id = oid;
         }
-        lu = format!("{lu_base}-{n}");
-        n += 1;
+        let parent = load_account(owner_id)
+            .await?
+            .ok_or_else(|| ZapError::New(-1, "父账号不存在".to_string()))?;
+        if parent.user_kind == USER_KIND_MEMBER {
+            return Err(ZapError::New(
+                -1,
+                "成员账号下不能再创建成员（只支持一层）".to_string(),
+            ));
+        }
+        if parent.home_dir.is_empty() || parent.linux_user.is_empty() {
+            return Err(ZapError::New(
+                -1,
+                "父账号尚未初始化家目录与系统账号，无法创建成员".to_string(),
+            ));
+        }
+        home_dir = parent.home_dir;
+        lu = parent.linux_user;
+        package_id = parent.package_id;
+        // PHP-FPM：成员复用父账号的 pool，不单独配置规格
+        fpm_pool = String::new();
+        fpm_spec_ref = String::new();
+    } else {
+        // reseller 创建的客户归属自己；admin 可指定归属（默认系统直属）
+        owner_id = if is_admin {
+            payload.owner_id.unwrap_or(0)
+        } else {
+            claims.id as i64
+        };
+        // 套餐：校验可见性（admin 全部；reseller 仅全局与自己名下）
+        package = match payload.package_id.filter(|v| *v > 0) {
+            Some(pid) => Some(
+                crate::routers::package::load_for_actor(pid, is_admin, claims.id as i64).await?,
+            ),
+            None => None,
+        };
+        package_id = package.as_ref().map(|p| p.id).unwrap_or(0);
+        // fpm 规格：fpm_pool（旧版自定义 JSON）与 fpm_spec_ref（模板/继承/默认）互斥。
+        // 前端新流程只传 fpm_spec_ref；一旦显式指定引用，不再保留自定义 JSON（避免遮蔽模板）。
+        fpm_pool = normalize_fpm_spec(payload.fpm_pool)?.unwrap_or_default();
+        fpm_spec_ref = payload.fpm_spec_ref.unwrap_or_default().trim().to_string();
+        // 未显式选择模板时继承套餐绑定的 FPM 规格模板
+        if fpm_spec_ref.is_empty()
+            && let Some(p) = &package
+            && !p.fpm_spec_ref.trim().is_empty()
+        {
+            fpm_spec_ref = p.fpm_spec_ref.trim().to_string();
+            // 套餐模板可能由 admin 创建，reseller 使用时同样校验可见性
+            crate::routers::fpm_spec::validate_spec_ref(&fpm_spec_ref, is_admin, &claims.sub)
+                .await?;
+        }
+        if !fpm_spec_ref.is_empty() {
+            fpm_pool.clear();
+        }
+        // 引用校验：reseller 只能选自己名下或全局通用模板；admin 校验模板存在性
+        if fpm_spec_ref.is_empty() || fpm_spec_ref == crate::routers::fpm_spec::INHERIT {
+            // '' 与 inherit 恒允许
+        } else if is_admin {
+            crate::routers::fpm_spec::validate_spec_ref(&fpm_spec_ref, true, "").await?;
+        } else {
+            crate::routers::fpm_spec::validate_spec_ref(&fpm_spec_ref, false, &claims.sub).await?;
+        }
+
+        // 家目录 / Linux 账号：{默认挂载点}/{linux_username(username)} 派生，
+        // 站点文档根与站点日志均规划于其下；派生名与已有账号冲突时追加 -n 后缀。
+        // 默认挂载点取自运行环境默认设置（conf: user_home_root，默认 /home）；
+        // /home 磁盘不足时管理员可切换到新挂载点（如 /home2），此后新建用户即落到新挂载点，
+        // 存量用户不受影响（数据迁移请使用「服务器配置 → 数据迁移」）。
+        let lu_base = zap_proto::linux_username(&payload.username);
+        let pool = db::get_db_pool().await;
+        let mut cand = lu_base.clone();
+        let mut n: i64 = 2;
+        loop {
+            let cnt: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM user WHERE linux_user = ? AND linux_user != ''",
+            )
+            .bind(&cand)
+            .fetch_one(pool)
+            .await
+            .unwrap_or((0,));
+            if cnt.0 == 0 {
+                break;
+            }
+            cand = format!("{lu_base}-{n}");
+            n += 1;
+        }
+        let home_root = crate::zap::server_env::conf_get("user_home_root")
+            .filter(|s| s.starts_with('/') && !s.contains("..") && s.len() > 1)
+            .unwrap_or_else(|| "/home".to_string());
+        lu = cand;
+        home_dir = format!("{home_root}/{lu}");
     }
-    let home_root = crate::zap::server_env::conf_get("user_home_root")
-        .filter(|s| s.starts_with('/') && !s.contains("..") && s.len() > 1)
-        .unwrap_or_else(|| "/home".to_string());
-    let home_dir = format!("{home_root}/{lu}");
 
     // 附加权限：预先归一化（只保留权限目录内合法 key），供写入与审计共用
     let granted_perms = payload
@@ -591,9 +724,16 @@ pub async fn user_add(
         .as_ref()
         .map(|p| p.normalize())
         .unwrap_or_default();
+    // 父账号对成员的收紧清单（仅成员生效），同样只保留合法 key
+    let denied_perms = payload
+        .perm_deny
+        .as_ref()
+        .map(|p| p.normalize())
+        .unwrap_or_default();
 
+    let pool = db::get_db_pool().await;
     let result = sqlx::query(
-        "INSERT INTO user (username, home_dir, linux_user, fpm_pool, fpm_spec_ref, password, email, phone, nickname, roles, permissions, owner_id, package_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        "INSERT INTO user (username, home_dir, linux_user, fpm_pool, fpm_spec_ref, password, email, phone, nickname, roles, permissions, owner_id, user_kind, perm_deny, package_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
     )
     .bind(&payload.username)
     .bind(&home_dir)
@@ -607,6 +747,8 @@ pub async fn user_add(
     .bind(&roles)
     .bind(&granted_perms)
     .bind(owner_id)
+    .bind(if is_member_create { USER_KIND_MEMBER } else { 0 })
+    .bind(&denied_perms)
     .bind(package_id)
     .bind(now)
     .bind(now)
@@ -616,21 +758,21 @@ pub async fn user_add(
     match result {
         Ok(r) => {
             audit::log(
-                Some(&claims),
-                Some(client_addr.ip().to_string().as_str()),
+                Some(claims),
+                Some(ip),
                 "user_create",
                 &format!("id={}", r.last_insert_rowid()),
                 &format!("username={}", payload.username),
             )
             .await;
-            // 建号即带附加权限 → 单独审计 + 权限缓存立即失效
-            if payload.permissions.is_some() {
+            // 建号即带附加权限 / 收紧清单 → 单独审计 + 权限缓存立即失效
+            if payload.permissions.is_some() || payload.perm_deny.is_some() {
                 crate::routers::access::invalidate_user_perm_cache();
                 audit_permissions_set(
-                    &claims,
-                    client_addr.ip().to_string().as_str(),
+                    claims,
+                    ip,
                     r.last_insert_rowid(),
-                    &granted_perms,
+                    &format!("grant=[{}] deny=[{}]", granted_perms, denied_perms),
                 )
                 .await;
             }
@@ -640,14 +782,17 @@ pub async fn user_add(
                 r.last_insert_rowid()
             );
             // 按全局运行模式补齐运行实体（system=Linux 账号 / www=家目录骨架）。
-            // 尽力而为：失败仅告警，站点同步时仍会递归补齐
+            // 尽力而为：失败仅告警，站点同步时仍会递归补齐。
+            // 成员共享父账号的运行实体，不需要也不能建自己的系统账号。
             let new_id = r.last_insert_rowid();
-            if let Err(e) = ensure_user_runtime(new_id).await {
-                warn!("初始化用户运行实体失败(id={}): {}", new_id, e);
-            }
-            // 套餐：下发磁盘配额（系统账号就绪后执行，best-effort）
-            if package.is_some() {
-                sync_package_quota(new_id).await;
+            if !is_member_create {
+                if let Err(e) = ensure_user_runtime(new_id).await {
+                    warn!("初始化用户运行实体失败(id={}): {}", new_id, e);
+                }
+                // 套餐：下发磁盘配额（系统账号就绪后执行，best-effort）
+                if package.is_some() {
+                    sync_package_quota(new_id).await;
+                }
             }
             Ok(Json(json!({
                 "code": 0,
@@ -680,10 +825,20 @@ pub async fn user_add(
 /// Update an existing user.
 /// - admin: any user
 /// - reseller: own customers only, and cannot change roles
+/// - 任意用户：自己的成员（子账号），可改基本信息 / 状态 / 密码 / 权限收紧
 pub async fn user_update(
     claims: Claims,
     Extension(client_addr): Extension<SocketAddr>,
     Json(payload): Json<UpdateUserPayload>,
+) -> ZapJsonResult {
+    update_user_inner(&claims, &client_addr.ip().to_string(), payload).await
+}
+
+/// 更新用户的实际实现：`/system/user/update` 与 `/user/team/update` 共用。
+async fn update_user_inner(
+    claims: &jwt::Claims,
+    ip: &str,
+    payload: UpdateUserPayload,
 ) -> ZapJsonResult {
     // 内置管理员保护：不可禁用、角色不可变更；其余信息（含密码）仅本人可改
     if payload.id == ROOT_ADMIN_ID {
@@ -701,18 +856,18 @@ pub async fn user_update(
         }
     }
     // 非管理员不能修改角色（防止提权，admin 除外）
-    if !jwt::is_admin(&claims) && payload.roles.is_some() {
+    if !jwt::is_admin(claims) && payload.roles.is_some() {
         return Err(ZapError::New(-1, "权限不足，不能修改角色".to_string()));
     }
     // PHP-FPM pool 规格（资源配额类）仅管理员可配置
-    if !jwt::is_admin(&claims) && payload.fpm_pool.is_some() {
+    if !jwt::is_admin(claims) && payload.fpm_pool.is_some() {
         return Err(ZapError::New(
             -1,
             "权限不足，不能修改 PHP-FPM 自定义规格".to_string(),
         ));
     }
     // fpm_spec_ref（模板 / 继承）：reseller 可为自己客户设置，但只能选自己名下或全局通用模板
-    if !jwt::is_admin(&claims) && payload.fpm_spec_ref.is_some() {
+    if !jwt::is_admin(claims) && payload.fpm_spec_ref.is_some() {
         let rv = payload.fpm_spec_ref.as_deref().unwrap_or("").trim();
         if !rv.is_empty() && rv != crate::routers::fpm_spec::INHERIT {
             crate::routers::fpm_spec::validate_spec_ref(rv, false, &claims.sub).await?;
@@ -722,15 +877,15 @@ pub async fn user_update(
     if let Some(pid) = payload.package_id
         && pid > 0
     {
-        crate::routers::package::load_for_actor(pid, jwt::is_admin(&claims), claims.id as i64)
+        crate::routers::package::load_for_actor(pid, jwt::is_admin(claims), claims.id as i64)
             .await?;
     }
 
     // 更新他人时的归属/权限校验
     if payload.id != claims.id as i64 {
-        if jwt::is_admin(&claims) {
+        if jwt::is_admin(claims) {
             // admin: full access
-        } else if jwt::is_reseller(&claims) {
+        } else if jwt::is_reseller(claims) {
             // reseller: own customers only
             let owner_id = get_user_owner_id(payload.id).await?;
             if owner_id != claims.id as i64 {
@@ -739,8 +894,10 @@ pub async fn user_update(
                     "权限不足，只能管理自己的客户".to_string(),
                 ));
             }
+        } else if is_own_member(claims, payload.id).await {
+            // 父账号管理自己的成员：角色 / FPM / 套餐类字段由下面的通用规则继续收敛
         } else {
-            require_admin(&claims)?;
+            require_admin(claims)?;
         }
     }
 
@@ -756,7 +913,8 @@ pub async fn user_update(
         || payload.fpm_pool.is_some()
         || payload.fpm_spec_ref.is_some()
         || payload.package_id.is_some()
-        || payload.permissions.is_some();
+        || payload.permissions.is_some()
+        || payload.perm_deny.is_some();
 
     if !has_any_field {
         return Err(ZapError::New(-1, "没有需要更新的字段".to_string()));
@@ -796,6 +954,11 @@ pub async fn user_update(
             .push("permissions = ")
             .push_bind_unseparated(perms.normalize());
     }
+    if let Some(ref deny) = payload.perm_deny {
+        separated
+            .push("perm_deny = ")
+            .push_bind_unseparated(deny.normalize());
+    }
     if let Some(status) = payload.status {
         separated.push("status = ").push_bind_unseparated(status);
     }
@@ -818,7 +981,7 @@ pub async fn user_update(
     }
     if let Some(ref rv) = payload.fpm_spec_ref {
         let norm = rv.trim().to_string();
-        if jwt::is_admin(&claims) && !norm.is_empty() && norm != crate::routers::fpm_spec::INHERIT {
+        if jwt::is_admin(claims) && !norm.is_empty() && norm != crate::routers::fpm_spec::INHERIT {
             crate::routers::fpm_spec::validate_spec_ref(&norm, true, "").await?;
         }
         separated
@@ -854,22 +1017,35 @@ pub async fn user_update(
     }
 
     audit::log(
-        Some(&claims),
-        Some(client_addr.ip().to_string().as_str()),
+        Some(claims),
+        Some(ip),
         "user_update",
         &format!("id={}", payload.id),
         "",
     )
     .await;
 
-    // 附加权限变更：单独审计 + 权限缓存立即失效
-    if let Some(ref perms) = payload.permissions {
+    // 附加权限 / 收紧清单变更：单独审计 + 权限缓存立即失效
+    // （收紧清单会改变成员的生效权限，必须立刻失效，不能等缓存过期）
+    if payload.permissions.is_some() || payload.perm_deny.is_some() {
         crate::routers::access::invalidate_user_perm_cache();
         audit_permissions_set(
-            &claims,
-            client_addr.ip().to_string().as_str(),
+            claims,
+            ip,
             payload.id,
-            &perms.normalize(),
+            &format!(
+                "grant=[{}] deny=[{}]",
+                payload
+                    .permissions
+                    .as_ref()
+                    .map(|p| p.normalize())
+                    .unwrap_or_default(),
+                payload
+                    .perm_deny
+                    .as_ref()
+                    .map(|p| p.normalize())
+                    .unwrap_or_default(),
+            ),
         )
         .await;
     }
@@ -887,40 +1063,63 @@ pub async fn user_update(
     Ok(Json(resp))
 }
 
-/// Delete a user — admin: any; reseller: own customers only
+/// Delete a user — admin: any; reseller: own customers only；任意用户可删除自己的成员
 pub async fn user_delete(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
     Json(payload): Json<DeleteUserPayload>,
 ) -> ZapJsonResult {
-    if payload.id == ROOT_ADMIN_ID {
+    delete_user_inner(&claims, &client_addr.ip().to_string(), payload.id).await
+}
+
+/// 删除用户的实际实现：`/system/user/delete` 与 `/user/team/delete` 共用。
+async fn delete_user_inner(claims: &jwt::Claims, ip: &str, id: i64) -> ZapJsonResult {
+    if id == ROOT_ADMIN_ID {
         return Err(ZapError::New(-1, "内置管理员账号不可删除".to_string()));
     }
-    if jwt::is_admin(&claims) {
+    if jwt::is_admin(claims) {
         // admin: full access (still cannot delete self)
-    } else if jwt::is_reseller(&claims) {
+    } else if jwt::is_reseller(claims) {
         // reseller: own customers only
-        let owner_id = get_user_owner_id(payload.id).await?;
+        let owner_id = get_user_owner_id(id).await?;
         if owner_id != claims.id as i64 {
             return Err(ZapError::New(
                 -1,
                 "权限不足，只能删除自己的客户".to_string(),
             ));
         }
+    } else if is_own_member(claims, id).await {
+        // 父账号删除自己的成员
     } else {
-        require_admin(&claims)?;
+        require_admin(claims)?;
     }
 
-    if payload.id == claims.id as i64 {
+    if id == claims.id as i64 {
         return Err(ZapError::New(-1, "不能删除自己".to_string()));
     }
 
     let pool = db::get_db_pool().await;
 
+    // 目标账号的归属信息：成员共享父账号的系统账号，删除时绝不能连带 userdel
+    let is_member = user_is_member(id).await;
+    // 名下还有成员时不允许删除：成员会变成无主账号（归属落空且无人可管）
+    let member_cnt: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM user WHERE owner_id = ? AND user_kind = 1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+    if member_cnt > 0 {
+        return Err(ZapError::New(
+            -1,
+            format!("该用户名下还有 {member_cnt} 个成员账号，请先删除这些成员"),
+        ));
+    }
+
     // 独立系统用户模式下，站点的 vhost / FPM pool / 目录都绑定归属用户的 Linux 账号，
     // 直接删除会让这些配置全部悬空且无法回收，因此要求先处理站点
     let site_cnt: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM site WHERE user_id = ?")
-        .bind(payload.id)
+        .bind(id)
         .fetch_one(pool)
         .await
         .unwrap_or(0);
@@ -931,15 +1130,20 @@ pub async fn user_delete(
         ));
     }
 
-    // 先记录待清理的 Linux 账号（删除用户后按它清 pool + userdel）
-    let linux_user: Option<String> = sqlx::query_scalar("SELECT linux_user FROM user WHERE id = ?")
-        .bind(payload.id)
-        .fetch_optional(pool)
-        .await?
-        .filter(|s: &String| !s.is_empty());
+    // 先记录待清理的 Linux 账号（删除用户后按它清 pool + userdel）。
+    // 成员共享父账号的系统账号，这里必须留空，否则会把父账号一起 userdel 掉。
+    let linux_user: Option<String> = if is_member {
+        None
+    } else {
+        sqlx::query_scalar("SELECT linux_user FROM user WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .filter(|s: &String| !s.is_empty())
+    };
 
     let result = sqlx::query("DELETE FROM user WHERE id = ?")
-        .bind(payload.id)
+        .bind(id)
         .execute(pool)
         .await?;
 
@@ -949,7 +1153,7 @@ pub async fn user_delete(
 
     // 清理该用户的 SSL 证书：先解除站点 HTTPS 绑定引用，再删除证书，避免悬空
     let cert_ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM ssl_cert WHERE user_id = ?")
-        .bind(payload.id)
+        .bind(id)
         .fetch_all(pool)
         .await
         .unwrap_or_default();
@@ -974,13 +1178,13 @@ pub async fn user_delete(
         .await
         {
             Ok(resp) if resp.code != 0 => {
-                warn!("清理 Linux 账号失败(id={}): {}", payload.id, resp.message);
+                warn!("清理 Linux 账号失败(id={}): {}", id, resp.message);
             }
             Err(e) => {
-                warn!("清理 Linux 账号失败(id={}): {}", payload.id, e);
+                warn!("清理 Linux 账号失败(id={}): {}", id, e);
             }
             _ => {
-                info!("Linux 账号已清理: {} (user id={})", lu, payload.id);
+                info!("Linux 账号已清理: {} (user id={})", lu, id);
             }
         }
     }
@@ -988,19 +1192,170 @@ pub async fn user_delete(
     crate::routers::access::invalidate_user_perm_cache();
 
     audit::log(
-        Some(&claims),
-        Some(client_addr.ip().to_string().as_str()),
+        Some(claims),
+        Some(ip),
         "user_delete",
-        &format!("id={}", payload.id),
+        &format!("id={id}"),
         "",
     )
     .await;
 
-    info!("User deleted: id={}", payload.id);
+    info!("User deleted: id={}", id);
     Ok(Json(json!({
         "code": 0,
         "message": "用户删除成功"
     })))
+}
+
+// ── 团队成员（子账号）────────────────────────────────────────
+// 成员共享父账号的家目录与 Linux 系统账号（同一个 uid），权限默认继承父账号的
+// 生效权限，父账号可通过 `perm_deny` 再收紧。层级固定一层：成员不能再建成员。
+//
+// 这几个接口的角色下限是普通用户（`/user` 前缀），让任何用户都能管理自己的团队，
+// 不必拥有「用户管理」模块（system.user:*）的权限。
+
+#[derive(Debug, Deserialize)]
+pub struct TeamAddPayload {
+    pub username: String,
+    pub password: String,
+    pub email: String,
+    pub phone: Option<String>,
+    pub nickname: Option<String>,
+    /// 父账号对该成员收紧（取消）的权限点（逗号分隔或数组）
+    #[serde(default)]
+    pub perm_deny: Option<PermissionInput>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TeamUpdatePayload {
+    pub id: i64,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub nickname: Option<String>,
+    pub status: Option<i32>,
+    pub password: Option<String>,
+    /// 收紧清单（不传 = 不改动；传空数组/空串 = 取消全部收紧）
+    #[serde(default)]
+    pub perm_deny: Option<PermissionInput>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TeamDeletePayload {
+    pub id: i64,
+}
+
+/// 当前用户名下的成员列表（含共享的家目录 / 系统账号，便于前端说明「共用父账号」）。
+pub async fn team_list(claims: Claims) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let rows: Vec<TeamRow> = sqlx::query_as(
+        "SELECT id, username, nickname, email, phone, status, roles, permissions, perm_deny, \
+                home_dir, linux_user, last_login_time, last_login_ip, created_at, updated_at \
+         FROM user WHERE owner_id = ? AND user_kind = 1 ORDER BY id DESC",
+    )
+    .bind(claims.id as i64)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(Json(json!({
+        "code": 0,
+        "message": "OK",
+        "data": rows.iter().map(|r| {
+            json!({
+                "id": r.id,
+                "username": r.username,
+                "nickname": r.nickname,
+                "email": r.email,
+                "phone": r.phone.clone().unwrap_or_default(),
+                "status": r.status,
+                "roles": r.roles.split(',').collect::<Vec<&str>>(),
+                "permissions": r.permissions.split(',').filter(|s| !s.is_empty()).collect::<Vec<&str>>(),
+                "perm_deny": r.perm_deny.split(',').filter(|s| !s.is_empty()).collect::<Vec<&str>>(),
+                // 共享父账号的家目录与系统账号（展示用：说明成员不单独建账号）
+                "home_dir": r.home_dir,
+                "linux_user": r.linux_user,
+                "last_login_time": r.last_login_time,
+                "last_login_ip": r.last_login_ip,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at,
+            })
+        }).collect::<Vec<Value>>(),
+        "total": rows.len(),
+    })))
+}
+
+#[derive(sqlx::FromRow)]
+struct TeamRow {
+    id: i64,
+    username: String,
+    nickname: String,
+    email: String,
+    phone: Option<String>,
+    status: i32,
+    roles: String,
+    permissions: String,
+    perm_deny: String,
+    home_dir: String,
+    linux_user: String,
+    last_login_time: i64,
+    last_login_ip: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
+/// 新增成员（强制挂在自己名下、强制 user_kind=成员）。
+pub async fn team_add(
+    claims: Claims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<TeamAddPayload>,
+) -> ZapJsonResult {
+    let inner = CreateUserPayload {
+        username: payload.username,
+        password: payload.password,
+        email: payload.email,
+        phone: payload.phone,
+        nickname: payload.nickname,
+        roles: None,
+        owner_id: Some(claims.id as i64),
+        fpm_pool: None,
+        fpm_spec_ref: None,
+        package_id: None,
+        permissions: None,
+        user_kind: Some(USER_KIND_MEMBER),
+        perm_deny: payload.perm_deny,
+    };
+    create_user_inner(&claims, &client_addr.ip().to_string(), inner).await
+}
+
+/// 修改自己的成员（基本信息 / 状态 / 密码 / 权限收紧）。
+pub async fn team_update(
+    claims: Claims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<TeamUpdatePayload>,
+) -> ZapJsonResult {
+    let inner = UpdateUserPayload {
+        id: payload.id,
+        email: payload.email,
+        phone: payload.phone,
+        nickname: payload.nickname,
+        roles: None,
+        status: payload.status,
+        password: payload.password,
+        fpm_pool: None,
+        fpm_spec_ref: None,
+        package_id: None,
+        permissions: None,
+        perm_deny: payload.perm_deny,
+    };
+    update_user_inner(&claims, &client_addr.ip().to_string(), inner).await
+}
+
+/// 删除自己的成员（不会连带删除共享的父账号系统账号）。
+pub async fn team_delete(
+    claims: Claims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<TeamDeletePayload>,
+) -> ZapJsonResult {
+    delete_user_inner(&claims, &client_addr.ip().to_string(), payload.id).await
 }
 
 /// List all reseller users — admin only (used to assign customer ownership)
@@ -1033,8 +1388,9 @@ pub async fn user_home_sync(
     require_admin(&claims)?;
 
     let pool = db::get_db_pool().await;
+    // 成员共享父账号的运行实体，跳过（父账号自己会补齐，重复执行没有意义）
     let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
-        "SELECT id, username, home_dir, linux_user FROM user WHERE home_dir != '' ORDER BY id",
+        "SELECT id, username, home_dir, linux_user FROM user WHERE home_dir != '' AND user_kind != 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await?;

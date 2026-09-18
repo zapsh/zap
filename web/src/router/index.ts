@@ -160,6 +160,22 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         },
         ],
         },
+  // 团队成员（子账号）：Layout 包裹 + 一级直链，admin / user / reseller 可用。
+  // 成员账号自己也能看到该菜单，但「新增」会被后端拦掉（成员不能再建成员）。
+  {
+    path: '/team',
+    component: Layout,
+    redirect: '/team/index',
+    meta: { title: '团队成员', icon: 'material-symbols:group', roles: ['admin', 'user', 'reseller'] },
+    children: [
+      {
+        path: 'index',
+        name: 'TeamIndex',
+        component: () => import('@/views/team/index.vue'),
+        meta: { title: '团队成员', icon: 'material-symbols:group', affix: true },
+      },
+    ],
+  },
   // SSL/TLS（Layout 包裹 + 一级直链：admin / user）
   {
     path: '/ssl-tls',

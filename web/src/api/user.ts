@@ -41,6 +41,12 @@ export interface UserListItem {
   roles: string[]
   permissions: string[]
   owner_id: number
+  /** 归属用户名（owner_id 对应用户；0 或已删除时为空串） */
+  owner_username: string
+  /** 用户类型：0=客户（独立家目录与系统账号）/ 1=成员（共享父账号） */
+  user_kind: number
+  /** 父账号对该成员收紧（取消）的权限点；仅成员有值 */
+  perm_deny: string[]
   /** 绑定的套餐 id；0 = 未绑定套餐 */
   package_id: number
   /** 套餐名（未绑定时为空串） */
@@ -91,6 +97,10 @@ export interface CreateUserPayload {
   package_id?: number
   /** 个人附加权限点：在角色权限之外单独授予（只做加法，admin） */
   permissions?: string[]
+  /** 用户类型：0=客户（默认） / 1=成员（子账号，共享归属用户的家目录与系统账号） */
+  user_kind?: number
+  /** 父账号对该成员收紧（取消）的权限点；仅成员生效 */
+  perm_deny?: string[]
 }
 
 /** 新增用户（返回 id / 家目录 / Linux 账号） */
@@ -120,6 +130,8 @@ export interface UpdateUserPayload {
   package_id?: number
   /** 个人附加权限点；传空数组 = 清空附加权限（admin） */
   permissions?: string[]
+  /** 父账号对该成员收紧（取消）的权限点；传空数组 = 取消全部收紧 */
+  perm_deny?: string[]
 }
 
 /** 更新用户结果 */
@@ -138,6 +150,73 @@ export function deleteUser(id: number) {
 /** 修改当前用户密码 */
 export function changeMyPassword(newPassword: string) {
   return http.post<ApiResponse>('/system/user/update', { password: newPassword })
+}
+
+// ── 团队成员（子账号）───────────────────────────────────────
+//
+// 成员共享父账号的家目录与 Linux 系统账号（同一个 uid），权限默认继承父账号的
+// 生效权限，父账号可通过 perm_deny 再收紧。层级固定一层：成员不能再建成员。
+
+/** 团队成员（子账号）列表项 */
+export interface TeamMemberItem {
+  id: number
+  username: string
+  nickname: string
+  email: string
+  phone: string
+  status: number
+  roles: string[]
+  permissions: string[]
+  /** 父账号收紧（收回）的权限点 */
+  perm_deny: string[]
+  /** 共享的家目录与系统账号（取自父账号，成员不单独建） */
+  home_dir: string
+  linux_user: string
+  last_login_time: number
+  last_login_ip: string
+  created_at: number
+  updated_at: number
+}
+
+/** 新增成员参数 */
+export interface TeamAddPayload {
+  username: string
+  password: string
+  email: string
+  phone?: string
+  nickname?: string
+  perm_deny?: string[]
+}
+
+/** 修改成员参数 */
+export interface TeamUpdatePayload {
+  id: number
+  email?: string
+  phone?: string
+  nickname?: string
+  status?: number
+  password?: string
+  perm_deny?: string[]
+}
+
+/** 团队成员列表（当前用户名下的成员） */
+export function getTeamList() {
+  return http.get<ApiResponse<TeamMemberItem[]>>('/user/team/list')
+}
+
+/** 新增成员 */
+export function createTeamMember(data: TeamAddPayload) {
+  return http.post<ApiResponse<{ id: number }>>('/user/team/add', data)
+}
+
+/** 修改成员（基本信息 / 状态 / 密码 / 收紧权限） */
+export function updateTeamMember(data: TeamUpdatePayload) {
+  return http.post<ApiResponse>('/user/team/update', data)
+}
+
+/** 删除成员（只删面板账号，不动共享的系统账号） */
+export function deleteTeamMember(id: number) {
+  return http.post<ApiResponse>('/user/team/delete', { id })
 }
 
 // ── 家目录 / 运行实体同步 ──────────────────────────────────

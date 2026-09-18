@@ -489,6 +489,9 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Admin,
         Some(Perm::action("system.user", "sync")),
     ),
+    // 权限点目录：只是静态的文案/分组元数据，不含任何用户数据，
+    // 开放给普通用户是为了让"团队成员"页面能给成员做权限收紧选择。
+    ("/system/role/permission-catalog", Required::User, None),
     // 家目录备份：任意登录用户可备份自己的家目录，目标用户名在 handler 内收敛
     (
         "/system/user/backup-home",
@@ -1031,10 +1034,14 @@ fn cache_slot() -> &'static RwLock<Option<Arc<PermMap>>> {
 }
 
 /// 角色权限变更后调用，立即失效缓存（撤销权限不必等过期）。
+///
+/// 用户生效权限由角色权限推导而来，角色一改成员的继承结果也跟着变，
+/// 因此这里必须连带清掉用户生效权限缓存（否则成员要等到下次用户变更才生效）。
 pub fn invalidate_perm_cache() {
     if let Ok(mut guard) = cache_slot().write() {
         *guard = None;
     }
+    invalidate_user_perm_cache();
 }
 
 async fn load_perm_map() -> PermMap {
@@ -1070,37 +1077,19 @@ pub async fn perm_map() -> Arc<PermMap> {
     map
 }
 
-/// 一组角色拥有的全部权限点（供 `/user/info` 回传前端做体验层控制）。
+// ── 用户生效权限缓存 ───────────────────────────────────────
+
+/// 用户类型：成员（子账号）。见 `user.user_kind`。
 ///
-/// 注意：这里的结果**只用于前端展示与按钮禁用**，真正的拦截在 `guard` 里。
-pub async fn permissions_of_roles(roles: &str) -> Vec<String> {
-    let mut set: HashSet<String> = HashSet::new();
-    let keys: Vec<&str> = roles
-        .split(',')
-        .map(str::trim)
-        .filter(|r| !r.is_empty())
-        .collect();
+/// 成员共享父账号（`owner_id`）的家目录与 Linux 系统账号，权限默认继承父账号。
+pub const USER_KIND_MEMBER: i32 = 1;
 
-    // admin 与运行时直通保持一致：视为持有全部权限点
-    if keys.contains(&"admin") {
-        set.extend(all_perm_keys());
-    } else {
-        let map = perm_map().await;
-        for r in &keys {
-            if let Some(s) = map.get(*r) {
-                set.extend(s.iter().cloned());
-            }
-        }
-    }
+/// 继承链最大解析深度（成员只允许一层，迭代只是防御脏数据成环）。
+const MAX_INHERIT_DEPTH: usize = 4;
 
-    let mut out: Vec<String> = set.into_iter().collect();
-    out.sort();
-    out
-}
-
-// ── 个人附加权限缓存 ───────────────────────────────────────
-
-/// `user.id → 附加权限点集合`（取自 `user.permissions`，逗号分隔）。
+/// `user.id → 生效权限点集合`。
+///
+/// 生效 = 自身（角色授予 ∪ 个人附加）∪ 父账号继承（成员） − 父账号收紧（perm_deny）。
 type UserPermMap = HashMap<i64, HashSet<String>>;
 static USER_PERM_CACHE: OnceLock<RwLock<Option<Arc<UserPermMap>>>> = OnceLock::new();
 
@@ -1115,25 +1104,89 @@ pub fn invalidate_user_perm_cache() {
     }
 }
 
+/// 用户自身权限点（不含继承）：角色授予 ∪ 个人附加权限。
+fn own_perms(role_perms: &PermMap, roles: &str, extra: &str) -> HashSet<String> {
+    let mut set: HashSet<String> = HashSet::new();
+    let keys: Vec<&str> = roles
+        .split(',')
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .collect();
+    // admin 与运行时直通保持一致：视为持有全部权限点
+    if keys.contains(&"admin") {
+        set.extend(all_perm_keys());
+    } else {
+        for r in &keys {
+            if let Some(s) = role_perms.get(*r) {
+                set.extend(s.iter().cloned());
+            }
+        }
+    }
+    for p in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        set.insert(p.to_string());
+    }
+    set
+}
+
+fn split_keys(csv: &str) -> HashSet<String> {
+    csv.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
 async fn load_user_perm_map() -> UserPermMap {
     let Some(pool) = crate::db::get_db_pool_opt().await else {
         return UserPermMap::new();
     };
-    let rows: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT id, permissions FROM user WHERE permissions IS NOT NULL AND permissions != ''",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let rows: Vec<(i64, String, String, i64, i32, String)> =
+        sqlx::query_as("SELECT id, roles, permissions, owner_id, user_kind, perm_deny FROM user")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
 
-    let mut map = UserPermMap::new();
-    for (uid, perms) in rows {
-        let set = map.entry(uid).or_default();
-        for p in perms.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            set.insert(p.to_string());
+    let role_perms = perm_map().await;
+    let mut own: UserPermMap = UserPermMap::new();
+    // 成员 → 父账号；仅 user_kind=1 且 owner_id 有效时登记
+    let mut parent_of: HashMap<i64, i64> = HashMap::new();
+    let mut deny_of: HashMap<i64, HashSet<String>> = HashMap::new();
+    for (id, roles, permissions, owner_id, user_kind, perm_deny) in rows {
+        own.insert(id, own_perms(&role_perms, &roles, &permissions));
+        if user_kind == USER_KIND_MEMBER && owner_id > 0 && owner_id != id {
+            parent_of.insert(id, owner_id);
+            deny_of.insert(id, split_keys(&perm_deny));
         }
     }
-    map
+
+    // 成员默认全量继承父账号的生效权限，父账号可再收紧：
+    // 生效 = （父生效 ∪ 自身）− perm_deny，且高危权限（EXPLICIT_ONLY）只能本人显式持有。
+    let mut eff = own.clone();
+    for _ in 0..MAX_INHERIT_DEPTH {
+        let mut changed = false;
+        for (id, parent) in &parent_of {
+            let Some(parent_set) = eff.get(parent).cloned() else {
+                continue;
+            };
+            let self_set = own.get(id).cloned().unwrap_or_default();
+            let mut merged = parent_set;
+            merged.extend(self_set.iter().cloned());
+            merged.retain(|k| !EXPLICIT_ONLY_PERMS.contains(&k.as_str()) || self_set.contains(k));
+            if let Some(d) = deny_of.get(id) {
+                for k in d {
+                    merged.remove(k);
+                }
+            }
+            if eff.get(id) != Some(&merged) {
+                eff.insert(*id, merged);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    eff
 }
 
 pub async fn user_perm_map() -> Arc<UserPermMap> {
@@ -1149,12 +1202,20 @@ pub async fn user_perm_map() -> Arc<UserPermMap> {
     map
 }
 
-/// 个人附加权限命中。
-///
-/// 语义：**只做加法**——给某个用户临时开小灶（如让某个 reseller 单独能改服务器配置）。
-/// 它不能用来"收回"角色已授予的权限，因此角色依然是权限的主体来源。
+/// 用户是否持有该权限点（**生效**权限：含成员继承与父账号收紧）。
 pub fn user_has_perm(map: &UserPermMap, uid: u64, key: &str) -> bool {
     map.get(&(uid as i64)).is_some_and(|set| set.contains(key))
+}
+
+/// 某用户的生效权限点（排序后）：供 `/user/info` 回传前端做按钮级控制。
+pub async fn effective_permissions_of(uid: u64) -> Vec<String> {
+    let mut out: Vec<String> = user_perm_map()
+        .await
+        .get(&(uid as i64))
+        .map(|set| set.iter().cloned().collect())
+        .unwrap_or_default();
+    out.sort();
+    out
 }
 
 /// 用户（其任一角色）是否持有该权限点。

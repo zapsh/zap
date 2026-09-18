@@ -119,6 +119,9 @@ const enUS: Messages = {
     // Container management (menus id=17 / 171)
     docker: 'Containers',
     'docker-index': 'Container',
+    // Team members / sub-accounts (menus id=18 / 181)
+    team: 'Team',
+    'team-index': 'Team',
     docs: 'Docs',
     profile: 'Profile',
     messages: 'Messages',
@@ -341,6 +344,56 @@ const enUS: Messages = {
     nicknameTip: 'Defaults to the username if left empty',
     rootProtected:
       'Built-in administrator is protected: it cannot be deleted or disabled, and only itself can edit it',
+    emailRequired: 'Please enter an email address',
+    emailInvalid: 'Invalid email address',
+    passwordRequired: 'Please enter a password',
+    passwordLength: 'At least 6 characters',
+
+    // User kind (customer / member)
+    kind: 'Kind',
+    kindCustomer: 'Customer',
+    kindMember: 'Member',
+    kindMemberTip: 'Shares the home dir and system account of {owner}; permissions inherit from it',
+    denyPerm: 'Revoke',
+    denyPermPlaceholder: 'Permissions revoked from this member (optional)',
+    denyPermTip:
+      'Members inherit all permissions of the parent by default; checked ones are revoked (high-risk permissions are never inherited)',
+  },
+
+  /** Team members (sub-accounts) */
+  team: {
+    title: 'Team',
+    subtitle:
+      'Members share your home directory and Linux account, inherit your permissions by default and can be restricted individually; members cannot create members',
+    add: 'New Member',
+    edit: 'Edit Member',
+    username: 'Username',
+    nickname: 'Nickname',
+    email: 'Email',
+    phone: 'Phone',
+    password: 'Password',
+    passwordKeepTip: 'Leave blank to keep the current password',
+    status: 'Status',
+    lastLogin: 'Last Login',
+    neverLogin: 'Never',
+    sharedHome: 'Shared Home',
+    sharedAccount: 'Shared Account',
+    sharedTip:
+      'Members do not get their own Linux account: they share {dir} with you (SSH / files / PHP-FPM all run as your account)',
+    inheritTip:
+      'Members get all your permissions by default; checked ones are revoked. High-risk permissions (e.g. docker:build) are never inherited',
+    denyPerm: 'Revoke',
+    denyPermPlaceholder: 'Pick permissions to revoke from this member (optional)',
+    sshTip:
+      'Members share your Linux account: their SSH / terminal actions are logged as your account and they can leave credentials in your home directory',
+    deleteConfirm: 'Delete member "{name}"?',
+    deleteTip: 'Deleting a member only removes the panel account, not the shared home/dir account',
+    toggleConfirm: '{action} member "{name}"?',
+    createSuccess: 'Member created',
+    updateSuccess: 'Member updated',
+    deleteSuccess: 'Member deleted',
+    usernameRequired: 'Please enter a username',
+    usernameLength: '2–50 characters',
     emailRequired: 'Please enter an email address',
     emailInvalid: 'Invalid email address',
     passwordRequired: 'Please enter a password',

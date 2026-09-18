@@ -249,6 +249,11 @@ fn api_routers() -> Router {
         .route("/user/notices/read", post(notice::notices_read))
         .route("/user/notices/read_all", post(notice::notices_read_all))
         .route("/user/notices/delete", post(notice::notices_delete))
+        // 团队成员（子账号）：任意登录用户管理自己名下的成员
+        .route("/user/team/list", get(user::team_list))
+        .route("/user/team/add", post(user::team_add))
+        .route("/user/team/update", post(user::team_update))
+        .route("/user/team/delete", post(user::team_delete))
         // User management (admin + reseller)
         .route("/system/user/list", get(user::user_list))
         .route("/system/user/add", post(user::user_add))
