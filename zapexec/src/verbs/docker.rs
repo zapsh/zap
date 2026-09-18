@@ -20,7 +20,7 @@ use bollard::API_DEFAULT_VERSION;
 use bollard::Docker;
 use bollard::container::LogOutput;
 use bollard::errors::Error as DockerError;
-use bollard::models::{NetworkCreateRequest, VolumeCreateRequest};
+use bollard::models::{NetworkCreateRequest, Volume, VolumeCreateRequest};
 use bollard::query_parameters::{
     CreateImageOptions, KillContainerOptions, ListContainersOptions, ListImagesOptions,
     ListNetworksOptions, ListVolumesOptions, LogsOptions, PruneImagesOptions, PruneVolumesOptions,
@@ -679,6 +679,7 @@ pub async fn volumes() -> Response {
                     "Name": v.name,
                     "Driver": v.driver,
                     "Mountpoint": v.mountpoint,
+                    "DataDir": volume_data_dir(v),
                     "Scope": as_text(&v.scope),
                     "CreatedAt": v.created_at.as_ref().map(|t| t.to_string()).unwrap_or_default(),
                 })
@@ -687,6 +688,19 @@ pub async fn volumes() -> Response {
     }
     .await;
     list_response(result)
+}
+
+/// 卷数据真正所在的宿主机目录。
+///
+/// bind mount 卷（`type=none` + `device=路径`）的 `Mountpoint` 仍指向 daemon 默认目录
+/// `/var/lib/docker/volumes/<name>/_data`，真实数据在 `Options.device` 里；
+/// 面板展示的是后者，否则用户会以为数据没落到自己的账号目录下。
+fn volume_data_dir(v: &Volume) -> String {
+    v.options
+        .get("device")
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .unwrap_or_else(|| v.mountpoint.clone())
 }
 
 /// 数据卷动作：create / remove / prune（清理未使用的卷）。
@@ -709,6 +723,15 @@ pub async fn volume_action(
                 } else {
                     None
                 };
+                // 同名卷已存在时 daemon 直接返回旧卷，不会把数据搬去 home：
+                // 先探一次，免得提示"已创建"而数据其实还在原处（多半是系统目录）
+                if let Ok(v) = call(CALL_TIMEOUT, "查询数据卷", d.inspect_volume(name)).await {
+                    return Ok(format!(
+                        "数据卷 {} 已存在（数据目录 {}）；要迁到账号目录请先删除该卷再重建",
+                        v.name,
+                        volume_data_dir(&v)
+                    ));
+                }
                 let driver_opts = bind.as_ref().map(|dir| {
                     let mut m = HashMap::new();
                     // 三件套是 local driver 的 bind mount 约定：type=none + device=路径 + o=bind
@@ -728,10 +751,11 @@ pub async fn volume_action(
                     }),
                 )
                 .await?;
-                Ok(match bind {
-                    Some(dir) => format!("已创建数据卷 {}（数据目录 {}）", v.name, dir),
-                    None => format!("已创建数据卷 {}", v.name),
-                })
+                Ok(format!(
+                    "已创建数据卷 {}（数据目录 {}）",
+                    v.name,
+                    volume_data_dir(&v)
+                ))
             }
             "remove" => {
                 call(

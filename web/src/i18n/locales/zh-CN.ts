@@ -2400,7 +2400,12 @@ export default {
     },
     volume: {
       name: '数据卷',
-      mountpoint: '挂载点',
+      dataDir: '数据目录',
+      systemDir: '系统目录',
+      systemDirTip:
+        '数据落在 Docker 默认目录：不进面板账号的磁盘配额，也不随 home 一起备份。如需迁到账号目录，请删除该卷后重建。',
+      createTip:
+        '数据默认存放在当前账号目录下的 volumes/<名称>，进该账号配额、可随 home 一起备份。',
       create: '新建数据卷',
       createTitle: '新建数据卷',
       namePlaceholder: '请输入数据卷名称',

@@ -49,6 +49,11 @@ export interface DockerVolume {
   Name: string
   Driver: string
   Mountpoint: string
+  /**
+   * 数据真正所在的宿主机目录：bind mount 卷取 `Options.device`，其余同 Mountpoint。
+   * local 驱动建 bind 卷时 Mountpoint 仍指向 daemon 默认目录，面板要展示的是这里。
+   */
+  DataDir?: string
   Scope: string
   Labels?: string
   CreatedAt?: string

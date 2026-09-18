@@ -2420,7 +2420,12 @@ const enUS: Messages = {
     },
     volume: {
       name: 'Volume',
-      mountpoint: 'Mount point',
+      dataDir: 'Data directory',
+      systemDir: 'system dir',
+      systemDirTip:
+        'Data lives in the Docker default directory: it is not counted in the panel account quota and is not backed up with home. Delete the volume and create it again to move the data into the account directory.',
+      createTip:
+        'Data is stored under volumes/<name> in the current account home: it counts against the account quota and is backed up with home.',
       create: 'Create volume',
       createTitle: 'Create volume',
       namePlaceholder: 'Volume name',

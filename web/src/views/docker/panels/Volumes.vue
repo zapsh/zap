@@ -11,7 +11,9 @@
         />
         <template v-if="selection.length">
           <el-divider direction="vertical" />
-          <span class="pane-selected">{{ t('docker.common.selected', { n: selection.length }) }}</span>
+          <span class="pane-selected">{{
+            t('docker.common.selected', { n: selection.length })
+          }}</span>
           <el-button size="small" type="danger" plain @click="bulkRemove">
             {{ t('docker.common.remove') }}
           </el-button>
@@ -21,8 +23,12 @@
         <el-button size="small" type="primary" :icon="Plus" @click="createVisible = true">
           {{ t('docker.volume.create') }}
         </el-button>
-        <el-button size="small" :icon="Delete" @click="prune">{{ t('docker.volume.prune') }}</el-button>
-        <el-button size="small" :icon="Refresh" @click="emit('refresh')">{{ t('docker.refresh') }}</el-button>
+        <el-button size="small" :icon="Delete" @click="prune">{{
+          t('docker.volume.prune')
+        }}</el-button>
+        <el-button size="small" :icon="Refresh" @click="emit('refresh')">{{
+          t('docker.refresh')
+        }}</el-button>
       </div>
     </div>
 
@@ -45,9 +51,18 @@
         <template #default="{ row }">{{ row.Driver || '—' }}</template>
       </el-table-column>
 
-      <el-table-column :label="t('docker.volume.mountpoint')" min-width="280" show-overflow-tooltip>
+      <el-table-column :label="t('docker.volume.dataDir')" min-width="300" show-overflow-tooltip>
         <template #default="{ row }">
-          <span class="mono">{{ row.Mountpoint || '—' }}</span>
+          <span class="mono">{{ row.DataDir || row.Mountpoint || '—' }}</span>
+          <el-tooltip
+            v-if="isSystemDir(row)"
+            :content="t('docker.volume.systemDirTip')"
+            placement="top"
+          >
+            <el-tag size="small" type="info" class="dir-tag">{{
+              t('docker.volume.systemDir')
+            }}</el-tag>
+          </el-tooltip>
         </template>
       </el-table-column>
 
@@ -57,7 +72,9 @@
 
       <el-table-column :label="t('docker.common.actions')" width="120" fixed="right">
         <template #default="{ row }">
-          <el-button link type="danger" @click="remove(row)">{{ t('docker.common.remove') }}</el-button>
+          <el-button link type="danger" @click="remove(row)">{{
+            t('docker.common.remove')
+          }}</el-button>
         </template>
       </el-table-column>
 
@@ -67,10 +84,17 @@
     </el-table>
 
     <el-dialog v-model="createVisible" :title="t('docker.volume.createTitle')" width="460px">
-      <el-input v-model="form.name" :placeholder="t('docker.volume.namePlaceholder')" @keyup.enter="doCreate" />
+      <el-input
+        v-model="form.name"
+        :placeholder="t('docker.volume.namePlaceholder')"
+        @keyup.enter="doCreate"
+      />
+      <div class="create-tip">{{ t('docker.volume.createTip') }}</div>
       <template #footer>
         <el-button @click="createVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="saving" @click="doCreate">{{ t('common.save') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="doCreate">{{
+          t('common.save')
+        }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -100,8 +124,15 @@ const form = reactive({ name: '' })
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   if (!kw) return rows.value
-  return rows.value.filter((r) => `${r.Name} ${r.Driver} ${r.Mountpoint}`.toLowerCase().includes(kw))
+  return rows.value.filter((r) =>
+    `${r.Name} ${r.Driver} ${r.DataDir || r.Mountpoint}`.toLowerCase().includes(kw),
+  )
 })
+
+/** Docker 默认目录：卷数据落在那儿就不进面板账号的配额、也不随 home 备份 */
+const SYSTEM_DIR_PREFIX = '/var/lib/docker/volumes'
+const isSystemDir = (row: DockerVolume) =>
+  (row.DataDir || row.Mountpoint || '').startsWith(SYSTEM_DIR_PREFIX)
 
 async function remove(row: DockerVolume) {
   try {
@@ -172,8 +203,9 @@ async function doCreate() {
   if (!name) return
   saving.value = true
   try {
-    await volumeAction(name, 'create')
-    ElMessage.success(t('common.saveSuccess'))
+    // 后端会回报数据真正落在哪个目录（bind 卷 = 账号 home，否则是 Docker 默认目录）
+    const resp = await volumeAction(name, 'create')
+    ElMessage.success(resp.data?.output || t('common.saveSuccess'))
     form.name = ''
     createVisible.value = false
     await load()
@@ -197,7 +229,11 @@ async function load() {
 }
 
 watch(() => props.refreshToken, load)
-watch(() => rows.value.length, (n) => emit('count', n), { immediate: true })
+watch(
+  () => rows.value.length,
+  (n) => emit('count', n),
+  { immediate: true },
+)
 onMounted(load)
 </script>
 
@@ -231,5 +267,16 @@ onMounted(load)
 .mono {
   font-family: Menlo, Monaco, 'Courier New', monospace;
   font-size: 12px;
+}
+
+.dir-tag {
+  margin-left: 6px;
+}
+
+.create-tip {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
 }
 </style>
