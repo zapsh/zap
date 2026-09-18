@@ -14,6 +14,10 @@
         <el-tooltip :content="t('docker.autoRefreshTip')" placement="bottom">
           <el-checkbox v-model="autoRefresh" size="small">{{ t('docker.autoRefresh') }}</el-checkbox>
         </el-tooltip>
+        <!-- daemon.json 配置：普通设置 + 配置文件编辑，仅管理员可改 -->
+        <el-button v-if="isAdmin" size="small" :icon="Setting" @click="settingsVisible = true">
+          {{ t('docker.settings') }}
+        </el-button>
         <el-button size="small" :icon="Refresh" @click="reload">{{ t('docker.refresh') }}</el-button>
       </div>
     </header>
@@ -51,14 +55,26 @@
         @refresh="reload"
       />
     </section>
+
+    <!-- 服务设置：daemon.json 的普通设置 / 配置文件编辑 -->
+    <el-drawer
+      v-model="settingsVisible"
+      :title="t('docker.settingsTitle')"
+      size="72%"
+      destroy-on-close
+    >
+      <DockerSettings />
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Box, Refresh } from '@/icons'
+import { Box, Refresh, Setting } from '@/icons'
+import { useUserStore } from '@/stores/user'
 import { dockerStatus, type DockerEnvStatus } from '@/api/docker'
+import DockerSettings from './components/DockerSettings.vue'
 import Containers from './panels/Containers.vue'
 import Images from './panels/Images.vue'
 import Volumes from './panels/Volumes.vue'
@@ -67,11 +83,16 @@ import Compose from './panels/Compose.vue'
 import Events from './panels/Events.vue'
 
 const { t } = useI18n()
+const userStore = useUserStore()
 
 const active = ref('containers')
 const token = ref(0)
 const autoRefresh = ref(false)
 const counts = reactive<Record<string, number>>({})
+
+const settingsVisible = ref(false)
+/** 改 daemon.json 走 /system/service-conf，管理员才可见入口 */
+const isAdmin = computed(() => userStore.roles.includes('admin'))
 
 const env = ref<DockerEnvStatus | null>(null)
 /** Compose 面板用它判断插件是否可用 */

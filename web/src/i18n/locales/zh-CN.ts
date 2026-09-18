@@ -1722,8 +1722,8 @@ export default {
     keysSaved: 'daemon.json 关键配置已保存',
     restartAsk: '配置已保存，需重启 Docker 才能生效。是否立即重启？',
 
-    tabKeys: '关键配置',
-    tabFile: 'daemon.json',
+    tabKeys: '设置',
+    tabFile: '修改 Docker JSON 配置文件',
     keysTip:
       '按分组修改 daemon.json 的常用字段：留空表示不写入（沿用 Docker 默认）；列表类字段清空保存即从配置中删除该键。修改后需重启 Docker 生效。',
     fileTip:
@@ -2253,6 +2253,8 @@ export default {
   /** 容器管理（Docker Desktop 式单页） */
   docker: {
     title: '容器管理',
+    settings: '设置',
+    settingsTitle: 'Docker 设置',
     refresh: '刷新',
     autoRefresh: '自动刷新',
     autoRefreshTip: '每 5 秒刷新当前页数据',

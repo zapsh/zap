@@ -1724,8 +1724,8 @@ const enUS: Messages = {
     keysSaved: 'daemon.json key settings saved',
     restartAsk: 'Saved. Docker must be restarted for daemon.json to take effect. Restart now?',
 
-    tabKeys: 'Key settings',
-    tabFile: 'daemon.json',
+    tabKeys: 'General',
+    tabFile: 'Edit Docker JSON config file',
     keysTip:
       'Edit the common daemon.json fields by group: leaving a field empty means "do not write it" (Docker defaults apply); clearing a list field and saving removes that key. A Docker restart is required after changes.',
     fileTip:
@@ -2273,6 +2273,8 @@ const enUS: Messages = {
   /** Container management (Docker Desktop style single page) */
   docker: {
     title: 'Containers',
+    settings: 'Settings',
+    settingsTitle: 'Docker Settings',
     refresh: 'Refresh',
     autoRefresh: 'Auto refresh',
     autoRefreshTip: 'Refresh current view every 5 seconds',
