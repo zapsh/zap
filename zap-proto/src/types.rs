@@ -856,8 +856,21 @@ pub enum Request {
     #[serde(rename = "docker.volumes")]
     DockerVolumes,
     /// 数据卷动作：create / remove / prune。
+    ///
+    /// `owner_home` / `owner_user` 非空时，create 建的是 bind mount 卷：
+    /// 数据落在 `{owner_home}/volumes/{name}`，并归 `owner_user` 这个 Linux 账号所有 ——
+    /// 多用户环境下卷数据要进用户自己的配额、也能跟着 home 一起备份，
+    /// 而不是闷在 `/var/lib/docker/volumes` 里（那里只有 root 看得到）。
+    /// 两者为空（旧客户端）或 remove / prune 时，退回 daemon 默认位置。
     #[serde(rename = "docker.volume_action")]
-    DockerVolumeAction { name: String, action: String },
+    DockerVolumeAction {
+        name: String,
+        action: String,
+        #[serde(default)]
+        owner_home: String,
+        #[serde(default)]
+        owner_user: String,
+    },
     /// 网络列表。
     #[serde(rename = "docker.networks")]
     DockerNetworks,
@@ -890,6 +903,11 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
+    /// 守护进程实时事件流（`docker events` 的等价物）。
+    ///
+    /// 同样是长会话：连接期间持续推送事件，断开即结束，因此也走 `Message::StreamOpen`。
+    #[serde(rename = "docker.events")]
+    DockerEvents,
 }
 
 /// `zapexec` -> `zapd` 的响应。

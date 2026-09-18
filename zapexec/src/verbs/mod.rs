@@ -3,6 +3,7 @@ mod appstore;
 mod cred;
 mod cron;
 mod docker;
+mod docker_events;
 mod docker_exec;
 mod env;
 mod file;
@@ -412,7 +413,12 @@ pub async fn dispatch(req: Request) -> Response {
         Request::DockerImages => docker::images().await,
         Request::DockerImageAction { id, action } => docker::image_action(&id, &action).await,
         Request::DockerVolumes => docker::volumes().await,
-        Request::DockerVolumeAction { name, action } => docker::volume_action(&name, &action).await,
+        Request::DockerVolumeAction {
+            name,
+            action,
+            owner_home,
+            owner_user,
+        } => docker::volume_action(&name, &action, &owner_home, &owner_user).await,
         Request::DockerNetworks => docker::networks().await,
         Request::DockerNetworkAction {
             name,
@@ -423,15 +429,16 @@ pub async fn dispatch(req: Request) -> Response {
         Request::DockerComposeAction { project, action } => {
             docker::compose_action(&project, &action).await
         }
-        // 交互式终端是长会话，只能走 `dispatch_stream`（StreamOpen），
-        // 一问一答的通道承载不了 stdin / stdout 双向流。
+        // 交互式终端与事件流都是长会话，只能走 `dispatch_stream`（StreamOpen）：
+        // 一问一答的通道承载不了持续输入 / 持续输出。
         Request::DockerContainerExec { .. } => {
             Response::err(-1, "容器终端请使用流式会话".to_string())
         }
+        Request::DockerEvents => Response::err(-1, "事件流请使用流式会话".to_string()),
     }
 }
 
-/// 开启一个流式会话（当前只有容器 exec 终端）。
+/// 开启一个流式会话（容器 exec 终端 / 守护事件流）。
 ///
 /// 会话任务直接往 `wr` 写输出帧，主循环负责把 stdin / resize 转发进来；
 /// `stdin_rx` / `resize_rx` 被丢弃即代表客户端断开，会话随之结束。
@@ -452,6 +459,13 @@ pub async fn dispatch_stream(
         } => {
             let sink = StreamSink::new(&id, wr);
             docker_exec::run(container, cmd, user, cols, rows, stdin_rx, resize_rx, sink).await;
+        }
+        // 事件流只有下行：stdin / resize 通道用不上，丢弃即代表客户端断开
+        Request::DockerEvents => {
+            let sink = StreamSink::new(&id, wr);
+            drop(stdin_rx);
+            drop(resize_rx);
+            docker_events::run(sink).await;
         }
         other => {
             let sink = StreamSink::new(&id, wr);

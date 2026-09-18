@@ -485,8 +485,9 @@ fn api_routers() -> Router {
         .route("/docker/volume/action", post(docker::volume_action))
         .route("/docker/networks", get(docker::networks))
         .route("/docker/network/action", post(docker::network_action))
-        // 容器终端（WebSocket：浏览器不能带自定义头，token 走 query）
+        // 容器终端 / 守护事件流（WebSocket：浏览器不能带自定义头，token 走 query）
         .route("/docker/exec/ws", get(docker::ws_exec))
+        .route("/docker/events/ws", get(docker::ws_events))
         .route("/docker/compose", get(docker::compose_list))
         .route("/docker/compose/action", post(docker::compose_action))
         // SSH terminal

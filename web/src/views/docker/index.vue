@@ -64,6 +64,7 @@ import Images from './panels/Images.vue'
 import Volumes from './panels/Volumes.vue'
 import Networks from './panels/Networks.vue'
 import Compose from './panels/Compose.vue'
+import Events from './panels/Events.vue'
 
 const { t } = useI18n()
 
@@ -82,6 +83,7 @@ const tabs = computed(() => [
   { key: 'volumes', label: t('docker.tabs.volumes'), component: Volumes },
   { key: 'networks', label: t('docker.tabs.networks'), component: Networks },
   { key: 'compose', label: t('docker.tabs.compose'), component: Compose },
+  { key: 'events', label: t('docker.tabs.events'), component: Events },
 ])
 
 const currentPanel = computed(() => tabs.value.find((p) => p.key === active.value) ?? tabs.value[0])

@@ -34,7 +34,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{DecodingKey, Validation, decode};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use zap_proto::Request;
@@ -239,6 +239,36 @@ pub struct VolumeActionBody {
     pub action: String,
 }
 
+/// 新建数据卷时的归属：当前登录账号的家目录 + Linux 运行账号。
+///
+/// 卷数据落在用户自己的 home 下（`{home}/volumes/{name}`），
+/// 这样它才进得了该用户的配额、也能跟着 home 一起备份。
+///
+/// `home_dir` 未配置时回退 `/home/{username}`（与文件管理的私有目录判定一致）；
+/// `linux_user` 未配置时按用户名派生（同 `ensure_user_runtime` 的派生规则）。
+async fn volume_owner(claims: &ValidatedClaims) -> (String, String) {
+    let pool = crate::db::get_db_pool().await;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT home_dir, linux_user FROM user WHERE username = ?")
+            .bind(&claims.sub)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let (home, linux_user) = row.unwrap_or_default();
+    let home = if home.is_empty() {
+        format!("/home/{}", claims.sub)
+    } else {
+        home
+    };
+    let linux_user = if linux_user.is_empty() {
+        zap_proto::linux_username(&claims.sub)
+    } else {
+        linux_user
+    };
+    (home, linux_user)
+}
+
 /// POST /docker/volume/action
 pub async fn volume_action(
     claims: ValidatedClaims,
@@ -249,14 +279,25 @@ pub async fn volume_action(
     if !matches!(body.action.as_str(), "create" | "remove" | "prune") {
         return Err(ZapError::New(-1, "不支持的数据卷操作".to_string()));
     }
+    // 只有新建需要归属（多用户：数据进各自 home）；删除和清理与归属无关
+    let (owner_home, owner_user) = if body.action == "create" {
+        volume_owner(&claims).await
+    } else {
+        (String::new(), String::new())
+    };
     exec_audited(
         &claims,
         &addr,
         "docker_volume_action",
-        format!("数据卷 {} → {}", body.name, body.action),
+        format!(
+            "数据卷 {} → {}（归属 {}）",
+            body.name, body.action, owner_user
+        ),
         Request::DockerVolumeAction {
             name: body.name.clone(),
             action: body.action.clone(),
+            owner_home,
+            owner_user,
         },
     )
     .await
@@ -362,6 +403,35 @@ fn is_safe_ref(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | ':'))
 }
 
+/// WebSocket 升级前的鉴权：管理员且非演示账号。
+///
+/// 浏览器 WebSocket 不能带自定义头，token 只能走 query（与 SSH 终端一致）；
+/// 门禁中间件同样接受 query token，这里是第二道校验。
+#[allow(clippy::result_large_err)] // axum 的 Response 本身体量就大，同 access.rs 的 guard
+fn ws_guard(params: &HashMap<String, String>) -> Result<(), HttpResponse> {
+    let Some(token) = params.get("token") else {
+        return Err(plain_status(StatusCode::UNAUTHORIZED, "Missing token"));
+    };
+
+    // 克隆密钥后立即释放锁：RwLockReadGuard 非 Send，跨 await 会让 future 非 Send
+    let secure_key = config::get_config().read().unwrap().jwt.jwt_secure.clone();
+    let claims = match decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secure_key.as_bytes()),
+        &Validation::default(),
+    ) {
+        Ok(d) => d.claims,
+        Err(_) => return Err(plain_status(StatusCode::UNAUTHORIZED, "Invalid token")),
+    };
+    if is_demo(&claims) {
+        return Err(plain_status(StatusCode::FORBIDDEN, "演示账号不支持该操作"));
+    }
+    if !is_admin(&claims) {
+        return Err(plain_status(StatusCode::FORBIDDEN, "仅管理员可访问"));
+    }
+    Ok(())
+}
+
 /// GET /docker/exec/ws —— 容器内交互式终端（`docker exec -it` 的等价物）。
 ///
 /// 帧协议沿用面板 SSH 终端：
@@ -373,26 +443,8 @@ pub async fn ws_exec(
     ws: WebSocketUpgrade,
     Query(params): Query<HashMap<String, String>>,
 ) -> HttpResponse {
-    // 浏览器 WebSocket 不能带自定义头，token 只能走 query（与 SSH 终端一致）
-    let Some(token) = params.get("token").cloned() else {
-        return plain_status(StatusCode::UNAUTHORIZED, "Missing token");
-    };
-
-    // 克隆密钥后立即释放锁：RwLockReadGuard 非 Send，跨 await 会让 future 非 Send
-    let secure_key = config::get_config().read().unwrap().jwt.jwt_secure.clone();
-    let claims = match decode::<Claims>(
-        &token,
-        &DecodingKey::from_secret(secure_key.as_bytes()),
-        &Validation::default(),
-    ) {
-        Ok(d) => d.claims,
-        Err(_) => return plain_status(StatusCode::UNAUTHORIZED, "Invalid token"),
-    };
-    if is_demo(&claims) {
-        return plain_status(StatusCode::FORBIDDEN, "演示账号不支持容器终端");
-    }
-    if !is_admin(&claims) {
-        return plain_status(StatusCode::FORBIDDEN, "仅管理员可访问");
+    if let Err(resp) = ws_guard(&params) {
+        return resp;
     }
 
     let Some(id) = params
@@ -565,4 +617,117 @@ fn plain_status(status: StatusCode, body: &str) -> HttpResponse {
         .status(status)
         .body(axum::body::Body::from(body.to_string()))
         .unwrap_or_default()
+}
+
+// ── WebSocket 守护事件流 ───────────────────────────────────
+
+/// GET /docker/events/ws —— 守护进程实时事件流（`docker events` 的等价物）。
+///
+/// 只有下行，全部是 **Text 帧**：
+/// - `{"kind":"event","data":{"type":"container","action":"start",...}}`
+/// - `{"kind":"ready"}` / `{"kind":"end"}` / `{"kind":"error","message":".."}`
+///
+/// 事件载荷自身也带 `type` 字段，控制消息因此统一用 `kind` 区分，避免歧义。
+pub async fn ws_events(
+    ws: WebSocketUpgrade,
+    Query(params): Query<HashMap<String, String>>,
+) -> HttpResponse {
+    if let Err(resp) = ws_guard(&params) {
+        return resp;
+    }
+    ws.on_upgrade(handle_events)
+}
+
+/// 把 zapexec 推来的事件流转成 WebSocket 文本帧。
+async fn handle_events(socket: WebSocket) {
+    info!("Docker 事件流建立");
+
+    let exec_cfg = {
+        let cfg = config::get_config().read().unwrap();
+        cfg.exec.clone()
+    };
+    let client = match crate::zapexec::connect(
+        Path::new(&exec_cfg.socket_path),
+        Path::new(&exec_cfg.secret_path),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("连接 zapexec 失败: {e}");
+            return;
+        }
+    };
+
+    let (mut exec_rd, mut exec_wr) = client.into_parts();
+    let stream_id = "events".to_string();
+
+    let open = ExecMessage::StreamOpen {
+        id: stream_id.clone(),
+        req: Box::new(Request::DockerEvents),
+    };
+    if crate::zapexec::send(&mut exec_wr, &open).await.is_err() {
+        warn!("开启 Docker 事件流失败");
+        return;
+    }
+
+    // 同 exec 终端：读循环独立成任务，避免 `frame::recv` 被 select 取消丢半帧
+    let (frame_tx, mut frame_rx) = mpsc::channel::<ExecMessage>(128);
+    tokio::spawn(async move {
+        while let Ok(msg) = crate::zapexec::recv(&mut exec_rd).await {
+            if frame_tx.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    loop {
+        tokio::select! {
+            frame = frame_rx.recv() => {
+                let Some(frame) = frame else { break };
+                match frame {
+                    ExecMessage::StreamOut { data, .. } => {
+                        let text = String::from_utf8(BASE64.decode(&data).unwrap_or_default())
+                            .unwrap_or_default();
+                        // 事件载荷就是 JSON，解析后再包装，避免手工拼字符串出错
+                        let payload = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
+                        let msg = json!({ "kind": "event", "data": payload });
+                        if ws_tx.send(WsMessage::Text(Utf8Bytes::from(msg.to_string()))).await.is_err() {
+                            break;
+                        }
+                    }
+                    ExecMessage::StreamReady { .. } => {
+                        let _ = ws_tx.send(ctrl_text("ready", None, None)).await;
+                    }
+                    ExecMessage::StreamEnd { .. } => {
+                        let _ = ws_tx.send(ctrl_text("end", None, None)).await;
+                        break;
+                    }
+                    ExecMessage::StreamError { message, .. } => {
+                        let _ = ws_tx.send(ctrl_text("error", None, Some(message))).await;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            // 事件流没有上行数据：收到任何文本帧都视为关闭
+            msg = ws_rx.next() => match msg {
+                Some(Ok(WsMessage::Text(_))) | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => {
+                    let _ = crate::zapexec::send(
+                        &mut exec_wr,
+                        &ExecMessage::StreamClose { id: stream_id.clone() },
+                    )
+                    .await;
+                    break;
+                }
+                _ => {}
+            },
+        }
+    }
+
+    let _ = crate::zapexec::send(&mut exec_wr, &ExecMessage::StreamClose { id: stream_id }).await;
+    let _ = ws_tx.close().await;
+    info!("Docker 事件流结束");
 }

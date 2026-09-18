@@ -14,6 +14,22 @@
         <el-select v-model="shell" size="small" :style="{ width: '120px' }" @change="reconnect">
           <el-option v-for="s in DOCKER_SHELLS" :key="s" :label="s" :value="s" />
         </el-select>
+        <el-dropdown trigger="click" @command="insertCmd">
+          <el-button size="small">
+            {{ t('docker.exec.quick') }}
+            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-for="c in QUICK_COMMANDS" :key="c" :command="c">
+                {{ c }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-tooltip :content="t('docker.exec.quickHint')" placement="bottom">
+          <el-icon class="exec-toolbar__info"><InfoFilled /></el-icon>
+        </el-tooltip>
         <el-tag size="small" effect="dark" :type="statusType">{{ statusText }}</el-tag>
         <div class="exec-toolbar__spacer" />
         <el-button size="small" :icon="Refresh" :disabled="status === 'connecting'" @click="reconnect">
@@ -35,7 +51,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { Refresh } from '@/icons'
+import { ArrowDown, InfoFilled, Refresh } from '@/icons'
 import { DOCKER_SHELLS, type DockerShell } from '@/api/docker'
 import { getToken } from '@/utils/auth'
 import { wsUrl } from '@/utils/base'
@@ -49,6 +65,24 @@ const visible = computed({
   get: () => props.modelValue,
   set: (v: boolean) => emit('update:modelValue', v),
 })
+
+/**
+ * 容器内常用排障命令。
+ * 只做"填入终端"，不代跑：容器内环境千差万别（alpine 没有 bash / ss），
+ * 自动执行容易在错误的机器上乱跑，交给用户看清后回车更稳。
+ */
+const QUICK_COMMANDS = [
+  'ps aux',
+  'top -b -n 1',
+  'df -h',
+  'free -m',
+  'env',
+  'ls -al /',
+  'cat /etc/os-release',
+  'ss -tulnp',
+  'id && hostname',
+  'tail -n 100 /var/log/syslog',
+]
 
 type Status = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
 
@@ -229,6 +263,13 @@ function disconnect() {
   sock.close()
 }
 
+/** 把命令填进终端并聚焦（不回车，由用户决定何时执行） */
+function insertCmd(cmd: string) {
+  if (!term) return
+  term.paste(cmd)
+  term.focus()
+}
+
 function reconnect() {
   if (!props.containerId) return
   term?.clear()
@@ -279,6 +320,10 @@ onBeforeUnmount(() => {
 
 .exec-toolbar__spacer {
   flex: 1;
+}
+
+.exec-toolbar__info {
+  color: var(--el-text-color-secondary);
 }
 
 .exec-term {

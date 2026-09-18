@@ -11,6 +11,8 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -688,21 +690,48 @@ pub async fn volumes() -> Response {
 }
 
 /// 数据卷动作：create / remove / prune（清理未使用的卷）。
-pub async fn volume_action(name: &str, action: &str) -> Response {
+///
+/// `owner_home` / `owner_user` 非空时，create 建的是 bind mount 卷：
+/// 数据落在该账号 home 下的 `volumes/{name}`，见 [`prepare_bind_dir`]。
+pub async fn volume_action(
+    name: &str,
+    action: &str,
+    owner_home: &str,
+    owner_user: &str,
+) -> Response {
     let result = async {
         let d = docker()?;
         match action {
             "create" => {
+                // 指定了归属就落到用户 home（bind mount）；否则用 daemon 默认位置
+                let bind = if !owner_home.is_empty() && !owner_user.is_empty() {
+                    Some(prepare_bind_dir(owner_home, name, owner_user)?)
+                } else {
+                    None
+                };
+                let driver_opts = bind.as_ref().map(|dir| {
+                    let mut m = HashMap::new();
+                    // 三件套是 local driver 的 bind mount 约定：type=none + device=路径 + o=bind
+                    m.insert("type".to_string(), "none".to_string());
+                    m.insert("device".to_string(), dir.clone());
+                    m.insert("o".to_string(), "bind".to_string());
+                    m
+                });
                 let v = call(
                     ACTION_TIMEOUT,
                     "创建数据卷",
                     d.create_volume(VolumeCreateRequest {
                         name: Some(name.to_string()),
+                        driver: bind.as_ref().map(|_| "local".to_string()),
+                        driver_opts,
                         ..Default::default()
                     }),
                 )
                 .await?;
-                Ok(format!("已创建数据卷 {}", v.name))
+                Ok(match bind {
+                    Some(dir) => format!("已创建数据卷 {}（数据目录 {}）", v.name, dir),
+                    None => format!("已创建数据卷 {}", v.name),
+                })
             }
             "remove" => {
                 call(
@@ -731,6 +760,64 @@ pub async fn volume_action(name: &str, action: &str) -> Response {
     }
     .await;
     action_response(result)
+}
+
+/// 准备 bind mount 的数据目录 `{home}/volumes/{name}`，返回其绝对路径。
+///
+/// 多用户环境下卷数据要落在账号自己的 home 里：这样才进得了该用户的磁盘配额，
+/// 也能跟着 home 一起被备份，而不是闷在 `/var/lib/docker/volumes`（只有 root 看得到）。
+///
+/// 拼出来的是**宿主机路径**，而卷名直接来自请求，所以这里必须自己挡住路径穿越：
+/// 只接受 docker 允许的字符集（字母数字与 `_.-`），并排除 `.` / `..`。
+fn prepare_bind_dir(home: &str, name: &str, owner: &str) -> Result<String, String> {
+    if name.is_empty()
+        || name == "."
+        || name.contains("..")
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    {
+        return Err(format!("非法的数据卷名: {name}"));
+    }
+    let home = home.trim_end_matches('/');
+    if !home.starts_with('/') || home.contains("..") {
+        return Err(format!("非法的家目录: {home}"));
+    }
+
+    let root = PathBuf::from(format!("{home}/volumes"));
+    if !root.exists() {
+        // 首次创建时把 volumes 一并归给该账号，用户在文件管理器里才进得去
+        create_owned(&root, owner)?;
+    }
+    let dir = root.join(name);
+    create_owned(&dir, owner)?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// 建目录并归 `owner` 所有，权限 755。
+///
+/// 755 + 属主本人：容器进程以 root 运行时照样能写（root 不受 DAC 限制），
+/// 以镜像内普通 uid 运行时需要自行 chown —— 与 docker 原生 bind mount 的行为一致。
+fn create_owned(dir: &Path, owner: &str) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败 {}: {e}", dir.display()))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("设置目录权限失败 {}: {e}", dir.display()))?;
+    chown_to(dir, owner)
+}
+
+/// 把路径属主设成指定 Linux 账号（uid / gid 以系统记录为准）。
+fn chown_to(path: &Path, owner: &str) -> Result<(), String> {
+    let cname = std::ffi::CString::new(owner).map_err(|_| format!("非法的账号名: {owner}"))?;
+    // SAFETY: getpwnam 返回进程持有的静态结构，这里只当场读两个整数，不保留指针
+    let (uid, gid) = unsafe {
+        let pw = libc::getpwnam(cname.as_ptr());
+        if pw.is_null() {
+            return Err(format!("系统账号不存在: {owner}"));
+        }
+        ((*pw).pw_uid, (*pw).pw_gid)
+    };
+    std::os::unix::fs::chown(path, Some(uid), Some(gid))
+        .map_err(|e| format!("设置属主失败 {}: {e}", path.display()))
 }
 
 // ── 网络 ─────────────────────────────────────────────────
@@ -953,4 +1040,30 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
         ACTION_TIMEOUT
     };
     compose_response(run_compose(&args, dur).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_bind_dir;
+
+    /// 卷名会被拼进宿主机路径，穿越必须挡住（这些用例都在建目录之前就返回，不碰文件系统）
+    #[test]
+    fn bind_dir_rejects_unsafe_names() {
+        for name in ["../evil", "a/b", "", ".", "..", "a..b", "/abs", "a b"] {
+            assert!(
+                prepare_bind_dir("/home/u", name, "u").is_err(),
+                "应拒绝卷名 {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bind_dir_rejects_unsafe_home() {
+        for home in ["home/u", "", "/home/../etc", "relative"] {
+            assert!(
+                prepare_bind_dir(home, "data", "u").is_err(),
+                "应拒绝家目录 {home:?}"
+            );
+        }
+    }
 }
