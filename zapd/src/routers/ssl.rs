@@ -67,7 +67,8 @@ struct CertDetailRow {
 
 /// 证书按归属用户隔离，可见性与站点一致：
 /// admin → 全部（含 user_id=0 的系统证书）；reseller → 自己 + 名下客户；
-/// 普通用户 → 仅自己的证书。返回该证书的归属 user_id。
+/// 普通用户 / 成员 → 自己所在归属组（站长 + 团队成员，与站点共享规则一致）。
+/// 返回该证书的归属 user_id。
 async fn cert_in_scope(claims: &jwt::Claims, cert_id: i64) -> Result<i64, ZapError> {
     let pool = db::get_db_pool().await;
     let row: Option<(i64,)> = sqlx::query_as("SELECT user_id FROM ssl_cert WHERE id = ?")
@@ -90,6 +91,11 @@ async fn cert_in_scope(claims: &jwt::Claims, cert_id: i64) -> Result<i64, ZapErr
         if cnt > 0 {
             return Ok(cuid);
         }
+    } else if crate::routers::site::group_id_of(cuid).await
+        == crate::routers::site::group_id_of(claims.id as i64).await
+    {
+        // 团队共享：组内成员可访问彼此的证书
+        return Ok(cuid);
     }
     Err(ZapError::New(
         -1,
@@ -97,8 +103,8 @@ async fn cert_in_scope(claims: &jwt::Claims, cert_id: i64) -> Result<i64, ZapErr
     ))
 }
 
-/// 归属目标校验：admin → 任意；reseller → 自己或名下客户；普通用户 → 仅自己。
-/// 与站点归属共用同一套规则。
+/// 归属目标校验：admin → 任意；reseller → 自己或名下客户；普通用户 / 成员 → 自己或同团队成员。
+/// 与站点归属共用同一套规则（`site::resolve_target_user`）。
 async fn resolve_cert_owner(claims: &jwt::Claims, target: i64) -> Result<(), ZapError> {
     if target <= 0 {
         return Err(ZapError::New(-1, "证书归属用户不合法".to_string()));
@@ -130,11 +136,16 @@ pub async fn cert_list(claims: ValidatedClaims) -> ZapJsonResult {
         .fetch_all(pool)
         .await?
     } else {
+        // 团队共享：证书与站点一样按归属组共享（站长 + 成员互相可见可用）
+        let gid = crate::routers::site::group_id_of(claims.id as i64).await;
         sqlx::query_as(&format!(
             "SELECT {cols} FROM ssl_cert c LEFT JOIN user u ON u.id = c.user_id \
-             WHERE c.user_id = ? ORDER BY c.id DESC"
+             WHERE {} ORDER BY c.id DESC",
+            crate::routers::site::group_scope_cond("c.user_id")
         ))
-        .bind(claims.id as i64)
+        .bind(gid)
+        .bind(crate::routers::user::USER_KIND_MEMBER)
+        .bind(gid)
         .fetch_all(pool)
         .await?
     };

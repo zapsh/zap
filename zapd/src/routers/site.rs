@@ -20,6 +20,7 @@ use crate::{
 use zap_proto::{LocationSpec, Request, UpstreamSpec};
 
 use super::system_basic::{K_IPV4 as K_DEFAULT_IPV4, K_IPV6 as K_DEFAULT_IPV6};
+use super::user::USER_KIND_MEMBER;
 
 // ── SQL 行结构 ──────────────────────────────────────────────
 
@@ -235,6 +236,32 @@ fn has_role(roles: &str, role: &str) -> bool {
     roles.split(',').any(|r| r.trim() == role)
 }
 
+/// 归属组 ID：团队成员（`user_kind = 1`）→ 其父账号 id；其余账号 → 自己。
+///
+/// 团队（站长 + 其成员）共享站点与证书：可见性 / 管理权判定先折算到归属组，
+/// 再按「组长本人 + 组内成员」的账号集合过滤（条件见 `group_scope_cond`）。
+/// 无团队的普通用户组 ID 即自身，行为与「只能看自己的」等价。
+pub(crate) async fn group_id_of(uid: i64) -> i64 {
+    let pool = db::get_db_pool().await;
+    let row: Option<(i32, i64)> =
+        sqlx::query_as("SELECT user_kind, owner_id FROM user WHERE id = ?")
+            .bind(uid)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    match row {
+        Some((kind, owner)) if kind == USER_KIND_MEMBER && owner > 0 => owner,
+        _ => uid,
+    }
+}
+
+/// 归属组范围条件：`{col}` 属于「组长本人 + 其团队成员」。
+/// 三个占位符依次绑定：组 ID、`USER_KIND_MEMBER`、组 ID。
+pub(crate) fn group_scope_cond(col: &str) -> String {
+    format!("({col} = ? OR {col} IN (SELECT id FROM user WHERE user_kind = ? AND owner_id = ?))")
+}
+
 /// 站点管理角色门禁：admin / reseller / 普通用户（demo 等不可访问）
 fn require_manageable(claims: &jwt::Claims) -> Result<(), ZapError> {
     if jwt::is_admin(claims) || jwt::is_reseller(claims) || has_role(&claims.roles, "user") {
@@ -283,8 +310,14 @@ pub(crate) async fn resolve_target_user(claims: &jwt::Claims, target: i64) -> Re
         }
     } else if target == claims.id as i64 {
         Ok(())
+    } else if group_id_of(target).await == group_id_of(claims.id as i64).await {
+        // 团队共享：可把站点归属给同团队的其他成员（站长 ↔ 成员、成员 ↔ 成员）
+        Ok(())
     } else {
-        Err(ZapError::New(-1, "普通用户只能管理自己的站点".to_string()))
+        Err(ZapError::New(
+            -1,
+            "只能将站点归属自己或同团队的成员".to_string(),
+        ))
     }
 }
 
@@ -319,8 +352,14 @@ async fn site_in_scope(claims: &jwt::Claims, site_id: i64) -> Result<(), ZapErro
         }
     } else if uid == claims.id as i64 {
         Ok(())
+    } else if group_id_of(uid).await == group_id_of(claims.id as i64).await {
+        // 团队共享：站长与其成员互相可管理组内站点
+        Ok(())
     } else {
-        Err(ZapError::New(-1, "只能管理自己的站点".to_string()))
+        Err(ZapError::New(
+            -1,
+            "只能管理自己或同团队成员的站点".to_string(),
+        ))
     }
 }
 
@@ -947,9 +986,9 @@ async fn save_profile(
     Ok(())
 }
 
-/// 校验证书库绑定：证书必须存在、启用，且归属与站点归属用户一致。
-/// 证书按用户隔离：跨归属绑定会让站点归属用户在「SSL/TLS」中看不到该证书，
-/// 因此严格限制证书归属 == 站点归属（管理员代管时先给客户建/转证书再绑定）。
+/// 校验证书库绑定：证书必须存在、启用，且归属与站点归属用户一致（或同属一个归属组）。
+/// 证书按用户隔离：跨归属绑定会让站点归属用户在「SSL/TLS」中看不到该证书；
+/// 团队成员共享站点，因此证书与站点归属同属一个归属组时也允许绑定。
 async fn ensure_cert_bindable(cert_id: i64, owner_user_id: i64) -> Result<(), ZapError> {
     let pool = db::get_db_pool().await;
     let st: Option<(i64, i64)> =
@@ -959,6 +998,8 @@ async fn ensure_cert_bindable(cert_id: i64, owner_user_id: i64) -> Result<(), Za
             .await?;
     match st {
         Some((1, cuid)) if cuid == owner_user_id => Ok(()),
+        // 团队共享：证书与站点归属同组（站长 + 成员）即可绑定
+        Some((1, cuid)) if group_id_of(cuid).await == group_id_of(owner_user_id).await => Ok(()),
         Some((1, _)) => Err(ZapError::New(
             -1,
             "所选 SSL 证书不属于本站点的归属用户：请先在「SSL/TLS → 证书管理」为该用户添加证书，\
@@ -1326,11 +1367,16 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
         .fetch_all(pool)
         .await?
     } else {
+        // 团队共享：站长 ↔ 成员、成员 ↔ 成员互相可见（无团队时等价于只看自己的）
+        let gid = group_id_of(claims.id as i64).await;
         sqlx::query_as(&format!(
-            "{} WHERE s.user_id = ? ORDER BY s.id DESC",
-            base_sql
+            "{} WHERE {} ORDER BY s.id DESC",
+            base_sql,
+            group_scope_cond("s.user_id")
         ))
-        .bind(claims.id as i64)
+        .bind(gid)
+        .bind(USER_KIND_MEMBER)
+        .bind(gid)
         .fetch_all(pool)
         .await?
     };
@@ -1592,19 +1638,24 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
 }
 
 /// 可选归属用户列表：
-/// admin → 全部 admin/reseller/user 账号（含自己）；reseller → 自己 + 自己的客户
+/// admin → 全部 admin/reseller/user 账号（含自己）；reseller → 自己 + 自己的客户；
+/// 普通用户 / 成员 → 自己所在归属组（站长 + 团队成员），站点在团队内共享
 pub async fn site_users(claims: ValidatedClaims) -> ZapJsonResult {
     require_manageable(&claims)?;
-    if !jwt::is_admin(&claims) && !jwt::is_reseller(&claims) {
-        // 普通用户归属固定为自己（归属 = 当前登录用户），无需下拉数据
-        return Ok(Json(json!({
-            "code": 0,
-            "message": "OK",
-            "data": [],
-        })));
-    }
     let pool = db::get_db_pool().await;
-    let users: Vec<OwnerCandidate> = if jwt::is_reseller(&claims) {
+    let users: Vec<OwnerCandidate> = if !jwt::is_admin(&claims) && !jwt::is_reseller(&claims) {
+        // 归属组内可选：本站长 + 其团队成员
+        let gid = group_id_of(claims.id as i64).await;
+        sqlx::query_as(
+            "SELECT id, username, nickname FROM user
+             WHERE status = 1 AND (id = ? OR (user_kind = ? AND owner_id = ?)) ORDER BY id",
+        )
+        .bind(gid)
+        .bind(USER_KIND_MEMBER)
+        .bind(gid)
+        .fetch_all(pool)
+        .await?
+    } else if jwt::is_reseller(&claims) {
         // 自己优先展示，再补充名下客户
         let mut v: Vec<OwnerCandidate> =
             sqlx::query_as("SELECT id, username, nickname FROM user WHERE id = ? AND status = 1")
@@ -1752,8 +1803,11 @@ pub async fn site_add(
             .user_id
             .ok_or_else(|| ZapError::New(-1, "请选择站点的归属用户".to_string()))?
     } else {
-        // 普通用户：归属即当前登录用户
-        claims.id as i64
+        // 普通用户默认归自己；团队共享下可显式归属给同团队成员（前端未开放时恒为自己）
+        match payload.user_id {
+            Some(t) if t > 0 => t,
+            _ => claims.id as i64,
+        }
     };
     resolve_target_user(&claims, owner).await?;
 
