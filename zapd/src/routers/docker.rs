@@ -467,6 +467,22 @@ pub async fn volumes(claims: ValidatedClaims) -> ZapJsonResult {
 pub struct VolumeActionBody {
     pub name: String,
     pub action: String,
+    /// create 时的数据落点：`home`（默认，省略同样按它处理）= 当前账号家目录下的
+    /// `volumes/<name>`；`default` = Docker 自己的 `/var/lib/docker/volumes/<name>/_data`。
+    ///
+    /// 两者各有取舍：账号目录进配额、随 home 备份，但只有该账号（与 root）看得到；
+    /// 默认目录由 daemon 托管、多个账号共享，但不进配额也不备份。
+    #[serde(default)]
+    pub location: String,
+}
+
+/// 数据落点：`home` = 账号目录（默认），`default` = Docker 默认目录。
+fn volume_location(body: &VolumeActionBody) -> &'static str {
+    if body.location.eq_ignore_ascii_case("default") {
+        "default"
+    } else {
+        "home"
+    }
 }
 
 /// 新建数据卷时的归属：当前登录账号的家目录 + Linux 运行账号。
@@ -509,19 +525,26 @@ pub async fn volume_action(
     if !matches!(body.action.as_str(), "create" | "remove" | "prune") {
         return Err(ZapError::New(-1, "不支持的数据卷操作".to_string()));
     }
-    // 只有新建需要归属（多用户：数据进各自 home）；删除和清理与归属无关
-    let (owner_home, owner_user) = if body.action == "create" {
+    // 只有建在账号目录的新建需要归属（多用户：数据进各自 home）；
+    // 选 Docker 默认目录、以及删除 / 清理都与归属无关
+    let location = volume_location(&body);
+    let (owner_home, owner_user) = if body.action == "create" && location == "home" {
         volume_owner(&claims).await
     } else {
         (String::new(), String::new())
+    };
+    let location_label = if location == "home" {
+        "账号目录"
+    } else {
+        "Docker 默认目录"
     };
     exec_audited(
         &claims,
         &addr,
         "docker_volume_action",
         format!(
-            "数据卷 {} → {}（归属 {}）",
-            body.name, body.action, owner_user
+            "数据卷 {} → {}（{}）",
+            body.name, body.action, location_label
         ),
         Request::DockerVolumeAction {
             name: body.name.clone(),

@@ -2490,6 +2490,13 @@ export default {
         '数据落在 Docker 默认目录：不进面板账号的磁盘配额，也不随 home 一起备份。如需迁到账号目录，请删除该卷后重建。',
       createTip:
         '数据默认存放在当前账号目录下的 volumes/<名称>，进该账号配额、可随 home 一起备份。',
+      location: '数据位置',
+      locationHome: '账号目录（推荐）',
+      locationDefault: 'Docker 默认目录',
+      homeTip:
+        '数据落在当前账号家目录下：计入该账号的磁盘配额，也会随 home 一起备份；只有该账号与 root 可见。',
+      defaultTip:
+        '数据由 Docker daemon 托管在 /var/lib/docker/volumes 下：多个账号共享、不进面板配额，也不随 home 备份。',
       create: '新建数据卷',
       createTitle: '新建数据卷',
       namePlaceholder: '请输入数据卷名称',

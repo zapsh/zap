@@ -83,13 +83,30 @@
       </template>
     </el-table>
 
-    <el-dialog v-model="createVisible" :title="t('docker.volume.createTitle')" width="460px">
-      <el-input
-        v-model="form.name"
-        :placeholder="t('docker.volume.namePlaceholder')"
-        @keyup.enter="doCreate"
-      />
-      <div class="create-tip">{{ t('docker.volume.createTip') }}</div>
+    <el-dialog v-model="createVisible" :title="t('docker.volume.createTitle')" width="560px">
+      <el-form label-position="top" size="default">
+        <el-form-item :label="t('docker.volume.name')">
+          <el-input
+            v-model="form.name"
+            :placeholder="t('docker.volume.namePlaceholder')"
+            @keyup.enter="doCreate"
+          />
+        </el-form-item>
+        <el-form-item :label="t('docker.volume.location')">
+          <el-radio-group v-model="form.location">
+            <el-radio value="home">{{ t('docker.volume.locationHome') }}</el-radio>
+            <el-radio value="default">{{ t('docker.volume.locationDefault') }}</el-radio>
+          </el-radio-group>
+          <div class="loc-preview mono">{{ previewDir }}</div>
+          <div class="loc-tip">
+            {{
+              form.location === 'home'
+                ? t('docker.volume.homeTip')
+                : t('docker.volume.defaultTip')
+            }}
+          </div>
+        </el-form-item>
+      </el-form>
       <template #footer>
         <el-button @click="createVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="saving" @click="doCreate">{{
@@ -106,6 +123,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Plus, Refresh, Search } from '@/icons'
 import { listVolumes, volumeAction, type DockerVolume } from '@/api/docker'
+import { getUserInfo } from '@/api/user'
 
 const props = defineProps<{ refreshToken: number }>()
 const emit = defineEmits<{ count: [number]; refresh: [] }>()
@@ -119,7 +137,33 @@ const keyword = ref('')
 
 const createVisible = ref(false)
 const saving = ref(false)
-const form = reactive({ name: '' })
+const form = reactive({ name: '', location: 'home' as 'home' | 'default' })
+
+/** 当前账号的家目录：只在第一次打开弹窗时取一次，用于预览数据落点 */
+const homeDir = ref('')
+async function ensureHomeDir() {
+  if (homeDir.value) return
+  try {
+    const resp = await getUserInfo()
+    homeDir.value = (resp.data as any)?.home_dir || ''
+  } catch {
+    // 拿不到就只显示相对提示，不影响建卷
+  }
+}
+watch(createVisible, (v) => {
+  if (v) ensureHomeDir()
+})
+
+/** Docker 默认目录：卷数据落在那儿就不进配额、也不随 home 备份 */
+const SYSTEM_DIR_PREFIX = '/var/lib/docker/volumes'
+
+/** 落点预览：名称还没填时给出占位，让用户看懂两种选择的区别 */
+const previewDir = computed(() => {
+  const name = form.name.trim() || '<名称>'
+  if (form.location === 'default') return `${SYSTEM_DIR_PREFIX}/${name}/_data`
+  const home = homeDir.value.trim().replace(/\/+$/, '')
+  return home ? `${home}/volumes/${name}` : `~/volumes/${name}`
+})
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
@@ -129,8 +173,6 @@ const filtered = computed(() => {
   )
 })
 
-/** Docker 默认目录：卷数据落在那儿就不进面板账号的配额、也不随 home 备份 */
-const SYSTEM_DIR_PREFIX = '/var/lib/docker/volumes'
 const isSystemDir = (row: DockerVolume) =>
   (row.DataDir || row.Mountpoint || '').startsWith(SYSTEM_DIR_PREFIX)
 
@@ -204,9 +246,10 @@ async function doCreate() {
   saving.value = true
   try {
     // 后端会回报数据真正落在哪个目录（bind 卷 = 账号 home，否则是 Docker 默认目录）
-    const resp = await volumeAction(name, 'create')
+    const resp = await volumeAction(name, 'create', form.location)
     ElMessage.success(resp.data?.output || t('common.saveSuccess'))
     form.name = ''
+    form.location = 'home'
     createVisible.value = false
     await load()
   } catch (e: any) {
@@ -273,8 +316,13 @@ onMounted(load)
   margin-left: 6px;
 }
 
-.create-tip {
-  margin-top: 10px;
+.loc-preview {
+  margin-top: 6px;
+  color: var(--el-text-color-regular);
+}
+
+.loc-tip {
+  margin-top: 4px;
   font-size: 12px;
   line-height: 1.6;
   color: var(--el-text-color-secondary);

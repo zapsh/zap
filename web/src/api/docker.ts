@@ -258,9 +258,19 @@ export function listVolumes() {
   return http.get<Api<{ items: DockerVolume[] }>>('/docker/volumes')
 }
 
-/** create / remove / prune */
-export function volumeAction(name: string, action: string) {
-  return http.post<Api<DockerActionResult>>('/docker/volume/action', { name, action })
+/**
+ * create / remove / prune。
+ *
+ * `location` 只在 create 时有效：
+ * - `home`（默认）：数据落在当前账号家目录下的 `volumes/<name>`，进配额、随 home 备份；
+ * - `default`：交给 Docker，落在 `/var/lib/docker/volumes/<name>/_data`，由 daemon 托管。
+ */
+export function volumeAction(
+  name: string,
+  action: string,
+  location?: 'home' | 'default',
+) {
+  return http.post<Api<DockerActionResult>>('/docker/volume/action', { name, action, location })
 }
 
 // ── 网络 ─────────────────────────────────────────────────

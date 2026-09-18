@@ -1246,6 +1246,9 @@ pub async fn volume_action(
         let d = docker()?;
         match action {
             "create" => {
+                // 两个落点共用同一套卷名校验：默认目录那边 daemon 也会查，
+                // 但提前挡住能给出中文提示，也避免奇怪的名字先被建出来
+                validate_volume_name(name)?;
                 // 指定了归属就落到用户 home（bind mount）；否则用 daemon 默认位置
                 let bind = if !owner_home.is_empty() && !owner_user.is_empty() {
                     Some(prepare_bind_dir(owner_home, name, owner_user)?)
@@ -1315,6 +1318,26 @@ pub async fn volume_action(
     action_response(result)
 }
 
+/// 卷名白名单：与 docker CLI 一致 —— 字母数字开头，其后可含 `_.-`。
+///
+/// 卷名会被拼进宿主机路径（bind 卷）或直接交给 daemon，所以这里连 `.` / `..`
+/// 与路径分隔符一并挡掉，避免穿越。
+fn validate_volume_name(name: &str) -> Result<(), String> {
+    let ok = !name.is_empty()
+        && name.len() <= 255
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "非法的数据卷名: {name}（只允许字母数字开头，可含 _ . -）"
+        ))
+    }
+}
+
 /// 准备 bind mount 的数据目录 `{home}/volumes/{name}`，返回其绝对路径。
 ///
 /// 多用户环境下卷数据要落在账号自己的 home 里：这样才进得了该用户的磁盘配额，
@@ -1323,15 +1346,7 @@ pub async fn volume_action(
 /// 拼出来的是**宿主机路径**，而卷名直接来自请求，所以这里必须自己挡住路径穿越：
 /// 只接受 docker 允许的字符集（字母数字与 `_.-`），并排除 `.` / `..`。
 fn prepare_bind_dir(home: &str, name: &str, owner: &str) -> Result<String, String> {
-    if name.is_empty()
-        || name == "."
-        || name.contains("..")
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-    {
-        return Err(format!("非法的数据卷名: {name}"));
-    }
+    validate_volume_name(name)?;
     let home = home.trim_end_matches('/');
     if !home.starts_with('/') || home.contains("..") {
         return Err(format!("非法的家目录: {home}"));
@@ -1606,7 +1621,7 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
 mod tests {
     use super::{
         parse_port_spec, prepare_bind_dir, valid_build_arg_key, valid_container_name,
-        valid_platform,
+        valid_platform, validate_volume_name,
     };
 
     /// 卷名会被拼进宿主机路径，穿越必须挡住（这些用例都在建目录之前就返回，不碰文件系统）
@@ -1679,6 +1694,17 @@ mod tests {
             "1:2/99999",
         ] {
             assert!(parse_port_spec(bad).is_err(), "应拒绝端口映射 {bad:?}");
+        }
+    }
+
+    /// 卷名会拼进宿主机路径，字符集与 docker CLI 保持一致
+    #[test]
+    fn volume_name_whitelist() {
+        for name in ["", ".", "..", "a/b", "../etc", "-x", "_x", &"x".repeat(256)] {
+            assert!(validate_volume_name(name).is_err(), "应拒绝卷名 {name:?}");
+        }
+        for name in ["data", "my_data", "my.data", "v-1", "A1"] {
+            assert!(validate_volume_name(name).is_ok(), "应接受卷名 {name:?}");
         }
     }
 

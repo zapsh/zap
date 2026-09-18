@@ -2510,6 +2510,13 @@ const enUS: Messages = {
         'Data lives in the Docker default directory: it is not counted in the panel account quota and is not backed up with home. Delete the volume and create it again to move the data into the account directory.',
       createTip:
         'Data is stored under volumes/<name> in the current account home: it counts against the account quota and is backed up with home.',
+      location: 'Data location',
+      locationHome: 'Account directory (recommended)',
+      locationDefault: 'Docker default directory',
+      homeTip:
+        'Data lands in the current account home: it counts against the account disk quota, is backed up with home, and is visible to that account and root only.',
+      defaultTip:
+        'Data is managed by the Docker daemon under /var/lib/docker/volumes: shared between accounts, not counted in the panel quota and not backed up with home.',
       create: 'Create volume',
       createTitle: 'Create volume',
       namePlaceholder: 'Volume name',
