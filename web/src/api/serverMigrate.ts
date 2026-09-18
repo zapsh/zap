@@ -6,7 +6,10 @@ export interface MigrateCandidate {
   username: string
   linux_user: string
   home_dir: string
+  /** 站点数：按家目录统计（含共享该家目录的团队成员站点） */
   site_count: number
+  /** 共享该家目录的面板账号数（含自己，>1 表示站长 + 团队成员） */
+  share_count: number
 }
 
 export interface MigratePreview {
@@ -25,6 +28,8 @@ export interface MigrateOkItem {
   sites: number
   sites_synced: number
   site_errors: string[]
+  /** true=该家目录由同组账号先搬过，本次仅复用结果并更新记录 */
+  reused?: boolean
 }
 
 export interface MigrateFailItem {

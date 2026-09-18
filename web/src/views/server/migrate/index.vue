@@ -73,7 +73,22 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column :label="t('serverMigrate.colShared')" width="120" align="center">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.share_count > 1"
+              size="small"
+              type="primary"
+              effect="plain"
+              disable-transitions
+            >
+              {{ t('serverMigrate.sharedTag', { n: row.share_count }) }}
+            </el-tag>
+            <span v-else class="dim-text">—</span>
+          </template>
+        </el-table-column>
       </el-table>
+      <div class="form-tip" style="margin-top: 8px">{{ t('serverMigrate.sharedTip') }}</div>
       <el-empty
         v-if="!previewLoading && previewLoaded && candidates.length === 0"
         :description="t('serverMigrate.empty')"
@@ -104,7 +119,20 @@
           style="margin-bottom: 12px"
         />
         <el-table v-if="result.ok.length" :data="result.ok" size="small" border max-height="260">
-          <el-table-column prop="username" :label="t('serverMigrate.colUsername')" width="140" />
+          <el-table-column :label="t('serverMigrate.colUsername')" width="180">
+            <template #default="{ row }">
+              <span>{{ row.username }}</span>
+              <el-tag
+                v-if="row.reused"
+                size="small"
+                type="info"
+                effect="plain"
+                style="margin-left: 6px"
+              >
+                {{ t('serverMigrate.reused') }}
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="old_home" :label="t('serverMigrate.colOldHome')" min-width="180" />
           <el-table-column prop="new_home" :label="t('serverMigrate.colNewHome')" min-width="180" />
           <el-table-column :label="t('serverMigrate.colSiteSync')" width="110" align="center">
