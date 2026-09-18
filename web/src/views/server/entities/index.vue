@@ -14,29 +14,11 @@
         </div>
       </template>
 
-      <el-alert
-        :title="t('serverEntities.modeAlert')"
-        type="info"
-        :closable="false"
-        show-icon
-        style="margin-bottom: 16px"
-      />
-
-      <div class="mode-cards">
-        <div class="mode-card active">
-          <div class="mode-card-head">
-            <span class="mode-title">{{ t('serverEntities.modeTitle') }}</span>
-            <el-tag type="warning" size="small" effect="dark">{{
-              t('serverEntities.currentMode')
-            }}</el-tag>
-          </div>
-          <ul class="mode-points">
-            <li>{{ t('serverEntities.point1') }}</li>
-            <li>{{ t('serverEntities.point2') }}</li>
-            <li>{{ t('serverEntities.point3') }}</li>
-          </ul>
-        </div>
-      </div>
+      <ul class="sync-points">
+        <li>{{ t('serverEntities.point1') }}</li>
+        <li>{{ t('serverEntities.point2') }}</li>
+        <li>{{ t('serverEntities.point3') }}</li>
+      </ul>
     </el-card>
 
     <!-- 同步结果 -->
@@ -51,7 +33,6 @@
         <el-tag v-if="resultFail.length" type="danger">
           {{ t('serverEntities.failCount', { n: resultFail.length }) }}
         </el-tag>
-        <span v-if="resultMode" class="result-mode">{{ t('serverEntities.modeRun') }}</span>
       </div>
       <template v-if="resultOk.length">
         <div class="result-title">{{ t('serverEntities.okDetail') }}</div>
@@ -91,7 +72,6 @@ const { t } = useI18n()
 const syncing = ref(false)
 
 const resultVisible = ref(false)
-const resultMode = ref('')
 const resultOk = ref<HomeSyncOkItem[]>([])
 const resultFail = ref<HomeSyncFailItem[]>([])
 
@@ -107,10 +87,9 @@ async function handleSync() {
   syncing.value = true
   try {
     const res = await userHomeSync()
-    const { ok, fail, mode: runMode } = res.data ?? { ok: [], fail: [], mode: '' }
+    const { ok, fail } = res.data ?? { ok: [], fail: [] }
     resultOk.value = ok ?? []
     resultFail.value = fail ?? []
-    resultMode.value = runMode ?? ''
     if (!resultFail.value.length) {
       ElMessage.success(t('serverEntities.syncDone', { n: resultOk.value.length }))
     }
@@ -144,35 +123,7 @@ async function handleSync() {
   color: var(--el-text-color-secondary);
   font-size: 12px;
 }
-.mode-cards {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-.mode-card {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 16px 18px;
-  background: var(--el-fill-color-blank);
-  transition:
-    border-color 0.2s,
-    box-shadow 0.2s;
-}
-.mode-card.active {
-  border-color: var(--el-color-primary);
-  box-shadow: 0 2px 10px rgba(64, 158, 255, 0.12);
-}
-.mode-card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.mode-title {
-  font-weight: 600;
-  font-size: 15px;
-}
-.mode-points {
+.sync-points {
   margin: 0;
   padding-left: 18px;
   color: var(--el-text-color-regular);
@@ -184,10 +135,6 @@ async function handleSync() {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
-}
-.result-mode {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
 }
 .result-title {
   margin: 12px 0 6px;

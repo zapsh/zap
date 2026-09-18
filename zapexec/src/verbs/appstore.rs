@@ -790,7 +790,7 @@ fn family_from_version_meta(pkg_dir: &Path, version: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 注入操作者上下文：面板登录用户名与虚拟主机运行模式（www / system）。
+/// 注入操作者上下文：面板登录用户名与虚拟主机运行模式（固定 system）。
 /// 值由 zapd 在发起任务时随请求透传；重跑（run_retry）从原 spec 恢复，保证环境一致。
 /// 脚本内对应 ZAP_USER / ZAP_RUN_MODE。
 fn push_actor_env(env: &mut Vec<(String, String)>, user: Option<&str>, run_mode: Option<&str>) {

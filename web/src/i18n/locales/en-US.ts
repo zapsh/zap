@@ -1254,13 +1254,6 @@ const enUS: Messages = {
     mountPoint: 'Mount Point',
     homeRootTip:
       'Root directory for panel users\' home directories. Defaults to /home. When /home runs out of space, mount a new disk at e.g. /home2 and set the new mount point here; new users will then be created on it. Existing users are unaffected — to relocate them, use "Server Config → Data Migration".',
-    vhostModeTitle: 'Virtual Host Run Mode',
-    runMode: 'Run Mode',
-    standaloneUser: 'Dedicated System User',
-    standaloneTip:
-      'Every panel user has a dedicated Linux account (nologin): site files belong to that account, and PHP-FPM runs one pool per user × PHP version, giving full isolation between users.',
-    fixedModeAlert:
-      'The system always uses dedicated system users (the shared "www" mode has been removed). New users automatically get a dedicated Linux account (nologin) with home directory ownership; for existing users go to "Server Config → Sync Runtime Environment" and click "Repair / Sync" (idempotent, does not affect existing sites). After syncing, an isolated PHP-FPM pool is generated per user and PHP version.',
     fpmDefaultsTitle: 'PHP-FPM Default Pool Spec',
     maxChildren: 'Max Children',
     maxChildrenTip:
@@ -1479,19 +1472,14 @@ const enUS: Messages = {
   /** Server - runtime environment sync */
   serverEntities: {
     title: 'Sync Runtime Environment',
-    sub: 'Dedicated system user mode: provision Linux accounts and grant home directory ownership for existing users',
+    sub: 'Provision Linux accounts and grant home directory ownership for existing users',
     syncBtn: 'One-click Repair / Sync',
-    modeAlert:
-      'The system always uses "dedicated system user" mode (the shared www mode has been removed): each panel user maps to a Linux account (nologin), and both sites and PHP-FPM run under that account. New users get their runtime environment provisioned automatically; this page repairs existing users in one click (idempotent, does not affect existing sites).',
-    modeTitle: 'Dedicated System User',
-    currentMode: 'Current Mode',
     point1: 'Each panel user maps to one Linux account (nologin)',
     point2: 'On sync, run useradd and grant the home / web directories to that account',
     point3: 'Site sync automatically generates an FPM pool per user per PHP version',
     resultTitle: 'Sync Result',
     okCount: '{n} succeeded',
     failCount: '{n} failed',
-    modeRun: 'Executed in "dedicated system user" mode',
     okDetail: 'Succeeded',
     failDetail: 'Failed',
     colUsername: 'Username',
@@ -3313,8 +3301,6 @@ const enUS: Messages = {
     keyManagerTitle: 'My SSH Keys',
     keyAlert:
       'Keys are stored in your own home directory ~/.ssh (with the zap_ prefix); the private key is visible only to you and never uploaded to the database.',
-    keyModeDisabled:
-      'The current mode is "unified www" (the user has no dedicated Linux account), so personal home-directory keys are unavailable and generate/import is disabled; ask an administrator to switch to "dedicated system user" under Server → Runtime first.',
     genKey: 'Generate Key',
     importKey: 'Import Key',
     noKeys: 'No keys yet; click "Generate Key" to create one',

@@ -1536,7 +1536,6 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
             )
         })
         .count();
-    let vmode = crate::routers::system_env::vhost_mode().await;
     let list: Vec<Value> = recs
         .iter()
         .map(|r| {
@@ -1587,7 +1586,6 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
             "running": running,
             "stopped": stopped,
             "failed": failed,
-            "vhost_mode": vmode,
             "rows": list,
         }
     })))

@@ -379,7 +379,7 @@ pub enum Request {
         /// 发起操作的面板登录用户名（注入 ZAP_USER，供安装脚本按操作者归属）
         #[serde(skip_serializing_if = "Option::is_none")]
         user: Option<String>,
-        /// 虚拟主机运行模式：www（统一 www 用户）| system（独立系统用户）；注入 ZAP_RUN_MODE
+        /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
         run_id: String,
@@ -394,7 +394,7 @@ pub enum Request {
         /// 发起操作的面板登录用户名（注入 ZAP_USER）
         #[serde(skip_serializing_if = "Option::is_none")]
         user: Option<String>,
-        /// 虚拟主机运行模式：www | system（注入 ZAP_RUN_MODE）
+        /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
         run_id: String,
@@ -418,7 +418,7 @@ pub enum Request {
         /// 发起操作的面板登录用户名（注入 ZAP_USER）
         #[serde(skip_serializing_if = "Option::is_none")]
         user: Option<String>,
-        /// 虚拟主机运行模式：www | system（注入 ZAP_RUN_MODE）
+        /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
         run_id: String,

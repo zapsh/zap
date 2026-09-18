@@ -254,8 +254,9 @@ fn validate_value(value: &str) -> Result<(), String> {
 /// 对少数「写错即功能异常」的键做轻量校验（与面板写入规则保持一致）。
 fn validate_known_key(key: &str, value: &str) -> Result<(), String> {
     match key {
-        "vhost_mode" if !["www", "system"].contains(&value) => {
-            Err("vhost_mode 仅支持 www / system".to_string())
+        // 运行模式已固定为独立系统用户（已移除统一 www 模式）
+        "vhost_mode" if value != "system" => {
+            Err("vhost_mode 已固定为 system（独立系统用户）".to_string())
         }
         "fpm_pool_defaults"
             if !value.is_empty()

@@ -6,7 +6,6 @@
         <span class="sidebar-title">{{ t('terminal.connManager') }}</span>
         <div class="sidebar-actions">
           <el-button
-            v-if="canUseUserKeys || isAdmin"
             link
             type="primary"
             size="small"
@@ -223,7 +222,6 @@
               <span v-else-if="form.ssh_key_name">{{ t('terminal.keyTipSaved') }}</span>
               <span v-else>{{ t('terminal.keyTipEmpty') }}</span>
               <el-button
-                v-if="canUseUserKeys || isAdmin"
                 type="primary"
                 link
                 size="small"
@@ -323,33 +321,20 @@
       width="780px"
       @open="loadMyKeys"
     >
-      <el-alert
-        :type="canUseUserKeys ? 'info' : 'warning'"
-        :closable="false"
-        show-icon
-        style="margin-bottom: 12px"
-      >
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
         {{ t('terminal.keyAlert') }}
-        <div v-if="!canUseUserKeys" style="margin-top: 4px">
-          {{ t('terminal.keyModeDisabled') }}
-        </div>
       </el-alert>
       <div class="keymgr-toolbar">
         <el-button
           type="primary"
           size="small"
           :icon="Plus"
-          :disabled="!canUseUserKeys || isReadOnly"
+          :disabled="isReadOnly"
           @click="openKeyGen"
         >
           {{ t('terminal.genKey') }}
         </el-button>
-        <el-button
-          size="small"
-          :icon="Key"
-          :disabled="!canUseUserKeys || isReadOnly"
-          @click="openKeyImport"
-        >
+        <el-button size="small" :icon="Key" :disabled="isReadOnly" @click="openKeyImport">
           {{ t('terminal.importKey') }}
         </el-button>
         <div style="flex: 1"></div>
@@ -541,11 +526,6 @@ const connections = ref<SshConnection[]>([])
 const sshKeys = ref<{ name: string; scope: 'user' }[]>([])
 const activeConnId = ref<number | null>(null)
 
-// 「我的密钥」能力门禁：仅「独立系统用户」(system) 模式支持家目录密钥（取自 /terminal/keys 响应）
-const vhostMode = ref<'system'>('system')
-const userKeysEnabled = ref(true)
-const canUseUserKeys = computed(() => userKeysEnabled.value && vhostMode.value === 'system')
-
 // 搜索过滤
 const connKeyword = ref('')
 const filteredConnections = computed(() => {
@@ -728,8 +708,6 @@ async function loadSshKeys() {
   try {
     const resp = await getUserSshKeys()
     const d = resp.data
-    vhostMode.value = d?.vhost_mode ?? 'system'
-    userKeysEnabled.value = d?.user_keys_enabled ?? true
     sshKeys.value = d?.items || []
   } catch {
     // SSH keys may not be available
@@ -753,8 +731,6 @@ async function loadMyKeys() {
   try {
     const resp = await getUserSshKeys()
     const d = resp.data
-    vhostMode.value = d?.vhost_mode ?? 'system'
-    userKeysEnabled.value = d?.user_keys_enabled ?? true
     myKeys.value = d?.items || []
   } catch (e: any) {
     ElMessage.error(e.message || t('terminal.loadKeysFailed'))

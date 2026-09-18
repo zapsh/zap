@@ -113,10 +113,6 @@ export interface UserSshKey {
 /** 我的密钥列表响应：items + 兼容字段（运行模式固定为独立系统用户） */
 export interface SshKeysPayload {
   items: UserSshKey[]
-  /** 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号） */
-  vhost_mode: 'system'
-  /** 是否支持个人家目录密钥（恒 true：每个用户都有独立 Linux 账号承载 ~/.ssh） */
-  user_keys_enabled: boolean
 }
 
 /** 我的密钥列表（admin 额外含系统级密钥，保持历史连接可选） */

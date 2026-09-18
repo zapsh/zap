@@ -165,7 +165,7 @@
               <tr><td><code>APP_OLD_VERSION</code></td><td>升级前旧版本（仅升级注入）</td></tr>
               <tr><td><code>ACTION</code></td><td>动作键（由 actions 自定义操作发起时注入，如 build）</td></tr>
               <tr><td><code>ZAP_USER</code></td><td>发起本次操作的面板登录用户名（install / uninstall / upgrade 及失败重跑都会注入）。多用户 / 多角色场景下，脚本可据此把安装产物、文件属主等归属到操作者名下</td></tr>
-              <tr><td><code>ZAP_RUN_MODE</code></td><td>虚拟主机运行模式：<code>www</code>（统一 www 用户）或 <code>system</code>（独立系统用户）。webapps 类应用据此设置站点文件属主 / 运行身份（与「服务器 → 运行环境」的全局配置保持一致）</td></tr>
+              <tr><td><code>ZAP_RUN_MODE</code></td><td>虚拟主机运行模式：恒为 <code>system</code>——每个面板用户一个独立 Linux 账号（nologin），站点文件与运行身份均归该账号（历史上一度支持 <code>www</code> 统一用户，现已移除）</td></tr>
               <tr><td>选项变量</td><td>每个 options 项按 <code>name</code> 直接注入同名环境变量（见第七节）</td></tr>
             </tbody>
           </table>

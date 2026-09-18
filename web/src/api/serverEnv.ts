@@ -37,8 +37,6 @@ export interface EnvConf {
   webserver: string
   php_default: string
   database: string
-  /** 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号） */
-  vhost_mode: 'system'
   /** PHP-FPM 默认 pool 规格（JSON 字符串；用户未自定义时的兜底） */
   fpm_pool_defaults: string
   /** 用户家目录默认挂载点（如 /home /home2），新建用户时 home_dir 前缀 */
@@ -60,8 +58,6 @@ export interface EnvDefaultsPayload {
   webserver?: string
   php_default?: string
   database?: string
-  /** 仅在为 "system" 时可提交；已移除「统一 www 用户」模式，一般无需传 */
-  vhost_mode?: 'system'
   fpm_pool_defaults?: string
   user_home_root?: string
 }

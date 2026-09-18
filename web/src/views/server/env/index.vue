@@ -25,7 +25,6 @@ const form = reactive<EnvConf>({
   webserver: '',
   php_default: '',
   database: '',
-  vhost_mode: 'system',
   fpm_pool_defaults: '',
   user_home_root: '/home',
 })
@@ -106,7 +105,6 @@ function openDefaultsDialog() {
   form.webserver = c?.webserver ?? ''
   form.php_default = c?.php_default ?? ''
   form.database = c?.database ?? ''
-  form.vhost_mode = 'system'
   form.user_home_root = c?.user_home_root || '/home'
   // 回填 fpm 默认规格（先重置再覆盖）
   resetFpmForm()
@@ -923,20 +921,6 @@ onMounted(() => {
         <el-form-item :label="t('serverEnv.mountPoint')">
           <el-input v-model="form.user_home_root" placeholder="/home" style="max-width: 360px" />
           <div class="form-tip">{{ t('serverEnv.homeRootTip') }}</div>
-        </el-form-item>
-
-        <el-divider content-position="left">{{ t('serverEnv.vhostModeTitle') }}</el-divider>
-        <el-form-item :label="t('serverEnv.runMode')">
-          <el-tag type="success" size="large">{{ t('serverEnv.standaloneUser') }}</el-tag>
-          <div class="form-tip">{{ t('serverEnv.standaloneTip') }}</div>
-        </el-form-item>
-        <el-form-item label=" ">
-          <el-alert
-            :title="t('serverEnv.fixedModeAlert')"
-            type="info"
-            :closable="false"
-            show-icon
-          />
         </el-form-item>
 
         <el-divider content-position="left">{{ t('serverEnv.fpmDefaultsTitle') }}</el-divider>

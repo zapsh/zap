@@ -1262,13 +1262,6 @@ export default {
     mountPoint: '挂载点',
     homeRootTip:
       '新建面板用户的家目录根目录。默认 /home；当 /home 磁盘不足时，可把新磁盘挂载到 /home2 等目录并在此设置新挂载点，此后新用户的数据即落到新挂载点；存量用户不受影响，需要搬迁时请到「服务器配置 → 数据迁移」整体迁移。',
-    vhostModeTitle: '虚拟主机运行模式',
-    runMode: '运行模式',
-    standaloneUser: '独立系统用户',
-    standaloneTip:
-      '每个面板用户对应一个专属 Linux 账号（nologin）：站点文件归该账号，PHP-FPM 以「该用户 × 该 PHP 版本」独立 pool 运行，用户之间完全隔离。',
-    fixedModeAlert:
-      '系统固定使用独立系统用户模式（已移除「统一 www 用户」模式）。新建用户会自动生成专属 Linux 账号（nologin）并赋权家目录；存量用户请到「服务器配置 → 同步运行环境」点击「一键修复/同步」补齐（幂等、不影响已有站点）；站点同步后自动生成每用户每 PHP 版本的独立 PHP-FPM pool。',
     fpmDefaultsTitle: 'PHP-FPM 默认 pool 规格',
     maxChildren: '最大子进程数',
     maxChildrenTip: 'pm.max_children：常驻 worker 上限（建议 = 可用内存 MB ÷ 单进程约 50-100MB）',
@@ -1478,19 +1471,14 @@ export default {
   /** 服务器 - 同步运行环境 */
   serverEntities: {
     title: '同步运行环境',
-    sub: '独立系统用户模式：为存量用户补齐 Linux 账号与家目录赋权',
+    sub: '为存量用户补齐 Linux 账号与家目录赋权',
     syncBtn: '一键修复/同步',
-    modeAlert:
-      '系统固定使用「独立系统用户」模式（已移除统一 www 模式）：每个面板用户对应一个 Linux 账号（nologin），网站与 PHP-FPM 均以该账号运行。新建用户时系统已自动补齐运行环境，本页用于存量用户一键修复补齐（幂等操作、不影响已有站点）。',
-    modeTitle: '独立系统用户',
-    currentMode: '当前模式',
     point1: '每个面板用户对应一个 Linux 账号（nologin）',
     point2: '同步时 useradd + 家目录 / web 目录赋权该账号',
     point3: '站点同步自动生成每用户每 PHP 版本的 FPM pool',
     resultTitle: '同步结果',
     okCount: '成功 {n} 个',
     failCount: '失败 {n} 个',
-    modeRun: '按「独立系统用户」模式执行',
     okDetail: '成功明细',
     failDetail: '失败明细',
     colUsername: '用户名',
@@ -3258,8 +3246,6 @@ export default {
     push: '推送',
     keyManagerTitle: '我的 SSH 密钥',
     keyAlert: '密钥保存在你自己的家目录 ~/.ssh（zap_ 前缀），私钥仅本人可见、不会上传数据库。',
-    keyModeDisabled:
-      '当前为「统一 www」运行模式（用户未创建独立 Linux 账号），个人家目录密钥不可用，生成/导入已禁用；请管理员在「服务器 → 运行环境」切换为「独立系统用户」模式后再使用个人密钥。',
     genKey: '生成密钥',
     importKey: '导入密钥',
     noKeys: '还没有密钥，点击「生成密钥」创建',

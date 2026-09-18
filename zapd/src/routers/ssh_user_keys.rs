@@ -50,8 +50,7 @@ async fn require_linux_user(claims: &ValidatedClaims) -> Result<String, ZapError
 // ── GET /terminal/keys ─────────────────────────────────────
 
 /// 我的密钥列表：本人（家目录扫描）+ (admin) 系统级密钥。
-/// data.items：密钥列表；另返回 vhost_mode / user_keys_enabled 兼容字段
-/// （运行模式固定为独立系统用户，两字段恒为 "system" / true）。
+/// data.items：密钥列表（运行模式固定为独立系统用户，每个用户都有家目录 ~/.ssh）。
 pub async fn list_keys(claims: ValidatedClaims) -> ZapJsonResult {
     let mut items: Vec<Value> = Vec::new();
 
@@ -85,8 +84,6 @@ pub async fn list_keys(claims: ValidatedClaims) -> ZapJsonResult {
         "code": 0,
         "data": {
             "items": items,
-            "vhost_mode": "system",
-            "user_keys_enabled": true,
         }
     })))
 }

@@ -353,9 +353,9 @@ pub async fn install(
     )
     .await?;
 
-    // 注入操作者上下文：面板登录用户与虚拟主机运行模式（www / system）
+    // 注入操作者上下文：面板登录用户与虚拟主机运行模式（固定为独立系统用户）
     let user = claims.sub.clone();
-    let run_mode = system_env::vhost_mode().await;
+    let run_mode = system_env::VHOST_MODE.to_string();
 
     let resp = zapexec::call(Request::AppstoreInstall {
         pkg_path: payload.pkg_path.clone(),
@@ -429,9 +429,9 @@ pub async fn uninstall(
     )
     .await?;
 
-    // 注入操作者上下文：面板登录用户与虚拟主机运行模式（www / system）
+    // 注入操作者上下文：面板登录用户与虚拟主机运行模式（固定为独立系统用户）
     let user = claims.sub.clone();
-    let run_mode = system_env::vhost_mode().await;
+    let run_mode = system_env::VHOST_MODE.to_string();
 
     let resp = zapexec::call(Request::AppstoreUninstall {
         pkg_path: payload.pkg_path.clone(),
@@ -508,9 +508,9 @@ pub async fn upgrade(
     )
     .await?;
 
-    // 注入操作者上下文：面板登录用户与虚拟主机运行模式（www / system）
+    // 注入操作者上下文：面板登录用户与虚拟主机运行模式（固定为独立系统用户）
     let user = claims.sub.clone();
-    let run_mode = system_env::vhost_mode().await;
+    let run_mode = system_env::VHOST_MODE.to_string();
 
     let resp = zapexec::call(Request::AppstoreUpgrade {
         pkg_path: payload.pkg_path.clone(),

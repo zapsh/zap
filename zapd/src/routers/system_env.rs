@@ -76,18 +76,14 @@ fn default_fpm_spec_json() -> String {
 ///
 /// 每个面板用户对应一个 Linux 账号（nologin），家目录与站点目录归该账号，
 /// PHP-FPM 以「每用户 × 每 PHP 版本」独立 pool 运行。
-/// 历史上的「统一 www 用户」模式已移除，此函数保留仅为统一调用点语义，
-/// 恒返回 `"system"`。
-pub async fn vhost_mode() -> String {
-    "system".to_string()
-}
+/// 历史上的「统一 www 用户」模式已移除，该常量仅用于向脚本注入 `ZAP_RUN_MODE`。
+pub const VHOST_MODE: &str = "system";
 
 fn conf_json(conf: &HashMap<String, String>) -> Value {
     json!({
         "webserver": conf.get("webserver").cloned().unwrap_or_default(),
         "php_default": conf.get("php_default").cloned().unwrap_or_default(),
         "database": conf.get("database").cloned().unwrap_or_default(),
-        "vhost_mode": "system",
         "fpm_pool_defaults": conf.get("fpm_pool_defaults").cloned().unwrap_or_else(default_fpm_spec_json),
         "user_home_root": conf.get("user_home_root").cloned().unwrap_or_else(|| "/home".into()),
     })
@@ -176,9 +172,6 @@ pub struct EnvDefaultsPayload {
     pub php_default: Option<String>,
     /// 默认数据库实例（如 mysql / mariadb）
     pub database: Option<String>,
-    /// 虚拟主机运行模式：已固定为独立系统用户，仅接受 "system"（空=未提交）；
-    /// 传其它值会报错，用于拦截旧前端/旧配置写入 www 模式。
-    pub vhost_mode: Option<String>,
     /// PHP-FPM 默认 pool 规格（JSON 字符串）
     pub fpm_pool_defaults: Option<String>,
     /// 用户家目录默认挂载点（如 /home /home2），新用户创建时的 home_dir 前缀
@@ -207,17 +200,6 @@ pub async fn env_defaults_save(
                 return Err(ZapError::New(-1, format!("默认{key}长度超限")));
             }
             upserts.push((key.to_string(), v));
-        }
-    }
-    // 运行模式已固定为独立系统用户：拒绝任何试图切回「统一 www」的写入
-    if let Some(v) = payload.vhost_mode {
-        let v = v.trim().to_string();
-        if !v.is_empty() && v != "system" {
-            return Err(ZapError::New(
-                -1,
-                "已移除「统一 www 用户」运行模式，系统固定使用独立系统用户（每面板用户一个 Linux 账号）"
-                    .to_string(),
-            ));
         }
     }
     if let Some(v) = payload.fpm_pool_defaults {
