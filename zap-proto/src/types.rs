@@ -822,6 +822,60 @@ pub enum Request {
     /// 清理 ACME HTTP-01 验证文件（幂等）。订单成功 / 失败 / 取消后都应收尾调用。
     #[serde(rename = "acme.http_clear")]
     AcmeHttpClear { tokens: Vec<String> },
+    // ── Docker 容器管理（面板「容器」）──────────────────────
+    /// 环境探测：docker 是否安装、守护进程是否可用、compose 插件是否存在。
+    #[serde(rename = "docker.status")]
+    DockerStatus,
+    /// 容器列表。`all = true` 时含已停止容器（`docker container ls -a`）。
+    #[serde(rename = "docker.containers")]
+    DockerContainers { all: bool },
+    /// 容器批量动作：start / stop / restart / pause / unpause / kill / remove。
+    #[serde(rename = "docker.container_action")]
+    DockerContainerAction { ids: Vec<String>, action: String },
+    /// 容器详情：透传 `docker container inspect` 的原始 JSON 对象。
+    #[serde(rename = "docker.container_inspect")]
+    DockerContainerInspect { id: String },
+    /// 容器日志尾部（一次性拉取；前端按需轮询实现跟随）。
+    #[serde(rename = "docker.container_logs")]
+    DockerContainerLogs {
+        id: String,
+        tail: Option<u32>,
+        since: Option<String>,
+        timestamps: bool,
+    },
+    /// 实时资源快照（`docker stats --no-stream`）：CPU / 内存 / 网络 / 磁盘 IO。
+    #[serde(rename = "docker.stats")]
+    DockerStats,
+    /// 镜像列表（含悬空镜像）。
+    #[serde(rename = "docker.images")]
+    DockerImages,
+    /// 镜像动作：pull（id 为仓库引用）/ remove（id 为镜像 ID 或引用）/ prune。
+    #[serde(rename = "docker.image_action")]
+    DockerImageAction { id: String, action: String },
+    /// 数据卷列表。
+    #[serde(rename = "docker.volumes")]
+    DockerVolumes,
+    /// 数据卷动作：create / remove / prune。
+    #[serde(rename = "docker.volume_action")]
+    DockerVolumeAction { name: String, action: String },
+    /// 网络列表。
+    #[serde(rename = "docker.networks")]
+    DockerNetworks,
+    /// 网络动作：create（可指定 driver）/ remove / prune。
+    #[serde(rename = "docker.network_action")]
+    DockerNetworkAction {
+        name: String,
+        action: String,
+        driver: Option<String>,
+    },
+    /// Compose 项目列表（`docker compose ls -a`）。
+    #[serde(rename = "docker.compose_list")]
+    DockerComposeList,
+    /// Compose 动作：up / down / start / stop / restart / pull。
+    ///
+    /// 项目配置文件从 `compose ls` 结果中反查，避免前端直接传任意路径。
+    #[serde(rename = "docker.compose_action")]
+    DockerComposeAction { project: String, action: String },
 }
 
 /// `zapexec` -> `zapd` 的响应。

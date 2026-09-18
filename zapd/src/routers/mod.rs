@@ -46,6 +46,7 @@ pub mod cloud;
 pub mod dashboard;
 pub mod database;
 pub mod dev;
+pub mod docker;
 pub mod docs;
 pub mod fpm_spec;
 pub mod notice;
@@ -471,6 +472,21 @@ fn api_routers() -> Router {
         .route("/system/fpm-specs/add", post(fpm_spec::spec_add))
         .route("/system/fpm-specs/update", post(fpm_spec::spec_update))
         .route("/system/fpm-specs/delete", post(fpm_spec::spec_delete))
+        // 容器管理（Docker Desktop 式单页：容器 / 镜像 / 卷 / 网络 / Compose，admin only）
+        .route("/docker/status", get(docker::status))
+        .route("/docker/containers", get(docker::containers))
+        .route("/docker/stats", get(docker::stats))
+        .route("/docker/container/inspect", get(docker::container_inspect))
+        .route("/docker/container/logs", get(docker::container_logs))
+        .route("/docker/container/action", post(docker::container_action))
+        .route("/docker/images", get(docker::images))
+        .route("/docker/image/action", post(docker::image_action))
+        .route("/docker/volumes", get(docker::volumes))
+        .route("/docker/volume/action", post(docker::volume_action))
+        .route("/docker/networks", get(docker::networks))
+        .route("/docker/network/action", post(docker::network_action))
+        .route("/docker/compose", get(docker::compose_list))
+        .route("/docker/compose/action", post(docker::compose_action))
         // SSH terminal
         .route("/terminal/connections", get(ssh_terminal::list_connections))
         .route(

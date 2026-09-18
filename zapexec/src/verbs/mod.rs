@@ -2,6 +2,7 @@ mod acme;
 mod appstore;
 mod cred;
 mod cron;
+mod docker;
 mod env;
 mod file;
 mod firewall;
@@ -388,6 +389,34 @@ pub async fn dispatch(req: Request) -> Response {
         // ACME HTTP-01 验证文件托管（Let's Encrypt 申请流程）
         Request::AcmeHttpWrite { entries } => acme::http_write(entries).await,
         Request::AcmeHttpClear { tokens } => acme::http_clear(tokens).await,
+        // Docker 容器管理（面板「容器」）
+        Request::DockerStatus => docker::status().await,
+        Request::DockerContainers { all } => docker::containers(all).await,
+        Request::DockerContainerAction { ids, action } => {
+            docker::container_action(&ids, &action).await
+        }
+        Request::DockerContainerInspect { id } => docker::container_inspect(&id).await,
+        Request::DockerContainerLogs {
+            id,
+            tail,
+            since,
+            timestamps,
+        } => docker::container_logs(&id, tail, since.as_deref(), timestamps).await,
+        Request::DockerStats => docker::stats().await,
+        Request::DockerImages => docker::images().await,
+        Request::DockerImageAction { id, action } => docker::image_action(&id, &action).await,
+        Request::DockerVolumes => docker::volumes().await,
+        Request::DockerVolumeAction { name, action } => docker::volume_action(&name, &action).await,
+        Request::DockerNetworks => docker::networks().await,
+        Request::DockerNetworkAction {
+            name,
+            action,
+            driver,
+        } => docker::network_action(&name, &action, driver.as_deref()).await,
+        Request::DockerComposeList => docker::compose_list().await,
+        Request::DockerComposeAction { project, action } => {
+            docker::compose_action(&project, &action).await
+        }
     }
 }
 

@@ -727,6 +727,8 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     ),
     // 数据库管理：管理员可管全部库，普通用户只能管自己前缀下的库
     ("/database", Required::User, Some(Perm::module("database"))),
+    // 容器管理：整机资源（启停容器、拉镜像、删卷），仅管理员
+    ("/docker", Required::Admin, Some(Perm::module("docker"))),
 ];
 
 /// 权限点命名空间的中文名（用于角色权限配置页与权限目录接口）。
@@ -749,6 +751,7 @@ const NS_LABELS: &[(&str, &str)] = &[
     ("service.conf", "服务配置"),
     ("system.ip", "IP 池"),
     ("database", "数据库管理"),
+    ("docker", "容器管理"),
     ("system.config", "服务器配置"),
     ("site", "站点管理"),
     ("ssl", "SSL 证书"),

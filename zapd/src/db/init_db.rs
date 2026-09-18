@@ -320,6 +320,43 @@ async fn sync_added_menus() {
     )
     .execute(pool)
     .await;
+
+    // 容器管理（Docker）：位于「计划任务」之下，管理员专属单页（nav pill 内切换
+    // 容器 / 镜像 / 卷 / 网络 / Compose，故只需要一个子菜单）。
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO menus
+            (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+         SELECT 17, 0, 'docker', '/docker', 'Layout', '/docker/index', 'dir', '容器管理',
+                'material-symbols:deployed-code', 0, 'admin', 5, 1,
+                strftime('%s','now'), strftime('%s','now')
+         WHERE NOT EXISTS (SELECT 1 FROM menus WHERE id = 17)",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO menus
+            (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+         SELECT 171, 17, 'docker-index', 'index', 'docker/index', '', 'menu', '容器',
+                'material-symbols:deployed-code', 0, 'admin', 1, 1,
+                strftime('%s','now'), strftime('%s','now')
+         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 17)",
+    )
+    .execute(pool)
+    .await;
+    // 菜单授权：menus.roles 只用于前端排序参考，侧栏可见性由 role_menus 决定，
+    // 不补这条的话管理员在新菜单上线后依然看不到入口。
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+         SELECT r.id, 17 FROM roles r WHERE r.role_key = 'admin'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+         SELECT r.id, 171 FROM roles r WHERE r.role_key = 'admin'",
+    )
+    .execute(pool)
+    .await;
 }
 
 async fn init_menus_table() {
