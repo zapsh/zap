@@ -1717,9 +1717,41 @@ const enUS: Messages = {
 
   /** Service config - Docker */
   servicesDocker: {
-    desc: 'Docker service status and daemon.json configuration (available after installing it from the App Store). If daemon.json does not exist you can create it here; saving validates the JSON syntax automatically.',
     installHint:
       'After installing the Docker app, this page will show the version, run state and a daemon.json editor.',
+    daemonHint: 'Config file: {path}. Changes to daemon.json take effect after restarting Docker.',
+    saveKeys: 'Save and apply',
+    keysSaved: 'daemon.json key settings saved',
+    restartAsk: 'Saved. Docker must be restarted for daemon.json to take effect. Restart now?',
+
+    tabKeys: 'Key settings',
+    tabFile: 'daemon.json',
+    keysTip:
+      'Edit the common daemon.json fields by group: leaving a field empty means "do not write it" (Docker defaults apply); clearing a list field and saving removes that key. A Docker restart is required after changes.',
+    fileTip:
+      'Edit daemon.json directly; the JSON syntax is validated on save (invalid JSON prevents dockerd from starting). This is the same file used by "Key settings".',
+    editableConfs: 'Config files',
+
+    groupMirrors: 'Mirrors and registries',
+    groupMirrorsDesc:
+      'Registry mirrors speed up pulls from the official registry; insecure registries are for self-hosted HTTP / self-signed registries',
+    groupLogging: 'Container logs',
+    groupLoggingDesc:
+      'Logging driver and rotation policy, to keep container logs from filling the disk',
+    groupStorage: 'Storage and data',
+    groupStorageDesc:
+      'Storage driver and data root; stop containers and back up data before changing',
+    groupRuntime: 'Network and runtime',
+    groupRuntimeDesc:
+      'Container DNS, cgroup driver and other runtime options, plus a few dockerd switches',
+
+    kindList: 'list',
+    unset: 'not set',
+    listAdd: 'Add a line',
+    listEmpty: 'Nothing configured',
+    itemPlaceholder: 'Enter one item',
+    quickAdd: 'Insert a common mirror',
+    mirrorInvalid: 'A registry mirror must start with https:// or http://: {url}',
   },
 
   /** Service config - MySQL / MariaDB */

@@ -1714,10 +1714,38 @@ export default {
     opSuccess: '操作成功',
   },
 
-  /** 服务配置 - Docker */
+  /** 服务配置 - Docker（独立页面，配置形态是 JSON，与 php.ini / my.cnf 差别较大） */
   servicesDocker: {
-    desc: 'Docker 服务状态与 daemon.json 配置（由应用商店安装后可用）。daemon.json 不存在时可直接在此新建；保存会自动校验 JSON 语法。',
     installHint: '安装 Docker 应用后，本页将自动显示版本、运行状态与 daemon.json 编辑入口。',
+    daemonHint: '配置文件：{path}。daemon.json 的修改需重启 Docker 后生效。',
+    saveKeys: '保存并生效',
+    keysSaved: 'daemon.json 关键配置已保存',
+    restartAsk: '配置已保存，需重启 Docker 才能生效。是否立即重启？',
+
+    tabKeys: '关键配置',
+    tabFile: 'daemon.json',
+    keysTip:
+      '按分组修改 daemon.json 的常用字段：留空表示不写入（沿用 Docker 默认）；列表类字段清空保存即从配置中删除该键。修改后需重启 Docker 生效。',
+    fileTip:
+      '直接编辑 daemon.json，保存时会自动校验 JSON 语法（写坏会导致 dockerd 无法启动）；此处与「关键配置」是同一个文件。',
+    editableConfs: '配置文件',
+
+    groupMirrors: '镜像与仓库',
+    groupMirrorsDesc: '加速器用于加快官方仓库拉取，私有仓库用于自建 HTTP / 自签证书的 registry',
+    groupLogging: '容器日志',
+    groupLoggingDesc: '控制日志驱动与轮转策略，避免容器日志撑爆磁盘',
+    groupStorage: '存储与数据',
+    groupStorageDesc: '存储驱动与数据根目录，改动前请停止容器并备份数据',
+    groupRuntime: '网络与运行时',
+    groupRuntimeDesc: '容器 DNS、cgroup 驱动等运行时参数，以及若干 dockerd 开关',
+
+    kindList: '列表',
+    unset: '未设置',
+    listAdd: '添加一行',
+    listEmpty: '未配置任何条目',
+    itemPlaceholder: '请输入一项',
+    quickAdd: '填入常用镜像源',
+    mirrorInvalid: '镜像源地址必须以 https:// 或 http:// 开头：{url}',
   },
 
   /** 服务配置 - MySQL / MariaDB */

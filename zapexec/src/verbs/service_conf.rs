@@ -232,6 +232,15 @@ const DOCKER_FIELDS: &[FieldDef] = &[
         options: &[],
     },
     FieldDef {
+        key: "insecure_registries",
+        label: "私有仓库",
+        kind: FieldKind::List,
+        help: "每行一个不走 HTTPS / 自签证书的仓库地址（insecure-registries），如 192.168.1.10:5000",
+        section: None,
+        jpath: &["insecure-registries"],
+        options: &[],
+    },
+    FieldDef {
         key: "log_driver",
         label: "日志驱动",
         kind: FieldKind::Select,
@@ -250,6 +259,24 @@ const DOCKER_FIELDS: &[FieldDef] = &[
         options: &[],
     },
     FieldDef {
+        key: "log_max_file",
+        label: "日志保留份数",
+        kind: FieldKind::Number,
+        help: "单个容器保留的日志文件个数（max-file），与上限配合做轮转，如 3",
+        section: None,
+        jpath: &["log-opts", "max-file"],
+        options: &[],
+    },
+    FieldDef {
+        key: "storage_driver",
+        label: "存储驱动",
+        kind: FieldKind::Select,
+        help: "存储驱动，一般保持 overlay2 即可（改动后已有镜像/容器不可见）",
+        section: None,
+        jpath: &["storage-driver"],
+        options: &["overlay2", "overlay", "devicemapper", "btrfs", "zfs", "vfs"],
+    },
+    FieldDef {
         key: "data_root",
         label: "数据目录",
         kind: FieldKind::Text,
@@ -257,6 +284,42 @@ const DOCKER_FIELDS: &[FieldDef] = &[
         section: None,
         jpath: &["data-root"],
         options: &[],
+    },
+    FieldDef {
+        key: "dns",
+        label: "容器 DNS",
+        kind: FieldKind::List,
+        help: "每行一个 DNS 服务器地址，仅对新创建的容器生效，如 223.5.5.5 / 8.8.8.8",
+        section: None,
+        jpath: &["dns"],
+        options: &[],
+    },
+    FieldDef {
+        key: "exec_opts",
+        label: "运行时参数",
+        kind: FieldKind::List,
+        help: "每行一条 dockerd 运行参数（exec-opts），如 native.cgroupdriver=systemd",
+        section: None,
+        jpath: &["exec-opts"],
+        options: &[],
+    },
+    FieldDef {
+        key: "live_restore",
+        label: "守护进程热升级",
+        kind: FieldKind::Bool,
+        help: "dockerd 重启或升级时保持容器继续运行（live-restore），未设置则跟随 Docker 默认",
+        section: None,
+        jpath: &["live-restore"],
+        options: &["true", "false"],
+    },
+    FieldDef {
+        key: "userland_proxy",
+        label: "用户态代理",
+        kind: FieldKind::Bool,
+        help: "端口映射是否走 docker-proxy，高并发场景可关闭以减少开销",
+        section: None,
+        jpath: &["userland-proxy"],
+        options: &["true", "false"],
     },
     FieldDef {
         key: "debug",
@@ -1608,7 +1671,12 @@ pub async fn keys_save(svc: &str, keys: std::collections::BTreeMap<String, Strin
                     if let Some(raw) = keys.get(f.key) {
                         let raw = raw.trim();
                         if raw.is_empty() {
-                            // 留空 = 保持原文件中的既有键不动（不写入托管值）
+                            // 表单每次都提交全部字段，所以列表留空是用户主动清空
+                            // （registry-mirrors 之类必须真删掉，留个空数组 dockerd 一样不认）；
+                            // 其余类型留空 = 保持原文件中的既有键不动（不写入托管值）
+                            if matches!(f.kind, FieldKind::List) {
+                                remove_json_path(&mut obj, f.jpath);
+                            }
                             continue;
                         }
                         let v = match f.kind {
@@ -1616,12 +1684,6 @@ pub async fn keys_save(svc: &str, keys: std::collections::BTreeMap<String, Strin
                                 Value::Bool(raw.eq_ignore_ascii_case("true") || raw == "1")
                             }
                             FieldKind::List => {
-                                // 表单每次都提交全部字段，所以"留空"是用户主动清空：
-                                // 删掉这个键，而不是写个空数组进去
-                                if raw.is_empty() {
-                                    remove_json_path(&mut obj, f.jpath);
-                                    continue;
-                                }
                                 let items = parse_list_items(raw)?;
                                 if f.key == "registry_mirrors" {
                                     validate_registry_mirrors(&items)?;
