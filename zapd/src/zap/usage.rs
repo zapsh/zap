@@ -12,7 +12,7 @@
 //!
 //! 日志路径取 `site.log_root/access.log`（不依赖目录命名）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -164,40 +164,73 @@ async fn du_bytes(dir: &str) -> Option<u64> {
 /// 单批路径上限：与 `zapexec` 的 `DISK_USAGE_MAX` 对齐并留余量
 const DU_BATCH: usize = 200;
 
-/// 委托 `zapexec`（root）批量统计目录占用：返回「目录 → 字节数」。
+/// root 批量统计结果：`usage` 为「目录 → 字节数」，`missing` 为 root 也 stat 不到的
+/// 目录（站点尚未创建等），一律按 0 计。
+#[derive(Default)]
+struct RootUsage {
+    usage: HashMap<String, u64>,
+    missing: HashSet<String>,
+}
+
+/// 委托 `zapexec`（root）批量统计目录占用。
 ///
 /// 面板（zapd）以 zapadm 运行，用户家目录 0700 读不到，`du` 必须由 root 执行；
-/// 失败时返回空 map，调用方逐目录回退本地 `du_bytes`。
-async fn du_batch_root(dirs: &[String]) -> HashMap<String, u64> {
+/// 失败时返回空结果，调用方逐目录回退本地 `du_bytes`。
+async fn du_batch_root(dirs: &[String]) -> RootUsage {
+    let mut out = RootUsage::default();
     let Ok(resp) = crate::zapexec::call(Request::FsDiskUsage {
         paths: dirs.to_vec(),
     })
     .await
     else {
-        return HashMap::new();
+        return out;
     };
     if resp.code != 0 {
         warn!("磁盘用量采集（root）失败: {}", resp.message);
-        return HashMap::new();
+        return out;
     }
-    let Some(obj) = resp
+    // 目录不存在 / 读不到不算失败（站点尚未创建是常态）：只在跟踪日志里说明
+    if let Some(err) = resp
+        .data
+        .as_ref()
+        .and_then(|d| d.get("error"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        debug!("磁盘用量采集（root）: {}", err);
+    }
+    if let Some(obj) = resp
         .data
         .as_ref()
         .and_then(|d| d.get("usage"))
         .and_then(|v| v.as_object())
-    else {
-        return HashMap::new();
-    };
-    obj.iter()
-        .filter_map(|(k, v)| Some((k.clone(), v.as_u64()?)))
-        .collect()
+    {
+        out.usage = obj
+            .iter()
+            .filter_map(|(k, v)| Some((k.clone(), v.as_u64()?)))
+            .collect();
+    }
+    if let Some(arr) = resp
+        .data
+        .as_ref()
+        .and_then(|d| d.get("missing"))
+        .and_then(|v| v.as_array())
+    {
+        out.missing = arr
+            .iter()
+            .filter_map(|v| Some(v.as_str()?.to_string()))
+            .collect();
+    }
+    out
 }
 
 /// 分批（每批 ≤ `DU_BATCH`）委托 root 统计，避免单次请求路径过多被截断。
-async fn du_batch_root_all(dirs: &[String]) -> HashMap<String, u64> {
-    let mut out = HashMap::new();
+async fn du_batch_root_all(dirs: &[String]) -> RootUsage {
+    let mut out = RootUsage::default();
     for chunk in dirs.chunks(DU_BATCH) {
-        out.extend(du_batch_root(chunk).await);
+        let r = du_batch_root(chunk).await;
+        out.usage.extend(r.usage);
+        out.missing.extend(r.missing);
     }
     out
 }
@@ -212,20 +245,29 @@ pub async fn collect_disk_usage() {
             .await
             .unwrap_or_default();
     let now = Local::now().timestamp();
-    // 家目录多为 0700（属主为各自 Linux 账号），zapadm 读不到 → 委托 root 一次统计完
+    // 家目录多为 0700（属主为各自 Linux 账号）：zapadm 连 stat 都做不到，
+    // 因此不自行过滤，全部交给 root 统计，由 root 判定目录是否存在
     let homes: Vec<String> = rows
         .iter()
-        .filter(|(_, h)| Path::new(h).exists())
         .map(|(_, h)| h.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
         .collect();
-    let root_usage = du_batch_root_all(&homes).await;
+    let root = du_batch_root_all(&homes).await;
 
     for (id, home_dir) in rows {
-        if !Path::new(&home_dir).exists() {
+        // 家目录不存在（Linux 账号还没建 / 已删除）：用量记 0
+        if root.missing.contains(&home_dir) {
+            let _ =
+                sqlx::query("UPDATE user SET disk_used_bytes = 0, disk_stat_at = ? WHERE id = ?")
+                    .bind(now)
+                    .bind(id)
+                    .execute(pool)
+                    .await;
             continue;
         }
         // root 未覆盖（zapexec 不可用 / du 报错）时回退本地 du
-        let bytes = match root_usage.get(&home_dir) {
+        let bytes = match root.usage.get(&home_dir) {
             Some(v) => Some(*v),
             None => du_bytes(&home_dir).await,
         };
@@ -289,13 +331,16 @@ pub async fn collect_site_disk() {
             .await
             .unwrap_or_default();
     let now = Local::now().timestamp();
-    // 站点目录位于用户家目录下（0700），同样委托 root 批量统计
+    // 站点目录位于用户家目录下（0700），同样委托 root 批量统计；
+    // 存在性一律以 root 的判断为准（zapadm stat 不到家目录，不能自行过滤）
     let dirs: Vec<String> = rows
         .iter()
         .flat_map(|(_, w, l)| [w.clone(), l.clone()])
         .filter(|d| !d.trim().is_empty())
+        .collect::<HashSet<_>>()
+        .into_iter()
         .collect();
-    let root_usage = du_batch_root_all(&dirs).await;
+    let root = du_batch_root_all(&dirs).await;
 
     for (id, web_root, log_root) in rows {
         let mut total: u64 = 0;
@@ -304,16 +349,24 @@ pub async fn collect_site_disk() {
             if dir.trim().is_empty() {
                 continue;
             }
-            let v = match root_usage.get(dir) {
+            // 目录不存在（站点还没建 / 已删除）：按 0 计
+            if root.missing.contains(dir) {
+                sampled = true;
+                continue;
+            }
+            let v = match root.usage.get(dir) {
                 Some(v) => Some(*v),
                 None => du_bytes(dir).await,
             };
-            if let Some(v) = v {
-                total = total.saturating_add(v);
-                sampled = true;
+            match v {
+                Some(v) => {
+                    total = total.saturating_add(v);
+                    sampled = true;
+                }
+                None => warn!("站点磁盘用量采集失败: site={} dir={}", id, dir),
             }
         }
-        // 两个目录都不存在 / 采集失败时保留上次结果，避免把有效值覆盖成 0
+        // 目录存在但采不到时才保留上次结果，避免把有效值覆盖成 0
         if !sampled {
             continue;
         }
