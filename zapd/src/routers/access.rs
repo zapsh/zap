@@ -1594,7 +1594,9 @@ mod tests {
             .route("/appstore/ws/{run_id}", get(|| async { "ok" }))
             .route("/site/list", get(|| async { "ok" }))
             .route("/site/add", post(|| async { "ok" }))
+            .route("/site/update", post(|| async { "ok" }))
             .route("/site/delete", post(|| async { "ok" }))
+            .route("/user/team/add", post(|| async { "ok" }))
             .layer(middleware::from_fn(guard))
     }
 
@@ -1642,10 +1644,54 @@ mod tests {
         // uid=100 是"个人附加权限"用例：角色没有任何权限，仅靠附加权限放行
         let mut users = UserPermMap::new();
         users.insert(100, ["site:delete"].iter().map(|s| s.to_string()).collect());
+        // uid=200 是"只读"用例：生效权限已被收敛为 `{ns}:view`（见 load_user_perm_map）
+        users.insert(200, ["site:view"].iter().map(|s| s.to_string()).collect());
 
         // 固定内容，直接覆盖：保证并发测试读到的是同一份数据
         *cache_slot().write().unwrap() = Some(Arc::new(map));
         *user_cache_slot().write().unwrap() = Some(Arc::new(users));
+        *readonly_slot().write().unwrap() =
+            Some(Arc::new([200i64].into_iter().collect::<ReadOnlySet>()));
+    }
+
+    /// 只读账号：共享可见（角色下限与权限点照常给 `view`），但一处都改不了。
+    ///
+    /// 关键是**角色不能兜底**：user 角色默认持有 `site:create` / `site:update`，
+    /// 只读账号也是 user 角色，若判定取「角色 ∪ 用户」并集就会被整体绕过。
+    #[tokio::test]
+    async fn readonly_account_sees_everything_but_changes_nothing() {
+        prime_cache();
+        let readonly = token_with(200, "user");
+
+        // 看：与资源归属无关，自己 / 父账号共享的都一样放行
+        assert_eq!(status("/site/list", Some(&readonly)).await, StatusCode::OK);
+        assert_eq!(status("/health", Some(&readonly)).await, StatusCode::OK);
+
+        // 改：角色持有的 create / update / delete 一律不生效
+        assert_eq!(
+            send(Method::POST, "/site/add", Some(&readonly)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(Method::POST, "/site/update", Some(&readonly)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(Method::POST, "/site/delete", Some(&readonly)).await,
+            StatusCode::FORBIDDEN
+        );
+
+        // 没登记权限点的写接口（成员管理）由只读兜底拦住
+        assert_eq!(
+            send(Method::POST, "/user/team/add", Some(&readonly)).await,
+            StatusCode::FORBIDDEN
+        );
+
+        // 对照组：同样角色、非只读的账号照常可写
+        assert_eq!(
+            send(Method::POST, "/site/add", Some(&token("user"))).await,
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]
