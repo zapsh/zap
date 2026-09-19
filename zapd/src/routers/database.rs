@@ -28,14 +28,14 @@ use serde_json::{Value, json};
 
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
-use crate::zap::jwt::{ValidatedClaims, is_admin};
+use crate::zap::jwt::{self, is_admin, ValidatedClaims};
 
 /// 凭据坐标（与 `zapctl cred show mysql zapadm` 一致）
 const CRED_SERVICE: &str = "mysql";
 const CRED_USER: &str = "zapadm";
 
 /// 面板展示用的连接地址主机位（本机管理走 socket，对外连接统一提示回环地址）
-const DB_HOST: &str = "127.0.0.1";
+pub(crate) const DB_HOST: &str = "127.0.0.1";
 
 /// 服务端口取不到时的兜底值
 const DEFAULT_PORT: u16 = 3306;
@@ -162,7 +162,7 @@ fn check_host(host: &str) -> Result<String, ZapError> {
 }
 
 /// 非管理员可见的库名前缀；管理员返回 None 表示不限制。
-fn schema_prefix(claims: &ValidatedClaims) -> Option<String> {
+fn schema_prefix(claims: &jwt::Claims) -> Option<String> {
     if is_admin(claims) {
         return None;
     }
@@ -200,7 +200,7 @@ pub(crate) fn count_schemas(prefixes: &[String]) -> i64 {
 }
 
 /// 校验库归属：非管理员只能操作自己前缀下的库。
-fn ensure_owned(claims: &ValidatedClaims, schema: &str) -> Result<String, ZapError> {
+fn ensure_owned(claims: &jwt::Claims, schema: &str) -> Result<String, ZapError> {
     let name = check_ident(schema, "数据库名")?;
     if let Some(p) = schema_prefix(claims)
         && !name.starts_with(&p)
@@ -336,7 +336,7 @@ pub async fn status(_claims: ValidatedClaims) -> ZapJsonResult {
 ///
 /// 与站点数限制一致：只对普通用户（有 `{用户名}_` 前缀）生效，管理员不受限；
 /// 未绑定套餐 / 套餐停用时不做拦截。
-async fn ensure_db_quota(claims: &ValidatedClaims) -> Result<(), ZapError> {
+async fn ensure_db_quota(claims: &jwt::Claims) -> Result<(), ZapError> {
     let Some(prefix) = schema_prefix(claims) else {
         return Ok(());
     };
@@ -442,14 +442,34 @@ pub async fn list(claims: ValidatedClaims, Query(q): Query<ListQuery>) -> ZapJso
 /// 非管理员的库名 / 用户名一律自动补 `{用户名}_` 前缀；`create_user=true` 时
 /// 一并创建「与库同名」的用户并授予该库全部权限（密码留空则随机生成，
 /// 明文密码仅在本次响应中返回一次）。建用户失败会回滚刚建的库，避免半成品。
-pub async fn create(claims: ValidatedClaims, Json(req): Json<CreateDbReq>) -> ZapJsonResult {
+/// 建库结果（HTTP 接口与 AppStore provision 共用）。
+#[derive(Debug, Clone)]
+pub(crate) struct CreatedDb {
+    pub name: String,
+    pub charset: String,
+    /// 专用用户名（create_user=false 时为 None）
+    pub user: Option<String>,
+    /// 允许连接的主机（create_user=false 时为 None）
+    pub host: Option<String>,
+    /// 明文密码（仅随机生成时在此出现一次，之后不再落盘可读取的位置）
+    pub password: Option<String>,
+}
+
+/// 建库执行体：套餐配额 → 前缀补全 → 建库 →（可选）建同名专用用户并授权。
+///
+/// HTTP 接口与 AppStore 建站包的 provision 共用同一条路径，确保配额、
+/// 多租户前缀、回滚逻辑只有一份实现。
+pub(crate) async fn create_schema(
+    claims: &jwt::Claims,
+    req: CreateDbReq,
+) -> Result<CreatedDb, ZapError> {
     // 套餐配额：数据库数量上限（0 = 不限）
-    ensure_db_quota(&claims).await?;
+    ensure_db_quota(claims).await?;
     let raw = req.name.trim();
-    let prefix = schema_prefix(&claims);
+    let prefix = schema_prefix(claims);
     let name = match &prefix {
         Some(p) if !raw.starts_with(p.as_str()) => check_ident(&format!("{p}{raw}"), "数据库名")?,
-        _ => ensure_owned(&claims, raw)?,
+        _ => ensure_owned(claims, raw)?,
     };
     let charset = if req.charset.trim().is_empty() {
         "utf8mb4".to_string()
@@ -460,7 +480,13 @@ pub async fn create(claims: ValidatedClaims, Json(req): Json<CreateDbReq>) -> Za
     run_sqls(&[format!("CREATE DATABASE `{name}` CHARACTER SET {charset}")])?;
 
     if !req.create_user {
-        return ok(json!({ "ok": true, "name": name, "charset": charset }));
+        return Ok(CreatedDb {
+            name,
+            charset,
+            user: None,
+            host: None,
+            password: None,
+        });
     }
 
     // 库 + 用户一条龙：用户名默认与库名同名（前缀一致），也允许高级模式自定义
@@ -500,15 +526,110 @@ pub async fn create(claims: ValidatedClaims, Json(req): Json<CreateDbReq>) -> Za
         return Err(e);
     }
 
-    ok(json!({
-        "ok": true,
-        "name": name,
-        "charset": charset,
-        "user": user,
-        "host": host,
+    Ok(CreatedDb {
+        name,
+        charset,
+        user: Some(user),
+        host: Some(host),
+        password: Some(password),
+    })
+}
+
+/// POST /api/database/create：创建数据库。
+///
+/// 非管理员的库名 / 用户名一律自动补 `{用户名}_` 前缀；`create_user=true` 时
+/// 一并创建「与库同名」的用户并授予该库全部权限（密码留空则随机生成，
+/// 明文密码仅在本次响应中返回一次）。建用户失败会回滚刚建的库，避免半成品。
+pub async fn create(claims: ValidatedClaims, Json(req): Json<CreateDbReq>) -> ZapJsonResult {
+    let d = create_schema(&claims, req).await?;
+    let mut data = json!({ "ok": true, "name": d.name, "charset": d.charset });
+    if let (Some(u), Some(h), Some(p)) = (&d.user, &d.host, &d.password) {
+        data["user"] = json!(u);
+        data["host"] = json!(h);
         // 明文密码仅在创建响应中返回一次，请提示用户立即保存
-        "password": password,
-    }))
+        data["password"] = json!(p);
+    }
+    ok(data)
+}
+
+// ── AppStore provision：为建站包分配数据库 ──────────────────
+
+/// 库是否已存在（用于 provision 自动避让重名）。
+fn schema_exists(name: &str) -> bool {
+    let sql = format!(
+        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{}'",
+        escape_literal(name)
+    );
+    run_sql(&sql)
+        .map(|s| s.trim().lines().next().unwrap_or_default().trim() == name)
+        .unwrap_or(false)
+}
+
+/// 数据库服务端口（脚本连接用；取不到时用 3306 兜底）。
+pub(crate) fn db_port() -> u16 {
+    run_sql("SELECT @@port")
+        .ok()
+        .and_then(|s| s.trim().lines().next().unwrap_or_default().trim().parse().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+
+/// AppStore provision：为建站类包建一个「专用库 + 专用用户」。
+///
+/// - 库名 = 用户前缀 + `base`（`base` 缺省 `app`），重名自动加序号
+///   （同一包装多个实例不会互相覆盖）；
+/// - 密码随机 16 位，**只出现在返回值与本次脚本 env 中**（不落 options.env，
+///   也不发给前端），脚本负责写进自己的配置文件；
+/// - 配额 / 前缀 / 回滚规则与普通建库完全一致。
+pub(crate) async fn provision_db(
+    claims: &jwt::Claims,
+    base: Option<&str>,
+    charset: Option<&str>,
+    host: Option<&str>,
+) -> Result<CreatedDb, ZapError> {
+    let base = match base.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(b) => b.to_string(),
+        None => "app".to_string(),
+    };
+    let prefix = schema_prefix(claims);
+    let charset = charset
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("utf8mb4")
+        .to_string();
+    let host = host
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("localhost")
+        .to_string();
+
+    for i in 0..32 {
+        let raw = if i == 0 {
+            base.clone()
+        } else {
+            format!("{base}_{}", i + 1)
+        };
+        // 前缀由 create_schema 内部补全；这里按同样规则预判重名
+        let full = match &prefix {
+            Some(p) if !raw.starts_with(p.as_str()) => format!("{p}{raw}"),
+            _ => raw.clone(),
+        };
+        if schema_exists(&full) {
+            continue;
+        }
+        let req = CreateDbReq {
+            name: raw,
+            charset: charset.clone(),
+            create_user: true,
+            user: None,
+            password: None,
+            host: host.clone(),
+        };
+        return create_schema(claims, req).await;
+    }
+    Err(ZapError::New(
+        -1,
+        format!("数据库名 `{base}` 已被占用，无法自动分配库名"),
+    ))
 }
 
 /// POST /api/database/drop：删除数据库。

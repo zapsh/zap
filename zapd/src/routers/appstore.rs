@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use tracing::info;
 
 use crate::{
@@ -20,6 +21,154 @@ use crate::{
     zapexec,
 };
 use zap_proto::Request;
+
+/// 运行身份门禁：声明 `run_as: user`（或 `scope: site`）的包必须是 `webapps` 分类。
+///
+/// 降权通道是给「装进用户站点目录」的建站包（WordPress 之类）用的：脚本以面板用户
+/// 对应的 Linux 账号运行，拿不到 root。其它分类的脚本要装系统目录、管 systemd，
+/// 不允许走这条通道（zapexec 侧会二次校验，这里先把错误提示前置到面板层）。
+async fn check_pkg_run_as(pkg_path: &str) -> Result<(), ZapError> {
+    let Some(mode) = ast::package_run_as_of(pkg_path).await else {
+        return Ok(());
+    };
+    if mode != "user" {
+        return Ok(());
+    }
+    let cat = pkg_path.split('/').next().unwrap_or("");
+    if cat != "webapps" {
+        return Err(ZapError::New(
+            -1,
+            "只有 webapps 分类的包允许以 Linux 用户身份运行（app.yaml: run_as: user）".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+// ── 面板侧编排（建站 / 建库）────────────────────────────────
+//
+// 建站类包（webapps）的脚本以 Linux 账号运行，拿不到「建站点」「建数据库」的权限。
+// 因此由面板在任务入队前把资源准备好，再把连接信息作为环境变量注入脚本；
+// 脚本只负责下载、落地、写配置文件。好处：
+// - 数据库凭据（zapadm）不出面板进程，也不落 options.env（那是给用户看的）；
+// - 套餐配额、多租户前缀（{用户名}_）、随机密码策略自动生效；
+// - 重跑 / 卸载复用同一份资源（存于 apps/<pkg>/provision.json，0600 仅 root 可读）。
+
+/// 编排结果存放位置：`data/apps/<pkg_path>/provision.json`（root only）。
+fn provision_file(pkg_path: &str) -> PathBuf {
+    ast::apps_dir().join(pkg_path).join("provision.json")
+}
+
+/// 落盘编排结果（0600：里面可能有数据库密码）。
+fn save_provision(pkg_path: &str, env: &BTreeMap<String, String>) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = provision_file(pkg_path);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut f = match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    use std::io::Write;
+    let _ = f.write_all(serde_json::to_string_pretty(env).unwrap_or_default().as_bytes());
+}
+
+/// 读取上次安装的编排结果（卸载 / 升级复用同一站点与库）。
+pub(crate) fn load_provision(pkg_path: &str) -> Option<BTreeMap<String, String>> {
+    let content = std::fs::read_to_string(provision_file(pkg_path)).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// 按包声明准备站点与数据库，返回待注入脚本的环境变量。
+///
+/// 失败即中止安装（任务不会入队），避免脚本跑到一半才发现没有数据库。
+async fn provision_for(
+    claims: &Claims,
+    pkg_path: &str,
+    options: Option<&BTreeMap<String, String>>,
+) -> Result<Option<BTreeMap<String, String>>, ZapError> {
+    let Some(spec) = ast::package_provision_of(pkg_path).await else {
+        return Ok(None);
+    };
+    let mut env: BTreeMap<String, String> = BTreeMap::new();
+
+    if let Some(site) = &spec.site {
+        let opt_name = site
+            .domain_option
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("SITE_DOMAIN");
+        let domain = options
+            .and_then(|o| o.get(opt_name))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ZapError::New(-1, format!("缺少安装选项 {opt_name}：建站包需要目标站点域名"))
+            })?;
+        let s = crate::routers::site::provision_site(
+            claims,
+            domain,
+            site.mode.as_deref(),
+            site.php.as_deref(),
+            site.rewrite.as_deref(),
+        )
+        .await?;
+        env.insert("SITE_ID".into(), s.id.to_string());
+        env.insert("SITE_DOMAIN".into(), s.domain);
+        env.insert("SITE_ROOT".into(), s.root);
+        env.insert("SITE_OWNER".into(), s.owner);
+        env.insert("SITE_LINUX_USER".into(), s.linux_user);
+        if !s.php_instance.is_empty() {
+            env.insert("PHP_INSTANCE".into(), s.php_instance);
+        }
+        if let Some(sock) = s.php_socket {
+            env.insert("PHP_FPM_SOCK".into(), sock);
+        }
+    }
+
+    if let Some(db) = &spec.database {
+        // 每个实例一个专用库 + 专用用户：只授权自己那个库，互不影响
+        let created = crate::routers::database::provision_db(
+            claims,
+            db.name.as_deref(),
+            db.charset.as_deref(),
+            db.host.as_deref(),
+        )
+        .await?;
+        env.insert("DB_NAME".into(), created.name);
+        env.insert("DB_CHARSET".into(), created.charset);
+        if let Some(u) = created.user {
+            env.insert("DB_USER".into(), u);
+        }
+        if let Some(h) = created.host {
+            // 该账号被授权的连接来源（默认 localhost），与 DB_HOST（连接地址）区分
+            env.insert("DB_USER_HOST".into(), h);
+        }
+        // 明文密码只进脚本进程环境与 provision.json（0600），前端与 options.env 都没有
+        if let Some(p) = created.password {
+            env.insert("DB_PASS".into(), p);
+        }
+        env.insert("DB_HOST".into(), crate::routers::database::DB_HOST.to_string());
+        env.insert(
+            "DB_PORT".into(),
+            crate::routers::database::db_port().to_string(),
+        );
+    }
+
+    if env.is_empty() {
+        return Ok(None);
+    }
+    save_provision(pkg_path, &env);
+    Ok(Some(env))
+}
 
 fn require_admin(claims: &Claims) -> Result<(), ZapError> {
     if jwt::is_admin(claims) {
@@ -326,6 +475,8 @@ pub async fn install(
 ) -> ZapJsonResult {
     // 包角色门禁：admin 恒可安装；roles 缺省 = 仅 admin，声明后按白名单校验
     check_pkg_roles(&claims, &payload.pkg_path).await?;
+    // 运行身份门禁：run_as: user 仅 webapps 分类可用
+    check_pkg_run_as(&payload.pkg_path).await?;
     // 自定义包包含任意脚本，仅管理员可安装
     if payload.source == "custom" {
         require_admin(&claims)?;
@@ -334,6 +485,9 @@ pub async fn install(
         Ok(o) => o,
         Err(e) => return Err(ZapError::New(-1, e)),
     };
+    // 面板侧编排：建站类包（webapps）先由面板建好站点 / 数据库；
+    // 失败直接返回，任务不会入队（避免脚本跑一半发现没库可用）
+    let provision = provision_for(&claims, &payload.pkg_path, options.as_ref()).await?;
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
 
@@ -345,6 +499,7 @@ pub async fn install(
         version: payload.version.clone(),
         action: payload.action.clone(),
         options,
+        provision,
         user: Some(claims.sub.clone()),
         run_mode: Some(system_env::VHOST_MODE.to_string()),
         run_id: run_id.clone(),
@@ -428,9 +583,12 @@ pub async fn uninstall(
     let user = claims.sub.clone();
     let run_mode = system_env::VHOST_MODE.to_string();
 
+    // 回传安装时的编排结果（站点 / 数据库），供 uninstall.sh 先备份数据再删文件
+    let provision = load_provision(&payload.pkg_path);
     let resp = zapexec::call(Request::AppstoreUninstall {
         pkg_path: payload.pkg_path.clone(),
         options,
+        provision,
         user: Some(user),
         run_mode: Some(run_mode),
         run_id: run_id.clone(),
@@ -485,6 +643,8 @@ pub async fn upgrade(
 ) -> ZapJsonResult {
     // 包角色门禁：admin 恒可升级；roles 缺省 = 仅 admin，声明后按白名单校验
     check_pkg_roles(&claims, &payload.pkg_path).await?;
+    // 运行身份门禁：run_as: user 仅 webapps 分类可用
+    check_pkg_run_as(&payload.pkg_path).await?;
     let old_version = ast::installed_version_of(&payload.pkg_path)
         .await
         .unwrap_or_default();

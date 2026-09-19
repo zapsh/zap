@@ -379,6 +379,13 @@ pub enum Request {
         /// 发起操作的面板登录用户名（注入 ZAP_USER，供安装脚本按操作者归属）
         #[serde(skip_serializing_if = "Option::is_none")]
         user: Option<String>,
+        /// 面板侧编排结果（建站 / 建库），由 zapd 在入队前准备好并注入脚本 env。
+        ///
+        /// 键即环境变量名（`SITE_ROOT` / `DB_NAME` / `DB_PASS` …）。与 `options` 的区别：
+        /// 这些值由面板产生（不是用户手填），可能含数据库密码，因此**不落 options.env /
+        /// options.json**，只进子进程环境（run.json 由 zapexec 以 0600 写出）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provision: Option<BTreeMap<String, String>>,
         /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
@@ -391,6 +398,9 @@ pub enum Request {
         /// 用户在卸载表单中填写的选项（app.yaml options.uninstall，键=选项名，值=字符串化表单值）
         #[serde(skip_serializing_if = "Option::is_none")]
         options: Option<BTreeMap<String, String>>,
+        /// 安装时面板编排结果（站点 / 数据库），卸载时回传以便脚本备份或清理
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provision: Option<BTreeMap<String, String>>,
         /// 发起操作的面板登录用户名（注入 ZAP_USER）
         #[serde(skip_serializing_if = "Option::is_none")]
         user: Option<String>,
@@ -1196,6 +1206,7 @@ mod tests {
                 version: "11.4.4".into(),
                 action: None,
                 options: None,
+                provision: None,
                 user: None,
                 run_mode: None,
                 run_id: "r1".into(),
@@ -1211,12 +1222,17 @@ mod tests {
                 version: "8.3.3".into(),
                 action: Some("build".into()),
                 options: None,
+                provision: Some(
+                    [("DB_NAME".to_string(), "u_wp1".to_string())]
+                        .into_iter()
+                        .collect()
+                ),
                 user: None,
                 run_mode: None,
                 run_id: "r2".into(),
             })
             .unwrap(),
-            r#"{"verb":"appstore.install","pkg_path":"application/php","source":"official","repo_id":"zap-appstore","version":"8.3.3","action":"build","run_id":"r2"}"#
+            r#"{"verb":"appstore.install","pkg_path":"application/php","source":"official","repo_id":"zap-appstore","version":"8.3.3","action":"build","provision":{"DB_NAME":"u_wp1"},"run_id":"r2"}"#
         );
         assert_eq!(
             serde_json::to_string(&Request::AppstoreRepoAdd {

@@ -28,7 +28,7 @@ fn home_dir_ok(home: &str) -> bool {
         && !home.contains(' ')
 }
 
-fn linux_user_ok(u: &str) -> bool {
+pub(crate) fn linux_user_ok(u: &str) -> bool {
     if u.is_empty() || u.len() > 32 {
         return false;
     }

@@ -166,6 +166,15 @@
               <tr><td><code>ACTION</code></td><td>动作键（由 actions 自定义操作发起时注入，如 build）</td></tr>
               <tr><td><code>ZAP_USER</code></td><td>发起本次操作的面板登录用户名（install / uninstall / upgrade 及失败重跑都会注入）。多用户 / 多角色场景下，脚本可据此把安装产物、文件属主等归属到操作者名下</td></tr>
               <tr><td><code>ZAP_RUN_MODE</code></td><td>虚拟主机运行模式：恒为 <code>system</code>——每个面板用户一个独立 Linux 账号（nologin），站点文件与运行身份均归该账号（历史上一度支持 <code>www</code> 统一用户，现已移除）</td></tr>
+              <tr><td><code>ZAP_LINUX_USER</code></td><td>降权运行（<code>run_as: user</code>）时的 Linux 账号名；非降权包不注入</td></tr>
+              <tr><td><code>ZAP_HOME</code></td><td>降权运行时该账号的家目录（进程 <code>cwd</code> 也在此），脚本产物应落在它下面</td></tr>
+              <tr><td><code>ZAP_PY_LIB</code></td><td>Python 辅助库目录（<code>$ZAP_PATH/scripts/zap</code>），供 <code>sys.path.insert</code> 后 <code>import zapweb</code>；仅 Python 脚本注入</td></tr>
+              <tr><td><code>SITE_ID / SITE_DOMAIN</code></td><td>目标站点 ID 与主域名（<code>provision.site</code> 编排后注入）</td></tr>
+              <tr><td><code>SITE_ROOT</code></td><td>站点文档根目录（脚本的部署目标，越界写入会被属主拦住）</td></tr>
+              <tr><td><code>SITE_OWNER / SITE_LINUX_USER</code></td><td>站点归属的面板用户名与 Linux 账号名</td></tr>
+              <tr><td><code>PHP_INSTANCE / PHP_FPM_SOCK</code></td><td>站点绑定的 PHP 实例（<code>php83</code>）与专属 FPM 通道（<code>unix:/var/run/php-fpm-&lt;用户&gt;-83.sock</code>）</td></tr>
+              <tr><td><code>DB_NAME / DB_USER / DB_PASS</code></td><td>面板为本实例建的专用库、专用用户与随机密码（密码只在脚本 env 与 <code>provision.json</code>（0600）出现，前端拿不到）</td></tr>
+              <tr><td><code>DB_HOST / DB_PORT / DB_CHARSET / DB_USER_HOST</code></td><td>连接地址、端口、字符集，以及该账号被授权的连接来源（默认 <code>localhost</code>）</td></tr>
               <tr><td>选项变量</td><td>每个 options 项按 <code>name</code> 直接注入同名环境变量（见第七节）</td></tr>
             </tbody>
           </table>
@@ -291,6 +300,82 @@
             <li>失败现场默认保留在 <code>data/appstore/runs/&lt;run_id&gt;/</code>：<code>pkg/</code> 内脚本与 <code>options.env</code> 可查看/编辑，<code>build/</code> 编译残留一并保留供排查；然后「编辑脚本 / 重跑」——重跑以快照内文件为准，编辑过的选项同样生效；</li>
             <li>重跑成功后系统按新 run_id 重新跟踪日志；新运行成功会清理其快照，原失败快照由「重跑」发起时一并清理。</li>
           </ol>
+          <!-- 十二、运行身份与脚本语言 -->
+          <h2 id="sec-runas">十二、运行身份与脚本语言</h2>
+          <p>默认所有包脚本以 <strong>root</strong> 执行。建站类包（<code>webapps</code>，如 WordPress / Typecho）可声明降权，让脚本以<strong>面板用户对应的 Linux 账号</strong>（nologin）运行：</p>
+          <pre class="code-block">category: webapps
+scope: site                # 作用范围：site = 装进用户站点（缺省即降权）；panel = 面板级工具（如 phpMyAdmin）
+run_as: user               # 显式声明运行身份，优先级高于 scope；只允许 webapps 分类声明
+scripts:
+  install: install.py      # .py 自动用 python3 执行；.sh 用 bash
+  uninstall: { file: remove.py, interpreter: python3 }</pre>
+          <ul>
+            <li><strong>门禁</strong>：非 <code>webapps</code> 分类声明 <code>run_as: user</code> 会被面板与 zapexec 双重拒绝——降权通道只为「装进站点目录」的建站包开放。</li>
+            <li><strong>降权后拿不到的能力</strong>：不能写 <code>/usr/local/apps</code>、不能改 nginx 配置、不能碰 systemd、拿不到数据库管理凭据。建站所需的「建站点 / 建库」由面板侧完成并以环境变量注入，脚本只负责<strong>下载、落地、写配置</strong>。</li>
+            <li><strong>可写范围</strong>：家目录（<code>$ZAP_HOME</code>）、<code>$BUILD_PATH</code>、<code>$APP_PATH</code>（系统已预建并 chown 给该账号）；越界会被文件系统属主直接拦住。</li>
+            <li><strong>环境</strong>：进程 <code>env_clear()</code> 后只注入白名单，PATH 不含 sbin；<code>cwd</code> 为家目录；<code>NO_NEW_PRIVS</code>（禁止借 setuid 再提权）+ 关 core dump（避免内存里的数据密码落盘）。</li>
+          </ul>
+          <p class="sec-sub"><strong>脚本可以用 python3 写</strong>：扩展名 <code>.py</code> 或 <code>interpreter: python3</code> 时以 <code>python3 -I -B &lt;脚本&gt;</code> 执行。</p>
+          <ul>
+            <li><code>-I</code> 隔离模式：忽略 <code>PYTHON*</code> 环境变量、不加载用户 site-packages、<strong>不把脚本目录放进 <code>sys.path</code></strong>；因此引入辅助库必须显式加路径：</li>
+          </ul>
+          <pre class="code-block">import os, sys
+sys.path.insert(0, os.environ["ZAP_PY_LIB"])   # 注入的辅助库目录
+from zapweb import log_info, log_ok, download, extract, deploy, render, write_info
+
+log_info("开始安装")
+archive = download(os.environ["PKG_URL"], os.path.join(os.environ["BUILD_PATH"], "app.tar.gz"))</pre>
+          <ul>
+            <li><code>-B</code>：不生成 <code>__pycache__</code>，家目录不留可执行字节码。</li>
+            <li><code>zapweb</code> 提供与 <code>bash_utils.sh</code> 等价的能力：<code>download(url, dest, sha256=...)</code>（给了摘要就强制校验）、<code>extract</code> / <code>deploy</code>（含路径围栏 <code>assert_under</code>）、<code>render</code>（<code>{{NAME}}</code> 占位替换，不做 shell 展开）、<code>write_info</code>（拒绝写入含 PASS/SECRET/TOKEN 的字段）、<code>mask()</code>（密码打码后再进日志）。</li>
+            <li>需要第三方库时请在脚本内显式安装到用户目录（<code>pip install --user</code>），并在 <code>app.yaml</code> 的 <code>dependencies</code> 里声明 <code>python3</code> 版本要求。</li>
+          </ul>
+          <!-- 十三、建站与建库编排 -->
+          <h2 id="sec-provision">十三、建站 / 建库编排（provision）</h2>
+          <p>降权脚本（<code>run_as: user</code>）拿不到「建站点」「建数据库」的权限，也绝不应当拿到数据库管理凭据。因此这两件事由<strong>面板在任务入队前完成</strong>，再把结果注入脚本环境：</p>
+          <pre class="code-block">provision:
+  site:
+    mode: create            # create（缺省，不存在就建）/ require（站点必须已存在）
+    domain_option: SITE_DOMAIN   # 从安装选项里取域名的选项名
+    php: php83              # PHP 实例，缺省取面板默认 PHP
+    rewrite: wordpress      # 伪静态预设
+  database:
+    name: wp                # 库名基名，实际库名 = 用户前缀 + wp（重名自动 wp_2、wp_3…）
+    charset: utf8mb4
+    host: localhost         # 专用账号被授权的连接来源
+options:
+  install:
+    - { name: SITE_DOMAIN, label: 站点域名, type: text, default: '', required: true }</pre>
+          <p class="sec-sub"><strong>执行顺序</strong>（<code>zapd</code> 的 <code>provision_for()</code>，同步执行；任一步失败就不入队，不会出现「脚本跑一半发现没库」）：</p>
+          <ol>
+            <li><strong>站点</strong>：按域名在操作者管理范围内查找 → 已存在直接复用（同一域名重复安装不会建出第二个站）；不存在时按 <code>/site/add</code> 的同一套规则新建（套餐站点数配额 → 域名唯一性 → 目录规划 → 档案 → vhost 同步），PHP 实例缺省取 <code>php_default</code>。</li>
+            <li><strong>数据库</strong>：走与「数据库 → 新建」<strong>完全同一个函数</strong>（<code>database::create_schema</code>）——配额校验、非 admin 自动加 <code>{用户名}_</code> 前缀、随机 16 位密码、建用户失败回滚刚建的库；重名自动加序号。</li>
+            <li><strong>注入</strong>：结果写入 <code>data/apps/&lt;包路径&gt;/provision.json</code>（0600，仅 root）并以环境变量注入脚本：<code>SITE_ID / SITE_DOMAIN / SITE_ROOT / SITE_OWNER / SITE_LINUX_USER / PHP_INSTANCE / PHP_FPM_SOCK</code> 与 <code>DB_NAME / DB_USER / DB_PASS / DB_HOST / DB_PORT / DB_CHARSET / DB_USER_HOST</code>。</li>
+            <li><strong>执行</strong>：脚本（Linux 账号）只做下载 → 解压到 <code>$SITE_ROOT</code> → 写配置文件 → 登记 <code>info.yaml</code>。</li>
+            <li><strong>重跑 / 卸载</strong>：重跑复用 <code>run.json</code> 里记录的同一套站点与库（<strong>不会重复建库</strong>）；卸载把 <code>provision.json</code> 回传给 <code>uninstall.sh</code>，脚本可先 <code>mysqldump</code> 备份再删文件。</li>
+          </ol>
+          <p class="sec-sub"><strong>典型脚本（Python）</strong>：</p>
+          <pre class="code-block">import os, sys
+sys.path.insert(0, os.environ["ZAP_PY_LIB"])
+from zapweb import *
+
+root = env_required("SITE_ROOT")          # 面板给的站点根目录
+archive = download(env_required("PKG_URL"), tmp_dir() / "wp.tar.gz")
+src = single_subdir(extract(archive, env("BUILD_PATH")))
+deploy(src, root, root)                   # 第二、三个参数是路径围栏，越界即中止
+
+render(os.path.join(env_required("PKG_SRC_PATH"), "wp-config.php.tpl"),
+       os.path.join(root, "wp-config.php"),
+       {"DB_NAME": env("DB_NAME"), "DB_USER": env("DB_USER"),
+        "DB_PASSWORD": env("DB_PASS"), "DB_HOST": env("DB_HOST")})
+# 密码绝不进 info.yaml（write_info 会拒绝 *_PASS / *_SECRET 类字段），也绝不 log
+write_info(env_required("APP_PATH"), domain=env("SITE_DOMAIN"),
+           site_root=root, version=env("APP_VERSION"), db=env("DB_NAME"))</pre>
+          <ul>
+            <li><strong>卸载默认不删库</strong>：库里可能有用户数据，脚本可在 <code>uninstall.sh</code> 里自行决定是否 <code>drop</code>（已回传 <code>DB_*</code>）。</li>
+            <li><strong>不要尝试自己建库</strong>：脚本没有 <code>zapadm</code> 凭据，也不要把凭据写进包里——那会绕过套餐配额与多租户隔离。</li>
+            <li><strong>密码处理</strong>：只从 <code>$DB_PASS</code> 读取、写进配置文件后不再出现；日志里用 <code>mask()</code>；<code>wp-config.php</code> 建议 <code>chmod 640</code>。</li>
+          </ul>
           <p class="footnote">本文档与 <code>app.yaml</code> 解析、<code>zapexec/src/verbs/appstore.rs</code> 执行实现保持同步；如有出入以代码为准。</p>
         </main>
       </div>
@@ -499,6 +584,8 @@ const toc = [
   { id: 'sec-example', label: '九、完整示例' },
   { id: 'sec-family', label: '十、合并入口示例' },
   { id: 'sec-trouble', label: '十一、失败排查' },
+  { id: 'sec-runas', label: '十二、运行身份与脚本语言' },
+  { id: 'sec-provision', label: '十三、建站 / 建库编排' },
 ]
 export default { name: 'DevAppScriptGuide' }
 </script>

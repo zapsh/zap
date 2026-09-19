@@ -168,22 +168,25 @@ pub async fn dispatch(req: Request) -> Response {
             version,
             action,
             options,
+            provision,
             user,
             run_mode,
             run_id,
         } => {
             appstore::install(
-                pkg_path, source, repo_id, version, action, options, user, run_mode, run_id,
+                pkg_path, source, repo_id, version, action, options, provision, user, run_mode,
+                run_id,
             )
             .await
         }
         Request::AppstoreUninstall {
             pkg_path,
             options,
+            provision,
             user,
             run_mode,
             run_id,
-        } => appstore::uninstall(pkg_path, options, user, run_mode, run_id).await,
+        } => appstore::uninstall(pkg_path, options, provision, user, run_mode, run_id).await,
         Request::AppstoreUpgrade {
             pkg_path,
             source,
@@ -515,4 +518,90 @@ pub(crate) fn root_cmd(program: &str) -> std::process::Command {
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     );
     c
+}
+
+/// 面板用户对应的 Linux 系统账号信息。
+#[derive(Debug, Clone)]
+pub(crate) struct LinuxAccount {
+    pub uid: u32,
+    pub gid: u32,
+    pub home: PathBuf,
+}
+
+/// 查询 Linux 账号（uid / gid / 家目录），账号不存在或名非法时报错。
+///
+/// 一律走 `getpwnam_r`，不 shell 出去拼 `id` 命令；账号名复用 `user` 动词的
+/// 白名单校验（字母/下划线开头，长度 ≤ 32），杜绝把用户名拼进其它地方。
+pub(crate) fn linux_account(user: &str) -> Result<LinuxAccount, String> {
+    if !user::linux_user_ok(user) {
+        return Err(format!("非法的 Linux 账号名: {user}"));
+    }
+    let name = std::ffi::CString::new(user).map_err(|_| format!("非法的 Linux 账号名: {user}"))?;
+    unsafe {
+        let buflen = libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX).max(4096) as usize;
+        let mut buf: Vec<libc::c_char> = vec![0; buflen];
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut out: *mut libc::passwd = std::ptr::null_mut();
+        let rc = libc::getpwnam_r(
+            name.as_ptr(),
+            &mut pwd,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut out,
+        );
+        if rc != 0 || out.is_null() {
+            return Err(format!("Linux 账号不存在: {user}"));
+        }
+        let home = std::ffi::CStr::from_ptr(pwd.pw_dir)
+            .to_string_lossy()
+            .into_owned();
+        Ok(LinuxAccount {
+            uid: pwd.pw_uid,
+            gid: pwd.pw_gid,
+            home: PathBuf::from(home),
+        })
+    }
+}
+
+/// 构造以指定 Linux 账号身份运行的子进程命令（与 `root_cmd` 对称）。
+///
+/// 额外收紧四点，用于执行第三方建站脚本（WordPress 之类）：
+/// 1. 环境全清，只给最小集合 —— **PATH 不含 sbin**，避免继承 zapd/zapexec 的
+///    任何进程环境（里面可能有 JWT 密钥、数据库凭据）；
+/// 2. `cwd` 固定为账号家目录，脚本无法借相对路径落到系统目录；
+/// 3. 主/属组设为该账号（`CommandExt::uid/gid`），该账号是 nologin 账号；
+/// 4. 配合调用方 `pre_exec` 里的 `harden_child`：禁止再提权 + 关 core dump。
+pub(crate) fn user_cmd(program: &str, user: &str) -> Result<std::process::Command, String> {
+    use std::os::unix::process::CommandExt;
+
+    let acc = linux_account(user)?;
+    let mut c = std::process::Command::new(program);
+    c.env_clear();
+    c.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+    c.env("HOME", &acc.home);
+    c.env("USER", user);
+    c.env("LOGNAME", user);
+    // 家目录下的 tmp（home_init 已建）供脚本做临时目录，避免共用 /tmp 被其它账号窥探
+    let tmp = acc.home.join("tmp");
+    if tmp.is_dir() {
+        c.env("TMPDIR", &tmp);
+    }
+    c.current_dir(&acc.home);
+    c.uid(acc.uid);
+    c.gid(acc.gid);
+    Ok(c)
+}
+
+/// 降权子进程的自加固（在 `pre_exec` 内调用，仅对以 Linux 账号运行的脚本生效）：
+/// - `PR_SET_NO_NEW_PRIVS`：禁止借 setuid 程序再次提权；
+/// - `RLIMIT_CORE = 0`：崩溃时不产生 core dump，避免内存里的数据库密码落盘。
+pub(crate) fn harden_child() {
+    unsafe {
+        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+        let rl = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        libc::setrlimit(libc::RLIMIT_CORE, &rl);
+    }
 }

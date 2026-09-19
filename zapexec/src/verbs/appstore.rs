@@ -160,6 +160,27 @@ fn run_meta_path(run_id: &str) -> PathBuf {
     runs_dir().join(run_id).join("run.json")
 }
 
+/// 本次运行的编译/解压临时目录：`runs/<run_id>/build`（注入给脚本的 `BUILD_PATH`）。
+fn build_dir(run_id: &str) -> PathBuf {
+    runs_dir().join(run_id).join("build")
+}
+
+/// 注入面板编排结果（建站 / 建库）到脚本环境。
+///
+/// 与 options 的区别：这些值由面板产生、可能含数据库密码，因此**不写进
+/// options.env / options.json**（那两个文件是给用户查看编辑的），只进子进程 env；
+/// 键名由面板给出（`SITE_*` / `DB_*`），这里只做基本的名字合法性校验。
+fn push_provision_env(env: &mut Vec<(String, String)>, provision: Option<&BTreeMap<String, String>>) {
+    let Some(map) = provision else {
+        return;
+    };
+    for (k, v) in map {
+        if valid_option_name(k) {
+            env.push((k.clone(), v.clone()));
+        }
+    }
+}
+
 /// 递归复制目录（跳过 .git），供快照使用。
 fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
@@ -187,9 +208,20 @@ fn prepare_snapshot(run_id: &str, pkg_dir: &Path, spec: &Value) -> Result<PathBu
     }
     let meta_dir = runs_dir().join(run_id);
     std::fs::create_dir_all(&meta_dir).map_err(|e| e.to_string())?;
-    let _ = std::fs::write(
-        run_meta_path(run_id),
-        serde_json::to_string_pretty(spec).unwrap_or_default(),
+    // run.json 里可能含面板编排的数据库密码（provision），只给 root 读
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = run_meta_path(run_id);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    let _ = std::io::Write::write_all(
+        &mut f,
+        serde_json::to_string_pretty(spec).unwrap_or_default().as_bytes(),
     );
     Ok(dst)
 }
@@ -397,23 +429,44 @@ fn find_package(pkg_path: &str, source: &str, repo_id: Option<&str>) -> Result<P
     found.ok_or_else(|| format!("官方包不存在: {pkg_path}"))
 }
 
-/// 包脚本文件名：app.yaml 的 `scripts.{install|uninstall|upgrade}` 可覆盖默认约定。
-fn script_file(pkg_dir: &Path, key: &str, default: &str) -> Result<PathBuf, String> {
+/// 包脚本文件与解释器：app.yaml 的 `scripts.{install|uninstall|upgrade}` 可覆盖默认约定。
+///
+/// 支持两种写法（脚本可用 python3 编写）：
+/// ```yaml
+/// scripts:
+///   install: install.py                                    # 简写：解释器按扩展名推导
+///   uninstall: { file: remove.py, interpreter: python3 }    # 显式指定解释器
+/// ```
+fn script_file(pkg_dir: &Path, key: &str, default: &str) -> Result<(PathBuf, Interpreter), String> {
     let mut file = default.to_string();
+    let mut interp: Option<Interpreter> = None;
     if let Ok(content) = std::fs::read_to_string(pkg_dir.join("app.yaml"))
         && let Ok(v) = serde_yaml::from_str::<serde_yaml::Value>(&content)
-        && let Some(name) = v
-            .get("scripts")
-            .and_then(|s| s.get(key))
-            .and_then(|s| s.as_str())
+        && let Some(s) = v.get("scripts").and_then(|s| s.get(key))
     {
-        file = name.to_string();
+        match s {
+            serde_yaml::Value::String(name) => file = name.clone(),
+            serde_yaml::Value::Mapping(m) => {
+                if let Some(name) = m.get("file").and_then(|f| f.as_str()) {
+                    file = name.to_string();
+                }
+                if let Some(i) = m.get("interpreter").and_then(|f| f.as_str()) {
+                    interp = Some(match i.trim().to_ascii_lowercase().as_str() {
+                        "python" | "python3" => Interpreter::Python3,
+                        "bash" | "sh" => Interpreter::Bash,
+                        other => return Err(format!("不支持的解释器: {other}")),
+                    });
+                }
+            }
+            _ => {}
+        }
     }
     let p = safe_join(pkg_dir, &file)?;
     if !p.is_file() {
         return Err(format!("包脚本不存在: {}", p.display()));
     }
-    Ok(p)
+    let interp = interp.unwrap_or_else(|| interpreter_of(&p));
+    Ok((p, interp))
 }
 
 // ── repos.yaml / meta.yaml ─────────────────────────────────
@@ -567,9 +620,163 @@ fn run_capture(program: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// 包脚本的运行身份模式（`app.yaml` 的 `run_as` / `scope` 推导结果）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    /// root：系统级包（nginx / php / mysql…）要写系统目录、管 systemd。
+    Root,
+    /// 降权：以面板用户对应的 Linux 账号运行，仅 `webapps` 分类可用。
+    User,
+}
+
+/// 包脚本的执行身份：`Root` 或携带具体 Linux 账号名的 `User`。
+#[derive(Debug, Clone)]
+enum RunAs {
+    Root,
+    User(String),
+}
+
+/// 包脚本解释器：`.py` 走 `python3 -I -B`，其余走 `/bin/bash`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Interpreter {
+    Bash,
+    Python3,
+}
+
+impl Interpreter {
+    /// 解释器程序（尽量用绝对路径，不依赖 PATH 解析）。
+    fn program(self) -> String {
+        match self {
+            Interpreter::Bash => "/bin/bash".to_string(),
+            Interpreter::Python3 => python3_bin(),
+        }
+    }
+
+    /// 解释器参数（必须排在脚本路径之前）。
+    fn flags(self) -> &'static [&'static str] {
+        match self {
+            Interpreter::Bash => &[],
+            // -I：隔离模式 —— 忽略 PYTHON* 环境变量、不加载用户 site-packages、
+            //     不把脚本所在目录放进 sys.path（防同目录同名模块劫持）；
+            // -B：不生成 __pycache__，家目录不留可执行字节码；
+            // -u：无缓冲输出（日志要实时回显到面板；-I 会让 PYTHONUNBUFFERED 失效）。
+            Interpreter::Python3 => &["-I", "-B", "-u"],
+        }
+    }
+}
+
+/// python3 解释器路径：优先常见绝对路径，取不到时回退 PATH 查找。
+fn python3_bin() -> String {
+    for p in ["/usr/bin/python3", "/usr/local/bin/python3", "/bin/python3"] {
+        if std::path::Path::new(p).is_file() {
+            return p.to_string();
+        }
+    }
+    "python3".to_string()
+}
+
+/// 按扩展名推导解释器：`.py` → python3，其余 → bash。
+fn interpreter_of(script: &Path) -> Interpreter {
+    match script.extension().and_then(|e| e.to_str()) {
+        Some("py") => Interpreter::Python3,
+        _ => Interpreter::Bash,
+    }
+}
+
+/// 解析包声明的运行身份：
+/// - `run_as: user|root` 显式声明，优先级最高；
+/// - 未声明时 `scope: site`（装进用户站点）默认降权为 `user`，其余保持 `root`；
+/// - **`user` 仅允许 `webapps` 分类**：其它分类的脚本要改系统目录，降权只会半途失败，
+///   且这条通道本来就是给建站类包开的，不允许别的分类蹭进来。
+fn pkg_run_as(pkg_dir: &Path, category: &str) -> Result<RunMode, String> {
+    let mut mode: Option<String> = None;
+    let mut scope: Option<String> = None;
+    if let Ok(content) = std::fs::read_to_string(pkg_dir.join("app.yaml"))
+        && let Ok(v) = serde_yaml::from_str::<serde_yaml::Value>(&content)
+    {
+        mode = v
+            .get("run_as")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_ascii_lowercase());
+        scope = v
+            .get("scope")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_ascii_lowercase());
+    }
+    let mode = mode.unwrap_or_else(|| {
+        if scope.as_deref() == Some("site") {
+            "user".to_string()
+        } else {
+            "root".to_string()
+        }
+    });
+    match mode.as_str() {
+        "root" => Ok(RunMode::Root),
+        "user" => {
+            if category != "webapps" {
+                return Err("只有 webapps 分类的包允许声明 run_as: user".into());
+            }
+            Ok(RunMode::User)
+        }
+        other => Err(format!("非法的 run_as: {other}（只能是 user 或 root）")),
+    }
+}
+
+/// 把运行身份模式解析成具体的执行者：降权时把面板用户名映射为 Linux 账号。
+fn resolve_run_as(pkg_dir: &Path, category: &str, actor: Option<&str>) -> Result<RunAs, String> {
+    match pkg_run_as(pkg_dir, category)? {
+        RunMode::Root => Ok(RunAs::Root),
+        RunMode::User => {
+            let actor = actor
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .ok_or("无法确定运行账号：请求未携带面板用户名")?;
+            Ok(RunAs::User(zap_proto::linux_username(actor)))
+        }
+    }
+}
+
+/// 降权运行前的准备：建目录、改属主、补齐环境变量。
+///
+/// 脚本以普通账号运行时无法自己 `mkdir`（父目录归 root），也无法 chown，
+/// 因此由 zapexec（root）先把本次运行要写的目录建好并交给该账号，
+/// 脚本只在这些目录内部写文件，越界就会被文件系统的属主拦住。
+fn prepare_user_run(
+    env: &mut Vec<(String, String)>,
+    dirs: &[PathBuf],
+    linux_user: &str,
+) -> Result<(), String> {
+    let acc = super::linux_account(linux_user)?;
+    for d in dirs {
+        std::fs::create_dir_all(d).map_err(|e| format!("创建目录 {} 失败: {e}", d.display()))?;
+        chown_path(d, acc.uid, acc.gid)?;
+    }
+    env.push(("ZAP_LINUX_USER".into(), linux_user.to_string()));
+    env.push(("ZAP_HOME".into(), acc.home.to_string_lossy().into_owned()));
+    Ok(())
+}
+
+/// 修改路径属主（仅对本模块自己创建的运行目录使用）。
+fn chown_path(p: &Path, uid: u32, gid: u32) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes())
+        .map_err(|_| format!("非法路径: {}", p.display()))?;
+    if unsafe { libc::chown(c.as_ptr(), uid, gid) } != 0 {
+        return Err(format!(
+            "修改属主失败 {}: {}",
+            p.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
 struct ScriptStep {
     script: PathBuf,
     env: Vec<(String, String)>,
+    run_as: RunAs,
+    interpreter: Interpreter,
 }
 
 // ── 任务执行队列：安装/卸载/升级等脚本任务一次只跑一个 ──────
@@ -657,8 +864,21 @@ fn spawn_background(
         let _ = writeln!(log, "── 开始执行（队列闸门已获得） ──");
         let mut final_code = 0;
         for step in steps {
-            let mut cmd = root_cmd("/bin/bash");
-            cmd.arg(&step.script)
+            // 建站类包（run_as: user）走降权通道，其余沿用 root
+            let mut cmd = match &step.run_as {
+                RunAs::Root => root_cmd(&step.interpreter.program()),
+                RunAs::User(u) => match super::user_cmd(&step.interpreter.program(), u) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = writeln!(log, "启动脚本失败: {e}");
+                        final_code = -1;
+                        break;
+                    }
+                },
+            };
+            // 解释器参数必须排在脚本路径之前：python3 -I -B install.py
+            cmd.args(step.interpreter.flags())
+                .arg(&step.script)
                 .env("ZAP_PATH", zap_path())
                 .env("ZAPCTL", zapctl_bin())
                 .env("APPS_DIR", super::install_root())
@@ -683,10 +903,20 @@ fn spawn_background(
             for (k, v) in &step.env {
                 cmd.env(k, v);
             }
+            // Python 脚本：注入辅助库目录（脚本自行 sys.path.insert 后 import zapweb）。
+            // 注意 -I 会忽略 PYTHON* 环境变量，所以这里只给自定义的 ZAP_PY_LIB。
+            if step.interpreter == Interpreter::Python3 {
+                cmd.env("ZAP_PY_LIB", zap_path().join("scripts").join("zap"));
+            }
+            let hardened = matches!(step.run_as, RunAs::User(_));
             // 新进程组：pid == pgid，便于停止时 kill(-pid)
             unsafe {
-                cmd.pre_exec(|| {
+                cmd.pre_exec(move || {
                     libc::setsid();
+                    // 降权脚本再加固：禁止借 setuid 提权 + 关 core dump
+                    if hardened {
+                        super::harden_child();
+                    }
                     Ok(())
                 });
             }
@@ -748,11 +978,7 @@ fn task_env(
         // 编译目录归属本次运行现场:runs/<run_id>/build,与脚本快照同生命周期
         // (成功随 cleanup_snapshot 整目录清理,失败保留供排查/重跑),
         // 同一应用并发运行互不干扰。
-        runs_dir()
-            .join(run_id)
-            .join("build")
-            .to_string_lossy()
-            .into_owned(),
+        build_dir(run_id).to_string_lossy().into_owned(),
     ));
     env.push((
         "ZAP_DATA_PATH".into(),
@@ -1015,6 +1241,7 @@ pub async fn install(
     version: String,
     action: Option<String>,
     options: Option<BTreeMap<String, String>>,
+    provision: Option<BTreeMap<String, String>>,
     user: Option<String>,
     run_mode: Option<String>,
     run_id: String,
@@ -1022,6 +1249,8 @@ pub async fn install(
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let (cat, name) = validate_pkg_path(&pkg_path)?;
         let pkg_dir = find_package(&pkg_path, &source, repo_id.as_deref())?;
+        // 运行身份：webapps 建站包（run_as: user / scope: site）降权为 Linux 账号执行
+        let run_as = resolve_run_as(&pkg_dir, &cat, user.as_deref())?;
         // 复制脚本副本到 runs/<run_id>/pkg 并从副本执行，失败后用户可编辑重跑
         let spec = json!({
             "kind": "install",
@@ -1031,11 +1260,13 @@ pub async fn install(
             "version": version.clone(),
             "action": action.clone(),
             "options": options.clone(),
+            // 面板编排结果（站点 / 数据库）：随 spec 落盘供「重跑」复用同一套资源
+            "provision": provision.clone(),
             "user": user.clone(),
             "run_mode": run_mode.clone(),
         });
         let snapshot = prepare_snapshot(&run_id, &pkg_dir, &spec)?;
-        let script = script_file(&snapshot, "install", "install.sh")?;
+        let (script, interpreter) = script_file(&snapshot, "install", "install.sh")?;
         let app_path = apps_dir().join(&pkg_path);
         let mut env = task_env(&snapshot, &app_path, &name, Some(&version), &run_id);
         // 选项落盘 options.env / options.json 并注入 env
@@ -1050,6 +1281,13 @@ pub async fn install(
             && !a.is_empty()
         {
             env.push(("ACTION".into(), a.to_string()));
+        }
+        // 面板编排结果（站点 / 数据库）：后注入，避免被同名选项覆盖
+        push_provision_env(&mut env, provision.as_ref());
+        // 降权运行：先把安装目录与编译目录建好并交给该 Linux 账号
+        let build = build_dir(&run_id);
+        if let RunAs::User(u) = &run_as {
+            prepare_user_run(&mut env, &[app_path.clone(), build], u)?;
         }
         let done_run_id = run_id.clone();
         let done_pkg_path = pkg_path.clone();
@@ -1074,7 +1312,16 @@ pub async fn install(
             }
             cleanup_snapshot(&done_run_id, code);
         });
-        let log = spawn_background(&run_id, vec![ScriptStep { script, env }], on_done)?;
+        let log = spawn_background(
+            &run_id,
+            vec![ScriptStep {
+                script,
+                env,
+                run_as,
+                interpreter,
+            }],
+            on_done,
+        )?;
         Ok(Response::ok(
             "安装已启动",
             Some(json!({ "run_id": run_id, "log": log })),
@@ -1088,12 +1335,13 @@ pub async fn install(
 pub async fn uninstall(
     pkg_path: String,
     options: Option<BTreeMap<String, String>>,
+    provision: Option<BTreeMap<String, String>>,
     user: Option<String>,
     run_mode: Option<String>,
     run_id: String,
 ) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
-        let (_, name) = validate_pkg_path(&pkg_path)?;
+        let (cat, name) = validate_pkg_path(&pkg_path)?;
         let app_path = apps_dir().join(&pkg_path);
         if !app_path.is_dir() {
             return Err("该包未安装".into());
@@ -1102,6 +1350,8 @@ pub async fn uninstall(
             .map(|m| (m.source, m.repo_id))
             .unwrap_or_else(|_| ("official".into(), None));
         let pkg_dir = find_package(&pkg_path, &source, repo_id.as_deref())?;
+        // 运行身份与安装时保持一致（降权脚本才能删掉自己写入的文件）
+        let run_as = resolve_run_as(&pkg_dir, &cat, user.as_deref())?;
         // 与 install 一致：复制脚本副本到 runs/<run_id>/pkg 并从副本执行
         let spec = json!({
             "kind": "uninstall",
@@ -1109,11 +1359,12 @@ pub async fn uninstall(
             "source": source.clone(),
             "repo_id": repo_id.clone(),
             "options": options.clone(),
+            "provision": provision.clone(),
             "user": user.clone(),
             "run_mode": run_mode.clone(),
         });
         let snapshot = prepare_snapshot(&run_id, &pkg_dir, &spec)?;
-        let script = script_file(&snapshot, "uninstall", "uninstall.sh")?;
+        let (script, interpreter) = script_file(&snapshot, "uninstall", "uninstall.sh")?;
         // 卸载脚本可能需要版本信息（如按版本计算安装目录），注入 meta 中记录的版本
         let meta_version = read_meta(&app_path).ok().map(|m| m.version);
         let mut env = task_env(
@@ -1131,6 +1382,12 @@ pub async fn uninstall(
             "PKG_SRC_PATH".into(),
             pkg_dir.to_string_lossy().into_owned(),
         ));
+        // 回传站点 / 数据库信息（脚本可能要先 mysqldump 备份再删文件）
+        push_provision_env(&mut env, provision.as_ref());
+        let build = build_dir(&run_id);
+        if let RunAs::User(u) = &run_as {
+            prepare_user_run(&mut env, &[app_path.clone(), build], u)?;
+        }
         let done_run_id = run_id.clone();
         let on_done = Box::new(move |code: i32| {
             if code == 0 {
@@ -1138,7 +1395,16 @@ pub async fn uninstall(
             }
             cleanup_snapshot(&done_run_id, code);
         });
-        let log = spawn_background(&run_id, vec![ScriptStep { script, env }], on_done)?;
+        let log = spawn_background(
+            &run_id,
+            vec![ScriptStep {
+                script,
+                env,
+                run_as,
+                interpreter,
+            }],
+            on_done,
+        )?;
         Ok(Response::ok(
             "卸载已启动",
             Some(json!({ "run_id": run_id, "log": log })),
@@ -1178,6 +1444,8 @@ pub async fn upgrade(
             ));
         }
         let pkg_dir = find_package(&pkg_path, &source, repo_id.as_deref())?;
+        // 运行身份与安装时保持一致
+        let run_as = resolve_run_as(&pkg_dir, &cat, user.as_deref())?;
         // 与 install 一致：复制脚本副本到 runs/<run_id>/pkg 并从副本执行
         let spec = json!({
             "kind": "upgrade",
@@ -1207,22 +1475,36 @@ pub async fn upgrade(
         {
             env.push(("ACTION".into(), a.to_string()));
         }
+        let build = build_dir(&run_id);
+        if let RunAs::User(u) = &run_as {
+            prepare_user_run(&mut env, &[app_path.clone(), build], u)?;
+        }
 
         let mut steps = Vec::new();
-        if snapshot.join("upgrade.sh").is_file() {
+        // 有独立的升级脚本就只跑它（兼容 .py 与 app.yaml 覆盖名），否则退回「卸载 + 安装」
+        if script_file(&snapshot, "upgrade", "upgrade.sh").is_ok() {
+            let (script, interpreter) = script_file(&snapshot, "upgrade", "upgrade.sh")?;
             steps.push(ScriptStep {
-                script: script_file(&snapshot, "upgrade", "upgrade.sh")?,
+                script,
                 env: env.clone(),
+                run_as: run_as.clone(),
+                interpreter,
             });
         } else {
             // 缺省升级策略：先卸载（uninstall.sh 自带数据备份）再安装
+            let (un_script, un_interp) = script_file(&snapshot, "uninstall", "uninstall.sh")?;
             steps.push(ScriptStep {
-                script: script_file(&snapshot, "uninstall", "uninstall.sh")?,
+                script: un_script,
                 env: env.clone(),
+                run_as: run_as.clone(),
+                interpreter: un_interp,
             });
+            let (in_script, in_interp) = script_file(&snapshot, "install", "install.sh")?;
             steps.push(ScriptStep {
-                script: script_file(&snapshot, "install", "install.sh")?,
+                script: in_script,
                 env: env.clone(),
+                run_as: run_as.clone(),
+                interpreter: in_interp,
             });
         }
         let done_run_id = run_id.clone();
@@ -1353,6 +1635,9 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
         let version = spec["version"].as_str().unwrap_or("").to_string();
         let action = spec["action"].as_str().unwrap_or("").to_string();
         let old_version = spec["old_version"].as_str().unwrap_or("").to_string();
+        // 运行身份：与首次执行一致（快照里的 app.yaml + run.json 记录的面板用户）
+        let cat = pkg_path.split('/').next().unwrap_or("").to_string();
+        let run_as = resolve_run_as(&snapshot, &cat, spec["user"].as_str())?;
 
         let mut env = task_env(&snapshot, &app_path, &name, Some(&version), &new_run_id);
         env.push((
@@ -1369,6 +1654,14 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
         env.extend(read_options_env(&snapshot));
         // 恢复原任务的操作者上下文（spec 在首次发起时记录，保证重跑环境一致）
         push_actor_env(&mut env, spec["user"].as_str(), spec["run_mode"].as_str());
+        // 复用首次运行时的面板编排结果（同一个站点 / 同一个库，不重复建库建站）
+        let provision: Option<BTreeMap<String, String>> =
+            serde_json::from_value(spec["provision"].clone()).unwrap_or(None);
+        push_provision_env(&mut env, provision.as_ref());
+        let build = build_dir(&new_run_id);
+        if let RunAs::User(u) = &run_as {
+            prepare_user_run(&mut env, &[app_path.clone(), build], u)?;
+        }
 
         let mut steps = Vec::new();
 
@@ -1378,8 +1671,13 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
         let done_app = app_path.clone();
         let on_done_extra: Option<Box<dyn FnOnce(i32) + Send>> = match kind {
             "uninstall" => {
-                let script = script_file(&snapshot, "uninstall", "uninstall.sh")?;
-                steps.push(ScriptStep { script, env });
+                let (script, interpreter) = script_file(&snapshot, "uninstall", "uninstall.sh")?;
+                steps.push(ScriptStep {
+                    script,
+                    env,
+                    run_as: run_as.clone(),
+                    interpreter,
+                });
                 Some(Box::new(move |code: i32| {
                     if code == 0 {
                         let _ = std::fs::remove_dir_all(&done_app);
@@ -1388,19 +1686,29 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                 }))
             }
             "upgrade" => {
-                if snapshot.join("upgrade.sh").is_file() {
+                if script_file(&snapshot, "upgrade", "upgrade.sh").is_ok() {
+                    let (script, interpreter) = script_file(&snapshot, "upgrade", "upgrade.sh")?;
                     steps.push(ScriptStep {
-                        script: script_file(&snapshot, "upgrade", "upgrade.sh")?,
+                        script,
                         env: env.clone(),
+                        run_as: run_as.clone(),
+                        interpreter,
                     });
                 } else {
+                    let (u_script, u_interp) =
+                        script_file(&snapshot, "uninstall", "uninstall.sh")?;
                     steps.push(ScriptStep {
-                        script: script_file(&snapshot, "uninstall", "uninstall.sh")?,
+                        script: u_script,
                         env: env.clone(),
+                        run_as: run_as.clone(),
+                        interpreter: u_interp,
                     });
+                    let (i_script, i_interp) = script_file(&snapshot, "install", "install.sh")?;
                     steps.push(ScriptStep {
-                        script: script_file(&snapshot, "install", "install.sh")?,
+                        script: i_script,
                         env: env.clone(),
+                        run_as: run_as.clone(),
+                        interpreter: i_interp,
                     });
                 }
                 let category = pkg_path.split('/').next().unwrap_or("").to_string();
@@ -1428,8 +1736,13 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
             }
             _ => {
                 // install 默认
-                let script = script_file(&snapshot, "install", "install.sh")?;
-                steps.push(ScriptStep { script, env });
+                let (script, interpreter) = script_file(&snapshot, "install", "install.sh")?;
+                steps.push(ScriptStep {
+                    script,
+                    env,
+                    run_as: run_as.clone(),
+                    interpreter,
+                });
                 let category = pkg_path.split('/').next().unwrap_or("").to_string();
                 let done_source = spec["source"].as_str().unwrap_or("").to_string();
                 let done_repo = spec["repo_id"].as_str().map(|s| s.to_string());
@@ -1505,11 +1818,15 @@ pub async fn script_run(path: String, run_id: String, username: String) -> Respo
         if !resolved.is_file() {
             return Err("脚本不存在".into());
         }
+        // 自定义脚本（管理员在「脚本」里维护）没有 app.yaml，保持 root 执行；
+        // 解释器按扩展名推导（.py → python3 -I -B）
         let log = spawn_background(
             &run_id,
             vec![ScriptStep {
+                interpreter: interpreter_of(&resolved),
                 script: resolved,
                 env: base_env(),
+                run_as: RunAs::Root,
             }],
             Box::new(|_| {}),
         )?;
@@ -1906,14 +2223,58 @@ mod tests {
         std::fs::write(pkg.join("remove.sh"), "#!/bin/bash\n").unwrap();
         std::fs::write(pkg.join("upgrade.sh"), "#!/bin/bash\n").unwrap();
 
-        let install = script_file(&pkg, "install", "install.sh").unwrap();
+        let (install, install_interp) = script_file(&pkg, "install", "install.sh").unwrap();
         assert_eq!(install.file_name().unwrap(), "setup.sh");
+        assert_eq!(install_interp, Interpreter::Bash);
         // 未在 yaml 中定义的 key 回退到默认
-        let upgrade = script_file(&pkg, "upgrade", "upgrade.sh").unwrap();
+        let (upgrade, _) = script_file(&pkg, "upgrade", "upgrade.sh").unwrap();
         assert_eq!(upgrade.file_name().unwrap(), "upgrade.sh");
         // 覆盖指向不存在的文件 → 报错
         let missing = script_file(&pkg, "install", "install.sh");
         assert!(missing.is_ok());
+    }
+
+    #[test]
+    fn script_file_python_interpreter() {
+        let (_g, root) = with_zap_root();
+        let pkg = root.join("webapps/wordpress");
+        std::fs::create_dir_all(&pkg).unwrap();
+        // 简写：按扩展名推导为 python3
+        std::fs::write(
+            pkg.join("app.yaml"),
+            "name: wordpress\nrun_as: user\nscripts:\n  install: install.py\n  uninstall: { file: remove.py, interpreter: python3 }\n",
+        )
+        .unwrap();
+        std::fs::write(pkg.join("install.py"), "print(1)\n").unwrap();
+        std::fs::write(pkg.join("remove.py"), "print(2)\n").unwrap();
+
+        let (script, interp) = script_file(&pkg, "install", "install.sh").unwrap();
+        assert_eq!(script.file_name().unwrap(), "install.py");
+        assert_eq!(interp, Interpreter::Python3);
+        let (_, interp) = script_file(&pkg, "uninstall", "uninstall.sh").unwrap();
+        assert_eq!(interp, Interpreter::Python3);
+    }
+
+    #[test]
+    fn pkg_run_as_only_for_webapps() {
+        let (_g, root) = with_zap_root();
+        let pkg = root.join("webapps/wordpress");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("app.yaml"), "name: wordpress\nrun_as: user\n").unwrap();
+        assert_eq!(pkg_run_as(&pkg, "webapps").unwrap(), RunMode::User);
+
+        // scope: site 未显式声明 run_as 时同样降权
+        std::fs::write(pkg.join("app.yaml"), "name: wordpress\nscope: site\n").unwrap();
+        assert_eq!(pkg_run_as(&pkg, "webapps").unwrap(), RunMode::User);
+
+        // 非 webapps 分类不允许降权
+        assert!(pkg_run_as(&pkg, "runtime").is_err());
+        // 缺省为 root
+        std::fs::write(pkg.join("app.yaml"), "name: wordpress\n").unwrap();
+        assert_eq!(pkg_run_as(&pkg, "webapps").unwrap(), RunMode::Root);
+        // 非法值
+        std::fs::write(pkg.join("app.yaml"), "name: wordpress\nrun_as: admin\n").unwrap();
+        assert!(pkg_run_as(&pkg, "webapps").is_err());
     }
 
     #[test]

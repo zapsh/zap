@@ -413,6 +413,48 @@ struct AppYaml {
     /// （install/upgrade 后端二次校验）。
     #[serde(default, deserialize_with = "de_str_list")]
     roles: Option<Vec<String>>,
+    /// 脚本运行身份：`user` = 以面板用户对应的 Linux 账号（nologin）执行，
+    /// `root` = 沿用特权执行（默认）。仅 `webapps` 分类可声明 `user`。
+    run_as: Option<String>,
+    /// 作用范围：`site` = 装进用户站点目录（建站类，缺省降权为 user），
+    /// `panel` = 面板级工具（如 phpMyAdmin，系统级安装）。
+    scope: Option<String>,
+    /// 面板侧编排声明（建站 / 建库）。降权脚本没有建站建库的权限，
+    /// 由面板先备好资源再把连接信息注入脚本 env。
+    provision: Option<ProvisionSpec>,
+}
+
+/// 面板侧编排声明：建站类包（`webapps`）安装前由面板准备好的资源。
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ProvisionSpec {
+    /// 站点：建站类包需要落地的站点（按域名复用或自动创建）
+    pub site: Option<SiteProvision>,
+    /// 数据库：为该实例建的专用库 + 专用用户
+    pub database: Option<DbProvision>,
+}
+
+/// 站点编排：`mode` = `create`（缺省，不存在就建）/ `require`（必须已存在）。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SiteProvision {
+    /// 从安装选项里读取域名的选项名（缺省 `SITE_DOMAIN`）
+    pub domain_option: Option<String>,
+    /// create（缺省）/ require
+    pub mode: Option<String>,
+    /// PHP 实例标识（缺省取面板默认 PHP）
+    pub php: Option<String>,
+    /// 伪静态预设（none / wordpress / thinkphp / laravel / codeigniter）
+    pub rewrite: Option<String>,
+}
+
+/// 数据库编排：库名基名（最终库名 = 用户前缀 + base，重名加序号）。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DbProvision {
+    pub name: Option<String>,
+    pub charset: Option<String>,
+    /// 是否创建专用用户并授权（缺省 true）
+    pub user: Option<bool>,
+    /// 允许连接的主机（缺省 localhost）
+    pub host: Option<String>,
 }
 
 /// version 字段解析结果：默认版本 + 全部可安装版本。
@@ -535,6 +577,92 @@ pub async fn package_roles_of(pkg_path: &str) -> Option<Vec<String>> {
     .flatten()
 }
 
+/// 读取指定包声明的脚本运行身份（app.yaml `run_as` / `scope`）。
+///
+/// 返回 `Some("user")`：该包以面板用户对应的 Linux 账号（nologin）运行；
+/// `Some("root")` / `None`（包不存在或未声明）= 特权运行。
+/// 优先级与 scan_packages 一致：custom 覆盖同名 Git 源包。
+pub async fn package_run_as_of(pkg_path: &str) -> Option<String> {
+    let (cat, name) = pkg_path.split_once('/')?;
+    if cat.is_empty() || name.is_empty() {
+        return None;
+    }
+    let pkg_rel = format!("{cat}/{name}");
+    let appstore = appstore_dir();
+    let repos_root = appstore.join("repos");
+    let custom_dir = appstore.join("custom");
+    let repo_list = read_repos_value().await.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(repos) = repo_list.get("repos").and_then(|r| r.as_array()) {
+            for repo in repos {
+                if let Some(id) = repo.get("id").and_then(|v| v.as_str()) {
+                    dirs.push(repos_root.join(id));
+                }
+            }
+        }
+        dirs.push(custom_dir);
+        // 倒序命中：custom 优先级最高
+        for dir in dirs.iter().rev() {
+            let yaml_path = dir.join(&pkg_rel).join("app.yaml");
+            if let Some(a) = parse_app_yaml(&yaml_path) {
+                let mode = a.run_as.map(|s| s.trim().to_ascii_lowercase()).or_else(|| {
+                    a.scope
+                        .as_deref()
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .filter(|s| s == "site")
+                        .map(|_| "user".to_string())
+                });
+                return Some(mode.unwrap_or_else(|| "root".to_string()));
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// 读取指定包的面板编排声明（app.yaml `provision`）。
+///
+/// 命中规则与 `package_run_as_of` 一致（custom 覆盖同名 Git 源包）；
+/// 未声明 / 包不存在 → None（脚本自己解决资源，通常是系统级包）。
+pub async fn package_provision_of(pkg_path: &str) -> Option<ProvisionSpec> {
+    let (cat, name) = pkg_path.split_once('/')?;
+    if cat.is_empty() || name.is_empty() {
+        return None;
+    }
+    let pkg_rel = format!("{cat}/{name}");
+    let appstore = appstore_dir();
+    let repos_root = appstore.join("repos");
+    let custom_dir = appstore.join("custom");
+    let repo_list = read_repos_value().await.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(repos) = repo_list.get("repos").and_then(|r| r.as_array()) {
+            for repo in repos {
+                if let Some(id) = repo.get("id").and_then(|v| v.as_str()) {
+                    dirs.push(repos_root.join(id));
+                }
+            }
+        }
+        dirs.push(custom_dir);
+        // 倒序命中：custom 优先级最高
+        for dir in dirs.iter().rev() {
+            let yaml_path = dir.join(&pkg_rel).join("app.yaml");
+            if let Some(a) = parse_app_yaml(&yaml_path)
+                && let Some(p) = a.provision
+            {
+                return Some(p);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// 扫描全部 Git 源 + 自定义包。同名覆盖顺序（优先级从低到高）：
 /// 内置源 < 后添加的源 < custom。
 pub async fn scan_packages() -> Vec<Value> {
@@ -626,6 +754,8 @@ fn scan_source_dir(
                     "default_port": app_yaml.default_port,
                     "scripts": app_yaml.scripts.clone().unwrap_or(Value::Null),
                     "roles": app_yaml.roles.clone().unwrap_or_default(),
+                    "run_as": app_yaml.run_as.clone().unwrap_or_default(),
+                    "scope": app_yaml.scope.clone().unwrap_or_default(),
                     "source": source,
                     "repo_id": repo_id,
                 }),
