@@ -36,6 +36,9 @@
       <el-table-column :label="t('task.columns.task')" min-width="220" show-overflow-tooltip>
         <template #default="{ row }">
           <span>{{ row.title || row.pkg || row.action }}</span>
+          <el-text v-if="row.status === 'pending'" size="small" type="warning" class="tasks-badge">
+            {{ t('task.queuePosition', { n: queueIndex(row) }) }}
+          </el-text>
         </template>
       </el-table-column>
       <el-table-column :label="t('task.columns.status')" width="110">
@@ -87,13 +90,13 @@
       />
     </div>
 
-    <!-- 构建日志：非脚本任务没有可停止句柄，用 simple 模式只展示日志 -->
+    <!-- 日志：队列里的任务未必有可停止句柄，用 simple 模式只展示日志 -->
     <AppStoreLogDrawer ref="drawerRef" simple />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Refresh } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -101,7 +104,14 @@ import { useUserStore } from '@/stores/user'
 import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
 import { cancelTask, getTasks, type TaskItem, type TaskStatus } from '@/api/task'
 
-const props = defineProps<{ refreshToken?: number }>()
+const props = withDefaults(
+  defineProps<{
+    /** 只看某一类任务（appstore / docker ...）；留空 = 全部 */
+    kind?: string
+    refreshToken?: number
+  }>(),
+  { kind: '', refreshToken: 0 },
+)
 const emit = defineEmits<{ (e: 'count', n: number): void }>()
 
 const { t } = useI18n()
@@ -142,6 +152,13 @@ function isActive(s: TaskStatus) {
   return s === 'running' || s === 'pending'
 }
 
+/** 排队位次：接口按 id 倒序返回，pending 的倒着数就是「第几位」 */
+function queueIndex(row: TaskItem) {
+  if (row.status !== 'pending') return 0
+  const queued = rows.value.filter((r) => r.status === 'pending')
+  return queued.length - queued.findIndex((r) => r.task_id === row.task_id)
+}
+
 function fmtTime(ts: number) {
   if (!ts) return '-'
   const d = new Date(ts * 1000)
@@ -153,7 +170,7 @@ async function load() {
   loading.value = true
   try {
     const res = await getTasks({
-      kind: 'docker',
+      kind: props.kind || undefined,
       page: page.value,
       page_size: pageSize,
       status: status.value || undefined,
@@ -191,8 +208,25 @@ async function handleCancel(row: TaskItem) {
   }
 }
 
+/** 队列里有活儿时才自动刷新：静止的列表不必每 5 秒打一次接口 */
+let timer: ReturnType<typeof setInterval> | undefined
+function syncTimer() {
+  const busy = rows.value.some((r) => isActive(r.status))
+  if (busy && !timer) timer = setInterval(load, 5000)
+  else if (!busy && timer) {
+    clearInterval(timer)
+    timer = undefined
+  }
+}
+
+watch(rows, syncTimer)
 watch(() => props.refreshToken, load)
 onMounted(load)
+onBeforeUnmount(() => {
+  if (timer) clearInterval(timer)
+})
+
+defineExpose({ load })
 </script>
 
 <style scoped>
@@ -211,6 +245,10 @@ onMounted(load)
 
 .tasks-toolbar__spacer {
   flex: 1;
+}
+
+.tasks-badge {
+  margin-left: 8px;
 }
 
 .tasks-pager {

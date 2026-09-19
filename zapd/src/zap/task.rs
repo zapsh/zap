@@ -15,12 +15,13 @@ use serde::Serialize;
 use serde_json::json;
 use std::path::Path;
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     config, db,
     zap::{ZapError, jwt},
 };
+use zap_proto::Request;
 
 /// 日志结束标记：`__ZAP_DONE__ <exit_code>`（由 zapexec 写入日志末尾）。
 pub const DONE_MARKER: &str = "__ZAP_DONE__";
@@ -76,6 +77,8 @@ pub struct Task {
     pub progress: i64,
     /// 控制指令：'' / 'cancel' / 'pause'。
     pub control: String,
+    /// 启动参数：序列化后的执行请求（排队任务靠它在放行时启动）。
+    pub payload: String,
     pub started_at: i64,
     pub finished_at: i64,
     pub updated_at: i64,
@@ -124,6 +127,16 @@ pub struct NewTask {
     pub group_key: String,
     /// 组内并行上限（1 = 组内同时只能跑一个）。
     pub group_limit: i64,
+    /// 启动参数（序列化后的执行请求 JSON）：排队任务必须有它，否则放行时无法启动。
+    pub payload: String,
+}
+
+impl NewTask {
+    /// 带上启动参数（排队任务需要）。
+    pub fn with_payload(mut self, payload: &str) -> Self {
+        self.payload = payload.to_string();
+        self
+    }
 }
 
 impl NewTask {
@@ -140,6 +153,7 @@ impl NewTask {
             job_key: String::new(),
             group_key: String::new(),
             group_limit: 0,
+            payload: String::new(),
         }
     }
 }
@@ -192,8 +206,8 @@ pub async fn enqueue(t: NewTask) -> Result<Task, ZapError> {
     sqlx::query(
         "INSERT INTO task_queue \
          (task_id, kind, action, pkg, username, status, exit_code, log_path, job_key, \
-          group_key, group_limit, title, progress, control, started_at, finished_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, -1, ?, ?, ?, ?, ?, -1, '', ?, 0, ?)",
+          group_key, group_limit, title, progress, control, payload, started_at, finished_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, -1, ?, ?, ?, ?, ?, -1, '', ?, ?, 0, ?)",
     )
     .bind(&t.task_id)
     .bind(&t.kind)
@@ -206,10 +220,31 @@ pub async fn enqueue(t: NewTask) -> Result<Task, ZapError> {
     .bind(&t.group_key)
     .bind(t.group_limit)
     .bind(&t.title)
+    .bind(&t.payload)
     .bind(now)
     .bind(now)
     .execute(pool)
     .await?;
+    // 并发窗口补救：两个请求可能同时看到空槽位并都登记成 running。
+    // 登记后按"实际有几个在跑"复核一次，超了就把自己退回排队。
+    if status == STATUS_RUNNING && t.group_limit > 0 && !t.group_key.is_empty() {
+        let running: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_queue WHERE group_key = ? AND status = 'running'",
+        )
+        .bind(&t.group_key)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if running > t.group_limit {
+            let _ =
+                sqlx::query("UPDATE task_queue SET status = ?, updated_at = ? WHERE task_id = ?")
+                    .bind(STATUS_PENDING)
+                    .bind(now)
+                    .bind(&t.task_id)
+                    .execute(pool)
+                    .await;
+        }
+    }
     get(&t.task_id)
         .await?
         .ok_or_else(|| ZapError::New(-1, "任务登记失败".to_string()))
@@ -289,8 +324,8 @@ pub async fn start(task_id: &str) -> Result<bool, sqlx::Error> {
 
 /// 任务收尾：落定状态与退出码。
 ///
-/// 返回同组内下一个待放行的任务（若有），调用方负责启动它并调 [`start`]；
-/// 这样"谁结束谁放行下一个"，不需要额外的常驻调度线程。
+/// 返回同组内下一个待放行的任务（若有）；真正把它跑起来由 [`spawn_scheduler`]
+/// 负责 —— 收尾只管记账，不做调度。
 pub async fn finish(task_id: &str, status: &str, exit_code: i64) -> Option<Task> {
     let now = chrono::Utc::now().timestamp();
     let pool = db::get_db_pool().await;
@@ -320,6 +355,132 @@ pub async fn finish(task_id: &str, status: &str, exit_code: i64) -> Option<Task>
         Some(g) if !g.is_empty() => next_pending(&g).await,
         _ => None,
     }
+}
+
+// ── 排队调度 ────────────────────────────────────────────────
+
+/// 调度轮询间隔：任务结束到下一个排队任务启动之间最坏延迟这么久。
+const SCHED_INTERVAL_SECS: u64 = 2;
+
+/// 启动后台调度器（main 里调一次即可）：并发组空出槽位就放行最早排队的任务。
+///
+/// 做成"轮询数据库"而不是"谁结束谁拉下一个"，是因为后者在每个退出路径上都要
+/// 记得放行（正常结束、超时、启动失败、被取消、进程重启……），漏一处排队任务
+/// 就永远卡住；轮询以数据库为唯一事实来源，槽位空了就一定会被填上。
+pub fn spawn_scheduler() {
+    tokio::spawn(async move {
+        info!("任务队列调度器已启动");
+        let mut timer = tokio::time::interval(std::time::Duration::from_secs(SCHED_INTERVAL_SECS));
+        loop {
+            timer.tick().await;
+            if let Err(e) = schedule_once().await {
+                warn!("任务队列调度失败: {e}");
+            }
+        }
+    });
+}
+
+/// 一轮调度：每个并发组至多放行一个（剩下的下一轮再看还有没有槽位）。
+async fn schedule_once() -> Result<(), sqlx::Error> {
+    let pool = db::get_db_pool().await;
+    // 只看"没人请求取消"的排队任务：已请求取消的会在原地被置为 canceled
+    let groups: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT group_key FROM task_queue \
+         WHERE status = 'pending' AND group_key <> '' AND control = ''",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for g in groups {
+        // 组上限在组内各条记录上一致，取最大即可容忍个别脏数据
+        let limit: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(group_limit), 0) FROM task_queue WHERE group_key = ?",
+        )
+        .bind(&g)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if limit <= 0 || active_in_group(&g).await >= limit {
+            continue;
+        }
+        if let Some(next) = next_pending(&g).await {
+            dispatch(&next).await;
+        }
+    }
+    Ok(())
+}
+
+/// 放行一条排队任务：先抢状态（防并发重入），再把请求下发给执行侧。
+async fn dispatch(t: &Task) {
+    match start(&t.task_id).await {
+        Ok(true) => {}
+        // 已被别的轮次放行：本轮放弃，下一轮再评估
+        Ok(false) => return,
+        Err(e) => {
+            warn!("放行任务 {} 失败: {e}", t.task_id);
+            return;
+        }
+    }
+    info!(
+        "排队任务 {} 已放行启动（{} {}）",
+        t.task_id, t.action, t.pkg
+    );
+    if let Err(e) = launch(t).await {
+        warn!("启动排队任务 {} 失败: {e}", t.task_id);
+    }
+}
+
+/// 把任务交给执行侧：下发请求 → 成功则盯日志收尾，失败立刻落 failed。
+///
+/// 已 running 的任务也能用它（安装接口"拿到槽位就立刻启动"走的就是这里）。
+pub async fn launch(t: &Task) -> Result<(), ZapError> {
+    if t.payload.is_empty() {
+        let _ = finish(&t.task_id, STATUS_FAILED, -1).await;
+        return Err(ZapError::New(-1, "任务缺少启动参数，无法执行".to_string()));
+    }
+    let req: Request = serde_json::from_str(&t.payload)
+        .map_err(|e| ZapError::New(-1, format!("任务启动参数无法解析: {e}")))?;
+    match crate::zapexec::call(req).await {
+        Ok(resp) if resp.code != 0 => {
+            let _ = finish(&t.task_id, STATUS_FAILED, resp.code).await;
+            return Err(ZapError::New(resp.code, resp.message));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            let _ = finish(&t.task_id, STATUS_FAILED, -1).await;
+            return Err(e);
+        }
+    }
+    watch_log(
+        t.task_id.clone(),
+        t.log_path.clone(),
+        watch_timeout(&t.kind),
+    );
+    Ok(())
+}
+
+/// 各类任务的日志盯守超时：构建这类长任务给 6 小时，其余 24 小时。
+fn watch_timeout(kind: &str) -> u64 {
+    match kind {
+        KIND_DOCKER => 6 * 3600,
+        _ => 24 * 3600,
+    }
+}
+
+/// 排队位次（1 = 下一个就轮到）；不在排队中返回 0。
+pub async fn queue_position(t: &Task) -> i64 {
+    if t.status != STATUS_PENDING || t.group_key.is_empty() {
+        return 0;
+    }
+    let pool = db::get_db_pool().await;
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM task_queue WHERE group_key = ? AND status = 'pending' AND id <= ?",
+    )
+    .bind(&t.group_key)
+    .bind(t.id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
 }
 
 /// 删除任务记录（并发组超发时撤销 / 管理页清理）。
@@ -377,6 +538,7 @@ pub async fn get(task_id: &str) -> Result<Option<Task>, sqlx::Error> {
 pub struct Filter {
     pub kind: Option<String>,
     pub action: Option<String>,
+    /// 状态筛选；支持逗号分隔的多值（如 `pending,running` 取"未结束的"）。
     pub status: Option<String>,
     /// 归属用户精确匹配（普通用户列表由 [`list_for`] 强制收敛为自己的）。
     pub username: Option<String>,
@@ -405,8 +567,25 @@ impl Filter {
             binds.push(v.clone());
         }
         if let Some(v) = &self.status {
-            conds.push("status = ?".to_string());
-            binds.push(v.clone());
+            let list: Vec<&str> = v
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+            match list.as_slice() {
+                [] => {}
+                [one] => {
+                    conds.push("status = ?".to_string());
+                    binds.push((*one).to_string());
+                }
+                many => {
+                    let ph = many.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+                    conds.push(format!("status IN ({ph})"));
+                    for s in many {
+                        binds.push((*s).to_string());
+                    }
+                }
+            }
         }
         if let Some(v) = &self.username {
             conds.push("username = ?".to_string());

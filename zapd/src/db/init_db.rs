@@ -103,6 +103,7 @@ async fn migrate_add_columns() {
     ensure_column("task_queue", "title", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("task_queue", "progress", "INTEGER NOT NULL DEFAULT -1").await;
     ensure_column("task_queue", "control", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("task_queue", "payload", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("task_queue", "updated_at", "INTEGER NOT NULL DEFAULT 0").await;
 }
 
@@ -1028,6 +1029,10 @@ async fn init_task_queue_table() {
         -- control：控制指令（''=无 / 'cancel'=请求取消 / 'pause'=请求暂停），
         --   由管理页写入，执行侧（zapexec）读取并执行，执行后清空
         control TEXT NOT NULL DEFAULT '',
+        -- payload：排队任务的启动参数（序列化后的 zapexec 请求）。
+        --   排队任务要等前一个结束才启动，那时 HTTP 请求早已返回，
+        --   只有把"该干什么"落库，调度器才知道怎么把它跑起来。
+        payload TEXT NOT NULL DEFAULT '',
         started_at INTEGER NOT NULL DEFAULT 0,
         finished_at INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL DEFAULT 0

@@ -1642,8 +1642,10 @@ pub async fn backup_home(
         title: format!("备份家目录 {target}"),
         log_path: log.clone(),
         job_key: backup_run_key(&target),
+        // 备份不做互斥（同一用户的多次备份由自己负责），且是同步下发，无需留存参数
         group_key: String::new(),
         group_limit: 0,
+        payload: String::new(),
     })
     .await?;
 

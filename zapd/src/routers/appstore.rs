@@ -15,7 +15,7 @@ use crate::{
     zap::{
         ZapError, ZapJsonResult, appstore as ast, audit,
         jwt::{self, Claims, ValidatedClaims},
-        user_cron,
+        task, user_cron,
     },
     zapexec,
 };
@@ -336,37 +336,33 @@ pub async fn install(
     };
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
-    // 编译型任务走并发组：全局同一时刻只允许一个编译在跑
-    ast::register_compile_run(
-        &run_id,
-        "install",
-        &payload.pkg_path,
-        &claims.sub,
-        &log_path,
-    )
-    .await?;
 
     // 注入操作者上下文：面板登录用户与虚拟主机运行模式（固定为独立系统用户）
-    let user = claims.sub.clone();
-    let run_mode = system_env::VHOST_MODE.to_string();
-
-    let resp = zapexec::call(Request::AppstoreInstall {
+    let req = Request::AppstoreInstall {
         pkg_path: payload.pkg_path.clone(),
         source: payload.source.clone(),
         repo_id: payload.repo_id.clone(),
         version: payload.version.clone(),
         action: payload.action.clone(),
         options,
-        user: Some(user),
-        run_mode: Some(run_mode),
+        user: Some(claims.sub.clone()),
+        run_mode: Some(system_env::VHOST_MODE.to_string()),
         run_id: run_id.clone(),
-    })
+    };
+    // 编译型任务走并发组：同一时刻只允许一个编译在跑，后到的排队等自动放行
+    let run = ast::enqueue_compile(
+        &run_id,
+        "install",
+        &payload.pkg_path,
+        &claims.sub,
+        &log_path,
+        &serde_json::to_string(&req).unwrap_or_default(),
+    )
     .await?;
-    if resp.code != 0 {
-        ast::finish_run(&run_id, "failed", resp.code as i64).await;
-        return Err(ZapError::New(resp.code, resp.message));
+    // 拿到槽位就立即启动；排队中的留给调度器（等前一个结束后自动跑）
+    if run.status == task::STATUS_RUNNING {
+        task::launch(&run).await?;
     }
-    ast::watch_log(run_id.clone(), log_path.clone());
     audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
@@ -391,7 +387,13 @@ pub async fn install(
     Ok(Json(json!({
         "code": 0,
         "message": "安装已启动",
-        "data": { "run_id": run_id, "log": log_path }
+        "data": {
+            "run_id": run_id,
+            "log": log_path,
+            "status": run.status,
+            "queued": run.status == task::STATUS_PENDING,
+            "position": task::queue_position(&run).await,
+        }
     })))
 }
 
@@ -492,21 +494,8 @@ pub async fn upgrade(
     };
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
-    // 升级同样是编译型任务，受同一把"全局只允许一个"的锁约束
-    ast::register_compile_run(
-        &run_id,
-        "upgrade",
-        &payload.pkg_path,
-        &claims.sub,
-        &log_path,
-    )
-    .await?;
 
-    // 注入操作者上下文：面板登录用户与虚拟主机运行模式（固定为独立系统用户）
-    let user = claims.sub.clone();
-    let run_mode = system_env::VHOST_MODE.to_string();
-
-    let resp = zapexec::call(Request::AppstoreUpgrade {
+    let req = Request::AppstoreUpgrade {
         pkg_path: payload.pkg_path.clone(),
         source: payload.source.clone(),
         repo_id: payload.repo_id.clone(),
@@ -514,16 +503,23 @@ pub async fn upgrade(
         old_version,
         action: payload.action.clone(),
         options,
-        user: Some(user),
-        run_mode: Some(run_mode),
+        user: Some(claims.sub.clone()),
+        run_mode: Some(system_env::VHOST_MODE.to_string()),
         run_id: run_id.clone(),
-    })
+    };
+    // 升级同样是编译型任务，受同一把"全局只允许一个"的约束（后到的排队）
+    let run = ast::enqueue_compile(
+        &run_id,
+        "upgrade",
+        &payload.pkg_path,
+        &claims.sub,
+        &log_path,
+        &serde_json::to_string(&req).unwrap_or_default(),
+    )
     .await?;
-    if resp.code != 0 {
-        ast::finish_run(&run_id, "failed", resp.code as i64).await;
-        return Err(ZapError::New(resp.code, resp.message));
+    if run.status == task::STATUS_RUNNING {
+        task::launch(&run).await?;
     }
-    ast::watch_log(run_id.clone(), log_path.clone());
     audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
@@ -545,7 +541,13 @@ pub async fn upgrade(
     Ok(Json(json!({
         "code": 0,
         "message": "升级已启动",
-        "data": { "run_id": run_id, "log": log_path }
+        "data": {
+            "run_id": run_id,
+            "log": log_path,
+            "status": run.status,
+            "queued": run.status == task::STATUS_PENDING,
+            "position": task::queue_position(&run).await,
+        }
     })))
 }
 

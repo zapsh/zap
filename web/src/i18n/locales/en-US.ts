@@ -2371,6 +2371,8 @@ const enUS: Messages = {
     pauseRequested: 'Pause requested',
     resumeRequested: 'Resume requested',
     paused: 'Paused',
+    /** Position hint for queued tasks in the list */
+    queuePosition: 'position {n}',
     columns: {
       task: 'Task',
       kind: 'Kind',
@@ -3106,6 +3108,11 @@ const enUS: Messages = {
     statusRunning: 'Running',
     statusSuccess: 'Success',
     statusFailed: 'Failed',
+    statusPending: 'Queued',
+    statusCanceled: 'Canceled',
+    queueBtn: 'Task queue',
+    queueTitle: 'App store task queue',
+    queued: 'A build is already running; this one is queued (position {n})',
   },
 
   /** App store - installed apps */

@@ -10,9 +10,18 @@
             <div class="repo-sub">{{ t('appstore.repoSub') }}</div>
           </div>
         </div>
-        <el-button type="primary" :disabled="!isAdmin" @click="showAddDialog = true">
-          {{ t('appstore.addSource') }}
-        </el-button>
+        <div class="repo-head__actions">
+          <!-- 任务队列入口：编译/安装是排队的，这里看得到排到哪了 -->
+          <el-button size="small" :icon="List" @click="openQueue">
+            {{ t('appstore.queueBtn') }}
+            <el-tag v-if="activeCount" size="small" type="warning" effect="dark" round>
+              {{ activeCount }}
+            </el-tag>
+          </el-button>
+          <el-button type="primary" :disabled="!isAdmin" @click="showAddDialog = true">
+            {{ t('appstore.addSource') }}
+          </el-button>
+        </div>
       </div>
 
       <div class="repo-list">
@@ -325,6 +334,11 @@
       </template>
     </el-dialog>
 
+    <!-- 任务队列抽屉：应用商店自己的任务（安装 / 升级 / 脚本 / 仓库同步） -->
+    <el-drawer v-model="queueVisible" :title="t('appstore.queueTitle')" size="72%" destroy-on-close>
+      <TaskQueuePanel ref="queuePanelRef" kind="appstore" />
+    </el-drawer>
+
     <!-- 安装/升级选项对话框 -->
     <el-dialog
       v-model="optDialogVisible"
@@ -414,8 +428,10 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
-import { Goods, Search, InfoFilled } from '@/icons'
+import { Goods, List, Search, InfoFilled } from '@/icons'
 import { useUserStore } from '@/stores/user'
+import TaskQueuePanel from '@/components/TaskQueuePanel.vue'
+import { getTasks } from '@/api/task'
 import {
   getRepos,
   addRepo,
@@ -919,9 +935,16 @@ async function doInstall(
       action: actionKey || undefined,
       options,
     })
-    ElMessage.success(t('appstore.started', { action: actName }))
-    logDrawerRef.value?.openDrawer(resp.data.run_id, `${actName} ${pkg.name}`)
+    // 编译是排队的：已有编译在跑时不弹日志（还没有输出），改为打开队列看位次
+    if (resp.data?.queued) {
+      ElMessage.success(t('appstore.queued', { n: resp.data.position ?? 1 }))
+      openQueue()
+    } else {
+      ElMessage.success(t('appstore.started', { action: actName }))
+      logDrawerRef.value?.openDrawer(resp.data.run_id, `${actName} ${pkg.name}`)
+    }
     trackRun(resp.data.run_id, `${pkg.title || pkg.name} ${actName}`)
+    loadQueueCount()
     return true
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e.message || t('appstore.startFailed', { action: actName }))
@@ -1010,14 +1033,43 @@ async function doUpgrade(pkg: AppPackage, options?: FormOptions): Promise<boolea
       version: ver || pkg.version,
       options,
     })
-    ElMessage.success(t('appstore.upgradeStarted'))
-    logDrawerRef.value?.openDrawer(resp.data.run_id, `${t('appstore.btnUpgrade')} ${pkg.name}`)
+    // 升级同样是编译任务，可能要排队
+    if (resp.data?.queued) {
+      ElMessage.success(t('appstore.queued', { n: resp.data.position ?? 1 }))
+      openQueue()
+    } else {
+      ElMessage.success(t('appstore.upgradeStarted'))
+      logDrawerRef.value?.openDrawer(resp.data.run_id, `${t('appstore.btnUpgrade')} ${pkg.name}`)
+    }
     trackRun(resp.data.run_id, `${pkg.title || pkg.name} ${t('appstore.btnUpgrade')}`)
+    loadQueueCount()
     return true
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e.message || t('appstore.upgradeFailed'))
     return false
   }
+}
+
+// ── 任务队列入口 ────────────────────────────────────────────
+
+const queueVisible = ref(false)
+const queuePanelRef = ref<InstanceType<typeof TaskQueuePanel> | null>(null)
+/** 未结束（排队中 + 进行中）的应用商店任务数，用作入口角标 */
+const activeCount = ref(0)
+
+async function loadQueueCount() {
+  try {
+    const res = await getTasks({ kind: 'appstore', status: 'pending,running', page_size: 1 })
+    activeCount.value = res.data?.total ?? 0
+  } catch {
+    // 角标只是提示，失败不打扰主流程
+  }
+}
+
+function openQueue() {
+  queueVisible.value = true
+  queuePanelRef.value?.load()
+  loadQueueCount()
 }
 
 // ── 后台任务完成跟踪:终态提示 + 自动刷新列表 ───────────────
@@ -1030,9 +1082,11 @@ function trackRun(runId: string, label: string) {
     try {
       const resp = await getRuns({ page: 1, page_size: 50 })
       const item = (resp.data?.items || []).find((r: RunItem) => r.run_id === runId)
-      if (!item || item.status === 'running') return // 排队中或仍在执行
+      // pending = 排队等编译槽位，running = 仍在执行，两者都不是终态
+      if (!item || item.status === 'running' || item.status === 'pending') return
       window.clearInterval(timer)
       runPolls.delete(runId)
+      loadQueueCount()
       if (item.status === 'success') {
         ElMessage.success(t('appstore.runSuccess', { label }))
       } else {
@@ -1116,14 +1170,17 @@ function statusType(s: string): 'info' | 'success' | 'danger' | 'warning' {
   if (s === 'success') return 'success'
   if (s === 'failed') return 'danger'
   if (s === 'running') return 'warning'
+  if (s === 'pending') return 'info'
   return 'info'
 }
 
 function statusText(s: string) {
   const map: Record<string, string> = {
+    pending: t('appstore.statusPending'),
     running: t('appstore.statusRunning'),
     success: t('appstore.statusSuccess'),
     failed: t('appstore.statusFailed'),
+    canceled: t('appstore.statusCanceled'),
   }
   return map[s] || s
 }
@@ -1143,6 +1200,7 @@ onMounted(() => {
   loadRepos()
   loadPackages()
   loadRuns()
+  loadQueueCount()
 })
 </script>
 
@@ -1193,6 +1251,12 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.repo-head__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .repo-title {

@@ -137,6 +137,8 @@ async fn main() {
 
     // init job scheduler for system monitoring
     zap::job::init_system_jobs().await;
+    // 通用任务队列调度器：并发组空出槽位就放行排队的任务（应用商店编译等）
+    zap::task::spawn_scheduler();
     // init cron scheduler for 脚本/自动化 计划任务
     zap::script_cron::start();
     // init cron scheduler for 面板用户计划任务（crontab.yaml）

@@ -2348,6 +2348,8 @@ export default {
     pauseRequested: '已请求暂停',
     resumeRequested: '已请求继续',
     paused: '暂停中',
+    /** 排队任务在列表里的位次提示 */
+    queuePosition: '第 {n} 位',
     columns: {
       task: '任务',
       kind: '类型',
@@ -3067,6 +3069,11 @@ export default {
     statusRunning: '运行中',
     statusSuccess: '成功',
     statusFailed: '失败',
+    statusPending: '排队中',
+    statusCanceled: '已取消',
+    queueBtn: '任务队列',
+    queueTitle: '应用商店任务队列',
+    queued: '已有编译任务在跑，本次已加入队列（第 {n} 位）',
   },
 
   /** 应用商店 - 已安装应用 */

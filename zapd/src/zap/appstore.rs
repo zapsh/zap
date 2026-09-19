@@ -23,9 +23,9 @@ pub const KIND: &str = crate::zap::task::KIND_APPSTORE;
 
 /// 并发互斥组：源码编译型任务（安装 / 升级）**全局同一时刻只允许一个**。
 ///
-/// 编译吃满 CPU 与内存，并行只会互相拖慢、还让日志交叉难以排查，
-/// 所以后到的请求直接拒绝并提示"已有编译任务在进行"，
-/// 而不是悄悄排队（排队需要"结束后自动启动下一个"的调度器，暂不引入）。
+/// 编译吃满 CPU 与内存，并行只会互相拖慢、还让日志交叉难以排查；
+/// 但直接拒绝第二个请求体验太差（用户只能反复重试），所以登记为 `pending`
+/// 排队，由 `task` 的调度器在前者结束后自动放行。
 pub const COMPILE_GROUP: &str = "appstore:compile";
 
 /// 日志监控超时：编译安装可能跑很久，给足 24 小时。
@@ -102,10 +102,10 @@ pub async fn register_run_with_key(
         title: String::new(),
         log_path: log_path.to_string(),
         job_key: job_key.to_string(),
-        // AppStore 的安装 / 升级不做全局互斥（同一时刻只允许一个编译的任务
-        // 由调用方显式传 group_key 控制，见 docker_build 等后续接入点）
+        // 脚本 / 仓库同步等任务不做全局互斥（编译类走 enqueue_compile 单独入口）
         group_key: String::new(),
         group_limit: 0,
+        payload: String::new(),
     })
     .await?;
     // 裁剪在后台跑，不拖慢本次触发；无归属的运行只受全表上限约束
@@ -127,24 +127,21 @@ pub async fn register_run(
     register_run_with_key(run_id, action, pkg, username, log_path, "").await
 }
 
-/// 登记一条**编译型**运行记录（安装 / 升级）：同一时刻全局只允许一个。
+/// 登记一条**编译型**任务（安装 / 升级）。
 ///
-/// 两步判定：先用组内活跃数快速失败（含排队中的，避免并发提交一起挤进来），
-/// 登记后若发现自己是排队的（并发窗口里被抢先），撤掉这条并给出同样的提示。
-pub async fn register_compile_run(
+/// 返回里带着准入结论：
+/// - `status = running`：拿到槽位了，调用方立刻 [`crate::zap::task::launch`]；
+/// - `status = pending`：前面还有编译在跑，这条已入队，由调度器在前一个结束后
+///   自动放行（启动参数 `payload` 已随记录落库）。
+pub async fn enqueue_compile(
     run_id: &str,
     action: &str,
     pkg: &str,
     username: &str,
     log_path: &str,
-) -> Result<(), ZapError> {
-    if crate::zap::task::active_in_group(COMPILE_GROUP).await >= 1 {
-        return Err(ZapError::New(
-            -1,
-            "已有编译任务在进行中，请等它结束后再试".to_string(),
-        ));
-    }
-    let t = crate::zap::task::enqueue(crate::zap::task::NewTask {
+    payload: &str,
+) -> Result<crate::zap::task::Task, ZapError> {
+    crate::zap::task::enqueue(crate::zap::task::NewTask {
         task_id: run_id.to_string(),
         kind: KIND.to_string(),
         action: action.to_string(),
@@ -155,16 +152,9 @@ pub async fn register_compile_run(
         job_key: String::new(),
         group_key: COMPILE_GROUP.to_string(),
         group_limit: 1,
+        payload: payload.to_string(),
     })
-    .await?;
-    if t.status != crate::zap::task::STATUS_RUNNING {
-        let _ = crate::zap::task::delete(&t.task_id).await;
-        return Err(ZapError::New(
-            -1,
-            "已有编译任务在进行中，请等它结束后再试".to_string(),
-        ));
-    }
-    Ok(())
+    .await
 }
 
 /// 列出某个定时任务最近的运行记录（新的在前）。

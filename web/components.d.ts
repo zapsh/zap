@@ -80,6 +80,7 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SystemMonitor: typeof import('./src/components/SystemMonitor.vue')['default']
+    TaskQueuePanel: typeof import('./src/components/TaskQueuePanel.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

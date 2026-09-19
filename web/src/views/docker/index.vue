@@ -50,6 +50,7 @@
     <section class="docker-panel">
       <component
         :is="currentPanel.component"
+        :kind="currentPanel.kind"
         :refresh-token="token"
         @count="(n: number) => (counts[active] = n)"
         @refresh="reload"
@@ -81,7 +82,7 @@ import Volumes from './panels/Volumes.vue'
 import Networks from './panels/Networks.vue'
 import Compose from './panels/Compose.vue'
 import Events from './panels/Events.vue'
-import Tasks from './panels/TasksPanel.vue'
+import TaskQueuePanel from '@/components/TaskQueuePanel.vue'
 
 const { t } = useI18n()
 const userStore = useUserStore()
@@ -107,7 +108,7 @@ const tabs = computed(() => [
   { key: 'compose', label: t('docker.tabs.compose'), component: Compose },
   { key: 'events', label: t('docker.tabs.events'), component: Events },
   // 构建 / 镜像相关的任务（通用队列里 kind=docker 的那部分）
-  { key: 'tasks', label: t('docker.tabs.tasks'), component: Tasks },
+  { key: 'tasks', label: t('docker.tabs.tasks'), component: TaskQueuePanel, kind: 'docker' },
 ])
 
 const currentPanel = computed(() => tabs.value.find((p) => p.key === active.value) ?? tabs.value[0])

@@ -243,6 +243,8 @@ pub async fn register_build_run(
         // 构建不做全局互斥：不同用户的构建互不干扰，同一用户并发提交也由自己负责
         group_key: String::new(),
         group_limit: 0,
+        // 构建由路由同步下发（不等排队），无需留存启动参数
+        payload: String::new(),
     })
     .await?;
     Ok(())
