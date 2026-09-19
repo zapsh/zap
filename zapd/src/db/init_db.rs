@@ -373,12 +373,13 @@ async fn sync_added_menus() {
     .await;
 
     // 团队成员（子账号）：任意用户管理自己名下的成员，故对 admin/user/reseller 全部开放。
-    // 成员自己登录后端同样会拦（成员不能创建成员），这里只是不显示入口。
+    // 入口已并入「个人中心」（顶栏头像 → 个人中心 → 团队成员 pill），侧边栏不再单列，
+    // 故两条都 hidden=1；路由 /team 仍保留，旧链接不会 404。
     let _ = sqlx::query(
         "INSERT OR IGNORE INTO menus
-            (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+            (id, parent_id, name, path, component, redirect, type, title, icon, hidden, affix, roles, sort_order, status, created_at, updated_at)
          SELECT 18, 0, 'team', '/team', 'Layout', '/team/index', 'dir', '团队成员',
-                'material-symbols:group', 0, 'admin,user,reseller', 9, 1,
+                'material-symbols:group', 1, 0, 'admin,user,reseller', 9, 1,
                 strftime('%s','now'), strftime('%s','now')
          WHERE NOT EXISTS (SELECT 1 FROM menus WHERE id = 18)",
     )
@@ -386,11 +387,19 @@ async fn sync_added_menus() {
     .await;
     let _ = sqlx::query(
         "INSERT OR IGNORE INTO menus
-            (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+            (id, parent_id, name, path, component, type, title, icon, hidden, affix, roles, sort_order, status, created_at, updated_at)
          SELECT 181, 18, 'team-index', 'index', 'team/index', 'menu', '团队成员',
-                'material-symbols:group', 1, 'admin,user,reseller', 1, 1,
+                'material-symbols:group', 1, 1, 'admin,user,reseller', 1, 1,
                 strftime('%s','now'), strftime('%s','now')
          WHERE EXISTS (SELECT 1 FROM menus WHERE id = 18)",
+    )
+    .execute(pool)
+    .await;
+    // 老库在入口下线前已存在这两行，INSERT OR IGNORE 改不到，这里补一道幂等收敛。
+    // 只改 hidden：菜单保留（界面「菜单管理」里仍可查到），不删是为了避免下次启动被重新补齐。
+    let _ = sqlx::query(
+        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now')
+         WHERE id IN (18, 181) AND hidden <> 1",
     )
     .execute(pool)
     .await;

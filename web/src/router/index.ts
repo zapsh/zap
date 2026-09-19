@@ -160,12 +160,12 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         },
         ],
         },
-  // 团队成员（子账号）：Layout 包裹 + 一级直链，admin / user / reseller 可用。
-  // 成员账号自己也能看到该菜单，但「新增」会被后端拦掉（成员不能再建成员）。
+  // 团队成员（子账号）：入口已移入「个人中心」的 pill（见 views/profile/index.vue），
+  // 侧边栏不再显示（后端菜单 hidden=1）。这里保留路由并指向新位置，旧链接不会失效。
   {
     path: '/team',
     component: Layout,
-    redirect: '/team/index',
+    redirect: '/profile?tab=team',
     meta: { title: '团队成员', icon: 'material-symbols:group', roles: ['admin', 'user', 'reseller'] },
     children: [
       {

@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { onMounted, ref, reactive } from 'vue'
+import { computed, onMounted, ref, reactive } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import QRCode from 'qrcode'
 import { useUserStore } from '@/stores/user'
+import TeamPanel from '@/views/team/TeamPanel.vue'
 import {
   updateUser,
   totpSetup,
@@ -21,6 +23,32 @@ const userStore = useUserStore()
 const { userInfo } = userStore
 
 const activeTab = ref('info')
+
+// ── 顶部页面切换：个人中心 / 团队成员 ────────────────────────
+const route = useRoute()
+const router = useRouter()
+
+/**
+ * 团队成员沿用原侧边栏菜单的可见角色（admin / user / reseller）。
+ * demo 之类未获授权的角色不给入口，避免并入个人中心后凭空多出可见范围。
+ */
+const canSeeTeam = computed(() =>
+  ((userInfo.roles ?? []) as string[]).some((r) => ['admin', 'user', 'reseller'].includes(r)),
+)
+
+const pages = computed(() => [
+  { key: 'profile', label: t('profilePage.title') },
+  ...(canSeeTeam.value ? [{ key: 'team', label: t('team.title') }] : []),
+])
+
+/** `?tab=team` 让旧链接（原 /team）与跳转直达团队面板 */
+const activePage = ref(canSeeTeam.value && route.query.tab === 'team' ? 'team' : 'profile')
+
+function switchPage(key: string) {
+  if (activePage.value === key) return
+  activePage.value = key
+  router.replace({ query: key === 'team' ? { tab: 'team' } : {} })
+}
 
 // ── 基本资料 ───────────────────────────────────────────────
 const infoForm = reactive({
@@ -225,11 +253,23 @@ async function savePrefs() {
 
 <template>
   <div class="app-container">
-    <el-card>
-      <template #header>
-        <span>{{ t('profilePage.title') }}</span>
-      </template>
+    <!-- 顶部 nav pill：个人中心 / 团队成员（团队成员已从左侧菜单移入此处） -->
+    <nav class="page-pills">
+      <button
+        v-for="p in pages"
+        :key="p.key"
+        type="button"
+        class="page-pill"
+        :class="{ 'is-active': activePage === p.key }"
+        @click="switchPage(p.key)"
+      >
+        {{ p.label }}
+      </button>
+    </nav>
 
+    <TeamPanel v-if="activePage === 'team'" />
+
+    <el-card v-else>
       <el-tabs v-model="activeTab">
         <!-- 基本资料 -->
         <el-tab-pane :label="t('profilePage.tabInfo')" name="info">
@@ -419,6 +459,43 @@ async function savePrefs() {
 <style scoped>
 .app-container {
   padding: 20px;
+}
+
+/* 顶部 nav pill 分段导航（与 Docker 页同一套视觉） */
+.page-pills {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+
+.page-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.page-pill:hover {
+  color: var(--el-color-primary);
+}
+
+.page-pill.is-active {
+  background: var(--el-color-primary);
+  color: #fff;
+  font-weight: 500;
 }
 
 .totp-panel {
