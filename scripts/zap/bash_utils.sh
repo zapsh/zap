@@ -17,10 +17,13 @@
 # 函数清单:
 #   assert_root ensure_dir ensure_user ensure_group ensure_usergroup
 #   log_info/log_ok/log_warn/log_error
-#   os_detect is_os normalize_arch cpu_count
+#   os_detect is_os is_os_strict is_os_ge os_version_major os_version_ge os_version_lt
+#   is_deb_family is_rpm_family pkg_manager normalize_arch cpu_count
 #   fetch_file download_file http_fetch download_extract extract_archive
 #   MakeInstall version_compare version_ge version_lt version_gt
 #   random_password has_git getPropsValue wzap_conf
+#   have_lib lib_path link_lib_compat(运行时库探测 / 兼容 soname 软链)
+#   pkg_install_any(多候选包名安装)
 #   preInstallation(汇总:用户/目录/系统编译依赖)
 #
 # 顶层变量(被 source 后立即可用):
@@ -216,6 +219,38 @@ is_os() {
     case " ${OS_ID_LIKE:-} " in *" ${id} "*) return 0 ;; esac
   done
   return 1
+}
+
+# ── 发行版家族 / 版本判断(基于 os_detect 填充的 OS_NAME / OS_VERSION) ──────
+# OS_VERSION 主版本号:24.04 -> 24 ; 7.9 -> 7 ; 12 -> 12
+os_version_major() { version_field "${OS_VERSION:-0}" 1; }
+# 与当前系统版本比较:os_version_ge 24.04 / os_version_lt 22.04
+os_version_ge() { version_ge "${OS_VERSION:-0}" "${1:-0}"; }
+os_version_lt() { version_lt "${OS_VERSION:-0}" "${1:-0}"; }
+# 严格按 ID 匹配(不匹配 ID_LIKE):is_os_strict debian
+# 例:Ubuntu 的 ID_LIKE 含 debian,is_os debian 为真,而 is_os_strict debian 为假
+is_os_strict() { [ -n "${1:-}" ] && [ "${OS_NAME:-}" = "$1" ]; }
+# 发行版 + 版本下限:is_os_ge ubuntu 24.04(同时满足才是 0)
+# 沿用 is_os 的语义(匹配 ID 与 ID_LIKE),因此 Ubuntu 24.04 上 is_os_ge debian 13 也为真
+# —— 对「包名改名」这类判断通常正是想要的结果;只认 ID 请用 is_os_strict + os_version_ge。
+# 典型用途:Ubuntu 24.04+ / Debian 13+ 的 libaio1 改名 libaio1t64、libncurses5 下线
+is_os_ge() {
+  local id="${1:-}" ver="${2:-0}"
+  [ -n "$id" ] || return 1
+  is_os "$id" || return 1
+  os_version_ge "$ver"
+}
+is_deb_family() { is_os ubuntu debian raspbian linuxmint pop neon kali deepin; }
+is_rpm_family() { is_os centos rhel rocky alma almalinux ol oracle amazon fedora opensuse sles suse; }
+# 系统包管理器:apt / dnf / yum / apk / zypper(未识别返回 1)
+pkg_manager() {
+  if command -v apt-get >/dev/null 2>&1; then echo apt
+  elif command -v dnf >/dev/null 2>&1; then echo dnf
+  elif command -v yum >/dev/null 2>&1; then echo yum
+  elif command -v apk >/dev/null 2>&1; then echo apk
+  elif command -v zypper >/dev/null 2>&1; then echo zypper
+  else return 1
+  fi
 }
 
 # 可用 CPU 核数(带容错;若注入 CPU_NUM 则以其为上限)
@@ -495,6 +530,103 @@ UBUNTU_DEPS="${ZAP_UBUNTU_DEPS:-wget curl git ca-certificates build-essential au
 RH_DEPS="${ZAP_RH_DEPS:-wget curl git make gcc gcc-c++ autoconf automake libtool bison re2c pkgconfig openssl-devel libxml2-devel sqlite-devel libcurl-devel libpcre-devel bzip2-devel zlib-devel ncurses-devel libpng-devel libjpeg-turbo-devel libwebp-devel}"
 RH_DNF_EXTRA="${ZAP_RH_DNF_EXTRA:-libzip-devel oniguruma-devel libicu-devel libffi-devel libxslt-devel gd-devel libsodium-devel}"
 ALPINE_DEPS="${ZAP_ALPINE_DEPS:-build-base autoconf automake libtool bison re2c pkgconf curl wget git openssl-dev libxml2-dev zlib-dev ncurses-dev bzip2-dev libpng-dev libjpeg-turbo-dev}"
+
+# ── 运行时库 / 系统包(发行版与版本间包名不同) ──────────────────────
+# 背景:同一个运行库在不同发行版、甚至同一发行版的不同大版本里包名不同,典型:
+#   libaio    : libaio1(Ubuntu 22.04-/Debian 12-) / libaio1t64(Ubuntu 24.04+/Debian 13+)
+#   libncurses: libncurses5(旧) / libncurses6(新) / ncurses-compat-libs(RHEL)
+# 而 apt-get install 只要有一个包名找不到就整条命令失败、一个都不装,
+# 所以 `apt-get install -y libncurses5 libaio1 libncurses6 || true` 在
+# Ubuntu 24.04 上是「静默什么都不装」,直到 mysqld 起来才报缺 libaio.so.1。
+# 正确姿势:先按「能力」判断库是否已在,再按候选包名逐个尝试。
+
+# 系统库缓存里是否已有该库(ldconfig -p):已存在就不必装包,也避免误判为「安装失败」
+# 参数按 ldconfig 条目的 soname 字段【精确 / 通配】匹配:
+#   have_lib libaio.so.1        只认 libaio.so.1,不认 libaio.so.1t64
+#   have_lib 'libncurses.so.*'  认 libncurses.so.5 / libncurses.so.6
+# 必须精确匹配 soname:ldconfig -p 里 libaio.so.1t64 也「包含」libaio.so.1 字样,
+# 但动态链接器按 soname 精确加载,只有 1t64 时 mysqld 依旧报缺 libaio.so.1。
+# 不用 `ldconfig -p | grep -q`:调用方普遍开着 pipefail,grep -q 命中即退出会让
+# ldconfig 收到 SIGPIPE(141),管道状态非零 → 明明有库也被判成缺失。
+have_lib() {
+  local cache line name
+  cache="$(ldconfig -p 2>/dev/null)" || return 1
+  # 条目形如: libaio.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libaio.so.1
+  while IFS= read -r line; do
+    case "$line" in *" => "*) ;; *) continue ;; esac
+    name="${line%% *}"
+    # shellcheck disable=SC2254
+    case "$name" in $1) return 0 ;; esac
+  done <<<"$cache"
+  return 1
+}
+
+# 取库的实际路径(ldconfig 缓存),参数同 have_lib;未找到返回 1
+lib_path() {
+  local cache line name
+  cache="$(ldconfig -p 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    case "$line" in *" => "*) ;; *) continue ;; esac
+    name="${line%% *}"
+    # shellcheck disable=SC2254
+    case "$name" in $1) printf '%s\n' "${line##* => }"; return 0 ;; esac
+  done <<<"$cache"
+  return 1
+}
+
+# 兼容 soname:发行版改了库文件名、而官方二进制仍按旧名加载时,补同名软链并刷新缓存
+# 例:Ubuntu 24.04+/Debian 13+ 的 libaio1t64 只提供 libaio.so.1t64,
+#    而 MySQL/MariaDB 官方二进制按 libaio.so.1 加载:
+#      link_lib_compat libaio.so.1 libaio.so.1t64
+# 已存在目标 soname 时直接返回 0(幂等)。
+link_lib_compat() {
+  local want="${1:-}" alt="${2:-}" src dst
+  if [ -z "$want" ] || [ -z "$alt" ]; then
+    log_error "link_lib_compat: 用法 <需要的 soname> <现有 soname>"
+    return 1
+  fi
+  have_lib "$want" && return 0
+  src="$(lib_path "$alt")" || {
+    log_warn "系统中找不到 ${alt},无法为 ${want} 建立兼容软链"
+    return 1
+  }
+  dst="$(dirname "$src")/${want}"
+  # 同目录内用相对链接(只写基名),以免把绝对路径固化在链接里
+  ln -sfn "$(basename "$src")" "$dst" || {
+    log_error "创建软链失败: ${dst} -> $(basename "$src")"
+    return 1
+  }
+  ldconfig >/dev/null 2>&1 || log_warn "ldconfig 刷新失败,请手动执行 ldconfig"
+  if ! have_lib "$want"; then
+    log_warn "已创建 ${dst},但 ldconfig 缓存未收录 ${want}(运行时会回退按目录搜索,一般无影响)"
+  fi
+  log_info "已建立兼容软链: ${dst} -> $(basename "$src")"
+  return 0
+}
+
+# 依次尝试候选包名,装上任意一个即成功;全失败返回 1(不中断脚本,由调用方决定后果)
+# 用法: pkg_install_any apt libaio1t64 libaio1 ; pkg_install_any dnf libaio
+pkg_install_any() {
+  local pm="$1" p
+  shift
+  if [ "$#" -eq 0 ]; then
+    log_error "pkg_install_any: 未提供候选包名"
+    return 1
+  fi
+  for p in "$@"; do
+    if [ "$pm" = "apt" ]; then
+      if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$p" >/dev/null 2>&1; then
+        log_info "已安装依赖: ${p}"
+        return 0
+      fi
+    elif "$pm" install -y "$p" >/dev/null 2>&1; then
+      log_info "已安装依赖: ${p}"
+      return 0
+    fi
+  done
+  log_warn "以下候选包均未能安装: $*"
+  return 1
+}
 
 # 安装系统编译依赖:批量失败后自动逐项补装(单项失败仅告警,不中断脚本);
 # 因为依赖缺失会在 configure/make 阶段暴露,不应因个别包名差异中止整个安装

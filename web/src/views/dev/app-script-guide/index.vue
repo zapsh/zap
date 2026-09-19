@@ -377,6 +377,80 @@ write_info(env_required("APP_PATH"), domain=env("SITE_DOMAIN"),
             <li><strong>不要尝试自己建库</strong>：脚本没有 <code>zapadm</code> 凭据，也不要把凭据写进包里——那会绕过套餐配额与多租户隔离。</li>
             <li><strong>密码处理</strong>：只从 <code>$DB_PASS</code> 读取、写进配置文件后不再出现；日志里用 <code>mask()</code>；<code>wp-config.php</code> 建议 <code>chmod 640</code>。</li>
           </ul>
+          <!-- 十四、bash_utils 公共函数库 -->
+          <h2 id="sec-utils">十四、bash_utils.sh 公共函数库</h2>
+          <p>
+            bash 脚本统一在开头 source 公共库即可使用下列函数（纯函数库：被 source 时不改动调用方 shell 选项、不强制退出，
+            Python 脚本请用等价的 <code>zapweb</code>，见第十二节）：
+          </p>
+          <pre class="code-block">#!/bin/bash
+set -euo pipefail
+source "${ZAP_PATH}/scripts/zap/bash_utils.sh"</pre>
+          <p>source 后顶层变量立即可用：<code>OS_NAME</code>（发行版小写 ID）、<code>OS_VERSION</code>、<code>OS_ID_LIKE</code>、<code>OS_PRETTY</code>、<code>OS_ARCH</code>、<code>OS_ARCH_ALIAS</code>、<code>OS_MACHINE</code>；可随时重跑 <code>os_detect</code> 刷新。</p>
+
+          <p class="sec-sub"><strong>日志 / 前置</strong></p>
+          <table class="doc-table">
+            <thead><tr><th style="width: 260px">函数</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>log_info</code> / <code>log_ok</code> / <code>log_warn</code> / <code>log_error</code></td><td>统一日志格式（warn / error 走 stderr），实时写入运行日志</td></tr>
+              <tr><td><code>assert_root</code></td><td>非 root 直接退出</td></tr>
+              <tr><td><code>ensure_dir &lt;dir&gt;</code></td><td>建目录（幂等）</td></tr>
+              <tr><td><code>ensure_user</code> / <code>ensure_group</code> / <code>ensure_usergroup</code></td><td>建账号 / 组并加入组（幂等），如 <code>ensure_user mysql mysql</code></td></tr>
+              <tr><td><code>preInstallation</code></td><td>汇总前置：用户 + 关键目录 + 首次系统编译依赖（带 <code>preinstall.lock</code>，仅首次装依赖）</td></tr>
+            </tbody>
+          </table>
+
+          <p class="sec-sub"><strong>操作系统 / 版本判断</strong></p>
+          <table class="doc-table">
+            <thead><tr><th style="width: 260px">函数</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>os_detect</code></td><td>探测发行版 / 内核 / 架构，刷新上表顶层变量</td></tr>
+              <tr><td><code>is_os &lt;id...&gt;</code></td><td>匹配 ID <strong>或</strong> ID_LIKE：<code>is_os ubuntu debian</code>；因 Ubuntu 的 ID_LIKE 含 debian，<code>is_os debian</code> 在 Ubuntu 上也为真</td></tr>
+              <tr><td><code>is_os_strict &lt;id&gt;</code></td><td>只匹配 ID，不认 ID_LIKE（严格区分 Ubuntu / Debian 时用）</td></tr>
+              <tr><td><code>os_version_major</code></td><td>主版本号：<code>24.04 → 24</code>、<code>7.9 → 7</code></td></tr>
+              <tr><td><code>os_version_ge</code> / <code>os_version_lt</code></td><td>与当前系统版本比较：<code>os_version_ge 24.04</code></td></tr>
+              <tr><td><code>is_os_ge &lt;id&gt; &lt;ver&gt;</code></td><td>发行版 + 版本下限：<code>is_os_ge ubuntu 24.04</code>（沿用 <code>is_os</code> 的 ID_LIKE 语义）</td></tr>
+              <tr><td><code>is_deb_family</code> / <code>is_rpm_family</code></td><td>deb 系（ubuntu / debian / …）/ rpm 系（rhel / rocky / alma / fedora / …）</td></tr>
+              <tr><td><code>pkg_manager</code></td><td>输出 <code>apt</code> / <code>dnf</code> / <code>yum</code> / <code>apk</code> / <code>zypper</code>，未识别返回 1</td></tr>
+              <tr><td><code>normalize_arch</code> / <code>cpu_count</code></td><td>架构归一化（<code>x86_64 → amd64</code>）/ 可用核数（受 <code>CPU_NUM</code> 上限约束）</td></tr>
+            </tbody>
+          </table>
+
+          <p class="sec-sub"><strong>运行时库 / 系统包（跨发行版差异）</strong></p>
+          <table class="doc-table">
+            <thead><tr><th style="width: 260px">函数</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>have_lib &lt;soname|glob&gt;</code></td><td>ldconfig 缓存里是否已有该库。按 soname <strong>精确</strong>匹配：<code>have_lib libaio.so.1</code> 不认 <code>libaio.so.1t64</code>；也可给通配 <code>have_lib 'libncurses.so.*'</code></td></tr>
+              <tr><td><code>lib_path &lt;soname|glob&gt;</code></td><td>取库的实际路径，参数同 <code>have_lib</code></td></tr>
+              <tr><td><code>link_lib_compat &lt;需要&gt; &lt;现有&gt;</code></td><td>发行版改了库文件名、官方二进制仍按旧 soname 加载时补同名软链并刷新缓存（幂等）：<code>link_lib_compat libaio.so.1 libaio.so.1t64</code></td></tr>
+              <tr><td><code>pkg_install_any &lt;pm&gt; &lt;候选包名...&gt;</code></td><td>依次尝试候选包名，装上任意一个即成功；全失败返回 1（不中断脚本，由调用方决定后果）。apt 走 <code>DEBIAN_FRONTEND=noninteractive</code> + <code>--no-install-recommends</code></td></tr>
+              <tr><td><code>install_system_deps</code></td><td>按发行版批量装编译依赖，批量失败后逐项补装（单项失败仅告警）</td></tr>
+            </tbody>
+          </table>
+
+          <p class="sec-sub"><strong>下载 / 构建 / 版本 / 其它</strong></p>
+          <table class="doc-table">
+            <thead><tr><th style="width: 260px">函数</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>download_file &lt;url&gt; &lt;dest&gt;</code> / <code>fetch_file &lt;url&gt; &lt;dest&gt; [重试]</code> / <code>http_fetch</code></td><td>下载（curl 优先、wget 回退、自动重试，非 TTY 下单行进度条）</td></tr>
+              <tr><td><code>extract_archive</code> / <code>download_extract</code></td><td>解压（按扩展名选 tar / zip）/ 下载并解压</td></tr>
+              <tr><td><code>MakeInstall</code></td><td>标准 <code>configure &amp;&amp; make &amp;&amp; make install</code> 封装</td></tr>
+              <tr><td><code>version_compare &lt;a&gt; &lt;b&gt;</code></td><td>版本比较：0 相等 / 1 a&gt;b / 2 a&lt;b（忽略字母后缀）</td></tr>
+              <tr><td><code>version_ge</code> / <code>version_gt</code> / <code>version_lt</code></td><td>基于 <code>version_compare</code> 的快捷判断</td></tr>
+              <tr><td><code>version_field &lt;ver&gt; &lt;段&gt;</code> / <code>version_major</code> / <code>version_minor</code> / <code>version_major_minor</code></td><td>取版本号字段（如 <code>1.1.1w</code> → 主版本 1）</td></tr>
+              <tr><td><code>random_password</code> / <code>has_git</code> / <code>getPropsValue</code> / <code>yaml_value</code></td><td>随机密码 / git 探测 / 取属性 / 取 YAML 值</td></tr>
+              <tr><td><code>normalize_dir</code> / <code>resolve_install_dir</code> / <code>assert_under_apps_dir</code> / <code>wzap_conf</code></td><td>目录归一化与路径围栏（越界即中止）/ 读写 <code>zap.conf</code> 的 key=value</td></tr>
+            </tbody>
+          </table>
+
+          <p class="sec-sub"><strong>依赖安装的正确姿势</strong></p>
+          <el-alert type="warning" :closable="false" class="doc-tip">
+            两条硬规则：① 不要写 <code>apt-get install -y &lt;一长串&gt; || true</code>——apt 只要有一个包名找不到就整条命令失败、
+            <strong>一个都不装</strong>，再被 <code>|| true</code> 吞掉，问题会推迟到编译 / 启动阶段以难懂的报错暴露；
+            ② 不要只按包名判断依赖是否就绪——同一库在不同版本里 soname 可能已改名，要用 <code>have_lib</code> 按 soname 复核。
+          </el-alert>
+          <pre class="code">{{ codes.runtimeDeps }}</pre>
+
           <p class="footnote">本文档与 <code>app.yaml</code> 解析、<code>zapexec/src/verbs/appstore.rs</code> 执行实现保持同步；如有出入以代码为准。</p>
         </main>
       </div>
@@ -569,6 +643,37 @@ case "\${APP_FAMILY:-}" in
         ;;
 esac
 `,
+  runtimeDeps: `#!/bin/bash
+set -euo pipefail
+source "\${ZAP_PATH}/scripts/zap/bash_utils.sh"
+
+# 运行时依赖：包名随发行版 / 版本变化（Ubuntu 24.04+ 的 libaio1 已改名 libaio1t64），
+# 且 apt 只要有一个包名找不到就整条命令失败、一个都不装 —— 必须按候选名逐个尝试
+PKG_MGR="\$(pkg_manager || true)"
+case "\${PKG_MGR}" in
+    apt)
+        apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update 失败(继续尝试安装)"
+        if ! have_lib libaio.so.1; then
+            pkg_install_any apt libaio1t64 libaio1 \\
+                || log_warn "libaio 包未装上，尝试用已有库做兼容软链"
+            # libaio1t64 只提供 libaio.so.1t64，官方二进制按 libaio.so.1 加载 → 补同名软链
+            link_lib_compat libaio.so.1 libaio.so.1t64 \\
+                || { log_error "缺少 libaio.so.1：mysqld 必需"; exit 1; }
+        fi
+        have_lib 'libncurses.so.*' \\
+            || pkg_install_any apt libncurses6 libncurses5 \\
+            || { log_error "缺少 libncurses：mysql 客户端必需"; exit 1; }
+        ;;
+    dnf | yum)
+        have_lib libaio.so.1 \\
+            || pkg_install_any "\${PKG_MGR}" libaio \\
+            || { log_error "缺少 libaio.so.1：mysqld 必需"; exit 1; }
+        ;;
+    *)
+        log_warn "未识别的包管理器：请自行确认依赖已安装"
+        ;;
+esac
+`,
 }
 </script>
 
@@ -587,6 +692,7 @@ const toc = [
   { id: 'sec-trouble', label: '十一、失败排查' },
   { id: 'sec-runas', label: '十二、运行身份与脚本语言' },
   { id: 'sec-provision', label: '十三、建站 / 建库编排' },
+  { id: 'sec-utils', label: '十四、bash_utils 函数库' },
 ]
 export default { name: 'DevAppScriptGuide' }
 </script>
