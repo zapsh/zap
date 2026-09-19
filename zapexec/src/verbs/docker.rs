@@ -541,42 +541,72 @@ pub async fn images() -> Response {
         )
         .await?;
 
-        Ok(list
-            .iter()
-            .map(|img| {
-                let short = img.id.strip_prefix("sha256:").unwrap_or(img.id.as_str());
-                let (repo, tag) = img
-                    .repo_tags
-                    .iter()
-                    .find(|t| !t.starts_with("<none>"))
-                    .and_then(|t| t.rsplit_once(':'))
+        // 一个镜像 ID 可以挂多个名字（`docker tag`、构建时多个 `-t`）：
+        // daemon 只返回一条记录（repo_tags 里带着全部名字），若只取第一个，
+        // 其余名字在面板里就凭空消失了 —— 故每个名字单独一行，与 `docker images` 观感一致。
+        let mut items: Vec<Value> = Vec::new();
+        for img in list.iter() {
+            let short = img.id.strip_prefix("sha256:").unwrap_or(img.id.as_str());
+            let in_use = containers
+                .iter()
+                .filter(|c| {
+                    c.image_id.as_deref() == Some(img.id.as_str())
+                        || c.image
+                            .as_deref()
+                            .map(|s| {
+                                s == short
+                                    || s.strip_prefix("sha256:")
+                                        .unwrap_or(s)
+                                        .starts_with(&short[..short.len().min(12)])
+                            })
+                            .unwrap_or(false)
+                })
+                .count();
+            let size = human_size(img.size as u64);
+            let created = fmt_time(img.created);
+            let named: Vec<&String> = img
+                .repo_tags
+                .iter()
+                .filter(|t| !t.is_empty() && !t.starts_with("<none>"))
+                .collect();
+
+            // 悬空镜像：没有任何名字，ID 就是它唯一的引用
+            if named.is_empty() {
+                items.push(json!({
+                    "ID": img.id,
+                    "Repository": "<none>",
+                    "Tag": "<none>",
+                    "Ref": img.id,
+                    "SharedTags": 0,
+                    "Size": size,
+                    "CreatedAt": created,
+                    "Containers": in_use.to_string(),
+                }));
+                continue;
+            }
+
+            for full in named.iter() {
+                // `host:5000/nginx:latest` 这类带端口的引用从最后一个冒号切，
+                // 仓库名里的冒号不能被当成 tag 分隔符
+                let (repo, tag) = full
+                    .rsplit_once(':')
                     .map(|(r, t)| (r.to_string(), t.to_string()))
-                    .unwrap_or_else(|| ("<none>".to_string(), "<none>".to_string()));
-                let in_use = containers
-                    .iter()
-                    .filter(|c| {
-                        c.image_id.as_deref() == Some(img.id.as_str())
-                            || c.image
-                                .as_deref()
-                                .map(|s| {
-                                    s == short
-                                        || s.strip_prefix("sha256:")
-                                            .unwrap_or(s)
-                                            .starts_with(&short[..short.len().min(12)])
-                                })
-                                .unwrap_or(false)
-                    })
-                    .count();
-                json!({
+                    .unwrap_or_else(|| ((*full).clone(), "latest".to_string()));
+                items.push(json!({
                     "ID": img.id,
                     "Repository": repo,
                     "Tag": tag,
-                    "Size": human_size(img.size as u64),
-                    "CreatedAt": fmt_time(img.created),
+                    // 删除 / 运行都按「名字」走：同一个 ID 有多个名字时，
+                    // 用 ID 删除会把其余名字一起干掉（force 下更是不留余地）
+                    "Ref": *full,
+                    "SharedTags": named.len(),
+                    "Size": size,
+                    "CreatedAt": created,
                     "Containers": in_use.to_string(),
-                })
-            })
-            .collect::<Vec<Value>>())
+                }));
+            }
+        }
+        Ok(items)
     }
     .await;
     list_response(result)

@@ -2460,6 +2460,7 @@ export default {
       id: '镜像 ID',
       containers: '使用中',
       dangling: '悬空',
+      sharedTags: '同一个镜像共 {n} 个标签，列表里每个标签各占一行',
       pull: '拉取镜像',
       pullPlaceholder: '例如 nginx:latest',
       remove: '删除镜像',

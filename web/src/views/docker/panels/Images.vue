@@ -39,7 +39,7 @@
     <el-table
       v-loading="loading"
       :data="filtered"
-      row-key="ID"
+      row-key="Key"
       size="small"
       @selection-change="(rows: DockerImage[]) => (selection = rows)"
     >
@@ -55,6 +55,16 @@
             <el-tag v-if="isDangling(row)" size="small" type="info" effect="plain" round>
               {{ t('docker.image.dangling') }}
             </el-tag>
+            <!-- 同一个 ID 挂了多个名字（docker tag / 构建多 -t）：提示还有别名行 -->
+            <el-tooltip
+              v-if="Number(row.SharedTags) > 1"
+              :content="t('docker.image.sharedTags', { n: row.SharedTags })"
+              placement="top"
+            >
+              <el-tag size="small" type="warning" effect="plain" round>
+                +{{ Number(row.SharedTags) - 1 }}
+              </el-tag>
+            </el-tooltip>
           </div>
           <div class="cell-sub mono">
             <el-link class="cell-id" :underline="false" @click="openDetail(row)">
@@ -390,7 +400,8 @@ async function remove(row: DockerImage) {
     return
   }
   try {
-    await imageAction(row.ID, 'remove')
+    // 按 `repo:tag` 删：同一 ID 还有别的名字时，用 ID 删会把它们一起带走
+    await imageAction(row.Ref || row.ID, 'remove')
     ElMessage.success(t('docker.common.deleted'))
     await load()
   } catch (e: any) {
@@ -415,7 +426,7 @@ async function bulkRemove() {
   let failed = 0
   for (const row of selection.value) {
     try {
-      await imageAction(row.ID, 'remove')
+      await imageAction(row.Ref || row.ID, 'remove')
     } catch {
       failed += 1
     }
@@ -464,7 +475,8 @@ async function load() {
   loading.value = true
   try {
     const resp = await listImages()
-    rows.value = resp.data.items ?? []
+    // 同一镜像多 tag 展开成多行，ID 会重复，补一个唯一行键给 el-table
+    rows.value = (resp.data.items ?? []).map((r) => ({ ...r, Key: r.Ref || r.ID }))
   } catch (e: any) {
     ElMessage.error(e.message || t('docker.common.loadFailed'))
   } finally {

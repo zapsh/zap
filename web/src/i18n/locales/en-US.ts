@@ -2483,6 +2483,7 @@ const enUS: Messages = {
       id: 'Image ID',
       containers: 'In use',
       dangling: 'Dangling',
+      sharedTags: 'This image has {n} tags; each tag is listed as a separate row',
       pull: 'Pull image',
       pullPlaceholder: 'e.g. nginx:latest',
       remove: 'Delete image',

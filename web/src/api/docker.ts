@@ -37,11 +37,17 @@ export interface DockerImage {
   ID: string
   Repository: string
   Tag: string
+  /** 精确引用 `repo:tag`（悬空镜像为 ID）：删除 / 运行都用它，避免误删同一镜像的其它名字 */
+  Ref?: string
+  /** 同一个镜像 ID 共有几个名字；> 1 说明列表里还有它的别名行 */
+  SharedTags?: number
   Digest?: string
   Size: string
   CreatedAt: string
   CreatedSince?: string
   Containers: string
+  /** 前端补的唯一行键（同 ID 多 tag 展开后 ID 不再唯一） */
+  Key?: string
 }
 
 /** 数据卷行 */
