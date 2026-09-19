@@ -105,7 +105,7 @@ async fn exec_audited(
 
 /// GET /docker/status
 pub async fn status(claims: ValidatedClaims) -> ZapJsonResult {
-    require_admin(&claims)?;
+    require_container_view(&claims).await?;
     exec(Request::DockerStatus).await
 }
 
@@ -120,13 +120,13 @@ pub async fn containers(
     claims: ValidatedClaims,
     Query(q): Query<ContainersQuery>,
 ) -> ZapJsonResult {
-    require_admin(&claims)?;
+    require_container_view(&claims).await?;
     exec(Request::DockerContainers { all: q.all }).await
 }
 
 /// GET /docker/stats
 pub async fn stats(claims: ValidatedClaims) -> ZapJsonResult {
-    require_admin(&claims)?;
+    require_container_view(&claims).await?;
     exec(Request::DockerStats).await
 }
 
@@ -137,7 +137,7 @@ pub struct IdQuery {
 
 /// GET /docker/container/inspect?id=..
 pub async fn container_inspect(claims: ValidatedClaims, Query(q): Query<IdQuery>) -> ZapJsonResult {
-    require_admin(&claims)?;
+    require_container_view(&claims).await?;
     exec(Request::DockerContainerInspect { id: q.id }).await
 }
 
@@ -152,7 +152,7 @@ pub struct LogsQuery {
 
 /// GET /docker/container/logs?id=..&tail=200&since=10m&timestamps=true
 pub async fn container_logs(claims: ValidatedClaims, Query(q): Query<LogsQuery>) -> ZapJsonResult {
-    require_admin(&claims)?;
+    require_container_view(&claims).await?;
     exec(Request::DockerContainerLogs {
         id: q.id,
         tail: q.tail,
@@ -174,7 +174,7 @@ pub async fn container_action(
     addr: Extension<SocketAddr>,
     Json(body): Json<ContainerActionBody>,
 ) -> ZapJsonResult {
-    require_admin(&claims)?;
+    require_container_manage(&claims).await?;
     if body.ids.is_empty() {
         return Err(ZapError::New(-1, "请先选择容器".to_string()));
     }
@@ -183,6 +183,14 @@ pub async fn container_action(
         "start" | "stop" | "restart" | "pause" | "unpause" | "kill" | "remove"
     ) {
         return Err(ZapError::New(-1, "不支持的容器操作".to_string()));
+    }
+    // 启停权限 ≠ 销毁权限：kill / remove 只有 admin 能做，
+    // 否则「给他启停」等于「他能删掉宿主机上任意容器」。
+    if !is_admin(&claims) && matches!(body.action.as_str(), "kill" | "remove") {
+        return Err(ZapError::New(
+            -1,
+            "启停权限不支持强制终止 / 删除容器".to_string(),
+        ));
     }
     exec_audited(
         &claims,
@@ -229,6 +237,40 @@ async fn require_builder(claims: &ValidatedClaims) -> Result<(), ZapError> {
         Ok(())
     } else {
         Err(ZapError::New(-1, "未授予镜像构建权限".to_string()))
+    }
+}
+
+/// 容器**只读视图**的门槛：admin 直通，其余需要显式授予的 `docker:view`。
+///
+/// 与容器启停（`docker:manage`）分开，是因为「看得见」和「动得了」风险差一个量级：
+/// 只给 `docker:view` 的人能看容器列表、资源占用、详情与日志，但改不了任何状态。
+///
+/// 构建者不用另外勾：`docker:build` 蕴含 `docker:view`（见 `access::IMPLIED_PERMS`），
+/// 否则镜像页顶部的环境探测条会因缺 `docker:view` 而 403（显示成「未检测到 Docker」）。
+async fn require_container_view(claims: &ValidatedClaims) -> Result<(), ZapError> {
+    if is_demo(claims) {
+        return Err(ZapError::New(-1, "演示账号不支持容器操作".to_string()));
+    }
+    if is_admin(claims) || has_perm(claims, "docker:view").await {
+        Ok(())
+    } else {
+        Err(ZapError::New(-1, "未授予容器查看权限".to_string()))
+    }
+}
+
+/// 容器**启停**的门槛：admin 直通，其余需要显式授予的 `docker:manage`。
+///
+/// 放开的只有 start / stop / restart / pause / unpause —— kill / remove 在
+/// `container_action` 里再挡一层。删容器 / 建容器（可挂宿主目录）/ 卷 / 网络 /
+/// Compose / exec 终端仍然只有 admin，那些等于直接动宿主机。
+async fn require_container_manage(claims: &ValidatedClaims) -> Result<(), ZapError> {
+    if is_demo(claims) {
+        return Err(ZapError::New(-1, "演示账号不支持容器操作".to_string()));
+    }
+    if is_admin(claims) || has_perm(claims, "docker:manage").await {
+        Ok(())
+    } else {
+        Err(ZapError::New(-1, "未授予容器启停权限".to_string()))
     }
 }
 

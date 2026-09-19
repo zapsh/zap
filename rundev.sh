@@ -8,6 +8,7 @@
 #   ./rundev.sh --skip-web      # 跳过前端构建
 #   ./rundev.sh --skip-build    # 跳过 cargo 构建
 #   ./rundev.sh --skip-install  # 缺 node_modules 时不自动 npm install
+#   ./rundev.sh --skip-check    # 跳过构建前的 fmt / clippy 检查（改一行代码想快点跑起来时用）
 #   ./rundev.sh --reset-db      # 删除 data/zap.db 重建全新数据库（admin 初始密码 A123456）
 #   ./rundev.sh --check         # 只检查 Rust 格式(fmt)与代码(clippy)，不构建、不启动服务
 #
@@ -28,13 +29,14 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 usage() { awk 'NR>2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
 # ── 参数解析 ────────────────────────────────────────────────
-RELEASE=false; SKIP_WEB=false; SKIP_BUILD=false; SKIP_INSTALL=false; RESET_DB=false; CHECK=false
+RELEASE=false; SKIP_WEB=false; SKIP_BUILD=false; SKIP_INSTALL=false; SKIP_CHECK=false; RESET_DB=false; CHECK=false
 for arg in "$@"; do
   case "$arg" in
     --release)      RELEASE=true ;;
     --skip-web)     SKIP_WEB=true ;;
     --skip-build)   SKIP_BUILD=true ;;
     --skip-install) SKIP_INSTALL=true ;;
+    --skip-check)   SKIP_CHECK=true ;;
     --reset-db|--fresh-db) RESET_DB=true ;;
     --check)        CHECK=true ;;
     -h|--help)      usage; exit 0 ;;
@@ -45,6 +47,11 @@ done
 # ── 路径 ────────────────────────────────────────────────────
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
+
+# --check 就是只做检查，与"跳过检查"语义相反，同时给出视为用法错误
+if [ "$CHECK" = true ] && [ "$SKIP_CHECK" = true ]; then
+  die "--check 与 --skip-check 互斥（--check 的含义就是只做 fmt / clippy 检查）"
+fi
 
 # ── --check：只做静态检查（fmt + clippy），不构建、不启动服务 ──
 # 提交前 / CI 用：纯只读检查（不会自动改写代码），失败以非零码退出。
@@ -126,10 +133,15 @@ fi
 if [ "$SKIP_BUILD" = true ]; then
   warn "跳过后端构建"
 else
-  info "格式化代码 (cargo fmt --all) ..."
-  cargo fmt --all
-  info "检查代码 (cargo clippy --all-targets --all-features -- -D warnings) ..."
-  cargo clippy --all-targets --all-features -- -D warnings || die "代码检查失败"
+  if [ "$SKIP_CHECK" = true ]; then
+    # 只跳过 fmt / clippy，构建照做：代码能编译就能跑，只是少了规范把关
+    warn "跳过 fmt / clippy 检查（--skip-check）"
+  else
+    info "格式化代码 (cargo fmt --all) ..."
+    cargo fmt --all
+    info "检查代码 (cargo clippy --all-targets --all-features -- -D warnings) ..."
+    cargo clippy --all-targets --all-features -- -D warnings || die "代码检查失败"
+  fi
   info "构建后端 (cargo build ${CARGO_FLAGS[*]} --bin zapd --bin zapexec --bin zapctl --bin zapupgrade) ..."
   cargo build "${CARGO_FLAGS[@]}" --bin zapd --bin zapexec --bin zapctl --bin zapupgrade || die "后端构建失败"
   ok "后端构建完成 -> $BIN_DIR"

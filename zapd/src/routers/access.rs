@@ -823,10 +823,43 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     ),
     // 环境探测只回有没有装 Docker / 版本号，对构建者可见更合理：
     // 否则镜像页顶部的探测条会因 403 显示成「未检测到 Docker」。
+    // 容器只读视图：给了 `docker:view` 就能看容器列表 / 资源占用 / 详情 / 日志。
+    // 只是「看」——改状态要 `docker:manage`，删容器 / 建容器 / 卷 / 网络 / Compose /
+    // exec 终端仍然只有 admin（那些等于直接动宿主机）。
+    (
+        "/docker/containers",
+        Required::User,
+        Some(Perm::action("docker", "view")),
+    ),
+    (
+        "/docker/stats",
+        Required::User,
+        Some(Perm::action("docker", "view")),
+    ),
+    (
+        "/docker/container/inspect",
+        Required::User,
+        Some(Perm::action("docker", "view")),
+    ),
+    (
+        "/docker/container/logs",
+        Required::User,
+        Some(Perm::action("docker", "view")),
+    ),
+    // 容器启停：start / stop / restart / pause / unpause。
+    // kill / remove 由 handler 再挡一层，避免「给个启停」变成「能删容器」。
+    (
+        "/docker/container/action",
+        Required::User,
+        Some(Perm::action("docker", "manage")),
+    ),
+    // 环境探测只回有没有装 Docker / 版本号，构建者与容器查看者都要能看到：
+    // 否则页面顶部的探测条会因 403 显示成「未检测到 Docker」。
+    // 构建者不受影响：`docker:build` 蕴含 `docker:view`（见 IMPLIED_PERMS）。
     (
         "/docker/status",
         Required::User,
-        Some(Perm::action("docker", "build")),
+        Some(Perm::action("docker", "view")),
     ),
     (
         "/docker/images",
@@ -842,7 +875,27 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
 /// 能力都登记在这里，由管理员在「角色权限」里逐个勾选，默认关闭：
 ///
 /// - `docker:build`：构建镜像 = 让 Containerfile 里的 `RUN` 以 root 跑在宿主机上。
-const EXPLICIT_ONLY_PERMS: &[&str] = &["docker:build"];
+///
+/// - `docker:build`：构建镜像 = 让 Containerfile 里的 `RUN` 以 root 跑在宿主机上。
+/// - `docker:view`：看得到别人的容器（列表 / 日志 / inspect）—— 日志可能含敏感信息。
+/// - `docker:manage`：启停别人的容器，等于能中断宿主机上的服务。
+const EXPLICIT_ONLY_PERMS: &[&str] = &["docker:build", "docker:view", "docker:manage"];
+
+/// 权限点蕴含：持有左侧即视为持有右侧。
+///
+/// `docker:build` 自带 `docker:view`：构建完总得看得到镜像与容器状态，
+/// 否则镜像页顶部的环境探测条会因为缺 `docker:view` 而 403（显示成「未检测到 Docker」）。
+const IMPLIED_PERMS: &[(&str, &str)] = &[("docker:build", "docker:view")];
+
+/// 权限集合是否覆盖某权限点（含蕴含推导）。
+fn perm_satisfied(set: &HashSet<String>, key: &str) -> bool {
+    if set.contains(key) {
+        return true;
+    }
+    IMPLIED_PERMS
+        .iter()
+        .any(|(from, to)| *to == key && set.contains(*from))
+}
 
 /// 权限点命名空间的中文名（用于角色权限配置页与权限目录接口）。
 const NS_LABELS: &[(&str, &str)] = &[
@@ -899,6 +952,7 @@ const ACTION_LABELS: &[(&str, &str)] = &[
     ("ssh", "SSH 服务"),
     ("firewall", "防火墙"),
     ("build", "构建"),
+    ("manage", "启停"),
 ];
 
 /// 未知动作用原样兜底（新增动作忘了登记中文名时，界面至少能看清是什么）。
@@ -1358,7 +1412,8 @@ pub fn readonly_allows(path: &str, method: &Method) -> bool {
 
 /// 用户是否持有该权限点（**生效**权限：含成员继承与父账号收紧）。
 pub fn user_has_perm(map: &UserPermMap, uid: u64, key: &str) -> bool {
-    map.get(&(uid as i64)).is_some_and(|set| set.contains(key))
+    map.get(&(uid as i64))
+        .is_some_and(|set| perm_satisfied(set, key))
 }
 
 /// 某用户的生效权限点（排序后）：供 `/user/info` 回传前端做按钮级控制。
@@ -1385,7 +1440,7 @@ pub fn role_has_perm(map: &PermMap, claims: &Claims, key: &str) -> bool {
         .split(',')
         .map(str::trim)
         .filter(|r| !r.is_empty())
-        .any(|r| map.get(r).is_some_and(|set| set.contains(key)))
+        .any(|r| map.get(r).is_some_and(|set| perm_satisfied(set, key)))
 }
 
 fn satisfies(claims: &Claims, required: Required) -> bool {
@@ -1831,13 +1886,52 @@ mod tests {
         assert_eq!(required_for("/docker/image/inspect"), Required::User);
         assert_eq!(required_for("/docker/images"), Required::User);
         assert_eq!(required_for("/docker/status"), Required::User);
-        // 落在 /docker 模块规则上：只有 admin
-        assert_eq!(required_for("/docker/containers"), Required::Admin);
+        // 容器只读视图 / 启停：登记了权限点，可按需授予给普通用户与成员
+        assert_eq!(required_for("/docker/containers"), Required::User);
+        assert_eq!(required_for("/docker/stats"), Required::User);
+        assert_eq!(required_for("/docker/container/inspect"), Required::User);
+        assert_eq!(required_for("/docker/container/logs"), Required::User);
+        assert_eq!(required_for("/docker/container/action"), Required::User);
+        // 落在 /docker 模块规则上、仍然只有 admin 的：建容器（可挂宿主目录）/
+        // 删镜像 / 卷 / 网络 / Compose —— 那些等于直接动宿主机
         assert_eq!(required_for("/docker/container/run"), Required::Admin);
         assert_eq!(required_for("/docker/image/action"), Required::Admin);
         assert_eq!(required_for("/docker/volumes"), Required::Admin);
         assert_eq!(required_for("/docker/network/action"), Required::Admin);
         assert_eq!(required_for("/docker/compose/action"), Required::Admin);
+    }
+
+    /// 容器权限点的边界：默认一律不给，靠管理员显式勾选；`build` 自带 `view`。
+    #[test]
+    fn docker_container_perms_are_explicit() {
+        assert_eq!(
+            perm_key_for("/docker/containers", &Method::GET),
+            Some("docker:view".to_string())
+        );
+        assert_eq!(
+            perm_key_for("/docker/container/logs", &Method::GET),
+            Some("docker:view".to_string())
+        );
+        assert_eq!(
+            perm_key_for("/docker/container/action", &Method::POST),
+            Some("docker:manage".to_string())
+        );
+        // 默认角色拿不到：必须在「角色权限」/「附加权限点」里显式勾
+        for role in ["user", "reseller", "demo"] {
+            let perms = default_permissions_for(role);
+            assert!(
+                !perms.contains(&"docker:view".to_string()),
+                "{role} 不该默认拥有 docker:view"
+            );
+            assert!(
+                !perms.contains(&"docker:manage".to_string()),
+                "{role} 不该默认拥有 docker:manage"
+            );
+        }
+        // 构建者自带查看（build ⊃ view），不必再勾一次；但启停不跟着送
+        let set = std::collections::HashSet::from(["docker:build".to_string()]);
+        assert!(perm_satisfied(&set, "docker:view"));
+        assert!(!perm_satisfied(&set, "docker:manage"));
     }
 
     /// `docker:build` 需要显式勾选：内置角色初始化时不自动带上（admin 除外）。
