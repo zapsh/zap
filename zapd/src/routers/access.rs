@@ -866,6 +866,54 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("docker", "build")),
     ),
+    // 通用任务队列：应用商店安装 / Docker 构建 / 备份 / 升级 / 计划任务的运行记录。
+    //
+    // 读取类（列表 / 统计 / 详情 / 日志 / 实时日志）对普通用户开放 `task:view`：
+    // 列表与详情在 handler 里按归属收敛 —— 非管理员只看得到自己的任务，
+    // 所以"能看到任务"不等于"能看到别人的日志"。
+    (
+        "/task/list",
+        Required::User,
+        Some(Perm::action("task", "view")),
+    ),
+    (
+        "/task/stats",
+        Required::User,
+        Some(Perm::action("task", "view")),
+    ),
+    (
+        "/task/detail",
+        Required::User,
+        Some(Perm::action("task", "view")),
+    ),
+    (
+        "/task/log",
+        Required::User,
+        Some(Perm::action("task", "view")),
+    ),
+    (
+        "/task/ws",
+        Required::User,
+        Some(Perm::action("task", "view")),
+    ),
+    // 取消自己的任务：`task:control`，handler 再挡一层「非管理员只能操作自己的」。
+    (
+        "/task/cancel",
+        Required::User,
+        Some(Perm::action("task", "control")),
+    ),
+    // 暂停 / 继续是下发进程信号，先只对管理员开放：让普通用户随意挂起他人任务
+    // 相当于一种拒绝服务手段。
+    (
+        "/task/pause",
+        Required::Admin,
+        Some(Perm::action("task", "control")),
+    ),
+    (
+        "/task/resume",
+        Required::Admin,
+        Some(Perm::action("task", "control")),
+    ),
 ];
 
 /// **只允许显式授予**的权限点：内置角色初始化时不会自动带上（admin 除外）。
@@ -899,6 +947,7 @@ fn perm_satisfied(set: &HashSet<String>, key: &str) -> bool {
 
 /// 权限点命名空间的中文名（用于角色权限配置页与权限目录接口）。
 const NS_LABELS: &[(&str, &str)] = &[
+    ("task", "任务队列"),
     ("system.menu", "菜单管理"),
     ("system.file", "文件管理"),
     ("system.cloud", "云存储"),
@@ -944,6 +993,7 @@ const ACTION_LABELS: &[(&str, &str)] = &[
     ("uninstall", "卸载"),
     ("upgrade", "升级"),
     ("manage", "实例管理"),
+    ("control", "任务控制"),
     ("log", "运行日志"),
     ("retry", "重跑"),
     ("run", "执行"),

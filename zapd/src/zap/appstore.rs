@@ -1,6 +1,10 @@
-//! AppStore 运行任务管理：DB 记录 + 日志监控 + 本地目录扫描。
+//! AppStore：本地目录扫描（包 / 已安装实例）+ 安装任务在通用任务队列上的登记。
+//!
+//! 任务本身（登记、状态机、日志、可见性）已抽到 [`crate::zap::task`]，全站共用；
+//! 本模块只保留 AppStore 的专属约定：日志落在 `appstore/logs/`、运行快照落在
+//! `appstore/runs/<task_id>/`，以及历史记录的裁剪规则。
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -11,33 +15,36 @@ use crate::{
     zap::{ZapError, jwt},
 };
 
-/// 日志结束标记：`__ZAP_DONE__ <exit_code>`（zapexec 写入）
-pub const DONE_MARKER: &str = "__ZAP_DONE__";
+/// 日志结束标记（`__ZAP_DONE__ <exit_code>`，zapexec 写入）：与通用任务队列同源。
+pub const DONE_MARKER: &str = crate::zap::task::DONE_MARKER;
+
+/// AppStore 任务在 `task_queue.kind` 里的大类标记。
+pub const KIND: &str = crate::zap::task::KIND_APPSTORE;
+
+/// 并发互斥组：源码编译型任务（安装 / 升级）**全局同一时刻只允许一个**。
+///
+/// 编译吃满 CPU 与内存，并行只会互相拖慢、还让日志交叉难以排查，
+/// 所以后到的请求直接拒绝并提示"已有编译任务在进行"，
+/// 而不是悄悄排队（排队需要"结束后自动启动下一个"的调度器，暂不引入）。
+pub const COMPILE_GROUP: &str = "appstore:compile";
+
+/// 日志监控超时：编译安装可能跑很久，给足 24 小时。
+const WATCH_TIMEOUT_SECS: u64 = 24 * 3600;
 
 /// 单个计划任务保留的运行记录条数上限（超出后自动清理最旧的）。
 ///
-/// 一分钟一次的任务一天就是 1440 条；不设上限的话 `appstore_runs` 表与
+/// 一分钟一次的任务一天就是 1440 条；不设上限的话 `task_queue` 表与
 /// `appstore/logs/` 目录会一起无限增长。
 pub const MAX_RUNS_PER_JOB: i64 = 50;
 
 /// 全表运行记录兜底上限（涵盖手动运行脚本、安装/更新等所有来源）。
 pub const MAX_RUNS_TOTAL: i64 = 1000;
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct AppstoreRun {
-    pub id: i64,
-    pub run_id: String,
-    pub action: String,
-    pub pkg: String,
-    pub username: String,
-    pub status: String,
-    pub exit_code: i64,
-    pub log_path: String,
-    /// 任务归属键：`cron:<username>:<id>`（管理员计划任务）| `crontab:<username>:<id>`（用户计划任务）
-    pub job_key: String,
-    pub started_at: i64,
-    pub finished_at: i64,
-}
+/// 运行记录就是通用任务队列里的一条任务。
+///
+/// 保留别名是因为升级、计划任务、Docker 构建等调用点历史上都以 `AppstoreRun`
+/// 引用它；字段与查询能力见 [`crate::zap::task::Task`]。
+pub type AppstoreRun = crate::zap::task::Task;
 
 /// AppStore 根目录（与 zap.db 同级的 appstore/）
 pub fn appstore_dir() -> PathBuf {
@@ -64,19 +71,12 @@ pub fn logs_dir() -> PathBuf {
 }
 
 pub fn log_path_for(run_id: &str) -> String {
-    logs_dir()
-        .join(format!("run-{run_id}.log"))
-        .to_string_lossy()
-        .into_owned()
+    crate::zap::task::log_path_in(&logs_dir(), run_id)
 }
 
+/// 生成任务号（与通用队列同源：同一个号既是 `task_id`，也是传给 zapexec 的 `run_id`）。
 pub fn generate_run_id() -> String {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let rand_part: u64 = rand::random();
-    format!("{millis:x}{rand_part:x}")
+    crate::zap::task::new_id()
 }
 
 /// 登记一条运行记录（status=running）。
@@ -93,20 +93,20 @@ pub async fn register_run_with_key(
     log_path: &str,
     job_key: &str,
 ) -> Result<(), ZapError> {
-    let now = chrono::Utc::now().timestamp();
-    let pool = db::get_db_pool().await;
-    sqlx::query(
-        "INSERT INTO appstore_runs (run_id, action, pkg, username, status, exit_code, log_path, job_key, started_at, finished_at) \
-         VALUES (?, ?, ?, ?, 'running', -1, ?, ?, ?, 0)",
-    )
-    .bind(run_id)
-    .bind(action)
-    .bind(pkg)
-    .bind(username)
-    .bind(log_path)
-    .bind(job_key)
-    .bind(now)
-    .execute(pool)
+    crate::zap::task::enqueue(crate::zap::task::NewTask {
+        task_id: run_id.to_string(),
+        kind: KIND.to_string(),
+        action: action.to_string(),
+        pkg: pkg.to_string(),
+        username: username.to_string(),
+        title: String::new(),
+        log_path: log_path.to_string(),
+        job_key: job_key.to_string(),
+        // AppStore 的安装 / 升级不做全局互斥（同一时刻只允许一个编译的任务
+        // 由调用方显式传 group_key 控制，见 docker_build 等后续接入点）
+        group_key: String::new(),
+        group_limit: 0,
+    })
     .await?;
     // 裁剪在后台跑，不拖慢本次触发；无归属的运行只受全表上限约束
     if !job_key.is_empty() {
@@ -127,24 +127,62 @@ pub async fn register_run(
     register_run_with_key(run_id, action, pkg, username, log_path, "").await
 }
 
+/// 登记一条**编译型**运行记录（安装 / 升级）：同一时刻全局只允许一个。
+///
+/// 两步判定：先用组内活跃数快速失败（含排队中的，避免并发提交一起挤进来），
+/// 登记后若发现自己是排队的（并发窗口里被抢先），撤掉这条并给出同样的提示。
+pub async fn register_compile_run(
+    run_id: &str,
+    action: &str,
+    pkg: &str,
+    username: &str,
+    log_path: &str,
+) -> Result<(), ZapError> {
+    if crate::zap::task::active_in_group(COMPILE_GROUP).await >= 1 {
+        return Err(ZapError::New(
+            -1,
+            "已有编译任务在进行中，请等它结束后再试".to_string(),
+        ));
+    }
+    let t = crate::zap::task::enqueue(crate::zap::task::NewTask {
+        task_id: run_id.to_string(),
+        kind: KIND.to_string(),
+        action: action.to_string(),
+        pkg: pkg.to_string(),
+        username: username.to_string(),
+        title: format!("{action} {pkg}"),
+        log_path: log_path.to_string(),
+        job_key: String::new(),
+        group_key: COMPILE_GROUP.to_string(),
+        group_limit: 1,
+    })
+    .await?;
+    if t.status != crate::zap::task::STATUS_RUNNING {
+        let _ = crate::zap::task::delete(&t.task_id).await;
+        return Err(ZapError::New(
+            -1,
+            "已有编译任务在进行中，请等它结束后再试".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// 列出某个定时任务最近的运行记录（新的在前）。
 pub async fn list_runs_by_key(job_key: &str, limit: i64) -> Result<Vec<AppstoreRun>, sqlx::Error> {
-    let pool = db::get_db_pool().await;
-    let limit = limit.clamp(1, 200);
-    sqlx::query_as::<_, AppstoreRun>(
-        "SELECT * FROM appstore_runs WHERE job_key = ? ORDER BY started_at DESC, id DESC LIMIT ?",
-    )
-    .bind(job_key)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
+    let filter = crate::zap::task::Filter {
+        job_key: Some(job_key.to_string()),
+        ..Default::default()
+    };
+    Ok(crate::zap::task::list(filter, 1, limit.clamp(1, 200))
+        .await?
+        .0)
 }
 
 /// 清空某个定时任务的全部运行历史（记录 + 日志 + 快照），返回删除条数。
 pub async fn delete_runs_by_key(job_key: &str) -> Result<i64, sqlx::Error> {
     let pool = db::get_db_pool().await;
     let rows = sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT id, run_id, log_path FROM appstore_runs WHERE job_key = ?",
+        "SELECT id, task_id, log_path FROM task_queue WHERE job_key = ?",
     )
     .bind(job_key)
     .fetch_all(pool)
@@ -153,7 +191,7 @@ pub async fn delete_runs_by_key(job_key: &str) -> Result<i64, sqlx::Error> {
     for (_, run_id, log_path) in &rows {
         remove_run_artifacts(run_id, log_path);
     }
-    sqlx::query("DELETE FROM appstore_runs WHERE job_key = ?")
+    sqlx::query("DELETE FROM task_queue WHERE job_key = ?")
         .bind(job_key)
         .execute(pool)
         .await?;
@@ -175,7 +213,7 @@ async fn prune_keep_recent(scope: Option<&str>, keep: i64) {
     let rows = match scope {
         Some(key) => {
             sqlx::query_as::<_, (i64, String, String)>(
-                "SELECT id, run_id, log_path FROM appstore_runs \
+                "SELECT id, task_id, log_path FROM task_queue \
                  WHERE job_key = ? ORDER BY started_at DESC, id DESC LIMIT -1 OFFSET ?",
             )
             .bind(key)
@@ -185,7 +223,7 @@ async fn prune_keep_recent(scope: Option<&str>, keep: i64) {
         }
         None => {
             sqlx::query_as::<_, (i64, String, String)>(
-                "SELECT id, run_id, log_path FROM appstore_runs \
+                "SELECT id, task_id, log_path FROM task_queue \
                  ORDER BY started_at DESC, id DESC LIMIT -1 OFFSET ?",
             )
             .bind(keep)
@@ -211,8 +249,8 @@ async fn prune_keep_recent(scope: Option<&str>, keep: i64) {
     let deleted = match scope {
         Some(key) => {
             sqlx::query(
-                "DELETE FROM appstore_runs WHERE id IN (\
-                 SELECT id FROM appstore_runs WHERE job_key = ? \
+                "DELETE FROM task_queue WHERE id IN (\
+                 SELECT id FROM task_queue WHERE job_key = ? \
                  ORDER BY started_at DESC, id DESC LIMIT -1 OFFSET ?)",
             )
             .bind(key)
@@ -222,8 +260,8 @@ async fn prune_keep_recent(scope: Option<&str>, keep: i64) {
         }
         None => {
             sqlx::query(
-                "DELETE FROM appstore_runs WHERE id IN (\
-                 SELECT id FROM appstore_runs \
+                "DELETE FROM task_queue WHERE id IN (\
+                 SELECT id FROM task_queue \
                  ORDER BY started_at DESC, id DESC LIMIT -1 OFFSET ?)",
             )
             .bind(keep)
@@ -257,43 +295,16 @@ fn remove_run_artifacts(run_id: &str, log_path: &str) {
 }
 
 pub async fn finish_run(run_id: &str, status: &str, exit_code: i64) {
-    let now = chrono::Utc::now().timestamp();
-    let pool = db::get_db_pool().await;
-    let _ = sqlx::query(
-        "UPDATE appstore_runs SET status = ?, exit_code = ?, finished_at = ? WHERE run_id = ?",
-    )
-    .bind(status)
-    .bind(exit_code)
-    .bind(now)
-    .bind(run_id)
-    .execute(pool)
-    .await;
+    // 返回值是"同组下一个待放行任务"：AppStore 未设并发组，忽略
+    let _ = crate::zap::task::finish(run_id, status, exit_code).await;
 }
 
 pub async fn get_run(run_id: &str) -> Result<Option<AppstoreRun>, sqlx::Error> {
-    let pool = db::get_db_pool().await;
-    sqlx::query_as::<_, AppstoreRun>("SELECT * FROM appstore_runs WHERE run_id = ?")
-        .bind(run_id)
-        .fetch_optional(pool)
-        .await
+    crate::zap::task::get(run_id).await
 }
 
 pub async fn list_runs(page: i64, page_size: i64) -> Result<(Vec<AppstoreRun>, i64), sqlx::Error> {
-    let pool = db::get_db_pool().await;
-    let page = page.max(1);
-    let page_size = page_size.clamp(1, 100);
-    let offset = (page - 1) * page_size;
-    let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM appstore_runs")
-        .fetch_one(pool)
-        .await?;
-    let rows = sqlx::query_as::<_, AppstoreRun>(
-        "SELECT * FROM appstore_runs ORDER BY id DESC LIMIT ? OFFSET ?",
-    )
-    .bind(page_size)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
-    Ok((rows, total))
+    crate::zap::task::list(Default::default(), page, page_size).await
 }
 
 // ── 运行记录归属 / 可见性 ─────────────────────────────────
@@ -306,37 +317,7 @@ pub async fn ensure_run_access(
     claims: &jwt::Claims,
     run_id: &str,
 ) -> Result<AppstoreRun, ZapError> {
-    let run = get_run(run_id)
-        .await?
-        .ok_or_else(|| ZapError::New(-1, "任务不存在".to_string()))?;
-    if !run_user_visible(claims, &run.username).await? {
-        return Err(ZapError::New(
-            -1,
-            "无权访问该任务：运行日志按归属用户隔离".to_string(),
-        ));
-    }
-    Ok(run)
-}
-
-/// `username` 是否落在 claims 的可见范围内（与站点 / 证书归属同一套规则）。
-async fn run_user_visible(claims: &jwt::Claims, username: &str) -> Result<bool, ZapError> {
-    if jwt::is_admin(claims) {
-        return Ok(true);
-    }
-    if username == claims.sub {
-        return Ok(true);
-    }
-    if jwt::is_reseller(claims) {
-        let pool = db::get_db_pool().await;
-        let (cnt,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM user WHERE username = ? AND owner_id = ?")
-                .bind(username)
-                .bind(claims.id as i64)
-                .fetch_one(pool)
-                .await?;
-        return Ok(cnt > 0);
-    }
-    Ok(false)
+    crate::zap::task::ensure_access(claims, run_id).await
 }
 
 /// 按可见范围分页列出运行记录：非管理员只看得到自己（reseller 含名下客户）的记录。
@@ -345,48 +326,7 @@ pub async fn list_runs_for(
     page: i64,
     page_size: i64,
 ) -> Result<(Vec<AppstoreRun>, i64), sqlx::Error> {
-    if jwt::is_admin(claims) {
-        return list_runs(page, page_size).await;
-    }
-
-    let pool = db::get_db_pool().await;
-    let page = page.max(1);
-    let page_size = page_size.clamp(1, 100);
-    let offset = (page - 1) * page_size;
-
-    if jwt::is_reseller(claims) {
-        let scope = "username = ? OR username IN (SELECT username FROM user WHERE owner_id = ?)";
-        let (total,): (i64,) =
-            sqlx::query_as(&format!("SELECT COUNT(*) FROM appstore_runs WHERE {scope}"))
-                .bind(&claims.sub)
-                .bind(claims.id as i64)
-                .fetch_one(pool)
-                .await?;
-        let rows = sqlx::query_as::<_, AppstoreRun>(&format!(
-            "SELECT * FROM appstore_runs WHERE {scope} ORDER BY id DESC LIMIT ? OFFSET ?"
-        ))
-        .bind(&claims.sub)
-        .bind(claims.id as i64)
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(pool)
-        .await?;
-        return Ok((rows, total));
-    }
-
-    let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM appstore_runs WHERE username = ?")
-        .bind(&claims.sub)
-        .fetch_one(pool)
-        .await?;
-    let rows = sqlx::query_as::<_, AppstoreRun>(
-        "SELECT * FROM appstore_runs WHERE username = ? ORDER BY id DESC LIMIT ? OFFSET ?",
-    )
-    .bind(&claims.sub)
-    .bind(page_size)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
-    Ok((rows, total))
+    crate::zap::task::list_for(claims, Default::default(), page, page_size).await
 }
 
 #[cfg(test)]
@@ -412,42 +352,23 @@ mod tests {
         let admin = claims("admin", "admin");
         let alice = claims("alice", "user");
 
-        assert!(run_user_visible(&admin, "alice").await.unwrap());
-        assert!(run_user_visible(&alice, "alice").await.unwrap());
-        assert!(!run_user_visible(&alice, "bob").await.unwrap());
+        assert!(
+            crate::zap::task::user_visible(&admin, "alice")
+                .await
+                .unwrap()
+        );
+        assert!(
+            crate::zap::task::user_visible(&alice, "alice")
+                .await
+                .unwrap()
+        );
+        assert!(!crate::zap::task::user_visible(&alice, "bob").await.unwrap());
     }
 }
 
 /// 后台监控日志直到出现 `__ZAP_DONE__ <code>`，随后更新运行状态。
 pub fn watch_log(run_id: String, log_path: String) {
-    tokio::spawn(async move {
-        let interval = std::time::Duration::from_millis(500);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
-        loop {
-            match read_done_marker(&log_path).await {
-                Some(code) => {
-                    let status = if code == 0 { "success" } else { "failed" };
-                    finish_run(&run_id, status, code).await;
-                    break;
-                }
-                None => {
-                    if std::time::Instant::now() > deadline {
-                        finish_run(&run_id, "failed", -2).await;
-                        break;
-                    }
-                    tokio::time::sleep(interval).await;
-                }
-            }
-        }
-    });
-}
-
-/// 从日志末尾探测完成标记，返回退出码。
-async fn read_done_marker(log_path: &str) -> Option<i64> {
-    let content = tokio::fs::read_to_string(log_path).await.ok()?;
-    let tail = content.rsplit(DONE_MARKER).next()?.trim();
-    let code: i64 = tail.split_whitespace().next()?.parse().ok()?;
-    Some(code)
+    crate::zap::task::watch_log(run_id, log_path, WATCH_TIMEOUT_SECS);
 }
 
 /// 读取日志 offset 之后的内容，同时返回是否已完成。
@@ -455,26 +376,12 @@ pub async fn read_log(
     log_path: &str,
     offset: u64,
 ) -> Result<(String, Option<i64>, bool), ZapError> {
-    let content = match tokio::fs::read_to_string(log_path).await {
-        Ok(c) => c,
-        // 日志文件尚未生成（后台任务刚启动的竞态窗口），视为空日志，
-        // 由调用方（WebSocket / HTTP 轮询）继续等待而非直接失败。
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.into()),
-    };
-    let bytes = content.as_bytes();
-    let start = (offset as usize).min(bytes.len());
-    let text = String::from_utf8_lossy(&bytes[start..]).to_string();
-    let done = read_done_marker(log_path).await;
-    Ok((text, done, done.is_some()))
+    crate::zap::task::read_log(log_path, offset).await
 }
 
 /// 去掉日志尾部完成标记，供最终展示。
 pub fn strip_done_marker(content: &str) -> String {
-    match content.rfind(DONE_MARKER) {
-        Some(idx) => content[..idx].trim_end().to_string(),
-        None => content.to_string(),
-    }
+    crate::zap::task::strip_done_marker(content)
 }
 
 // ── 本地目录扫描（包列表 / 已安装列表）──────────────────────

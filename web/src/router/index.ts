@@ -113,6 +113,12 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/system/update/index.vue'),
         meta: { title: '系统更新', icon: 'material-symbols:refresh', affix: true },
       },
+      {
+        path: 'tasks',
+        name: 'SystemTasks',
+        component: () => import('@/views/system/tasks/index.vue'),
+        meta: { title: '任务队列', icon: 'material-symbols:view-list' },
+      },
     ],
   },
   // 文件管理（Layout 包裹 + 一级直链）

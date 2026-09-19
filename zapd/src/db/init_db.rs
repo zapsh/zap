@@ -25,8 +25,8 @@ pub async fn init_schema() {
     init_login_attempts_table().await;
     init_hourly_stats_tables().await;
     crate::routers::ssh_terminal::init_table().await;
-    // AppStore: run records table + menu
-    init_appstore_runs_table().await;
+    // 通用任务队列（应用商店安装 / Docker 构建 / 备份 / 升级 / 计划任务都登记在这里）
+    init_task_queue_table().await;
     // IP 池管理表
     init_ip_pool_table().await;
     // 用户站点管理表
@@ -96,6 +96,14 @@ async fn migrate_add_columns() {
     ensure_column("user", "perm_deny", "TEXT NOT NULL DEFAULT ''").await;
     // user：只读账号（共享可见但不可改）
     ensure_column("user", "read_only", "INTEGER NOT NULL DEFAULT 0").await;
+    // task_queue：由 appstore_runs 改名而来的旧库缺这些通用队列列
+    ensure_column("task_queue", "kind", "TEXT NOT NULL DEFAULT 'appstore'").await;
+    ensure_column("task_queue", "group_key", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("task_queue", "group_limit", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("task_queue", "title", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("task_queue", "progress", "INTEGER NOT NULL DEFAULT -1").await;
+    ensure_column("task_queue", "control", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("task_queue", "updated_at", "INTEGER NOT NULL DEFAULT 0").await;
 }
 
 // ── user ───────────────────────────────────────────────────
@@ -370,6 +378,25 @@ async fn sync_added_menus() {
     let _ = sqlx::query(
         "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
          SELECT r.id, 171 FROM roles r WHERE r.role_key = 'admin'",
+    )
+    .execute(pool)
+    .await;
+
+    // 任务队列：管理员的全局任务视角（应用商店安装 / Docker 构建 / 备份 / 升级 /
+    // 计划任务的运行记录都汇总在这里），挂在「系统设置」下。
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO menus
+            (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+         SELECT 29, 2, 'tasks', 'tasks', 'system/tasks/index', 'menu', '任务队列',
+                'material-symbols:view-list', 0, 'admin', 6, 1,
+                strftime('%s','now'), strftime('%s','now')
+         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 2)",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+         SELECT r.id, 29 FROM roles r WHERE r.role_key = 'admin'",
     )
     .execute(pool)
     .await;
@@ -935,28 +962,79 @@ async fn init_hourly_stats_tables() {
 
 // ── appstore ────────────────────────────────────────────────
 
-async fn init_appstore_runs_table() {
-    if table_exists("appstore_runs").await {
+/// 通用任务队列表 `task_queue`。
+///
+/// 这张表最早只服务应用商店的安装任务（旧名 `appstore_runs`），现在 Docker 构建、
+/// 家目录备份、系统升级、计划任务都在往里登记，因此表名与用途对齐为 `task_queue`。
+///
+/// **旧库迁移**：`appstore_runs` 原地 `RENAME`（数据、主键、索引一并保留），
+/// 再靠 `migrate_add_columns()` 把新增列补上，所以存量面板升级后历史记录不会丢。
+async fn init_task_queue_table() {
+    if table_exists("appstore_runs").await && !table_exists("task_queue").await {
+        match get_db_pool()
+            .await
+            .execute("ALTER TABLE appstore_runs RENAME TO task_queue")
+            .await
+        {
+            Ok(_) => println!("任务队列表已迁移: appstore_runs -> task_queue"),
+            Err(e) => eprintln!("任务队列表迁移失败（保留旧表）: {e}"),
+        }
+    }
+    if table_exists("task_queue").await {
+        // 改表名不改列名：旧库的 `run_id` 列要一起跟着改成 `task_id`，
+        // 否则新旧库的字段对不上，内核只能写两套 SQL。
+        if column_exists("task_queue", "run_id").await
+            && !column_exists("task_queue", "task_id").await
+        {
+            let renamed = get_db_pool()
+                .await
+                .execute("ALTER TABLE task_queue RENAME COLUMN run_id TO task_id")
+                .await;
+            match renamed {
+                Ok(_) => println!("任务队列字段已迁移: run_id -> task_id"),
+                Err(e) => eprintln!("任务队列字段迁移失败: {e}"),
+            }
+        }
         return;
     }
     let sql = r#"
-    CREATE TABLE appstore_runs (
+    CREATE TABLE task_queue (
         id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        run_id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL UNIQUE,
+        -- kind：任务大类（appstore / docker / backup / system / cron / crontab / site），
+        --   管理页按它分组展示；action 是类内的具体动作（install / image_build / ...）
+        kind TEXT NOT NULL DEFAULT 'appstore',
         action TEXT NOT NULL DEFAULT '',
+        -- pkg：任务对象（包名 / 镜像名 / 脚本路径 / 备份目标），由各 kind 自行解释
         pkg TEXT NOT NULL DEFAULT '',
         username TEXT NOT NULL DEFAULT '',
+        -- status：pending（排队等并发槽）/ running / success / failed / canceled
         status TEXT NOT NULL DEFAULT 'running',
         exit_code INTEGER NOT NULL DEFAULT -1,
         log_path TEXT NOT NULL DEFAULT '',
-        -- 任务归属键："cron:<id>"（计划任务）| "crontab:<username>:<id>"（用户计划任务）；
-        -- 空串表示非任务触发（如手动安装）。改表结构直接改这里，不做旧库补列兼容。
+        -- 归属键：同一次触发（如某个计划任务）的多次运行串在一起，
+        --   "cron:<username>:<id>" | "crontab:<username>:<id>" | "docker-build:<username>"；
+        --   空串表示手动触发。改表结构直接改这里，新增列靠 ensure_column 补。
         job_key TEXT NOT NULL DEFAULT '',
+        -- 并发互斥组 + 组内并行上限：group_key 相同且 group_limit>0 时，
+        --   组内同时处于 pending/running 的任务不得超过 group_limit
+        --   （如应用商店编译全局只允许 1 个：group_key='appstore:compile', limit=1）。
+        --   超出上限的登记为 pending，由调度器在前一个结束后放行。0 = 不限制。
+        group_key TEXT NOT NULL DEFAULT '',
+        group_limit INTEGER NOT NULL DEFAULT 0,
+        -- 管理页展示用：人类可读标题与进度（0-100，-1 = 不适用）
+        title TEXT NOT NULL DEFAULT '',
+        progress INTEGER NOT NULL DEFAULT -1,
+        -- control：控制指令（''=无 / 'cancel'=请求取消 / 'pause'=请求暂停），
+        --   由管理页写入，执行侧（zapexec）读取并执行，执行后清空
+        control TEXT NOT NULL DEFAULT '',
         started_at INTEGER NOT NULL DEFAULT 0,
-        finished_at INTEGER NOT NULL DEFAULT 0
+        finished_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
     );
-    CREATE INDEX idx_appstore_runs_started ON appstore_runs(started_at);
-    CREATE INDEX idx_appstore_runs_job ON appstore_runs(job_key, started_at);
+    CREATE INDEX idx_task_queue_started ON task_queue(started_at);
+    CREATE INDEX idx_task_queue_job ON task_queue(job_key, started_at);
+    CREATE INDEX idx_task_queue_group ON task_queue(group_key, status);
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }
@@ -1264,4 +1342,18 @@ async fn table_exists(table_name: &str) -> bool {
             .fetch_one(pool)
             .await;
     result.is_ok()
+}
+
+/// 列是否存在（`pragma_table_info` 查表结构，用于幂等改名 / 补列）。
+async fn column_exists(table: &str, column: &str) -> bool {
+    if !table_exists(table).await {
+        return false;
+    }
+    let pool = get_db_pool().await;
+    sqlx::query_scalar::<_, bool>("SELECT COUNT(*) > 0 FROM pragma_table_info(?) WHERE name = ?")
+        .bind(table)
+        .bind(column)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false)
 }

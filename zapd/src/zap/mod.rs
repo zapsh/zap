@@ -22,6 +22,7 @@ pub mod notify;
 pub mod script_cron;
 pub mod server_env;
 pub mod system_info;
+pub mod task;
 pub mod totp;
 pub mod types;
 pub mod update_config;

@@ -390,16 +390,7 @@ pub async fn image_build(
 
     let run_id = ast::generate_run_id();
     let log = docker_build::log_path(&username, &run_id);
-    let pkg = tags.first().cloned().unwrap_or_default();
-    ast::register_run_with_key(
-        &run_id,
-        docker_build::RUN_ACTION,
-        &pkg,
-        &username,
-        &log,
-        &docker_build::job_key(&username),
-    )
-    .await?;
+    docker_build::register_build_run(&run_id, &tags, &username, &log).await?;
 
     let resp = crate::zapexec::call(Request::DockerImageBuild {
         run_id: run_id.clone(),

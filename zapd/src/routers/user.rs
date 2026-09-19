@@ -1574,34 +1574,9 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// zapexec 在任务结束时追加的完成标记：`__ZAP_DONE__ <exit_code>`。
-async fn read_done_marker(log: &str) -> Option<i64> {
-    let content = tokio::fs::read_to_string(log).await.ok()?;
-    content.lines().rev().find_map(|line| {
-        line.trim()
-            .strip_prefix("__ZAP_DONE__ ")?
-            .trim()
-            .parse::<i64>()
-            .ok()
-    })
-}
-
-/// 后台盯住日志文件，出现完成标记（或超时）即落定运行记录状态。
+/// 后台盯住日志文件，出现完成标记（或超时）即落定任务状态：复用通用队列的监控。
 fn watch_home_backup(run_id: String, log: String) {
-    tokio::spawn(async move {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
-        loop {
-            if let Some(code) = read_done_marker(&log).await {
-                ast::finish_run(&run_id, if code == 0 { "success" } else { "failed" }, code).await;
-                break;
-            }
-            if tokio::time::Instant::now() > deadline {
-                ast::finish_run(&run_id, "failed", -1).await;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-    });
+    crate::zap::task::watch_log(run_id, log, 24 * 3600);
 }
 
 /// POST /system/user/backup-home
@@ -1657,14 +1632,19 @@ pub async fn backup_home(
 
     let run_id = ast::generate_run_id();
     let log = user_cron::log_path(&target, &run_id);
-    ast::register_run_with_key(
-        &run_id,
-        "home-backup",
-        "home-backup",
-        &target,
-        &log,
-        &backup_run_key(&target),
-    )
+    // 备份登记为 backup 大类：任务队列按 kind 分组，管理页一眼能区分
+    let _ = crate::zap::task::enqueue(crate::zap::task::NewTask {
+        task_id: run_id.clone(),
+        kind: crate::zap::task::KIND_BACKUP.to_string(),
+        action: "home-backup".to_string(),
+        pkg: "home-backup".to_string(),
+        username: target.clone(),
+        title: format!("备份家目录 {target}"),
+        log_path: log.clone(),
+        job_key: backup_run_key(&target),
+        group_key: String::new(),
+        group_limit: 0,
+    })
     .await?;
 
     let resp = crate::zapexec::call(zap_proto::types::Request::CronRun {

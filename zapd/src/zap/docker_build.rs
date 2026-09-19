@@ -4,9 +4,9 @@
 //!
 //! - 日志：`{data}/users/<username>/docker-build-logs/run-<run_id>.log`
 //!   （zapexec 只允许写 `data/users/` 之下、且以 `.log` 结尾的路径）
-//! - 运行记录：登记进 `appstore_runs`，`job_key = docker-build:<username>`，
-//!   于是 `/appstore/runs` 能看到自己的构建历史、`/appstore/ws/{run_id}` 能流式看日志
-//!   （该端点已带「同一用户 / admin 才可读」的校验）
+//! - 运行记录：登记进通用任务队列 `task_queue`（kind=docker），
+//!   `job_key = docker-build:<username>`，于是任务列表能看到自己的构建历史、
+//!   `/appstore/ws/{run_id}` 能流式看日志（该端点已带「同一用户 / admin 才可读」的校验）
 //!
 //! 两条多用户边界，都在这里收敛：
 //!
@@ -19,7 +19,6 @@
 use std::path::PathBuf;
 
 use crate::zap::ZapError;
-use crate::zap::appstore as ast;
 use crate::zap::jwt::{ValidatedClaims, is_admin};
 use crate::zap::user_cron;
 
@@ -41,7 +40,7 @@ pub fn log_path(username: &str, run_id: &str) -> String {
         .into_owned()
 }
 
-/// 运行记录在 `appstore_runs` 中的归属键：同一用户的构建历史串在一起。
+/// 运行记录在 `task_queue` 中的归属键：同一用户的构建历史串在一起。
 pub fn job_key(username: &str) -> String {
     format!("docker-build:{username}")
 }
@@ -224,39 +223,38 @@ fn canonical_file(path: &str, what: &str) -> Result<PathBuf, ZapError> {
     Ok(real)
 }
 
-/// 解析日志尾部的完成标记：`__ZAP_DONE__ <exit_code>`。
-fn read_done_marker(log: &str) -> Option<i64> {
-    let content = std::fs::read_to_string(log).ok()?;
-    content.lines().rev().find_map(|line| {
-        line.trim()
-            .strip_prefix("__ZAP_DONE__ ")?
-            .trim()
-            .parse::<i64>()
-            .ok()
+/// 登记一次镜像构建任务：走通用队列的 `docker` 大类，管理页按 kind 分组展示。
+pub async fn register_build_run(
+    run_id: &str,
+    tags: &[String],
+    username: &str,
+    log_path: &str,
+) -> Result<(), ZapError> {
+    let pkg = tags.first().cloned().unwrap_or_default();
+    crate::zap::task::enqueue(crate::zap::task::NewTask {
+        task_id: run_id.to_string(),
+        kind: crate::zap::task::KIND_DOCKER.to_string(),
+        action: RUN_ACTION.to_string(),
+        pkg: pkg.clone(),
+        username: username.to_string(),
+        title: format!("构建镜像 {pkg}"),
+        log_path: log_path.to_string(),
+        job_key: job_key(username),
+        // 构建不做全局互斥：不同用户的构建互不干扰，同一用户并发提交也由自己负责
+        group_key: String::new(),
+        group_limit: 0,
     })
+    .await?;
+    Ok(())
 }
 
-/// 后台兜底：盯住日志，出现完成标记就落定运行记录状态。
+/// 后台兜底：盯住日志，出现完成标记就落定任务状态。
 ///
-/// `/appstore/ws/{run_id}` 在流结束时也会更新状态，但那要求「有人正在看日志」；
-/// 用户点完构建就关掉抽屉、或直接刷新页面的场景需要这里兜底，
-/// 否则记录会一直停在 `running`。
+/// 流式日志接口在连接断开时也会收尾，但那要求「有人正在看日志」；用户点完构建就
+/// 关掉抽屉、或直接刷新页面的场景需要这里兜底，否则记录会一直停在 `running`。
+/// 构建可能很久（拉基础镜像 + 编译），给足 6 小时再判超时。
 pub fn watch_run(run_id: String, log: String) {
-    tokio::spawn(async move {
-        // 构建可能很久（拉基础镜像 + 编译），给足 6 小时再判超时
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6 * 3600);
-        loop {
-            if let Some(code) = read_done_marker(&log) {
-                ast::finish_run(&run_id, if code == 0 { "success" } else { "failed" }, code).await;
-                break;
-            }
-            if tokio::time::Instant::now() > deadline {
-                ast::finish_run(&run_id, "failed", -1).await;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
-    });
+    crate::zap::task::watch_log(run_id, log, 6 * 3600);
 }
 
 #[cfg(test)]

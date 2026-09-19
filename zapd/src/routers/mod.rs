@@ -73,6 +73,7 @@ pub mod system_service_conf;
 pub mod system_update;
 pub mod system_user_menu;
 pub mod system_zap;
+pub mod task;
 pub mod user;
 pub mod user_cron;
 pub mod webapps;
@@ -633,7 +634,16 @@ fn api_routers() -> Router {
         .route("/appstore/run/retry", post(appstore::run_retry))
         .route("/appstore/runs", get(appstore::runs))
         .route("/appstore/log/{run_id}", get(appstore::log))
-        .route("/appstore/ws/{run_id}", get(appstore::ws_log))
+        .route("/appstore/ws/{run_id}", get(task::ws_log))
+        // 通用任务队列（应用商店安装 / Docker 构建 / 备份 / 升级 / 计划任务共用一张表）
+        .route("/task/list", get(task::list))
+        .route("/task/stats", get(task::stats))
+        .route("/task/detail", get(task::detail))
+        .route("/task/log/{task_id}", get(task::log))
+        .route("/task/ws/{task_id}", get(task::ws_log))
+        .route("/task/cancel", post(task::cancel))
+        .route("/task/pause", post(task::pause))
+        .route("/task/resume", post(task::resume))
         // 站点管理（admin 全部 / reseller 所属客户 / user 自己的站点）
         .route("/site/list", get(site::site_list))
         .route("/site/users", get(site::site_users))

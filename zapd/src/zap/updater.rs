@@ -15,12 +15,12 @@ use sha2::Digest;
 use zap_proto::Request;
 
 /// 升级启动阶段互斥（防止手动/自动并发触发）；
-/// 一旦 zapupgrade 已在独立 unit 中运行即释放（运行状态由 appstore_runs 记录）。
+/// 一旦 zapupgrade 已在独立 unit 中运行即释放（运行状态由 task_queue 记录）。
 pub static UPGRADING: AtomicBool = AtomicBool::new(false);
 
 /// 随发行包分发的二进制清单（与 build.sh / zapupgrade 保持一致）。
 pub const UPGRADE_BINS: [&str; 4] = ["zapd", "zapexec", "zapctl", "zapupgrade"];
-/// appstore_runs 中系统升级运行的 action 标识。
+/// task_queue 中系统升级运行的 action 标识。
 pub const ACTION_ZAP_UPDATE: &str = "zap_update";
 /// 默认更新渠道（与 build.sh 上传目录一致）。
 pub const DEFAULT_CHANNEL: &str = update_config::DEFAULT_CHANNEL;
@@ -311,11 +311,11 @@ async fn launch_update_inner(username: &str) -> Result<LaunchInfo, ZapError> {
     })
 }
 
-/// 当前正在进行的系统升级（appstore_runs 中 action=zap_update 且 status=running 的最新一条）。
+/// 当前正在进行的系统升级（`task_queue` 中 action=zap_update 且 status=running 的最新一条）。
 pub async fn running_run() -> Option<ast::AppstoreRun> {
     let pool = db::get_db_pool().await;
     sqlx::query_as::<_, ast::AppstoreRun>(
-        "SELECT * FROM appstore_runs WHERE action = ? AND status = 'running' ORDER BY id DESC LIMIT 1",
+        "SELECT * FROM task_queue WHERE action = ? AND status = 'running' ORDER BY id DESC LIMIT 1",
     )
     .bind(ACTION_ZAP_UPDATE)
     .fetch_optional(pool)
@@ -328,16 +328,14 @@ pub async fn running_run() -> Option<ast::AppstoreRun> {
 pub async fn recent_update_runs(limit: i64) -> Vec<Value> {
     let pool = db::get_db_pool().await;
     let rows = sqlx::query_as::<_, ast::AppstoreRun>(
-        "SELECT * FROM appstore_runs WHERE action = ? ORDER BY id DESC LIMIT ?",
+        "SELECT * FROM task_queue WHERE action = ? ORDER BY id DESC LIMIT ?",
     )
     .bind(ACTION_ZAP_UPDATE)
     .bind(limit)
     .fetch_all(pool)
     .await
     .unwrap_or_default();
-    rows.into_iter()
-        .filter_map(|r| serde_json::to_value(r).ok())
-        .collect()
+    rows.into_iter().map(|r| r.to_json()).collect()
 }
 
 /// 惰性收尾：zapd 若在升级中重启，watch_log 任务会丢失，
@@ -345,7 +343,7 @@ pub async fn recent_update_runs(limit: i64) -> Vec<Value> {
 pub async fn finalize_stale_updates() {
     let pool = db::get_db_pool().await;
     let Ok(rows) = sqlx::query_as::<_, (String, String)>(
-        "SELECT run_id, log_path FROM appstore_runs WHERE action = ? AND status = 'running'",
+        "SELECT task_id, log_path FROM task_queue WHERE action = ? AND status = 'running'",
     )
     .bind(ACTION_ZAP_UPDATE)
     .fetch_all(pool)

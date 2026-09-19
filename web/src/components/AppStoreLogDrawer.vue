@@ -118,7 +118,6 @@ import { useI18n } from 'vue-i18n'
 import { InfoFilled } from '@/icons'
 import {
   stopScript,
-  wsLogUrl,
   getRunFiles,
   readRunFile,
   writeRunFile,
@@ -126,6 +125,7 @@ import {
   type RunFileItem,
 } from '@/api/appstore'
 import { useUserStore } from '@/stores/user'
+import { taskWsUrl } from '@/api/task'
 import CodeEditor from '@/components/CodeEditor.vue'
 
 /**
@@ -231,7 +231,8 @@ function connect() {
   nextTick(() => initTerminal())
   if (!term) return
 
-  ws = new WebSocket(wsLogUrl(runId.value))
+  // 日志流走通用任务队列端点（/appstore/ws 与它同一实现，仅作兼容路径保留）
+  ws = new WebSocket(taskWsUrl(runId.value))
   ws.onopen = () => {
     statusText.value = t('runLogDrawer.statusRunning')
   }

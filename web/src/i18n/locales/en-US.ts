@@ -2349,6 +2349,62 @@ const enUS: Messages = {
 
   /** Crontab */
   /** Container management (Docker Desktop style single page) */
+  // Generic task queue: appstore installs / Docker builds / backups / upgrades / cron
+  task: {
+    title: 'Task Queue',
+    subtitle: 'Runs of appstore, Docker builds, backups, upgrades and scheduled jobs',
+    refresh: 'Refresh',
+    autoRefresh: 'Auto refresh',
+    search: 'Search',
+    reset: 'Reset',
+    filterKind: 'Kind',
+    filterStatus: 'Status',
+    filterUser: 'Username',
+    keyword: 'Title / target / task id',
+    total: '{n} total',
+    empty: 'No tasks',
+    loadFailed: 'Failed to load tasks',
+    opFailed: 'Operation failed',
+    logTitle: 'Task log',
+    confirmCancel: 'Cancel this task? Output already produced will not be rolled back.',
+    cancelRequested: 'Cancellation requested',
+    pauseRequested: 'Pause requested',
+    resumeRequested: 'Resume requested',
+    paused: 'Paused',
+    columns: {
+      task: 'Task',
+      kind: 'Kind',
+      action: 'Action',
+      user: 'User',
+      status: 'Status',
+      started: 'Started',
+      duration: 'Duration',
+      ops: 'Actions',
+    },
+    status: {
+      pending: 'Queued',
+      running: 'Running',
+      success: 'Success',
+      failed: 'Failed',
+      canceled: 'Canceled',
+    },
+    kind: {
+      appstore: 'App Store',
+      docker: 'Docker',
+      backup: 'Backup',
+      system: 'System',
+      cron: 'Cron',
+      crontab: 'User cron',
+      site: 'Site',
+    },
+    ops: {
+      log: 'Log',
+      cancel: 'Cancel',
+      pause: 'Pause',
+      resume: 'Resume',
+    },
+  },
+
   docker: {
     title: 'Containers',
     settings: 'Settings',
@@ -2372,6 +2428,7 @@ const enUS: Messages = {
       networks: 'Networks',
       compose: 'Compose',
       events: 'Events',
+      tasks: 'Tasks',
     },
     common: {
       name: 'Name',

@@ -4,7 +4,7 @@
 //! - **存储**：每个管理员一份 `{data}/users/<username>/cron-jobs.yaml`
 //!   （YAML 为唯一事实来源，任务归属创建者，与用户 crontab 同构）
 //! - **执行**：调度器每分钟扫描一次 enabled 任务，命中即触发脚本运行。
-//!   执行链路复用 AppStore 脚本运行：`appstore_runs` 记录 + 日志监控
+//!   执行链路复用 AppStore 脚本运行：`task_queue` 记录 + 日志监控
 //!   （脚本以 `SCRIPT_OWNER`（admin）的脚本目录运行于 zapexec，
 //!   日志见运行记录 / 实时日志）。
 
@@ -232,7 +232,7 @@ pub fn cron_file_path(username: &str) -> PathBuf {
     users_dir().join(username).join(FILE_NAME)
 }
 
-/// 运行记录在 `appstore_runs` 表中的任务归属键。
+/// 运行记录在 `task_queue` 表中的任务归属键。
 ///
 /// 带上用户名是因为任务按管理员隔离（`cron-jobs.yaml` 各存一份），
 /// 不同管理员的任务 id 不保证全局唯一。
@@ -477,7 +477,7 @@ pub async fn clear_dangling_last_run_ids() {
                 continue;
             }
             let alive: bool =
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM appstore_runs WHERE run_id = ?)")
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?)")
                     .bind(&job.last_run_id)
                     .fetch_one(pool)
                     .await

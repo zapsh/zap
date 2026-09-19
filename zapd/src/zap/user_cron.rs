@@ -161,7 +161,7 @@ pub fn log_path(username: &str, run_id: &str) -> String {
         .into_owned()
 }
 
-/// 运行记录在 `appstore_runs` 表中的任务归属键。
+/// 运行记录在 `task_queue` 表中的任务归属键。
 ///
 /// 带上用户名是因为 crontab 按用户隔离（`crontab.yaml` 各存一份），
 /// 不同用户的任务 id 不保证全局唯一。
@@ -767,7 +767,7 @@ pub async fn purge_orphan_logs(username: &str) -> Result<i64, ZapError> {
             continue;
         };
         let known: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM appstore_runs WHERE run_id = ?)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?)")
                 .bind(run_id)
                 .fetch_one(pool)
                 .await

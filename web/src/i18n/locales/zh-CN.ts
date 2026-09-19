@@ -2326,6 +2326,62 @@ export default {
 
   /** 计划任务（定时任务） */
   /** 容器管理（Docker Desktop 式单页） */
+  // 通用任务队列：应用商店安装 / Docker 构建 / 备份 / 升级 / 计划任务共用
+  task: {
+    title: '任务队列',
+    subtitle: '应用商店、Docker 构建、备份、升级与计划任务的运行记录',
+    refresh: '刷新',
+    autoRefresh: '自动刷新',
+    search: '查询',
+    reset: '重置',
+    filterKind: '任务类型',
+    filterStatus: '状态',
+    filterUser: '用户名',
+    keyword: '标题 / 对象 / 任务号',
+    total: '共 {n} 条',
+    empty: '暂无任务',
+    loadFailed: '任务列表加载失败',
+    opFailed: '操作失败',
+    logTitle: '任务日志',
+    confirmCancel: '确定取消这个任务？已输出的内容不会回滚。',
+    cancelRequested: '已请求取消',
+    pauseRequested: '已请求暂停',
+    resumeRequested: '已请求继续',
+    paused: '暂停中',
+    columns: {
+      task: '任务',
+      kind: '类型',
+      action: '动作',
+      user: '用户',
+      status: '状态',
+      started: '开始时间',
+      duration: '耗时',
+      ops: '操作',
+    },
+    status: {
+      pending: '排队中',
+      running: '进行中',
+      success: '成功',
+      failed: '失败',
+      canceled: '已取消',
+    },
+    kind: {
+      appstore: '应用商店',
+      docker: 'Docker',
+      backup: '备份',
+      system: '系统',
+      cron: '计划任务',
+      crontab: '用户计划任务',
+      site: '站点',
+    },
+    ops: {
+      log: '日志',
+      cancel: '取消',
+      pause: '暂停',
+      resume: '继续',
+    },
+  },
+
   docker: {
     title: '容器管理',
     settings: '设置',
@@ -2349,6 +2405,7 @@ export default {
       networks: '网络',
       compose: 'Compose',
       events: '事件流',
+      tasks: '任务',
     },
     common: {
       name: '名称',

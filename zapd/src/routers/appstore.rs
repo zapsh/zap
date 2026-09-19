@@ -4,21 +4,13 @@ use std::{collections::BTreeMap, net::SocketAddr};
 
 use axum::{
     Json,
-    extract::{
-        Extension, Path, Query,
-        ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
-    },
-    http::StatusCode,
-    response::IntoResponse,
+    extract::{Extension, Path, Query},
 };
-use futures_util::SinkExt;
-use jsonwebtoken::{DecodingKey, Validation, decode};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
-    config,
     routers::system_env,
     zap::{
         ZapError, ZapJsonResult, appstore as ast, audit,
@@ -344,7 +336,8 @@ pub async fn install(
     };
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
-    ast::register_run(
+    // 编译型任务走并发组：全局同一时刻只允许一个编译在跑
+    ast::register_compile_run(
         &run_id,
         "install",
         &payload.pkg_path,
@@ -499,7 +492,8 @@ pub async fn upgrade(
     };
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
-    ast::register_run(
+    // 升级同样是编译型任务，受同一把"全局只允许一个"的锁约束
+    ast::register_compile_run(
         &run_id,
         "upgrade",
         &payload.pkg_path,
@@ -939,22 +933,8 @@ pub async fn runs(claims: ValidatedClaims, Query(q): Query<RunsQuery>) -> ZapJso
     // 运行日志按归属用户隔离：非管理员只看得到自己（reseller 含名下客户）的记录
     let (rows, total) =
         ast::list_runs_for(&claims, q.page.unwrap_or(1), q.page_size.unwrap_or(20)).await?;
-    let items: Vec<Value> = rows
-        .iter()
-        .map(|r| {
-            json!({
-                "run_id": r.run_id,
-                "action": r.action,
-                "pkg": r.pkg,
-                "username": r.username,
-                "status": r.status,
-                "exit_code": r.exit_code,
-                "log_path": r.log_path,
-                "started_at": r.started_at,
-                "finished_at": r.finished_at,
-            })
-        })
-        .collect();
+    // to_json() 同时给出 task_id 与 run_id：老前端读 run_id，新任务页读 task_id
+    let items: Vec<Value> = rows.iter().map(|r| r.to_json()).collect();
     Ok(Json(
         json!({ "code": 0, "message": "OK", "data": { "items": items, "total": total } }),
     ))
@@ -980,52 +960,8 @@ pub async fn log(
     })))
 }
 
-// ── WebSocket 实时日志 ──────────────────────────────────────
-
-pub async fn ws_log(
-    ws: WebSocketUpgrade,
-    Path(run_id): Path<String>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
-    let Some(token) = params.get("token").cloned() else {
-        return unauthorized("Missing token");
-    };
-    // 克隆密钥后立即释放锁：RwLockReadGuard 非 Send，跨 await 会让 handler future 非 Send
-    let secure_key = config::get_config().read().unwrap().jwt.jwt_secure.clone();
-    let claims = match decode::<Claims>(
-        &token,
-        &DecodingKey::from_secret(secure_key.as_bytes()),
-        &Validation::default(),
-    ) {
-        Ok(data) => data.claims,
-        Err(_) => return unauthorized("Invalid token"),
-    };
-    // 归属校验：实时日志同样按归属用户隔离，不能凭 run_id 串看他人安装输出。
-    // 校验失败也照常升级，再回一条可读的 error 帧：直接回 403 时浏览器只会触发
-    // onerror，前端拿不到任何原因，只能显示含糊的「连接错误」。
-    let access = ast::ensure_run_access(&claims, &run_id).await;
-    ws.on_upgrade(move |mut socket| async move {
-        match access {
-            Ok(_) => handle_ws_log(socket, run_id).await,
-            Err(e) => {
-                let _ = socket
-                    .send(Message::Text(Utf8Bytes::from(
-                        json!({ "type": "error", "message": e.to_string() }).to_string(),
-                    )))
-                    .await;
-                let _ = socket.close().await;
-            }
-        }
-    })
-}
-
-/// WebSocket 握手失败的统一响应（升级前返回，前端表现为连接失败）。
-fn unauthorized(message: &str) -> axum::response::Response {
-    axum::response::Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .body(axum::body::Body::from(message.to_string()))
-        .unwrap()
-}
+// WebSocket 实时日志已收进通用任务队列路由 `/task/ws/{task_id}`
+// （`/appstore/ws/{run_id}` 作为兼容路径指向同一实现，见 routers/mod.rs）。
 
 // ── 已安装应用（实例管理）───────────────────────────────────
 
@@ -1081,65 +1017,4 @@ pub async fn instance_action(
     Ok(Json(
         json!({ "code": 0, "message": "OK", "data": resp.data }),
     ))
-}
-
-async fn handle_ws_log(mut socket: WebSocket, run_id: String) {
-    info!("AppStore log WebSocket connected: {run_id}");
-    let Some(run) = ast::get_run(&run_id).await.unwrap_or(None) else {
-        let _ = socket
-            .send(Message::Text(Utf8Bytes::from(
-                json!({ "type": "error", "message": "任务不存在" }).to_string(),
-            )))
-            .await;
-        return;
-    };
-    let log_path = run.log_path;
-    let mut offset: u64 = 0;
-
-    loop {
-        match ast::read_log(&log_path, offset).await {
-            Ok((text, exit_code, done)) => {
-                if !text.is_empty() {
-                    // 去掉完成标记行，避免重复展示
-                    let clean = if done {
-                        ast::strip_done_marker(&text)
-                    } else {
-                        text.clone()
-                    };
-                    if !clean.is_empty()
-                        && socket
-                            .send(Message::Text(Utf8Bytes::from(
-                                json!({ "type": "log", "data": clean }).to_string(),
-                            )))
-                            .await
-                            .is_err()
-                    {
-                        return;
-                    }
-                    offset += text.len() as u64;
-                }
-                if done {
-                    let status = if exit_code == Some(0) {
-                        "success"
-                    } else {
-                        "failed"
-                    };
-                    let _ = socket
-                        .send(Message::Text(Utf8Bytes::from(
-                            json!({ "type": "done", "status": status, "exit_code": exit_code })
-                                .to_string(),
-                        )))
-                        .await;
-                    let _ = socket.close().await;
-                    return;
-                }
-            }
-            Err(e) => {
-                error!("read appstore log {run_id} failed: {e}");
-                let _ = socket.close().await;
-                return;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
 }
