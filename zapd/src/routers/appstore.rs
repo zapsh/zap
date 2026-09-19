@@ -888,18 +888,50 @@ pub async fn run_retry(
         .ok_or_else(|| ZapError::New(-1, "原任务不存在，无法重跑".to_string()))?;
     let new_run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&new_run_id);
-    ast::register_run(&new_run_id, &run.action, &run.pkg, &claims.sub, &log_path).await?;
-
-    let resp = zapexec::call(Request::AppstoreRunRetry {
+    let req = Request::AppstoreRunRetry {
         run_id: payload.run_id.clone(),
         new_run_id: new_run_id.clone(),
-    })
-    .await?;
-    if resp.code != 0 {
-        ast::finish_run(&new_run_id, "failed", resp.code as i64).await;
-        return Err(ZapError::New(resp.code, resp.message));
-    }
-    ast::watch_log(new_run_id.clone(), log_path.clone());
+    };
+    let req_json = serde_json::to_string(&req).unwrap_or_default();
+
+    // 重跑安装 / 升级本质上还是一次编译：走同一个并发组，前面有编译在跑就排队，
+    // 由调度器在前一个结束后放行（启动参数随记录落库）。
+    let compile_task = if matches!(run.action.as_str(), "install" | "upgrade") {
+        Some(
+            ast::enqueue_compile(
+                &new_run_id,
+                &run.action,
+                &run.pkg,
+                &claims.sub,
+                &log_path,
+                &req_json,
+            )
+            .await?,
+        )
+    } else {
+        // 脚本 / 卸载等不做互斥，登记后直接下发
+        ast::register_run(&new_run_id, &run.action, &run.pkg, &claims.sub, &log_path).await?;
+        None
+    };
+
+    let (queued, position) = match &compile_task {
+        // 拿到编译槽位：立即启动
+        Some(t) if t.status == task::STATUS_RUNNING => {
+            task::launch(t).await?;
+            (false, 0)
+        }
+        // 前面还有编译：留给调度器，返回排队位次给前端提示
+        Some(t) => (true, task::queue_position(t).await),
+        None => {
+            let resp = zapexec::call(req).await?;
+            if resp.code != 0 {
+                ast::finish_run(&new_run_id, "failed", resp.code as i64).await;
+                return Err(ZapError::New(resp.code, resp.message));
+            }
+            ast::watch_log(new_run_id.clone(), log_path.clone());
+            (false, 0)
+        }
+    };
     audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
@@ -918,7 +950,9 @@ pub async fn run_retry(
         "data": {
             "run_id": new_run_id,
             "log": log_path,
-            "original_run_id": payload.run_id
+            "original_run_id": payload.run_id,
+            "queued": queued,
+            "position": position
         }
     })))
 }

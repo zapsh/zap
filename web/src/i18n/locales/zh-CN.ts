@@ -2350,6 +2350,14 @@ export default {
     paused: '暂停中',
     /** 排队任务在列表里的位次提示 */
     queuePosition: '第 {n} 位',
+    retryConfirm: '确定重跑这个任务？将复用它的运行快照，以新的任务号重新执行。',
+    retryStarted: '重跑已启动',
+    retryFailed: '重跑失败',
+    retrySuffix: '（重跑）',
+    /** 重跑的是编译任务且前面还有编译时，只入队不立刻执行 */
+    retryQueued: '重跑已加入编译队列（第 {n} 位）',
+    /** 没有运行快照（如非应用商店任务）时重跑/编辑的提示 */
+    noSnapshot: '该任务没有可编辑的运行快照',
     columns: {
       task: '任务',
       kind: '类型',
@@ -2381,6 +2389,10 @@ export default {
       cancel: '取消',
       pause: '暂停',
       resume: '继续',
+      /** 编辑失败任务的运行快照脚本（仅应用商店任务） */
+      edit: '编辑',
+      /** 复用运行快照重跑（仅应用商店任务） */
+      retry: '重跑',
     },
   },
 

@@ -2373,6 +2373,14 @@ const enUS: Messages = {
     paused: 'Paused',
     /** Position hint for queued tasks in the list */
     queuePosition: 'position {n}',
+    retryConfirm: 'Retry this task? Its run snapshot will be reused under a new task id.',
+    retryStarted: 'Retry started',
+    retryFailed: 'Retry failed',
+    retrySuffix: ' (retry)',
+    /** The retry is a build and another build is running: only queued */
+    retryQueued: 'Retry queued for the build slot (position {n})',
+    /** Shown when a task has no editable run snapshot (e.g. non-app-store tasks) */
+    noSnapshot: 'This task has no editable run snapshot',
     columns: {
       task: 'Task',
       kind: 'Kind',
@@ -2404,6 +2412,10 @@ const enUS: Messages = {
       cancel: 'Cancel',
       pause: 'Pause',
       resume: 'Resume',
+      /** Edit the run snapshot scripts of a failed task (app store tasks only) */
+      edit: 'Edit',
+      /** Re-run from the run snapshot (app store tasks only) */
+      retry: 'Retry',
     },
   },
 

@@ -336,7 +336,7 @@
 
     <!-- 任务队列抽屉：应用商店自己的任务（安装 / 升级 / 脚本 / 仓库同步） -->
     <el-drawer v-model="queueVisible" :title="t('appstore.queueTitle')" size="72%" destroy-on-close>
-      <TaskQueuePanel ref="queuePanelRef" kind="appstore" />
+      <TaskQueuePanel ref="queuePanelRef" kind="appstore" @changed="onQueueChanged" />
     </el-drawer>
 
     <!-- 安装/升级选项对话框 -->
@@ -1070,6 +1070,12 @@ function openQueue() {
   queueVisible.value = true
   queuePanelRef.value?.load()
   loadQueueCount()
+}
+
+/** 队列里发生写操作（重跑 / 改脚本后重跑）→ 角标与运行记录一起刷新 */
+function onQueueChanged() {
+  loadQueueCount()
+  loadRuns()
 }
 
 // ── 后台任务完成跟踪:终态提示 + 自动刷新列表 ───────────────

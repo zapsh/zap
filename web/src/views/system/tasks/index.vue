@@ -92,11 +92,26 @@
       <el-table-column :label="t('task.columns.duration')" width="100">
         <template #default="{ row }">{{ fmtDuration(row) }}</template>
       </el-table-column>
-      <el-table-column :label="t('task.columns.ops')" width="220" fixed="right">
+      <el-table-column :label="t('task.columns.ops')" width="290" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openLog(row)">
             {{ t('task.ops.log') }}
           </el-button>
+          <!-- 应用商店任务失败后：改快照脚本再重跑（管理员） -->
+          <template v-if="row.kind === 'appstore' && canOperate(row)">
+            <el-button link type="warning" size="small" @click="openEditor(row)">
+              {{ t('task.ops.edit') }}
+            </el-button>
+            <el-button
+              link
+              type="danger"
+              size="small"
+              :loading="retryId === row.task_id"
+              @click="retry(row)"
+            >
+              {{ t('task.ops.retry') }}
+            </el-button>
+          </template>
           <el-button
             link
             type="danger"
@@ -134,7 +149,7 @@
       />
     </div>
 
-    <AppStoreLogDrawer ref="drawerRef" simple />
+    <AppStoreLogDrawer ref="drawerRef" :simple="drawerSimple" @retried="loadAll" />
   </div>
 </template>
 
@@ -144,6 +159,7 @@ import { useI18n } from 'vue-i18n'
 import { List, Refresh, Search } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
+import { useAppstoreRunOps } from '@/composables/useAppstoreRunOps'
 import {
   cancelTask,
   getTasks,
@@ -157,6 +173,10 @@ import {
 
 const { t } = useI18n()
 const drawerRef = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
+/** 抽屉的默认模式：只有应用商店任务带可编辑快照与重跑，其余只展示日志 */
+const drawerSimple = ref(true)
+
+const { retryId, canOperate, openEditor, retry } = useAppstoreRunOps(drawerRef, loadAll)
 
 const rows = ref<TaskItem[]>([])
 const loading = ref(false)
@@ -297,6 +317,7 @@ function pickStatus(key: keyof TaskStats) {
 }
 
 function openLog(row: TaskItem) {
+  drawerSimple.value = row.kind !== 'appstore'
   drawerRef.value?.openDrawer(row.task_id, row.title || t('task.logTitle'))
 }
 

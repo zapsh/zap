@@ -57,11 +57,26 @@
       <el-table-column :label="t('task.columns.started')" width="170">
         <template #default="{ row }">{{ fmtTime(row.started_at) }}</template>
       </el-table-column>
-      <el-table-column :label="t('task.columns.ops')" width="150" fixed="right">
+      <el-table-column :label="t('task.columns.ops')" width="230" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openLog(row)">
             {{ t('task.ops.log') }}
           </el-button>
+          <!-- 应用商店任务失败后：改快照脚本再重跑（管理员） -->
+          <template v-if="isAppstore && canOperate(row)">
+            <el-button link type="warning" size="small" @click="openEditor(row)">
+              {{ t('task.ops.edit') }}
+            </el-button>
+            <el-button
+              link
+              type="danger"
+              size="small"
+              :loading="retryId === row.task_id"
+              @click="retry(row)"
+            >
+              {{ t('task.ops.retry') }}
+            </el-button>
+          </template>
           <el-button
             link
             type="danger"
@@ -90,18 +105,19 @@
       />
     </div>
 
-    <!-- 日志：队列里的任务未必有可停止句柄，用 simple 模式只展示日志 -->
-    <AppStoreLogDrawer ref="drawerRef" simple />
+    <!-- 日志：非应用商店的任务未必有可停止/编辑的句柄，用 simple 模式只展示日志 -->
+    <AppStoreLogDrawer ref="drawerRef" :simple="!isAppstore" @retried="onRetried" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Refresh } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
+import { useAppstoreRunOps } from '@/composables/useAppstoreRunOps'
 import { cancelTask, getTasks, type TaskItem, type TaskStatus } from '@/api/task'
 
 const props = withDefaults(
@@ -112,13 +128,25 @@ const props = withDefaults(
   }>(),
   { kind: '', refreshToken: 0 },
 )
-const emit = defineEmits<{ (e: 'count', n: number): void }>()
+const emit = defineEmits<{ (e: 'count', n: number): void; (e: 'changed'): void }>()
 
 const { t } = useI18n()
 const userStore = useUserStore()
 const isAdmin = !!userStore.roles?.includes('admin')
 
 const drawerRef = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
+
+const isAppstore = computed(() => props.kind === 'appstore')
+// 应用商店任务的「编辑快照 / 重跑」：改完脚本要刷新列表，重跑会新增一条任务
+const { retryId, canOperate, openEditor, retry } = useAppstoreRunOps(drawerRef, () => {
+  load()
+  emit('changed')
+})
+/** 抽屉里改脚本后重跑：任务号变了，列表要跟上 */
+function onRetried() {
+  load()
+  emit('changed')
+}
 
 const rows = ref<TaskItem[]>([])
 const loading = ref(false)

@@ -136,6 +136,9 @@ import CodeEditor from '@/components/CodeEditor.vue'
  */
 const props = withDefaults(defineProps<{ simple?: boolean }>(), { simple: false })
 
+/** `retried`：抽屉内重跑成功后带出新任务号，好让列表刷新 */
+const emit = defineEmits<{ (e: 'retried', runId: string): void }>()
+
 const { t } = useI18n()
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.roles.includes('admin'))
@@ -187,7 +190,42 @@ function openDrawer(id: string, title?: string) {
   if (reopen) connect()
 }
 
-defineExpose({ openDrawer })
+/**
+ * 供任务列表行直接打开「编辑脚本」：先探测该运行有没有快照，有就打开编辑对话框。
+ *
+ * 抽屉本身也会顺带连上日志，便于对照报错改脚本；从列表走这条路，
+ * 用户不必先打开日志、等它跑完才知道能不能编辑。
+ */
+async function openEditorFor(id: string, title?: string) {
+  if (!id) {
+    ElMessage.warning(t('runLogDrawer.noRunId'))
+    return
+  }
+  runId.value = id
+  if (title) drawerTitle.value = title
+  visible.value = true
+  probeLoading.value = true
+  try {
+    const resp = await getRunFiles(id)
+    files.value = resp.data?.files || []
+    probed.value = true
+    snapshotReady.value = true
+    if (!files.value.length) {
+      ElMessage.warning(t('runLogDrawer.noSnapshotHint'))
+      return
+    }
+    editorVisible.value = true
+    await openFile(files.value[0].path)
+  } catch (e: any) {
+    probed.value = true
+    snapshotReady.value = false
+    ElMessage.error(e?.message || t('runLogDrawer.loadFilesFailed'))
+  } finally {
+    probeLoading.value = false
+  }
+}
+
+defineExpose({ openDrawer, openEditorFor })
 
 function initTerminal() {
   if (!termRef.value) return
@@ -433,6 +471,12 @@ async function handleRetry() {
   retrying.value = true
   try {
     const resp = await retryRun(runId.value)
+    // 重跑安装/升级要等编译槽位：此时还没有新日志，留在原日志上提示即可
+    if (resp.data?.queued) {
+      ElMessage.success(t('task.retryQueued', { n: resp.data.position ?? 1 }))
+      emit('retried', resp.data?.run_id || '')
+      return
+    }
     ElMessage.success(t('runLogDrawer.retryStarted'))
     // 切换到新运行日志
     closeWs()
@@ -442,6 +486,7 @@ async function handleRetry() {
     fileContent.value = ''
     originalContent.value = ''
     connect()
+    emit('retried', runId.value)
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e.message || t('runLogDrawer.retryFailed'))
   } finally {
