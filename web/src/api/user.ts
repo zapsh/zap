@@ -177,6 +177,34 @@ export function deleteUser(id: number) {
   return http.post<ApiResponse>('/system/user/delete', { id })
 }
 
+// ── 用户级菜单例外 ─────────────────────────────────────────
+//
+// 在「角色 → 菜单」之外，单独给某个人加减侧边栏入口（表 user_menus）。
+// 只影响菜单渲染：看得见 ≠ 能改，操作权限仍由角色 / 附加权限点决定。
+
+export interface UserMenus {
+  user_id: number
+  /** 该用户已获得的额外菜单 id */
+  menu_ids: number[]
+  /** 当前操作者可授予的菜单 id（提交范围外的 id 会被后端丢弃） */
+  available_ids: number[]
+}
+
+/** 读取某用户的额外菜单，以及当前登录者可授予的范围 */
+export function getUserMenus(userId: number) {
+  return http.get<ApiResponse<UserMenus>>('/user/menus', {
+    params: { user_id: userId },
+  })
+}
+
+/** 全量覆盖某用户的额外菜单 */
+export function setUserMenus(userId: number, menuIds: number[]) {
+  return http.post<ApiResponse>('/user/menus/set', {
+    user_id: userId,
+    menu_ids: menuIds,
+  })
+}
+
 /** 修改当前用户密码 */
 export function changeMyPassword(newPassword: string) {
   return http.post<ApiResponse>('/system/user/update', { password: newPassword })

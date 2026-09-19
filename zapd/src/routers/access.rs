@@ -1902,6 +1902,19 @@ mod tests {
         assert_eq!(required_for("/system/fpm-specs/add"), Required::Admin);
     }
 
+    /// 用户级菜单例外（user_menus）挂在 `/user` 前缀下：
+    /// 父账号要在「团队成员」页给成员配菜单，普通用户必须能调用；
+    /// 越权由 handler 内的 owner 收敛拦，因此不挂权限点；
+    /// 写操作未登记 → 只读账号被兜底拦住。
+    #[test]
+    fn user_extra_menu_paths() {
+        assert_eq!(required_for("/user/menus"), Required::User);
+        assert_eq!(required_for("/user/menus/set"), Required::User);
+        assert_eq!(perm_key_for("/user/menus", &Method::GET), None);
+        assert_eq!(perm_key_for("/user/menus/set", &Method::POST), None);
+        assert!(!readonly_allows("/user/menus/set", &Method::POST));
+    }
+
     #[test]
     fn business_paths() {
         assert_eq!(required_for("/site/list"), Required::User);

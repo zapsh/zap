@@ -121,11 +121,22 @@ pub async fn role_add(
 
     match result {
         Ok(r) => {
+            let role_id = r.last_insert_rowid();
+            // 新角色默认只给「仪表盘」：登录后至少能进主页，其余保持 fail-closed。
+            // 个人中心（/profile）是前端 constant route，无需菜单授权。
+            // 动作级权限点仍为空 —— 看得见 ≠ 能改，需在「角色权限」里显式勾选。
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO role_menus (role_id, menu_id) \
+                 SELECT ?, id FROM menus WHERE name = 'dashboard' AND parent_id = 0 AND status = 1",
+            )
+            .bind(role_id)
+            .execute(pool)
+            .await;
             audit::log(
                 Some(&claims),
                 Some(client_addr.ip().to_string().as_str()),
                 "role_create",
-                &format!("id={}", r.last_insert_rowid()),
+                &format!("id={role_id}"),
                 &format!("name={}, key={}", payload.name, payload.role_key),
             )
             .await;

@@ -2,12 +2,13 @@ use axum::{Json, extract::Extension};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Sqlite;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use tracing::info;
 
 use crate::{
     db,
-    zap::{ZapError, ZapJsonResult, audit, jwt::ValidatedClaims},
+    zap::{ZapError, ZapJsonResult, audit, jwt, jwt::ValidatedClaims},
 };
 
 // ── types ──────────────────────────────────────────────────
@@ -84,19 +85,23 @@ pub struct MenuStatusPayload {
 
 // ── tree builder ───────────────────────────────────────────
 
-fn menu_to_tree_value(m: &MenuRow, children: Vec<Value>) -> Value {
+fn menu_to_tree_value(m: &MenuRow, children: Vec<Value>, explicit: bool) -> Value {
     let mut meta = json!({
         "title": m.title,
         "icon": m.icon,
         "affix": m.affix == 1,
     });
-    if m.hidden == 1 {
+    // 用户级显式授权的菜单绕开两道前端过滤：
+    // - hidden：既然管理员单独勾给了这个人，即便入口本身已隐藏（如迁走的「团队成员」）也对他显示；
+    // - roles：menus.roles 只是内置角色的静态标注，前端 filterAsyncRoutes 会据此二次过滤，
+    //   不下发才不会被自定义角色 / 经销商误杀（否则后端放行、前端照样不显示）。
+    if m.hidden == 1 && !explicit {
         meta["hidden"] = json!(true);
     }
     if m.keep_alive == 1 {
         meta["keepAlive"] = json!(true);
     }
-    if !m.roles.is_empty() {
+    if !explicit && !m.roles.is_empty() {
         meta["roles"] = json!(m.roles.split(',').map(|s| s.trim()).collect::<Vec<_>>());
     }
 
@@ -119,24 +124,33 @@ fn menu_to_tree_value(m: &MenuRow, children: Vec<Value>) -> Value {
     obj
 }
 
-fn build_menu_tree(rows: &[MenuRow], parent_id: i64) -> Vec<Value> {
+fn build_menu_tree(rows: &[MenuRow], parent_id: i64, extra: &HashSet<i64>) -> Vec<Value> {
     rows.iter()
         .filter(|r| r.parent_id == parent_id)
         .map(|r| {
-            let children = build_menu_tree(rows, r.id);
-            menu_to_tree_value(r, children)
+            let children = build_menu_tree(rows, r.id, extra);
+            menu_to_tree_value(r, children, extra.contains(&r.id))
         })
         .collect()
 }
 
-// ── handlers ───────────────────────────────────────────────
+/// 某人被「用户级例外」显式放行的菜单 id（见 `user_menus` 表）。
+pub async fn extra_menu_ids(uid: i64) -> HashSet<i64> {
+    let pool = db::get_db_pool().await;
+    sqlx::query_scalar::<_, i64>("SELECT menu_id FROM user_menus WHERE user_id = ?")
+        .bind(uid)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
 
-/// Get menu tree visible to the current user (for rendering sidebar)。
+/// 当前用户可见的菜单行：`status = 1` 且 （角色授权 ∪ 用户级例外），admin 恒为全量。
 ///
-/// - admin 恒返回全部启用的菜单；
-/// - 其他角色按「用户角色 key → roles.id → role_menus」动态授权过滤，
-///   角色管理里给角色勾选的菜单即在此生效（menus.roles 仅为内置角色的静态标注）。
-pub async fn get_menus_tree(claims: ValidatedClaims) -> ZapJsonResult {
+/// `claims.roles` 是逗号分隔的 role_key，先映射到 roles.id 再查 `role_menus`；
+/// 子菜单授权父不授权时，整棵子树在 `build_menu_tree` 里自然消失。
+pub async fn visible_menu_rows(claims: &jwt::Claims) -> Result<Vec<MenuRow>, sqlx::Error> {
     let pool = db::get_db_pool().await;
     let my_keys: Vec<&str> = claims
         .roles
@@ -146,39 +160,62 @@ pub async fn get_menus_tree(claims: ValidatedClaims) -> ZapJsonResult {
         .collect();
     let is_admin = my_keys.contains(&"admin");
 
-    let rows: Vec<MenuRow> = if is_admin {
-        sqlx::query_as("SELECT * FROM menus WHERE status = 1 ORDER BY sort_order, id")
+    if is_admin {
+        return sqlx::query_as("SELECT * FROM menus WHERE status = 1 ORDER BY sort_order, id")
             .fetch_all(pool)
-            .await?
-    } else if my_keys.is_empty() {
-        Vec::new()
-    } else {
-        // 角色 key → 角色 id
-        let mut qb = sqlx::QueryBuilder::<Sqlite>::new("SELECT id FROM roles WHERE role_key IN (");
-        let mut sep = qb.separated(", ");
-        for k in &my_keys {
-            sep.push_bind(*k);
-        }
-        qb.push(")");
-        let role_ids: Vec<(i64,)> = qb.build_query_as().fetch_all(pool).await?;
-        if role_ids.is_empty() {
-            Vec::new()
-        } else {
-            // 仅返回该角色被 role_menus 授权的菜单（子菜单授权父不授权时整棵子树自然消失）
-            let mut qb2 = sqlx::QueryBuilder::<Sqlite>::new(
-                "SELECT * FROM menus WHERE status = 1 AND id IN \
-                 (SELECT menu_id FROM role_menus WHERE role_id IN (",
-            );
-            let mut sep2 = qb2.separated(", ");
-            for (rid,) in &role_ids {
-                sep2.push_bind(*rid);
-            }
-            qb2.push(")) ORDER BY sort_order, id");
-            qb2.build_query_as::<MenuRow>().fetch_all(pool).await?
-        }
-    };
+            .await;
+    }
+    if my_keys.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    let tree = build_menu_tree(&rows, 0);
+    // 角色 key → 角色 id
+    let mut qb = sqlx::QueryBuilder::<Sqlite>::new("SELECT id FROM roles WHERE role_key IN (");
+    let mut sep = qb.separated(", ");
+    for k in &my_keys {
+        sep.push_bind(*k);
+    }
+    qb.push(")");
+    let role_ids: Vec<(i64,)> = qb.build_query_as().fetch_all(pool).await?;
+    if role_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 角色授予 ∪ 用户级例外
+    let extra = extra_menu_ids(claims.id as i64).await;
+    let mut qb2 = sqlx::QueryBuilder::<Sqlite>::new(
+        "SELECT * FROM menus WHERE status = 1 AND (id IN \
+         (SELECT menu_id FROM role_menus WHERE role_id IN (",
+    );
+    let mut sep2 = qb2.separated(", ");
+    for (rid,) in &role_ids {
+        sep2.push_bind(*rid);
+    }
+    qb2.push("))");
+    if !extra.is_empty() {
+        qb2.push(" OR id IN (");
+        let mut sep3 = qb2.separated(", ");
+        for mid in &extra {
+            sep3.push_bind(*mid);
+        }
+        qb2.push(")");
+    }
+    qb2.push(") ORDER BY sort_order, id");
+    qb2.build_query_as::<MenuRow>().fetch_all(pool).await
+}
+
+// ── handlers ───────────────────────────────────────────────
+
+/// Get menu tree visible to the current user (for rendering sidebar)。
+///
+/// - admin 恒返回全部启用的菜单；
+/// - 其他角色按「用户角色 key → roles.id → role_menus」动态授权过滤，
+///   角色管理里给角色勾选的菜单即在此生效（menus.roles 仅为内置角色的静态标注）；
+/// - 最后并上 **用户级例外**（`user_menus`），见 `visible_menu_rows`。
+pub async fn get_menus_tree(claims: ValidatedClaims) -> ZapJsonResult {
+    let rows = visible_menu_rows(&claims).await?;
+    let extra = extra_menu_ids(claims.id as i64).await;
+    let tree = build_menu_tree(&rows, 0, &extra);
     Ok(Json(json!({ "code": 0, "message": "ok", "data": tree })))
 }
 
@@ -189,7 +226,7 @@ pub async fn menu_list(_claims: ValidatedClaims) -> ZapJsonResult {
         .fetch_all(pool)
         .await?;
 
-    let tree = build_menu_tree(&rows, 0);
+    let tree = build_menu_tree(&rows, 0, &HashSet::new());
     Ok(Json(json!({ "code": 0, "message": "ok", "data": tree })))
 }
 
@@ -323,6 +360,13 @@ pub async fn menu_delete(
     Json(payload): Json<DeleteMenuPayload>,
 ) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
+    // 先记录子菜单 id：连同源菜单一起回收两条授权表的关联行，避免留下孤儿
+    let child_ids: Vec<i64> =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM menus WHERE parent_id = ?")
+            .bind(payload.id)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
     // Delete children first
     let _ = sqlx::query("DELETE FROM menus WHERE parent_id = ?")
         .bind(payload.id)
@@ -337,11 +381,17 @@ pub async fn menu_delete(
         return Err(ZapError::New(-1, "菜单不存在".to_string()));
     }
 
-    // Clean orphaned role_menus
-    let _ = sqlx::query("DELETE FROM role_menus WHERE menu_id = ?")
-        .bind(payload.id)
-        .execute(pool)
-        .await;
+    // Clean orphaned role_menus / user_menus（连同被一起删掉的子菜单）
+    for mid in child_ids.iter().chain(std::iter::once(&payload.id)) {
+        let _ = sqlx::query("DELETE FROM role_menus WHERE menu_id = ?")
+            .bind(*mid)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM user_menus WHERE menu_id = ?")
+            .bind(*mid)
+            .execute(pool)
+            .await;
+    }
 
     audit::log(
         Some(&claims),

@@ -54,13 +54,12 @@ export const usePermissionStore = defineStore('permission', {
       try {
         // 从后端获取菜单树
         const resp = await getMenuTree()
-        // 将菜单树转换为路由配置
-        let accessedRoutes = menuTreeToRoutes(resp.data)
-
-        // 如果不是管理员，需要根据角色过滤路由
-        if (!roles.includes('admin')) {
-          accessedRoutes = filterAsyncRoutes(accessedRoutes, roles)
-        }
+        // 将菜单树转换为路由配置。
+        //
+        // 后端已按「角色 → role_menus」＋「用户级例外 user_menus」精确返回该用户可见的菜单，
+        // 这里**不再**用 meta.roles 二次过滤：menus.roles 只是内置角色的静态标注，
+        // 会把管理员自建角色、user_menus 例外误杀（勾了菜单却看不到入口）。
+        const accessedRoutes = menuTreeToRoutes(resp.data)
 
         this.setRoutes(accessedRoutes)
         return accessedRoutes

@@ -1247,6 +1247,12 @@ async fn delete_user_inner(claims: &jwt::Claims, ip: &str, id: i64) -> ZapJsonRe
         return Err(ZapError::New(-1, "用户不存在".to_string()));
     }
 
+    // 用户级菜单例外随账号回收，避免留下无主行
+    let _ = sqlx::query("DELETE FROM user_menus WHERE user_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await;
+
     // 清理该用户的 SSL 证书：先解除站点 HTTPS 绑定引用，再删除证书，避免悬空
     let cert_ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM ssl_cert WHERE user_id = ?")
         .bind(id)

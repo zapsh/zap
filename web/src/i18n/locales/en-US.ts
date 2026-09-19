@@ -317,6 +317,9 @@ const enUS: Messages = {
     extraPermPlaceholder: 'Grant beyond role permissions (optional)',
     extraPermTip:
       'Additive only: permissions already granted by the role cannot be revoked here. Use for temporary grants.',
+    extraMenu: 'Extra Menus',
+    extraMenuTip:
+      'Sidebar entries granted beyond the role. Visibility only — actions still require the matching permission points (403 otherwise).',
 
     ownerSystem: 'System-owned',
     packageNone: 'No package',
@@ -410,6 +413,9 @@ const enUS: Messages = {
     readOnly: 'Read-only',
     readOnlyTip:
       'When enabled the member can only view: shared resources are visible but all create / update / delete actions are denied',
+    extraMenu: 'Extra Menus',
+    extraMenuTip:
+      'Sidebar entries beyond his role. Only menus visible in your own sidebar can be granted; visibility does not imply write access.',
     sshTip:
       'Members share your Linux account: their SSH / terminal actions are logged as your account and they can leave credentials in your home directory',
     deleteConfirm: 'Delete member "{name}"?',

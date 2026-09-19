@@ -15,6 +15,8 @@ pub async fn init_schema() {
     init_roles_table().await;
     init_menus_table().await;
     init_role_menus_table().await;
+    // 用户级菜单例外：给单个用户开小灶 / 收窄入口（仅渲染层）
+    init_user_menus_table().await;
     // 老库补入口：新增菜单对已存在的库同样生效（见函数注释）
     sync_added_menus().await;
     // 动作级权限点（请求级鉴权依据；role_menus 仅用于菜单渲染）
@@ -761,6 +763,35 @@ async fn init_role_menus_table() {
     INSERT INTO role_menus (role_id, menu_id) VALUES (4, 164);
     "#;
     let _ = get_db_pool().await.execute(sql).await;
+}
+
+// ── user_menus（用户级菜单例外）────────────────────────────
+
+/// 单用户的菜单例外：在「角色 → role_menus」之外，单独给某个人放行的侧边栏入口。
+///
+/// 与 `role_menus` 同构，只是作用域从「一类用户」收窄到「一个人」：给个别成员 /
+/// 客户开小灶（例如把隐藏入口只对他显示）时，不必为此新建一个角色。
+///
+/// **只影响菜单渲染**，不是请求级鉴权依据（安全边界仍在 `routers::access`）——
+/// 勾了菜单但缺 `*:view` / `*:edit` 权限点，页面照样会 403。
+async fn init_user_menus_table() {
+    let pool = get_db_pool().await;
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS user_menus (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        menu_id INTEGER NOT NULL,
+        created_at BIGINT,
+        UNIQUE(user_id, menu_id)
+    )
+    "#;
+    let _ = pool.execute(sql).await;
+    let _ = pool
+        .execute("CREATE INDEX IF NOT EXISTS idx_user_menus_user ON user_menus(user_id)")
+        .await;
+    let _ = pool
+        .execute("CREATE INDEX IF NOT EXISTS idx_user_menus_menu ON user_menus(menu_id)")
+        .await;
 }
 
 // ── role_permissions（动作级权限点）────────────────────────

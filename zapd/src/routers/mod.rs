@@ -71,6 +71,7 @@ pub mod system_nginx;
 pub mod system_role;
 pub mod system_service_conf;
 pub mod system_update;
+pub mod system_user_menu;
 pub mod system_zap;
 pub mod user;
 pub mod user_cron;
@@ -306,6 +307,12 @@ fn api_routers() -> Router {
         .route("/system/menus/update", post(system_menu::menu_update))
         .route("/system/menus/delete", post(system_menu::menu_delete))
         .route("/system/menus/status", post(system_menu::menu_status))
+        // 用户级菜单例外：给单个用户加减侧栏入口（仅渲染层，不是安全边界）。
+        // 挂在 `/user` 前缀下是为了复用 `("/user", Required::User)` 这条放行规则 ——
+        // 父账号要在「团队成员」页给成员配菜单，必须是普通用户也能调用
+        // （越权由 handler 内的 owner 收敛拦，与 `/user/team/*` 同一套路）。
+        .route("/user/menus", get(system_user_menu::user_menus_get))
+        .route("/user/menus/set", post(system_user_menu::user_menus_set))
         // Server config (admin only)
         .route("/system/config/time", get(system_config::get_time))
         .route("/system/config/time/sync", post(system_config::sync_time))

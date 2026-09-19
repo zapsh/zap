@@ -346,6 +346,9 @@ export default {
     extraPerm: '附加权限',
     extraPermPlaceholder: '在角色权限之外单独授予（可选）',
     extraPermTip: '只做加法：不能收回角色已授予的权限，建议仅用于临时授权',
+    extraMenu: '额外菜单',
+    extraMenuTip:
+      '在角色之外单独给该账号的侧边栏入口。只管显示 —— 能否操作仍取决于权限点（缺权限时会提示 403）',
 
     // 套餐
     ownerSystem: '系统直属',
@@ -437,6 +440,9 @@ export default {
     denyPermPlaceholder: '选择要从该成员收回的权限点（可选）',
     readOnly: '只读',
     readOnlyTip: '开启后该成员只能查看：共享可见但不能做任何修改（新增 / 修改 / 删除一律拒绝）',
+    extraMenu: '额外菜单',
+    extraMenuTip:
+      '在角色之外单独给该成员的侧边栏入口。只能勾选你自己侧边栏里已有的菜单；看得见 ≠ 能改，操作权限仍受上面的「收紧权限」约束',
     sshTip:
       '成员与你共用系统账号：其 SSH / 终端操作在系统层都记录为你的账号，且可在你的家目录留下凭据',
     deleteConfirm: '确认删除成员「{name}」？',

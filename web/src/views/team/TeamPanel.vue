@@ -159,6 +159,20 @@
           </el-select>
           <div class="form-tip">{{ t('team.inheritTip') }}</div>
         </el-form-item>
+        <!-- 额外菜单：父账号给该成员单独加装的入口（只能选自己看得见的菜单） -->
+        <el-form-item v-if="dialogType === 'edit'" :label="t('team.extraMenu')">
+          <el-tree
+            ref="menuTreeRef"
+            v-loading="menuTreeLoading"
+            :data="menuTreeData"
+            :props="menuTreeProps"
+            show-checkbox
+            node-key="id"
+            default-expand-all
+            class="menu-tree"
+          />
+          <div class="form-tip">{{ t('team.extraMenuTip') }}</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
@@ -171,7 +185,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Plus } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -181,12 +195,16 @@ import {
   createTeamMember,
   updateTeamMember,
   deleteTeamMember,
+  getUserMenus,
+  setUserMenus,
   type TeamMemberItem,
 } from '@/api/user'
 import { getPermissionCatalog, type PermGroupItem } from '@/api/role'
+import { getMenuList } from '@/api/menu'
 import { permGroupLabel, permKeyLabel } from '@/utils/perm'
-import { getLocale } from '@/i18n'
+import { getLocale, translateTitle } from '@/i18n'
 import { useUserStore } from '@/stores/user'
+import { disableUnavailable, type MenuNode } from '@/utils/menu-tree'
 
 const { t } = useI18n()
 const userStore = useUserStore()
@@ -223,6 +241,41 @@ async function loadPermCatalog() {
   } catch {
     // 拦截器已弹窗
   }
+}
+
+// ── 额外菜单（用户级例外，表 user_menus）──────────────────
+//
+// 父账号给成员单独加装入口；可选范围由后端收敛为「父账号自己看得见的菜单」。
+
+const menuTreeRef = ref()
+const menuTreeLoading = ref(false)
+const menuTreeData = ref<MenuNode[]>([])
+const menuTreeProps = {
+  children: 'children',
+  label: (data: any) => translateTitle(data?.meta?.title || data?.name || ''),
+}
+
+async function loadUserMenus(userId: number) {
+  menuTreeLoading.value = true
+  try {
+    const [listRes, mineRes] = await Promise.all([getMenuList(), getUserMenus(userId)])
+    menuTreeData.value = disableUnavailable(listRes.data ?? [], mineRes.data?.available_ids ?? [])
+    await nextTick()
+    menuTreeRef.value?.setCheckedKeys(mineRes.data?.menu_ids ?? [])
+  } catch {
+    // 加载失败保持空树：提交时会据此跳过，不会误清空已有授权
+    menuTreeData.value = []
+  } finally {
+    menuTreeLoading.value = false
+  }
+}
+
+/** 提交额外菜单（全量覆盖）：勾选 + 半选（父目录未勾选时子菜单不会出现在侧边栏） */
+async function saveUserMenus(userId: number) {
+  if (!menuTreeData.value.length) return
+  const keys: number[] = menuTreeRef.value?.getCheckedKeys() ?? []
+  const half: number[] = menuTreeRef.value?.getHalfCheckedKeys() ?? []
+  await setUserMenus(userId, [...keys, ...half])
 }
 
 // ── 表单 ──
@@ -273,6 +326,7 @@ function resetForm() {
   form.perm_deny = []
   form.read_only = false
   editingId.value = 0
+  menuTreeData.value = []
 }
 
 async function handleAdd() {
@@ -295,6 +349,8 @@ async function handleEdit(row: TeamMemberItem) {
   form.perm_deny = [...(row.perm_deny ?? [])]
   form.read_only = !!row.read_only
   dialogVisible.value = true
+  // 额外菜单异步加载，不阻塞弹窗打开
+  void loadUserMenus(row.id)
 }
 
 async function handleSubmit() {
@@ -328,6 +384,8 @@ async function handleSubmit() {
       }
       if (form.password) payload.password = form.password
       await updateTeamMember(payload as never)
+      // 额外菜单独立于成员资料，单独提交（树未加载成功时自动跳过）
+      await saveUserMenus(editingId.value)
       ElMessage.success(t('team.updateSuccess'))
     }
     dialogVisible.value = false
@@ -444,6 +502,16 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.5;
   color: var(--el-text-color-secondary);
+}
+
+/* 额外菜单树：限高滚动，菜单再多也不会撑破弹窗 */
+.menu-tree {
+  width: 100%;
+  max-height: 260px;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
 }
 
 .empty-tip {

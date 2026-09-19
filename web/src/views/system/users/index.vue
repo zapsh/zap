@@ -226,7 +226,7 @@
         <el-table-column :label="t('users.roles')" width="120">
           <template #default="{ row }">
             <el-tag v-for="r in row.roles" :key="r" size="small" style="margin-right: 4px">
-              {{ roleLabel(r) }}
+              {{ roleName(r) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -327,7 +327,7 @@
         <el-form-item v-if="isAdmin" :label="t('users.roles')" prop="roles">
           <el-select v-model="form.roles" :disabled="editingId === ROOT_USER_ID">
             <el-option
-              v-for="opt in roleOptions()"
+              v-for="opt in roleOptions"
               :key="opt.value"
               :label="opt.label"
               :value="opt.value"
@@ -356,6 +356,20 @@
             </el-option-group>
           </el-select>
           <div class="form-tip">{{ t('users.extraPermTip') }}</div>
+        </el-form-item>
+        <!-- 额外菜单：用户级例外（表 user_menus），在角色之外单独开 / 收侧边栏入口 -->
+        <el-form-item v-if="dialogType === 'edit'" :label="t('users.extraMenu')">
+          <el-tree
+            ref="menuTreeRef"
+            v-loading="menuTreeLoading"
+            :data="menuTreeData"
+            :props="menuTreeProps"
+            show-checkbox
+            node-key="id"
+            default-expand-all
+            class="menu-tree"
+          />
+          <div class="form-tip">{{ t('users.extraMenuTip') }}</div>
         </el-form-item>
         <!-- 用户类型：成员共享归属用户的家目录与 Linux 系统账号，权限默认继承父账号 -->
         <el-form-item v-if="dialogType === 'add'" :label="t('users.kind')">
@@ -482,7 +496,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ArrowRight, Plus } from '@/icons'
@@ -494,18 +508,28 @@ import {
   updateUser,
   deleteUser,
   getResellerList,
+  getUserMenus,
+  setUserMenus,
   type UserListItem,
   type ResellerItem,
   type CreateUserPayload,
   type UpdateUserPayload,
 } from '@/api/user'
-import { roleLabel, roleOptions } from '@/utils/role'
+// 角色下拉与列表回显：内置角色走语言包，管理员自建角色显示其保存的名称
+import { roleLabel, isBuiltinRole } from '@/utils/role'
 import { useUserStore } from '@/stores/user'
 import { getFpmSpecs, type FpmSpecItem } from '@/api/serverEnv'
 import { getPackageList, type PackageItem } from '@/api/package'
-import { getPermissionCatalog, type PermGroupItem } from '@/api/role'
+import {
+  getRoleList,
+  type RoleItem,
+  getPermissionCatalog,
+  type PermGroupItem,
+} from '@/api/role'
+import { getMenuList } from '@/api/menu'
 import { permGroupLabel, permKeyLabel } from '@/utils/perm'
-import { getLocale } from '@/i18n'
+import { getLocale, translateTitle } from '@/i18n'
+import { disableUnavailable, type MenuNode } from '@/utils/menu-tree'
 
 const { t } = useI18n()
 
@@ -789,6 +813,68 @@ function resetSearch() {
   loadList()
 }
 
+// ── 角色列表（含管理员自建角色）────────────────────────────
+
+const roleList = ref<RoleItem[]>([])
+
+async function loadRoles() {
+  try {
+    const res = await getRoleList()
+    // 停用的角色不参与选择
+    roleList.value = (res.data ?? []).filter((r) => r.status === 1)
+  } catch {
+    // 拦截器已弹窗
+  }
+}
+
+/** 角色下拉：内置角色跟随语言包，自建角色显示管理员保存的名称 */
+const roleOptions = computed(() =>
+  roleList.value.map((r) => ({
+    value: r.role_key,
+    label: isBuiltinRole(r.role_key) ? roleLabel(r.role_key) : r.name,
+  })),
+)
+
+/** 列表回显：未知标识（角色已删除等）原样显示，避免出现空白标签 */
+function roleName(key: string): string {
+  if (isBuiltinRole(key)) return roleLabel(key)
+  return roleList.value.find((r) => r.role_key === key)?.name ?? key
+}
+
+// ── 额外菜单（用户级例外，表 user_menus）──────────────────
+
+const menuTreeRef = ref()
+const menuTreeLoading = ref(false)
+const menuTreeData = ref<MenuNode[]>([])
+const menuTreeProps = {
+  children: 'children',
+  label: (data: any) => translateTitle(data?.meta?.title || data?.name || ''),
+}
+
+/** 加载某用户的额外菜单；超出授权范围的节点置灰（范围由后端给出） */
+async function loadUserMenus(userId: number) {
+  menuTreeLoading.value = true
+  try {
+    const [listRes, mineRes] = await Promise.all([getMenuList(), getUserMenus(userId)])
+    menuTreeData.value = disableUnavailable(listRes.data ?? [], mineRes.data?.available_ids ?? [])
+    await nextTick()
+    menuTreeRef.value?.setCheckedKeys(mineRes.data?.menu_ids ?? [])
+  } catch {
+    // 加载失败保持空树：下面的 saveUserMenus 会据此跳过，不会误清空已有授权
+    menuTreeData.value = []
+  } finally {
+    menuTreeLoading.value = false
+  }
+}
+
+/** 提交额外菜单（全量覆盖）：勾选 + 半选（父目录未勾选时子菜单不会出现在侧边栏） */
+async function saveUserMenus(userId: number) {
+  if (!menuTreeData.value.length) return
+  const keys: number[] = menuTreeRef.value?.getCheckedKeys() ?? []
+  const half: number[] = menuTreeRef.value?.getHalfCheckedKeys() ?? []
+  await setUserMenus(userId, [...keys, ...half])
+}
+
 // ── 对话框 ─────────────────────────────────────────────────
 const dialogVisible = ref(false)
 const dialogType = ref<'add' | 'edit'>('add')
@@ -859,6 +945,8 @@ function handleAdd() {
   Object.assign(form, defaultForm())
   fpmMode.value = ''
   fpmCustomJson.value = ''
+  // 新增时没有 user_id，额外菜单等创建后再编辑
+  menuTreeData.value = []
   dialogVisible.value = true
 }
 
@@ -887,6 +975,8 @@ function handleEdit(row: UserListItem) {
   fpmMode.value = fpmEditInitial(row)
   fpmCustomJson.value = row.fpm_pool && row.fpm_pool.trim() ? row.fpm_pool : ''
   dialogVisible.value = true
+  // 额外菜单异步加载，不阻塞弹窗打开
+  void loadUserMenus(row.id)
 }
 
 /**
@@ -980,6 +1070,8 @@ async function submitForm() {
         }
       }
       await updateUser(payload)
+      // 额外菜单独立于用户资料，单独提交（树未加载成功时自动跳过）
+      await saveUserMenus(editingId.value!)
       ElMessage.success(t('common.updateSuccess'))
     }
     dialogVisible.value = false
@@ -1085,6 +1177,7 @@ async function loadPermCatalog() {
 
 onMounted(() => {
   loadList()
+  loadRoles()
   loadResellers()
   loadSpecs()
   loadPackages()
@@ -1247,6 +1340,16 @@ code.v {
   color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* 额外菜单树：限高滚动，菜单再多也不会撑破弹窗 */
+.menu-tree {
+  width: 100%;
+  max-height: 260px;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
 }
 
 .muted {
