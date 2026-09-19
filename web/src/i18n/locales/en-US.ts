@@ -360,6 +360,27 @@ const enUS: Messages = {
     readOnlyTip: 'When enabled this account can only view: shared resources are visible but not editable',
     denyPermTip:
       'Members inherit all permissions of the parent by default; checked ones are revoked (high-risk permissions are never inherited)',
+
+    // Row expansion: detail cards and owned sites
+    diskUsage: 'Disk Usage',
+    notCollected: 'Not sampled',
+    diskTip: '{size} ({bytes} bytes) · sampled at {time}',
+    diskTipNotCollected: '{size} (not sampled yet)',
+    homeDisk: 'Home Dir',
+    siteDiskTotal: 'Sites Total',
+    bandwidth: 'Traffic (month)',
+    statAt: 'Sampled At',
+    sites: 'Sites',
+    siteList: 'Owned Sites',
+    siteCount: '{count} total',
+    noSite: 'This user has no sites yet',
+    goSiteManage: 'Go to Sites',
+    phpChannel: 'PHP Channel',
+    remark: 'Remark',
+    detailRuntime: 'Runtime',
+    detailUsage: 'Usage',
+    detailAccount: 'Account',
+    lastLogin: 'Last Login',
   },
 
   /** Team members (sub-accounts) */

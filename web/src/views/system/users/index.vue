@@ -23,40 +23,206 @@
         </div>
       </template>
 
-      <el-table :data="filteredData" v-loading="loading" stripe>
+      <el-table
+        ref="tableRef"
+        :data="filteredData"
+        v-loading="loading"
+        stripe
+        :row-class-name="rowClassName"
+        @row-click="onRowClick"
+        @expand-change="onExpandChange"
+      >
+        <!-- 行展开：用户详情（运行实体 / 用量 / 权限）与名下站点列表。
+             本列只承载展开内容，自带箭头由 CSS 隐藏，改用用户名列里的折叠按钮控制 -->
+        <el-table-column type="expand" width="1">
+          <template #default="{ row }">
+            <div class="user-detail">
+              <div class="detail-grid">
+                <!-- 运行实体：家目录 / 系统账号 / FPM 规格 -->
+                <div class="detail-card">
+                  <div class="card-title">{{ t('users.detailRuntime') }}</div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.homeDir') }}</span>
+                    <code v-if="row.home_dir" class="v">{{ row.home_dir }}</code>
+                    <span v-else class="muted">{{ t('users.notSet') }}</span>
+                  </div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.linuxUser') }}</span>
+                    <code v-if="row.linux_user" class="v">{{ row.linux_user }}</code>
+                    <span v-else class="muted">{{ t('users.emptyValue') }}</span>
+                  </div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.fpmSpec') }}</span>
+                    <span class="v">
+                      <el-tag
+                        v-if="fpmSpecKind(row) === 'default'"
+                        size="small"
+                        type="info"
+                        effect="plain"
+                      >
+                        {{ t('users.fpmDefault') }}
+                      </el-tag>
+                      <el-tag
+                        v-else-if="fpmSpecKind(row) === 'inherit'"
+                        size="small"
+                        type="success"
+                      >
+                        {{ t('users.fpmInheritTag') }}
+                      </el-tag>
+                      <el-tag v-else-if="fpmSpecKind(row) === 'custom'" size="small" type="warning">
+                        {{ t('users.fpmCustomJson') }}
+                      </el-tag>
+                      <span v-else class="spec-name">{{ row.fpm_spec_ref }}</span>
+                    </span>
+                  </div>
+                </div>
+
+                <!-- 资源用量：家目录磁盘 / 站点合计 / 本月流量 -->
+                <div class="detail-card">
+                  <div class="card-title">{{ t('users.detailUsage') }}</div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.homeDisk') }}</span>
+                    <span class="v strong">{{ fmtSize(row.disk_used_bytes) }}</span>
+                  </div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.siteDiskTotal') }}</span>
+                    <span class="v">{{ fmtSize(sitesDiskTotal(row)) }}</span>
+                  </div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.bandwidth') }}</span>
+                    <span class="v">
+                      {{ fmtSize(row.bandwidth_used_bytes) }}
+                      <span v-if="row.bandwidth_period" class="muted">
+                        （{{ row.bandwidth_period }}）
+                      </span>
+                    </span>
+                  </div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.statAt') }}</span>
+                    <span class="v muted">{{ fmtTime(row.disk_stat_at) }}</span>
+                  </div>
+                </div>
+
+                <!-- 账号信息：归属 / 登录 / 时间 -->
+                <div class="detail-card">
+                  <div class="card-title">{{ t('users.detailAccount') }}</div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.owner') }}</span>
+                    <span class="v">
+                      <el-tag v-if="!row.owner_id" size="small" type="info">
+                        {{ t('users.ownerSystemTag') }}
+                      </el-tag>
+                      <el-tag v-else size="small">{{ ownerName(row.owner_id) }}</el-tag>
+                    </span>
+                  </div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.lastLogin') }}</span>
+                    <span class="v">
+                      {{
+                        row.last_login_time ? fmtTime(row.last_login_time) : t('users.emptyValue')
+                      }}
+                      <span v-if="row.last_login_ip" class="muted">
+                        · {{ row.last_login_ip }}
+                      </span>
+                    </span>
+                  </div>
+                  <div class="kv">
+                    <span class="k">{{ t('common.createdAt') }}</span>
+                    <span class="v">{{ fmtTime(row.created_at) }}</span>
+                  </div>
+                  <div class="kv">
+                    <span class="k">{{ t('users.package') }}</span>
+                    <span class="v">
+                      <el-tag v-if="row.package_name" size="small" type="primary" effect="plain">
+                        {{ row.package_name }}
+                      </el-tag>
+                      <span v-else class="muted">{{ t('users.emptyValue') }}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 名下站点：与站点列表同构的精简表格 -->
+              <div class="site-block">
+                <div class="block-head">
+                  <span class="block-title">{{ t('users.siteList') }}</span>
+                  <el-tag size="small" effect="plain">
+                    {{ t('users.siteCount', { count: row.sites?.length ?? 0 }) }}
+                  </el-tag>
+                  <el-button link type="primary" @click="goSiteManage">
+                    {{ t('users.goSiteManage') }}
+                  </el-button>
+                </div>
+                <el-table :data="row.sites ?? []" size="small" stripe>
+                  <el-table-column prop="name" :label="t('site.colName')" min-width="140" />
+                  <el-table-column :label="t('common.status')" width="80">
+                    <template #default="{ row: s }">
+                      <el-tag size="small" :type="s.status === 1 ? 'success' : 'danger'">
+                        {{ s.status === 1 ? t('common.enable') : t('common.disable') }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column :label="t('users.phpChannel')" min-width="140">
+                    <template #default="{ row: s }">
+                      <code v-if="s.php_instance" class="v">{{ s.php_instance }}</code>
+                      <span v-else class="muted">{{ t('users.emptyValue') }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column :label="t('users.diskUsage')" width="110">
+                    <template #default="{ row: s }">{{ fmtSize(s.disk_used_bytes) }}</template>
+                  </el-table-column>
+                  <el-table-column
+                    prop="remark"
+                    :label="t('users.remark')"
+                    min-width="140"
+                    show-overflow-tooltip
+                  >
+                    <template #default="{ row: s }">
+                      <span class="muted">{{ s.remark || t('users.emptyValue') }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column :label="t('common.createdAt')" width="170">
+                    <template #default="{ row: s }">{{ fmtTime(s.created_at) }}</template>
+                  </el-table-column>
+                  <template #empty>
+                    <span class="muted">{{ t('users.noSite') }}</span>
+                  </template>
+                </el-table>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="username" :label="t('users.username')" width="120" />
+        <el-table-column :label="t('users.username')" min-width="170">
+          <template #default="{ row }">
+            <div class="name-cell">
+              <!-- 折叠/展开按钮合并进用户名列（展开列本身已隐藏） -->
+              <span
+                class="expander"
+                :class="{ 'is-open': isExpanded(row) }"
+                :title="isExpanded(row) ? t('common.collapse') : t('common.expand')"
+                @click.stop="toggleExpand(row)"
+              >
+                <el-icon><ArrowRight /></el-icon>
+              </span>
+              <span class="user-name">{{ row.username }}</span>
+              <el-tag
+                v-if="row.user_kind === 1"
+                size="small"
+                type="warning"
+                effect="plain"
+                class="kind-tag"
+              >
+                {{ t('users.kindMember') }}
+              </el-tag>
+              <el-tag v-if="row.read_only" size="small" type="info" effect="plain">
+                {{ t('users.readOnly') }}
+              </el-tag>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="nickname" :label="t('users.nickname')" width="120" />
         <el-table-column prop="email" :label="t('users.email')" min-width="180" />
-        <el-table-column :label="t('users.homeDir')" min-width="200">
-          <template #default="{ row }">
-            <el-tooltip
-              v-if="row.home_dir"
-              :content="t('users.homeDirTip', { dir: row.home_dir })"
-              placement="top"
-            >
-              <code class="home-dir">{{ row.home_dir }}</code>
-            </el-tooltip>
-            <el-tag v-else size="small" type="warning">{{ t('users.notSet') }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('users.linuxUser')" width="150">
-          <template #default="{ row }">
-            <el-tooltip
-              v-if="row.linux_user"
-              :content="
-                t('users.linuxUserTip', {
-                  user: row.linux_user,
-                  dir: row.home_dir || '/home',
-                })
-              "
-              placement="top"
-            >
-              <code class="linux-user">{{ row.linux_user }}</code>
-            </el-tooltip>
-            <span v-else class="muted">{{ t('users.emptyValue') }}</span>
-          </template>
-        </el-table-column>
         <el-table-column :label="t('users.roles')" width="120">
           <template #default="{ row }">
             <el-tag v-for="r in row.roles" :key="r" size="small" style="margin-right: 4px">
@@ -64,36 +230,23 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column :label="t('users.kind')" width="90">
+        <el-table-column :label="t('users.diskUsage')" width="170">
           <template #default="{ row }">
-            <el-tag
-              v-if="row.user_kind === 1"
-              size="small"
-              type="warning"
-              effect="plain"
-            >
-              {{ t('users.kindMember') }}
-            </el-tag>
-            <el-tag v-else size="small" type="info" effect="plain">
-              {{ t('users.kindCustomer') }}
-            </el-tag>
-            <el-tag v-if="row.read_only" size="small" type="info" effect="plain">
-              {{ t('users.readOnly') }}
-            </el-tag>
+            <el-tooltip :content="diskTip(row)" placement="top">
+              <span class="disk-cell">
+                {{ fmtSize(row.disk_used_bytes) }}
+                <el-tag v-if="!row.disk_stat_at" size="small" type="info" effect="plain">
+                  {{ t('users.notCollected') }}
+                </el-tag>
+              </span>
+            </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column :label="t('users.fpmSpec')" width="170" show-overflow-tooltip>
+        <el-table-column :label="t('users.sites')" width="110">
           <template #default="{ row }">
-            <el-tag v-if="fpmSpecKind(row) === 'default'" size="small" type="info" effect="plain">
-              {{ t('users.fpmDefault') }}
+            <el-tag size="small" effect="plain" :type="row.sites?.length ? 'primary' : 'info'">
+              {{ row.sites?.length ?? 0 }}
             </el-tag>
-            <el-tag v-else-if="fpmSpecKind(row) === 'inherit'" size="small" type="success">
-              {{ t('users.fpmInheritTag') }}
-            </el-tag>
-            <el-tag v-else-if="fpmSpecKind(row) === 'custom'" size="small" type="warning">
-              {{ t('users.fpmCustomJson') }}
-            </el-tag>
-            <span v-else class="spec-name">{{ row.fpm_spec_ref }}</span>
           </template>
         </el-table-column>
         <el-table-column :label="t('users.package')" width="140">
@@ -104,24 +257,11 @@
             <span v-else class="muted">{{ t('users.emptyValue') }}</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="isAdmin" :label="t('users.owner')" width="120">
-          <template #default="{ row }">
-            <el-tag v-if="row.owner_id === 0" size="small" type="info">
-              {{ t('users.ownerSystemTag') }}
-            </el-tag>
-            <el-tag v-else size="small">{{ ownerName(row.owner_id) }}</el-tag>
-          </template>
-        </el-table-column>
         <el-table-column :label="t('common.status')" width="80">
           <template #default="{ row }">
             <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
               {{ row.status === 1 ? t('common.enable') : t('common.disable') }}
             </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('common.createdAt')" width="170">
-          <template #default="{ row }">
-            {{ fmtTime(row.created_at) }}
           </template>
         </el-table-column>
         <el-table-column :label="t('common.operation')" width="220" fixed="right">
@@ -344,7 +484,8 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus } from '@/icons'
+import { useRouter } from 'vue-router'
+import { ArrowRight, Plus } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
@@ -412,6 +553,37 @@ const filteredData = computed(() => {
     [u.username, u.nickname, u.email].some((f) => (f ?? '').toLowerCase().includes(kw)),
   )
 })
+
+// ── 行展开：当前展开行高亮；站点入口跳到站点管理 ────────────
+const router = useRouter()
+const tableRef = ref<{ toggleRowExpansion: (row: UserListItem, expanded?: boolean) => void }>()
+const expandedIds = ref<Set<number>>(new Set())
+
+function onExpandChange(_row: UserListItem, rows: UserListItem[]) {
+  expandedIds.value = new Set(rows.map((r) => r.id))
+}
+
+/** 单击整行展开/收起详情：展开列与操作列（右侧固定）交给自身处理 */
+function onRowClick(row: UserListItem, column?: { type?: string; fixed?: string | boolean }) {
+  if (column?.type === 'expand' || column?.fixed === 'right' || column?.fixed === true) return
+  tableRef.value?.toggleRowExpansion(row)
+}
+
+function isExpanded(row: UserListItem) {
+  return expandedIds.value.has(row.id)
+}
+
+function toggleExpand(row: UserListItem) {
+  tableRef.value?.toggleRowExpansion(row)
+}
+
+function rowClassName({ row }: { row: UserListItem }) {
+  return expandedIds.value.has(row.id) ? 'row-expanded' : ''
+}
+
+function goSiteManage() {
+  router.push('/site/index')
+}
 
 async function loadResellers() {
   if (!isAdmin.value) return
@@ -877,6 +1049,29 @@ function fmtTime(ts: number) {
   return new Date(ts * 1000).toLocaleString(getLocale())
 }
 
+/** 字节数按 1024 进制换算成可读文本（与磁盘 / 流量统计口径一致） */
+function fmtSize(bytes: number): string {
+  const n = Number(bytes) || 0
+  if (n <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1)
+  const v = n / 1024 ** i
+  // 末位单位（B）不带小数，其余保留 1～2 位够读即可
+  return `${v.toFixed(i === 0 ? 0 : v >= 100 ? 0 : 1)} ${units[i]}`
+}
+
+/** 磁盘用量列的悬浮提示：精确字节 + 采集时间 */
+function diskTip(row: UserListItem): string {
+  const size = fmtSize(row.disk_used_bytes)
+  if (!row.disk_stat_at) return t('users.diskTipNotCollected', { size })
+  return t('users.diskTip', { size, bytes: row.disk_used_bytes, time: fmtTime(row.disk_stat_at) })
+}
+
+/** 名下站点磁盘用量合计（与「站点详细」逐行对齐） */
+function sitesDiskTotal(row: UserListItem): number {
+  return (row.sites ?? []).reduce((sum, s) => sum + (Number(s.disk_used_bytes) || 0), 0)
+}
+
 async function loadPermCatalog() {
   // 权限点目录对任意登录用户开放（后端 Required::User）：reseller 建成员时也要选收紧项
   if ((!isAdmin.value && !isReseller.value) || permCatalog.value.length) return
@@ -922,25 +1117,130 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
-.home-dir {
+/* ── 行展开（与站点列表同一套交互）───────────────────────── */
+/* 展开列自带的箭头隐藏，改用用户名列里的折叠按钮 */
+:deep(.el-table__expand-icon) {
+  display: none;
+}
+
+:deep(.el-table__expanded-cell) {
+  background: transparent;
+  padding: 0 8px 8px !important;
+}
+
+:deep(.el-table__row.row-expanded) > td.el-table__cell {
+  background: var(--el-color-primary-light-9);
+}
+
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.user-name {
+  font-weight: 500;
+}
+
+.kind-tag {
+  flex-shrink: 0;
+}
+
+.expander {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--el-text-color-secondary);
+  transition: transform 0.2s;
+}
+
+.expander:hover {
+  color: var(--el-color-primary);
+}
+
+.expander.is-open {
+  transform: rotate(90deg);
+}
+
+.disk-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 展开详情：概览卡 + 名下站点 */
+.user-detail {
+  padding: 8px 4px 4px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.detail-card {
+  background: var(--el-fill-color-blank);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.kv {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.kv .k {
+  flex: 0 0 82px;
+  color: var(--el-text-color-secondary);
+}
+
+.kv .v {
+  min-width: 0;
+  word-break: break-all;
+}
+
+.kv .v.strong {
+  font-weight: 600;
+}
+
+code.v {
   font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
   font-size: 12px;
   color: var(--el-color-primary);
   background: var(--el-fill-color-light);
   border-radius: 4px;
   padding: 1px 6px;
-  cursor: default;
-  word-break: break-all;
 }
 
-.linux-user {
-  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
-  font-size: 12px;
-  color: var(--el-color-warning);
-  background: var(--el-fill-color-light);
-  border-radius: 4px;
-  padding: 1px 6px;
-  cursor: default;
+.site-block {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 10px 12px 12px;
+}
+
+.block-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.block-title {
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .form-tip {

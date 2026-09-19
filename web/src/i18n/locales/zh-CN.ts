@@ -389,6 +389,27 @@ export default {
     denyPermTip: '成员默认继承父账号的全部权限点；勾选的权限会被收回（高危权限不会自动继承）',
     readOnly: '只读',
     readOnlyTip: '开启后该账号只能查看：共享可见但不能做任何修改',
+
+    // 列表行展开：详情卡片与名下站点
+    diskUsage: '磁盘用量',
+    notCollected: '未更新',
+    diskTip: '{size}（{bytes} 字节）· 更新于 {time}',
+    diskTipNotCollected: '{size}（尚未更新）',
+    homeDisk: '家目录占用',
+    siteDiskTotal: '站点合计',
+    bandwidth: '本月流量',
+    statAt: '更新时间',
+    sites: '站点',
+    siteList: '名下站点',
+    siteCount: '共 {count} 个',
+    noSite: '该用户暂无站点',
+    goSiteManage: '前往站点管理',
+    phpChannel: 'PHP 通道',
+    remark: '备注',
+    detailRuntime: '运行实体',
+    detailUsage: '资源用量',
+    detailAccount: '账号信息',
+    lastLogin: '最近登录',
   },
 
   /** 团队成员（子账号） */

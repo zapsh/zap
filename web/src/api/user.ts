@@ -18,6 +18,19 @@ export function logout() {
 
 // ── 用户管理 CRUD ─────────────────────────────────────────
 
+/** 用户名下站点的摘要（用户列表行展开的「站点详细」用） */
+export interface UserSiteItem {
+  id: number
+  name: string
+  status: number
+  remark: string
+  /** PHP 实例标识（带版本后缀）；站点通道由此推导 */
+  php_instance: string
+  disk_used_bytes: number
+  disk_stat_at: number
+  created_at: number
+}
+
 export interface UserListItem {
   id: number
   username: string
@@ -53,6 +66,17 @@ export interface UserListItem {
   package_id: number
   /** 套餐名（未绑定时为空串） */
   package_name: string
+  /** 家目录磁盘占用（字节）；0 = 未采集或家目录不存在 */
+  disk_used_bytes: number
+  /** 磁盘用量采集时间（Unix 秒）；0 = 从未采集 */
+  disk_stat_at: number
+  /** 本月出站流量（字节） */
+  bandwidth_used_bytes: number
+  /** 流量统计周期（YYYYMM） */
+  bandwidth_period: string
+  bandwidth_stat_at: number
+  /** 该用户名下的站点摘要；展开行的「站点详细」直接取用 */
+  sites: UserSiteItem[]
   created_at: number
   updated_at: number
 }

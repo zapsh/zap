@@ -505,6 +505,21 @@ pub async fn user_prefs_save(claims: Claims, Json(payload): Json<NoticePrefs>) -
     ))
 }
 
+/// 用户列表里随行带回的站点摘要：展开行的「站点详细」直接取用，
+/// 前端不必再拉一次站点列表（也避免范围不一致 —— 这里已按 `users` 的可见集合收敛）。
+#[derive(sqlx::FromRow)]
+struct SiteBriefRow {
+    id: i64,
+    user_id: i64,
+    name: String,
+    status: i32,
+    remark: String,
+    php_instance: String,
+    disk_used_bytes: i64,
+    disk_stat_at: i64,
+    created_at: Option<i64>,
+}
+
 /// List users — admin sees all, reseller sees only own customers
 pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
     let is_admin = jwt::is_admin(&claims);
@@ -535,6 +550,40 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
     // 归属用户名映射：列表里「成员 of X」直接取用，前端不必再查一次
     let name_of: std::collections::HashMap<i64, String> =
         users.iter().map(|u| (u.id, u.username.clone())).collect();
+
+    // 站点摘要：一次取出可见用户的全部站点并按 user_id 分组，避免逐户查询（N+1）
+    let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
+    let mut sites_by_user: std::collections::HashMap<i64, Vec<Value>> =
+        std::collections::HashMap::new();
+    if !ids.is_empty() {
+        let mut site_qb = QueryBuilder::<Sqlite>::new(
+            "SELECT id, user_id, name, status, remark, php_instance, disk_used_bytes, \
+             disk_stat_at, created_at FROM site WHERE user_id IN (",
+        );
+        let mut sep = site_qb.separated(", ");
+        for id in &ids {
+            sep.push_bind(*id);
+        }
+        site_qb.push(") ORDER BY name");
+        if let Ok(rows) = site_qb
+            .build_query_as::<SiteBriefRow>()
+            .fetch_all(pool)
+            .await
+        {
+            for s in rows {
+                sites_by_user.entry(s.user_id).or_default().push(json!({
+                    "id": s.id,
+                    "name": s.name,
+                    "status": s.status,
+                    "remark": s.remark,
+                    "php_instance": s.php_instance,
+                    "disk_used_bytes": s.disk_used_bytes,
+                    "disk_stat_at": s.disk_stat_at,
+                    "created_at": s.created_at.unwrap_or(0),
+                }));
+            }
+        }
+    }
 
     Ok(Json(json!({
         "code": 0,
@@ -567,6 +616,15 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
                     .get(&user.package_id)
                     .cloned()
                     .unwrap_or_default(),
+                // 资源用量：磁盘（定时 du 家目录）/ 本月流量（汇总站点 access.log）
+                // disk_used_bytes 为 0 表示未采集或家目录不存在
+                "disk_used_bytes": user.disk_used_bytes,
+                "disk_stat_at": user.disk_stat_at,
+                "bandwidth_used_bytes": user.bandwidth_used_bytes,
+                "bandwidth_period": user.bandwidth_period,
+                "bandwidth_stat_at": user.bandwidth_stat_at,
+                // 该用户名下的站点摘要（列表行展开时的「站点详细」）
+                "sites": sites_by_user.remove(&user.id).unwrap_or_default(),
                 "created_at": user.created_at,
                 "updated_at": user.updated_at,
             })
