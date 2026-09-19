@@ -24,7 +24,9 @@
 #   random_password has_git getPropsValue wzap_conf
 #   have_lib lib_path link_lib_compat(运行时库探测 / 兼容 soname 软链)
 #   pkg_install_any(多候选包名安装)
-#   preInstallation(汇总:用户/目录/系统编译依赖)
+#   app_install_complete path_under remove_path service_stop_disable
+#   db_data_initialized(安装残局处理 / 失败重跑)
+#   prepare_install_env(汇总:运行用户/关键目录/首次系统编译依赖)
 #
 # 顶层变量(被 source 后立即可用):
 #   OS_NAME(发行版小写 ID) OS_VERSION(版本号) OS_PRETTY OS_ID_LIKE
@@ -525,7 +527,7 @@ wzap_conf() {
 }
 
 # ── 系统编译依赖(按发行版分组,可用环境变量整体覆盖) ─────────────────────
-# 用法: ZAP_UBUNTU_DEPS="..." 自定义后再调用 preInstallation
+# 用法: ZAP_UBUNTU_DEPS="..." 自定义后再调用 prepare_install_env / install_system_deps
 UBUNTU_DEPS="${ZAP_UBUNTU_DEPS:-wget curl git ca-certificates build-essential autoconf automake libtool bison re2c pkg-config libxml2-dev libssl-dev libsqlite3-dev libcurl4-openssl-dev libpcre3-dev libbz2-dev zlib1g-dev libpq-dev libzip-dev libonig-dev libpng-dev libjpeg-dev libwebp-dev libavif-dev libicu-dev libreadline-dev libffi-dev libxslt1-dev libfreetype6-dev libgd-dev libsodium-dev}"
 RH_DEPS="${ZAP_RH_DEPS:-wget curl git make gcc gcc-c++ autoconf automake libtool bison re2c pkgconfig openssl-devel libxml2-devel sqlite-devel libcurl-devel libpcre-devel bzip2-devel zlib-devel ncurses-devel libpng-devel libjpeg-turbo-devel libwebp-devel}"
 RH_DNF_EXTRA="${ZAP_RH_DNF_EXTRA:-libzip-devel oniguruma-devel libicu-devel libffi-devel libxslt-devel gd-devel libsodium-devel}"
@@ -540,37 +542,77 @@ ALPINE_DEPS="${ZAP_ALPINE_DEPS:-build-base autoconf automake libtool bison re2c 
 # Ubuntu 24.04 上是「静默什么都不装」,直到 mysqld 起来才报缺 libaio.so.1。
 # 正确姿势:先按「能力」判断库是否已在,再按候选包名逐个尝试。
 
-# 系统库缓存里是否已有该库(ldconfig -p):已存在就不必装包,也避免误判为「安装失败」
-# 参数按 ldconfig 条目的 soname 字段【精确 / 通配】匹配:
-#   have_lib libaio.so.1        只认 libaio.so.1,不认 libaio.so.1t64
-#   have_lib 'libncurses.so.*'  认 libncurses.so.5 / libncurses.so.6
-# 必须精确匹配 soname:ldconfig -p 里 libaio.so.1t64 也「包含」libaio.so.1 字样,
-# 但动态链接器按 soname 精确加载,只有 1t64 时 mysqld 依旧报缺 libaio.so.1。
+# ldconfig 可执行文件:它在 /sbin、/usr/sbin,而守护进程拉起的脚本常是精简 PATH,
+# 直接写 `ldconfig -p` 会「命令未找到」→ 缓存查不到 → 被误判成缺库,故显式兜底
+ldconfig_bin() {
+  local c
+  for c in ldconfig /sbin/ldconfig /usr/sbin/ldconfig /usr/bin/ldconfig; do
+    if command -v "$c" >/dev/null 2>&1; then printf '%s\n' "$c"; return 0; fi
+  done
+  return 1
+}
+
+# 动态链接器的默认搜索目录(缓存未收录时按文件系统复核用)
+lib_search_dirs() {
+  local d
+  printf '%s\n' /lib /usr/lib /lib64 /usr/lib64 /usr/local/lib
+  for d in /lib/*-linux-gnu /usr/lib/*-linux-gnu /lib/*-linux-musl /usr/lib/*-linux-musl; do
+    if [ -d "$d" ]; then printf '%s\n' "$d"; fi
+  done
+}
+
+# 解析 ldconfig -p 缓存:按 soname 精确 / 通配匹配,命中则把库路径打到标准输出
 # 不用 `ldconfig -p | grep -q`:调用方普遍开着 pipefail,grep -q 命中即退出会让
 # ldconfig 收到 SIGPIPE(141),管道状态非零 → 明明有库也被判成缺失。
-have_lib() {
-  local cache line name
-  cache="$(ldconfig -p 2>/dev/null)" || return 1
-  # 条目形如: libaio.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libaio.so.1
-  while IFS= read -r line; do
-    case "$line" in *" => "*) ;; *) continue ;; esac
-    name="${line%% *}"
+# 解析必须用 read 分词:ldconfig 输出每行以 Tab 开头,${line%% *} 会把 Tab 留在
+# soname 里("	libaio.so.1t64"),于是永远匹配不上、库明明在却判成缺失。
+_ldconfig_lookup() {
+  local pattern="${1:-}" cache name rest
+  [ -n "$pattern" ] || return 1
+  cache="$("$(ldconfig_bin)" -p 2>/dev/null)" || cache=""
+  # 条目形如: libaio.so.1t64 (libc6,x86-64) => /lib/x86_64-linux-gnu/libaio.so.1t64
+  while read -r name rest; do
+    case "$rest" in *" => "*) ;; *) continue ;; esac
     # shellcheck disable=SC2254
-    case "$name" in $1) return 0 ;; esac
+    case "$name" in $pattern) printf '%s\n' "${rest##* => }"; return 0 ;; esac
   done <<<"$cache"
   return 1
 }
 
-# 取库的实际路径(ldconfig 缓存),参数同 have_lib;未找到返回 1
+# 系统里是否已有该库:参数按 soname【精确 / 通配】匹配
+#   have_lib libaio.so.1        只认 libaio.so.1,不认 libaio.so.1t64
+#   have_lib 'libncurses.so.*'  认 libncurses.so.5 / libncurses.so.6
+# 必须精确匹配 soname:ldconfig 缓存里 libaio.so.1t64 也「包含」libaio.so.1 字样,
+# 但动态链接器按 soname 精确加载,只有 1t64 时 mysqld 依旧报缺 libaio.so.1。
+have_lib() {
+  local pattern="${1:-}" dir f
+  [ -n "$pattern" ] || return 1
+  _ldconfig_lookup "$pattern" >/dev/null 2>&1 && return 0
+  # 缓存查不到时按文件系统复核:ldconfig 只按真实 SONAME 登记,不收录「别名软链」
+  # (如自建的 libaio.so.1 -> libaio.so.1t64),但动态链接器在缓存未命中时会回退按
+  # 默认目录搜索并正常加载(已实测 dlopen("libaio.so.1") 成功)→ 只看缓存会误判。
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    # shellcheck disable=SC2086
+    for f in ${dir}/${pattern}; do
+      if [ -e "$f" ]; then return 0; fi
+    done
+  done <<<"$(lib_search_dirs)"
+  return 1
+}
+
+# 取库的实际路径,参数同 have_lib;未找到返回 1(缓存优先,再按默认目录找)
 lib_path() {
-  local cache line name
-  cache="$(ldconfig -p 2>/dev/null)" || return 1
-  while IFS= read -r line; do
-    case "$line" in *" => "*) ;; *) continue ;; esac
-    name="${line%% *}"
-    # shellcheck disable=SC2254
-    case "$name" in $1) printf '%s\n' "${line##* => }"; return 0 ;; esac
-  done <<<"$cache"
+  local pattern="${1:-}" dir f
+  [ -n "$pattern" ] || return 1
+  _ldconfig_lookup "$pattern" && return 0
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    # shellcheck disable=SC2086
+    for f in ${dir}/${pattern}; do
+      if [ -e "$f" ]; then printf '%s\n' "$f"; return 0; fi
+    done
+  done <<<"$(lib_search_dirs)"
   return 1
 }
 
@@ -580,7 +622,7 @@ lib_path() {
 #      link_lib_compat libaio.so.1 libaio.so.1t64
 # 已存在目标 soname 时直接返回 0(幂等)。
 link_lib_compat() {
-  local want="${1:-}" alt="${2:-}" src dst
+  local want="${1:-}" alt="${2:-}" src dst ld_bin
   if [ -z "$want" ] || [ -z "$alt" ]; then
     log_error "link_lib_compat: 用法 <需要的 soname> <现有 soname>"
     return 1
@@ -596,7 +638,9 @@ link_lib_compat() {
     log_error "创建软链失败: ${dst} -> $(basename "$src")"
     return 1
   }
-  ldconfig >/dev/null 2>&1 || log_warn "ldconfig 刷新失败,请手动执行 ldconfig"
+  if ld_bin="$(ldconfig_bin)"; then
+    "${ld_bin}" >/dev/null 2>&1 || log_warn "ldconfig 刷新失败,请手动执行 ldconfig"
+  fi
   if ! have_lib "$want"; then
     log_warn "已创建 ${dst},但 ldconfig 缓存未收录 ${want}(运行时会回退按目录搜索,一般无影响)"
   fi
@@ -607,25 +651,77 @@ link_lib_compat() {
 # 依次尝试候选包名,装上任意一个即成功;全失败返回 1(不中断脚本,由调用方决定后果)
 # 用法: pkg_install_any apt libaio1t64 libaio1 ; pkg_install_any dnf libaio
 pkg_install_any() {
-  local pm="$1" p
+  local pm="$1" p out
   shift
   if [ "$#" -eq 0 ]; then
     log_error "pkg_install_any: 未提供候选包名"
     return 1
   fi
   for p in "$@"; do
+    out=""
     if [ "$pm" = "apt" ]; then
-      if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$p" >/dev/null 2>&1; then
+      out="$(DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$p" 2>&1)" && {
         log_info "已安装依赖: ${p}"
         return 0
-      fi
-    elif "$pm" install -y "$p" >/dev/null 2>&1; then
-      log_info "已安装依赖: ${p}"
-      return 0
+      }
+    else
+      out="$("$pm" install -y "$p" 2>&1)" && {
+        log_info "已安装依赖: ${p}"
+        return 0
+      }
     fi
+    # 把失败原因写进日志(源不可达 / dpkg 锁 / 包名不存在…):
+    # 否则「装不上」只剩一行结论,排查时无从下手(用 tail 避免 grep -m 触发 SIGPIPE)
+    log_warn "安装 ${p} 失败: $(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"
   done
   log_warn "以下候选包均未能安装: $*"
   return 1
+}
+
+# ── 安装残局处理(失败后重跑) ─────────────────────────────────
+# 系统只在脚本【成功退出】后才写 apps/<cat>/<name>/meta.yaml(面板据此显示「已安装」),
+# 而脚本自己常以「安装目录在不在」做守卫。一旦中途失败(mysqld 初始化缺 libaio 等),
+# 就形成死锁:面板说没装(不给卸载)+ 脚本说装了(不给重装)。
+# 约定:以脚本末尾登记的 APP_PATH/info.yaml 为「装完了」的唯一依据;
+# 目录还在但没登记 = 装了一半的残局 → 清理后继续装,而不是报错退出。
+app_install_complete() { [ -n "${APP_PATH:-}" ] && [ -f "${APP_PATH}/info.yaml" ]; }
+
+# 路径是否在指定前缀下(删除前的围栏):path_under ${APPS_DIR}/mysql-8.0 ${APPS_DIR}
+path_under() {
+  local p="${1:-}" pre="${2:-}"
+  [ -n "$p" ] && [ -n "$pre" ] || return 1
+  case "$p" in "$pre"/*) return 0 ;; *) return 1 ;; esac
+}
+
+# 安全删除(目录 / 文件 / 软链通吃;空路径与 / 一律拒绝),不存在时静默返回 0
+remove_path() {
+  local p="${1:-}"
+  [ -n "$p" ] && [ "$p" != "/" ] || { log_error "remove_path: 拒绝删除 '${p:-空}'"; return 1; }
+  [ -e "$p" ] || [ -L "$p" ] || return 0
+  rm -rf -- "$p"
+}
+
+# 停止并禁用服务(幂等;systemctl / service / chkconfig 都试,均缺失返回 1)
+service_stop_disable() {
+  local unit="${1:-}" rc=1
+  [ -n "$unit" ] || { log_error "service_stop_disable: 需要 unit 名"; return 1; }
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop "$unit" >/dev/null 2>&1 || true
+    systemctl disable "$unit" >/dev/null 2>&1 || true
+    rc=0
+  fi
+  if command -v service >/dev/null 2>&1; then service "$unit" stop >/dev/null 2>&1 || true; rc=0; fi
+  if command -v chkconfig >/dev/null 2>&1; then chkconfig --del "$unit" >/dev/null 2>&1 || true; rc=0; fi
+  return "$rc"
+}
+
+# 数据目录是否已完成初始化(MySQL / MariaDB 通用:有 mysql 系统库或 InnoDB 系统表空间)
+# 未初始化(或半初始化)的数据目录里不会有用户数据,可随残局安全清掉;
+# 已初始化的目录必须留给人工确认,绝不自动删。
+db_data_initialized() {
+  local d="${1:-}"
+  [ -n "$d" ] || return 1
+  [ -d "${d}/mysql" ] || [ -f "${d}/ibdata1" ] || [ -f "${d}/mysql.ibd" ]
 }
 
 # 安装系统编译依赖:批量失败后自动逐项补装(单项失败仅告警,不中断脚本);
@@ -662,30 +758,51 @@ install_system_deps() {
     apk add --no-cache ${ALPINE_DEPS} >/dev/null 2>&1 || rc=1
   else
     log_warn "暂不支持自动安装依赖的发行版(${OS_NAME:-unknown}),跳过;请手动安装编译依赖"
+    rc=1
   fi
   if [ "$rc" -eq 0 ]; then log_ok "系统编译依赖就绪"; else log_warn "部分依赖安装失败,如编译报缺头文件/库请手动补装"; fi
-  return 0
+  # 返回真实结果(0=全部就绪),供 prepare_install_env 决定是否写依赖锁
+  return "$rc"
 }
 
-# ── preInstallation(兼容旧接口):用户 + 目录 + 首次系统依赖 ────────────────
-# 说明:系统依赖仅在首次(无 preinstall.lock)时安装;www 用户与关键目录每次保证
-preInstallation() {
-  # www 用户 + www 组(组缺省已随 useradd 建同名组,这里保证跨发行版/历史环境一致)
-  ensure_user www www || return 1
+# ── prepare_install_env:安装前置汇总(运行用户 + 关键目录 + 首次系统依赖) ─────
+# 用法: prepare_install_env [运行用户] [附加组...]
+#   prepare_install_env            # www 用户 + www 组(缺省)
+#   prepare_install_env mysql      # mysql 用户 + mysql 组(组缺省与用户同名)
+#   prepare_install_env www www zap
+# 行为:
+#   * 运行用户 / 组与 PKG_PATH、BUILD_PATH 目录每次都保证(幂等);
+#   * 系统编译依赖只在首次安装:成功写 system_deps.lock,未装全则不写锁(下次重试);
+#     设 ZAP_FORCE_DEPS=1 可强制重装。
+# 返回:用户建不出来返回 1;依赖装得成装不成都不中断脚本(缺包会在 configure/make 阶段暴露)
+prepare_install_env() {
+  local user="${1:-www}" lock_dir lock
+  [ "$#" -gt 0 ] && shift
+  # 未显式给组时补一个同名组(www→www),跨发行版保证组一定存在
+  if [ "$#" -eq 0 ]; then
+    ensure_user "${user}" "${user}" || return 1
+  else
+    ensure_user "${user}" "$@" || return 1
+  fi
 
-  ensure_dir "${PKG_PATH:-/tmp/pkg}" "${BUILD_PATH:-/tmp/build}" "${ZAP_DATA_PATH:-/tmp}/tmp" \
+  lock_dir="${ZAP_DATA_PATH:-/tmp}/tmp"
+  ensure_dir "${PKG_PATH:-/tmp/pkg}" "${BUILD_PATH:-/tmp/build}" "${lock_dir}" \
     || log_warn "部分运行目录创建失败(PKG_PATH/BUILD_PATH 由执行器确保)"
 
   log_info "系统: ${OS_PRETTY:-${OS_NAME:-unknown}}, arch: ${OS_ARCH:-unknown} (alias: ${OS_ARCH_ALIAS:-unknown})"
 
-  local lock="${ZAP_DATA_PATH:-/tmp}/tmp/preinstall.lock"
-  if [ -f "$lock" ] && [ "${ZAP_FORCE_DEPS:-0}" != "1" ]; then
-    log_info "检测到 ${lock},系统依赖已就绪,跳过安装"
+  lock="${lock_dir}/system_deps.lock"
+  # 旧锁名是 preinstall.lock:一并认,免得升级后每台机器都重跑一次包管理器
+  if [ "${ZAP_FORCE_DEPS:-0}" != "1" ] && { [ -f "$lock" ] || [ -f "${lock_dir}/preinstall.lock" ]; }; then
+    log_info "检测到依赖锁 ${lock},系统编译依赖已就绪,跳过安装"
     return 0
   fi
-  install_system_deps
-  ensure_dir "${ZAP_DATA_PATH:-/tmp}/tmp"
-  touch "$lock" 2>/dev/null || true
+  if install_system_deps && touch "$lock" 2>/dev/null; then
+    log_ok "系统编译依赖就绪(已记录 ${lock})"
+  else
+    # 装了一半(断网 / 源不可用)时不写锁,下次运行会重试,而不是带着残缺依赖去编译
+    log_warn "系统编译依赖未完全就绪,未写锁 ${lock},下次运行会重试"
+  fi
   return 0
 }
 

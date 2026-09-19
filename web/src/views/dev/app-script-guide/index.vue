@@ -388,58 +388,88 @@ set -euo pipefail
 source "${ZAP_PATH}/scripts/zap/bash_utils.sh"</pre>
           <p>source 后顶层变量立即可用：<code>OS_NAME</code>（发行版小写 ID）、<code>OS_VERSION</code>、<code>OS_ID_LIKE</code>、<code>OS_PRETTY</code>、<code>OS_ARCH</code>、<code>OS_ARCH_ALIAS</code>、<code>OS_MACHINE</code>；可随时重跑 <code>os_detect</code> 刷新。</p>
 
-          <p class="sec-sub"><strong>日志 / 前置</strong></p>
+          <p class="sec-sub"><strong>① 日志与前置（用户 / 目录 / 系统依赖）</strong></p>
           <table class="doc-table">
-            <thead><tr><th style="width: 260px">函数</th><th>说明</th></tr></thead>
+            <thead><tr><th style="width: 300px">函数</th><th>用法与说明</th></tr></thead>
             <tbody>
-              <tr><td><code>log_info</code> / <code>log_ok</code> / <code>log_warn</code> / <code>log_error</code></td><td>统一日志格式（warn / error 走 stderr），实时写入运行日志</td></tr>
-              <tr><td><code>assert_root</code></td><td>非 root 直接退出</td></tr>
-              <tr><td><code>ensure_dir &lt;dir&gt;</code></td><td>建目录（幂等）</td></tr>
-              <tr><td><code>ensure_user</code> / <code>ensure_group</code> / <code>ensure_usergroup</code></td><td>建账号 / 组并加入组（幂等），如 <code>ensure_user mysql mysql</code></td></tr>
-              <tr><td><code>preInstallation</code></td><td>汇总前置：用户 + 关键目录 + 首次系统编译依赖（带 <code>preinstall.lock</code>，仅首次装依赖）</td></tr>
+              <tr><td><code>log_info</code> / <code>log_ok</code> / <code>log_warn</code> / <code>log_error</code></td><td>统一日志格式（<code>[时间] [级别]</code>，warn / error 走 stderr），实时写入运行日志。用法：<code>log_info "开始编译 ${APP_VERSION}"</code></td></tr>
+              <tr><td><code>assert_root</code></td><td>非 root 返回 1（不会自己 exit）。用法：<code>assert_root || { log_error "需要 root"; exit 1; }</code></td></tr>
+              <tr><td><code>ensure_dir &lt;dir&gt; [...]</code></td><td>建目录（幂等，可一次传多个），任一失败返回 1。用法：<code>ensure_dir "${BUILD_PATH}" "${PKG_PATH}"</code></td></tr>
+              <tr><td><code>ensure_group &lt;group&gt;</code></td><td>确保系统组存在（<code>groupadd -r</code>，Alpine 走 <code>addgroup</code>），已存在直接返回 0</td></tr>
+              <tr><td><code>ensure_user &lt;user&gt; [group...]</code></td><td>确保运行用户存在；组不存在先建再把用户加进去（用户已存在时也会补齐附加组）。用法：<code>ensure_user mysql mysql</code>、<code>ensure_user www www zap</code></td></tr>
+              <tr><td><code>ensure_usergroup &lt;user&gt; &lt;group&gt; [...]</code></td><td>只把<strong>已存在</strong>的用户加入组：用户不存在直接报错，避免拼错用户名被静默创建。用法：<code>ensure_usergroup "${U}" docker</code></td></tr>
+              <tr><td><code>prepare_install_env [user] [group...]</code></td><td>前置汇总：运行用户 + 关键目录（<code>PKG_PATH</code> / <code>BUILD_PATH</code>）+ 首次系统编译依赖。缺省 <code>www www</code>，组缺省与用户同名。依赖<strong>装全了才写锁</strong>（<code>system_deps.lock</code>），没装全不写锁 → 下次运行重试；<code>ZAP_FORCE_DEPS=1</code> 可强制重装。用法：<code>prepare_install_env www</code>、<code>prepare_install_env mysql</code></td></tr>
+              <tr><td><code>install_system_deps</code></td><td>按发行版批量装编译依赖（<code>UBUNTU_DEPS</code> / <code>RH_DEPS</code> / <code>ALPINE_DEPS</code>，可用同名环境变量整体覆盖）；批量失败自动逐项补装，返回 0 = 全部就绪。一般不直接调用，走 <code>prepare_install_env</code></td></tr>
             </tbody>
           </table>
 
-          <p class="sec-sub"><strong>操作系统 / 版本判断</strong></p>
+          <p class="sec-sub"><strong>② 系统 / 版本 / 包管理</strong></p>
           <table class="doc-table">
-            <thead><tr><th style="width: 260px">函数</th><th>说明</th></tr></thead>
+            <thead><tr><th style="width: 300px">函数</th><th>用法与说明</th></tr></thead>
             <tbody>
-              <tr><td><code>os_detect</code></td><td>探测发行版 / 内核 / 架构，刷新上表顶层变量</td></tr>
+              <tr><td><code>os_detect</code></td><td>探测发行版 / 内核 / 架构并刷新顶层变量（source 时已自动跑过一次，改过 <code>/etc/os-release</code> 可重跑）</td></tr>
               <tr><td><code>is_os &lt;id...&gt;</code></td><td>匹配 ID <strong>或</strong> ID_LIKE：<code>is_os ubuntu debian</code>；因 Ubuntu 的 ID_LIKE 含 debian，<code>is_os debian</code> 在 Ubuntu 上也为真</td></tr>
-              <tr><td><code>is_os_strict &lt;id&gt;</code></td><td>只匹配 ID，不认 ID_LIKE（严格区分 Ubuntu / Debian 时用）</td></tr>
-              <tr><td><code>os_version_major</code></td><td>主版本号：<code>24.04 → 24</code>、<code>7.9 → 7</code></td></tr>
-              <tr><td><code>os_version_ge</code> / <code>os_version_lt</code></td><td>与当前系统版本比较：<code>os_version_ge 24.04</code></td></tr>
-              <tr><td><code>is_os_ge &lt;id&gt; &lt;ver&gt;</code></td><td>发行版 + 版本下限：<code>is_os_ge ubuntu 24.04</code>（沿用 <code>is_os</code> 的 ID_LIKE 语义）</td></tr>
-              <tr><td><code>is_deb_family</code> / <code>is_rpm_family</code></td><td>deb 系（ubuntu / debian / …）/ rpm 系（rhel / rocky / alma / fedora / …）</td></tr>
-              <tr><td><code>pkg_manager</code></td><td>输出 <code>apt</code> / <code>dnf</code> / <code>yum</code> / <code>apk</code> / <code>zypper</code>，未识别返回 1</td></tr>
-              <tr><td><code>normalize_arch</code> / <code>cpu_count</code></td><td>架构归一化（<code>x86_64 → amd64</code>）/ 可用核数（受 <code>CPU_NUM</code> 上限约束）</td></tr>
+              <tr><td><code>is_os_strict &lt;id&gt;</code></td><td>只匹配 ID，不认 ID_LIKE（要严格区分 Ubuntu / Debian 时用）：<code>is_os_strict debian</code></td></tr>
+              <tr><td><code>os_version_major</code></td><td>系统主版本号（stdout 输出）：<code>24.04 → 24</code>、<code>7.9 → 7</code>。用法：<code>[ "$(os_version_major)" -ge 24 ]</code></td></tr>
+              <tr><td><code>os_version_ge &lt;ver&gt;</code> / <code>os_version_lt &lt;ver&gt;</code></td><td>与当前系统版本比较：<code>os_version_ge 24.04</code></td></tr>
+              <tr><td><code>is_os_ge &lt;id&gt; &lt;ver&gt;</code></td><td>发行版 + 版本下限<strong>同时</strong>成立：<code>is_os_ge ubuntu 24.04</code>（沿用 <code>is_os</code> 的 ID_LIKE 语义；只认 ID 请用 <code>is_os_strict</code> + <code>os_version_ge</code>）</td></tr>
+              <tr><td><code>is_deb_family</code> / <code>is_rpm_family</code></td><td>deb 系（ubuntu / debian / mint / …）/ rpm 系（rhel / rocky / alma / fedora / …）</td></tr>
+              <tr><td><code>pkg_manager</code></td><td>输出 <code>apt</code> / <code>dnf</code> / <code>yum</code> / <code>apk</code> / <code>zypper</code>，未识别返回 1。用法：<code>PKG_MGR="$(pkg_manager || true)"</code></td></tr>
+              <tr><td><code>normalize_arch [arch]</code></td><td>架构归一化：<code>x86_64 → amd64</code>、<code>aarch64 → arm64</code>（缺省取 <code>uname -m</code>）</td></tr>
+              <tr><td><code>cpu_count</code></td><td>可用核数（受注入的 <code>CPU_NUM</code> 上限约束，探测失败回退 1）</td></tr>
             </tbody>
           </table>
 
-          <p class="sec-sub"><strong>运行时库 / 系统包（跨发行版差异）</strong></p>
+          <p class="sec-sub"><strong>③ 运行时库 / 系统包（跨发行版差异）</strong></p>
           <table class="doc-table">
-            <thead><tr><th style="width: 260px">函数</th><th>说明</th></tr></thead>
+            <thead><tr><th style="width: 300px">函数</th><th>用法与说明</th></tr></thead>
             <tbody>
-              <tr><td><code>have_lib &lt;soname|glob&gt;</code></td><td>ldconfig 缓存里是否已有该库。按 soname <strong>精确</strong>匹配：<code>have_lib libaio.so.1</code> 不认 <code>libaio.so.1t64</code>；也可给通配 <code>have_lib 'libncurses.so.*'</code></td></tr>
-              <tr><td><code>lib_path &lt;soname|glob&gt;</code></td><td>取库的实际路径，参数同 <code>have_lib</code></td></tr>
-              <tr><td><code>link_lib_compat &lt;需要&gt; &lt;现有&gt;</code></td><td>发行版改了库文件名、官方二进制仍按旧 soname 加载时补同名软链并刷新缓存（幂等）：<code>link_lib_compat libaio.so.1 libaio.so.1t64</code></td></tr>
-              <tr><td><code>pkg_install_any &lt;pm&gt; &lt;候选包名...&gt;</code></td><td>依次尝试候选包名，装上任意一个即成功；全失败返回 1（不中断脚本，由调用方决定后果）。apt 走 <code>DEBIAN_FRONTEND=noninteractive</code> + <code>--no-install-recommends</code></td></tr>
-              <tr><td><code>install_system_deps</code></td><td>按发行版批量装编译依赖，批量失败后逐项补装（单项失败仅告警）</td></tr>
+              <tr><td><code>have_lib &lt;soname|glob&gt;</code></td><td>系统里是否已有该库：先查 ldconfig 缓存，缓存未收录时再按默认目录复核文件。按 soname <strong>精确</strong>匹配：<code>have_lib libaio.so.1</code> 不认 <code>libaio.so.1t64</code>；也可给通配 <code>have_lib 'libncurses.so.*'</code></td></tr>
+              <tr><td><code>lib_path &lt;soname|glob&gt;</code></td><td>取库的实际路径（缓存优先，再按默认目录找），未找到返回 1。用法：<code>src="$(lib_path libaio.so.1t64)"</code></td></tr>
+              <tr><td><code>link_lib_compat &lt;需要的 soname&gt; &lt;现有 soname&gt;</code></td><td>发行版改了库文件名、官方二进制仍按旧 soname 加载时补同名软链 + 刷新缓存（幂等，已存在直接返回 0）。用法：<code>link_lib_compat libaio.so.1 libaio.so.1t64</code></td></tr>
+              <tr><td><code>pkg_install_any &lt;pm&gt; &lt;候选包名...&gt;</code></td><td>依次尝试候选包名，装上任意一个即成功；全失败返回 1 并把包管理器的错误写进日志（不中断脚本，后果由调用方决定）。apt 走 <code>DEBIAN_FRONTEND=noninteractive</code> + <code>--no-install-recommends</code>。用法：<code>pkg_install_any apt libaio1t64 libaio1</code></td></tr>
+              <tr><td><code>ldconfig_bin</code> / <code>lib_search_dirs</code></td><td>内部辅助（一般不必直接调用）：定位 <code>ldconfig</code>（它在 <code>/sbin</code>，守护进程 PATH 里常没有）/ 列出动态链接器默认搜索目录</td></tr>
             </tbody>
           </table>
 
-          <p class="sec-sub"><strong>下载 / 构建 / 版本 / 其它</strong></p>
+          <p class="sec-sub"><strong>④ 下载 / 解压 / 编译</strong></p>
           <table class="doc-table">
-            <thead><tr><th style="width: 260px">函数</th><th>说明</th></tr></thead>
+            <thead><tr><th style="width: 300px">函数</th><th>用法与说明</th></tr></thead>
             <tbody>
-              <tr><td><code>download_file &lt;url&gt; &lt;dest&gt;</code> / <code>fetch_file &lt;url&gt; &lt;dest&gt; [重试]</code> / <code>http_fetch</code></td><td>下载（curl 优先、wget 回退、自动重试，非 TTY 下单行进度条）</td></tr>
-              <tr><td><code>extract_archive</code> / <code>download_extract</code></td><td>解压（按扩展名选 tar / zip）/ 下载并解压</td></tr>
-              <tr><td><code>MakeInstall</code></td><td>标准 <code>configure &amp;&amp; make &amp;&amp; make install</code> 封装</td></tr>
-              <tr><td><code>version_compare &lt;a&gt; &lt;b&gt;</code></td><td>版本比较：0 相等 / 1 a&gt;b / 2 a&lt;b（忽略字母后缀）</td></tr>
-              <tr><td><code>version_ge</code> / <code>version_gt</code> / <code>version_lt</code></td><td>基于 <code>version_compare</code> 的快捷判断</td></tr>
-              <tr><td><code>version_field &lt;ver&gt; &lt;段&gt;</code> / <code>version_major</code> / <code>version_minor</code> / <code>version_major_minor</code></td><td>取版本号字段（如 <code>1.1.1w</code> → 主版本 1）</td></tr>
-              <tr><td><code>random_password</code> / <code>has_git</code> / <code>getPropsValue</code> / <code>yaml_value</code></td><td>随机密码 / git 探测 / 取属性 / 取 YAML 值</td></tr>
-              <tr><td><code>normalize_dir</code> / <code>resolve_install_dir</code> / <code>assert_under_apps_dir</code> / <code>wzap_conf</code></td><td>目录归一化与路径围栏（越界即中止）/ 读写 <code>zap.conf</code> 的 key=value</td></tr>
+              <tr><td><code>fetch_file &lt;url&gt; &lt;dest&gt; [重试次数]</code></td><td>下载：curl 优先、wget 回退、自动重试（默认 3 次），非 TTY 下也输出单行进度条；失败返回 1（不中断脚本）</td></tr>
+              <tr><td><code>download_file &lt;url&gt; &lt;dest&gt;</code></td><td>下载并打日志，失败<strong>直接 exit 1</strong>（适合「下不到就没必要继续」的场景）</td></tr>
+              <tr><td><code>http_fetch &lt;url&gt; &lt;dest&gt;</code></td><td><code>download_file</code> 的旧名，行为一致</td></tr>
+              <tr><td><code>extract_archive &lt;归档&gt; [目标目录]</code></td><td>按扩展名解压（<code>.tar.gz</code> / <code>.tgz</code> / <code>.tar.xz</code> / <code>.tar.bz2</code> / <code>.tar</code> / <code>.zip</code>），目标目录缺省为当前目录</td></tr>
+              <tr><td><code>download_extract &lt;url&gt; &lt;本地归档名&gt; &lt;目标目录&gt;</code></td><td>下载 + 解压一步到位，任一步失败返回 1</td></tr>
+              <tr><td><code>MakeInstall [并行数]</code></td><td><code>make -jN</code>，失败自动退回串行再 <code>make install</code>；并行数缺省 <code>CPU_NUM</code> → <code>cpu_count</code>。用法：<code>./configure --prefix="${APP_PATH}" &amp;&amp; MakeInstall</code></td></tr>
+            </tbody>
+          </table>
+
+          <p class="sec-sub"><strong>⑤ 版本比较 / 解析</strong></p>
+          <table class="doc-table">
+            <thead><tr><th style="width: 300px">函数</th><th>用法与说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>version_compare &lt;a&gt; &lt;b&gt;</code></td><td>返回 0 相等 / 1 a&gt;b / 2 a&lt;b（点分数字，忽略字母后缀：<code>1.24.0p1</code> 视作 <code>1.24.0</code>）</td></tr>
+              <tr><td><code>version_ge</code> / <code>version_gt</code> / <code>version_lt</code></td><td>基于 <code>version_compare</code> 的快捷判断。用法：<code>version_ge "${APP_VERSION}" "8.4" &amp;&amp; ...</code></td></tr>
+              <tr><td><code>version_field &lt;ver&gt; &lt;段号&gt;</code></td><td>取第 N 段（从 1 起）：<code>version_field 1.1.1w 3</code> → <code>1</code></td></tr>
+              <tr><td><code>version_major &lt;ver&gt;</code> / <code>version_minor &lt;ver&gt;</code></td><td>主 / 次版本号：<code>version_major 1.1.1w</code> → <code>1</code></td></tr>
+              <tr><td><code>version_major_minor &lt;ver&gt;</code></td><td>一次取主次版本，输出 <code>"major minor"</code>。用法：<code>read -r MAJOR MINOR &lt;&lt;&lt;"$(version_major_minor "${APP_OLD_VERSION}")"</code></td></tr>
+            </tbody>
+          </table>
+
+          <p class="sec-sub"><strong>⑥ 配置读写 / 路径安全</strong></p>
+          <table class="doc-table">
+            <thead><tr><th style="width: 300px">函数</th><th>用法与说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>random_password [长度]</code></td><td>生成随机密码（默认 16 位字母数字；<code>openssl</code> → <code>/dev/urandom</code> → <code>sha256sum</code> 三级回退）。用法：<code>DB_PASS="$(random_password 20)"</code></td></tr>
+              <tr><td><code>has_git</code></td><td>系统是否有 git：<code>has_git &amp;&amp; git clone ...</code></td></tr>
+              <tr><td><code>getPropsValue &lt;文件&gt; &lt;key&gt;</code></td><td>读 <code>key=value</code> 属性文件里的值（允许行内注释后的值），无匹配返回空</td></tr>
+              <tr><td><code>yaml_value &lt;文件&gt; &lt;key&gt;</code></td><td>读 YAML <strong>顶层</strong> <code>key: value</code>（只支持简单形式），无匹配返回空</td></tr>
+              <tr><td><code>normalize_dir &lt;path&gt;</code></td><td>去掉末尾多余斜杠（保留根 <code>/</code>，不解析软链），空路径返回 1</td></tr>
+              <tr><td><code>resolve_install_dir &lt;info.yaml&gt; &lt;软链&gt; [键名]</code></td><td>确定安装目录：info 文件里登记的值优先，其次软链指向。用法：<code>resolve_install_dir "${APP_PATH}/info.yaml" "${APPS_DIR}/phpmyadmin"</code></td></tr>
+              <tr><td><code>assert_under_apps_dir &lt;目标&gt; [应用根目录]</code></td><td>路径围栏：目标必须是应用根目录的<strong>直接子目录</strong>，否则拒绝（防误删）；应用根目录缺省取 <code>APPS_DIR</code></td></tr>
+              <tr><td><code>path_under &lt;path&gt; &lt;prefix&gt;</code></td><td>判断路径是否在指定前缀下（删除前的围栏）：<code>path_under "${APPS_DIR}/mysql-8.0" "${APPS_DIR}"</code></td></tr>
+              <tr><td><code>wzap_conf &lt;key&gt; &lt;value&gt;</code></td><td>写 <code>/root/zap.conf</code> 的 <code>key=value</code>（已存在则覆盖）；文件可用 <code>WZAP_CONF_FILE</code> 覆盖，key 仅允许字母数字下划线</td></tr>
             </tbody>
           </table>
 
@@ -450,6 +480,39 @@ source "${ZAP_PATH}/scripts/zap/bash_utils.sh"</pre>
             ② 不要只按包名判断依赖是否就绪——同一库在不同版本里 soname 可能已改名，要用 <code>have_lib</code> 按 soname 复核。
           </el-alert>
           <pre class="code">{{ codes.runtimeDeps }}</pre>
+
+          <el-alert type="danger" :closable="false" class="doc-tip">
+            <strong>踩过的坑：</strong><code>ldconfig -p</code> 每行以 <strong>Tab 开头</strong>，用 <code>${line%% *}</code> 取 soname 会把 Tab 留在名字里
+            （<code>"\tlibaio.so.1t64"</code>），于是永远匹配不上——库明明装着却判成「缺失」，进而误报「缺少 libaio.so.1」。
+            正确做法是用 <code>read -r name rest</code> 分词（自动吃掉前导空白）。另外 <code>ldconfig</code> 在 <code>/sbin</code>，
+            守护进程拉起的脚本 PATH 里常常没有，直接写 <code>ldconfig -p</code> 会「命令未找到」→ 同样误判成缺库。
+          </el-alert>
+
+          <p class="sec-sub"><strong>安装残局与失败重跑</strong></p>
+          <p>
+            系统只在脚本<strong>成功退出</strong>后才写 <code>apps/&lt;cat&gt;/&lt;name&gt;/meta.yaml</code>（面板据此显示「已安装」并可卸载）。
+            若脚本中途失败（如 <code>mysqld --initialize-insecure</code> 缺 <code>libaio.so.1</code>），磁盘上已留下安装目录 / 软链 / 服务单元，
+            而面板仍显示「未安装」→ 卸载按钮不可用；此时脚本若只按「安装目录在不在」守卫并报「已安装」，
+            就形成<strong>装不了也卸不掉</strong>的死锁。约定做法：
+          </p>
+          <ul>
+            <li>以脚本末尾登记的 <code>APP_PATH/info.yaml</code> 为「装完了」的唯一依据（<code>app_install_complete</code>），命中才拒绝重装；</li>
+            <li>目录还在但没登记 = 装了一半的<strong>残局</strong> → 停服务、清目录 / 软链 / 配置后<strong>继续安装</strong>，而不是报错退出；</li>
+            <li>数据目录已初始化（可能含真实数据）时<strong>绝不自动删</strong>，明确报错让人工备份后处理；</li>
+            <li>各步骤做成幂等：已解压就跳过解压、数据目录已初始化就跳过初始化、软链用 <code>ln -sfn</code>、配置只在确有 <code>my.cnf</code> 时才备份。</li>
+          </ul>
+          <table class="doc-table">
+            <thead><tr><th style="width: 300px">函数</th><th>用法与说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>app_install_complete</code></td><td><code>APP_PATH/info.yaml</code> 存在即判「装完了」（info.yaml 由脚本末尾自行登记）</td></tr>
+              <tr><td><code>db_data_initialized &lt;datadir&gt;</code></td><td>数据目录是否已完成初始化（MySQL / MariaDB 通用：<code>mysql</code> 系统库或 InnoDB 系统表空间存在）；<strong>已初始化 = 可能有真实数据，绝不自动删</strong></td></tr>
+              <tr><td><code>remove_path &lt;path&gt;</code></td><td>安全删除（目录 / 文件 / 软链通吃；空路径与 <code>/</code> 一律拒绝，不存在时静默返回 0）</td></tr>
+              <tr><td><code>service_stop_disable &lt;unit&gt;</code></td><td>停止并禁用服务（幂等；systemctl / service / chkconfig 都试，均缺失返回 1）</td></tr>
+            </tbody>
+          </table>
+
+          <p class="sec-sub"><strong>典型脚本骨架（把上面几组函数串起来）</strong></p>
+          <pre class="code">{{ codes.utilsSkeleton }}</pre>
 
           <p class="footnote">本文档与 <code>app.yaml</code> 解析、<code>zapexec/src/verbs/appstore.rs</code> 执行实现保持同步；如有出入以代码为准。</p>
         </main>
@@ -660,8 +723,10 @@ case "\${PKG_MGR}" in
             link_lib_compat libaio.so.1 libaio.so.1t64 \\
                 || { log_error "缺少 libaio.so.1：mysqld 必需"; exit 1; }
         fi
+        # 客户端按 libncurses.so.6 加载；装不上时用已有的 libncursesw.so.6 兜底
         have_lib 'libncurses.so.*' \\
             || pkg_install_any apt libncurses6 libncurses5 \\
+            || link_lib_compat libncurses.so.6 libncursesw.so.6 \\
             || { log_error "缺少 libncurses：mysql 客户端必需"; exit 1; }
         ;;
     dnf | yum)
@@ -673,6 +738,42 @@ case "\${PKG_MGR}" in
         log_warn "未识别的包管理器：请自行确认依赖已安装"
         ;;
 esac
+`,
+  utilsSkeleton: `#!/bin/bash
+set -euo pipefail
+source "\${ZAP_PATH}/scripts/zap/bash_utils.sh"
+
+# 1) 装完了就别重装(残局另见下文:目录在但没登记 = 装了一半)
+if app_install_complete; then
+    log_info "\${APP_NAME} 已安装,跳过"
+    exit 0
+fi
+
+# 2) 前置:运行用户 + 关键目录 + 首次系统编译依赖
+prepare_install_env mysql
+
+# 3) 下载 → 解压(下不到就中止,没必要继续)
+download_file "\${PKG_URL}" "\${PKG_PATH}/pkg.tar.gz"
+extract_archive "\${PKG_PATH}/pkg.tar.gz" "\${BUILD_PATH}"
+
+# 4) 编译(并行失败自动回退串行)
+cd "\${BUILD_PATH}/xxx"
+./configure --prefix="\${APP_PATH}"
+MakeInstall
+
+# 5) 按版本走分支(点分版本比较,忽略字母后缀)
+if version_ge "\${APP_VERSION}" "8.4"; then
+    log_info "8.4+ 走新参数"
+fi
+
+# 6) 初始化(幂等:已初始化就跳过;已初始化的数据目录绝不自动删)
+if ! db_data_initialized "\${DATA_DIR}"; then
+    "\${APP_PATH}/bin/mysqld" --initialize-insecure --user=mysql
+fi
+
+# 7) 登记:写完 info.yaml 之后 app_install_complete 才为真
+printf 'version: %s\\ninstall_dir: %s\\n' "\${APP_VERSION}" "\${APP_PATH}" > "\${APP_PATH}/info.yaml"
+log_ok "安装完成: \${APP_PATH}"
 `,
 }
 </script>
