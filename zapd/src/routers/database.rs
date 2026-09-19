@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
-use crate::zap::jwt::{self, is_admin, ValidatedClaims};
+use crate::zap::jwt::{self, ValidatedClaims, is_admin};
 
 /// 凭据坐标（与 `zapctl cred show mysql zapadm` 一致）
 const CRED_SERVICE: &str = "mysql";
@@ -569,7 +569,15 @@ fn schema_exists(name: &str) -> bool {
 pub(crate) fn db_port() -> u16 {
     run_sql("SELECT @@port")
         .ok()
-        .and_then(|s| s.trim().lines().next().unwrap_or_default().trim().parse().ok())
+        .and_then(|s| {
+            s.trim()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .parse()
+                .ok()
+        })
         .unwrap_or(DEFAULT_PORT)
 }
 

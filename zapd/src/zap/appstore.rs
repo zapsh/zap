@@ -360,8 +360,8 @@ mod tests {
     /// 因此在这里钉住它的关键声明。
     #[test]
     fn sample_wordpress_package_declares_provision() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../data/appstore/repos/zap-appstore");
+        let repo =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/appstore/repos/zap-appstore");
         let app = parse_app_yaml(&repo.join("webapps/wordpress/app.yaml"))
             .expect("样板包 app.yaml 解析失败");
         assert_eq!(app.category.as_deref(), Some("webapps"));

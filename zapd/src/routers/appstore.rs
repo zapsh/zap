@@ -77,7 +77,11 @@ fn save_provision(pkg_path: &str, env: &BTreeMap<String, String>) {
         Err(_) => return,
     };
     use std::io::Write;
-    let _ = f.write_all(serde_json::to_string_pretty(env).unwrap_or_default().as_bytes());
+    let _ = f.write_all(
+        serde_json::to_string_pretty(env)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
 }
 
 /// 读取上次安装的编排结果（卸载 / 升级复用同一站点与库）。
@@ -111,7 +115,10 @@ async fn provision_for(
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                ZapError::New(-1, format!("缺少安装选项 {opt_name}：建站包需要目标站点域名"))
+                ZapError::New(
+                    -1,
+                    format!("缺少安装选项 {opt_name}：建站包需要目标站点域名"),
+                )
             })?;
         let s = crate::routers::site::provision_site(
             claims,
@@ -156,7 +163,10 @@ async fn provision_for(
         if let Some(p) = created.password {
             env.insert("DB_PASS".into(), p);
         }
-        env.insert("DB_HOST".into(), crate::routers::database::DB_HOST.to_string());
+        env.insert(
+            "DB_HOST".into(),
+            crate::routers::database::DB_HOST.to_string(),
+        );
         env.insert(
             "DB_PORT".into(),
             crate::routers::database::db_port().to_string(),

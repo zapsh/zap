@@ -170,7 +170,10 @@ fn build_dir(run_id: &str) -> PathBuf {
 /// 与 options 的区别：这些值由面板产生、可能含数据库密码，因此**不写进
 /// options.env / options.json**（那两个文件是给用户查看编辑的），只进子进程 env；
 /// 键名由面板给出（`SITE_*` / `DB_*`），这里只做基本的名字合法性校验。
-fn push_provision_env(env: &mut Vec<(String, String)>, provision: Option<&BTreeMap<String, String>>) {
+fn push_provision_env(
+    env: &mut Vec<(String, String)>,
+    provision: Option<&BTreeMap<String, String>>,
+) {
     let Some(map) = provision else {
         return;
     };
@@ -221,7 +224,9 @@ fn prepare_snapshot(run_id: &str, pkg_dir: &Path, spec: &Value) -> Result<PathBu
         .map_err(|e| e.to_string())?;
     let _ = std::io::Write::write_all(
         &mut f,
-        serde_json::to_string_pretty(spec).unwrap_or_default().as_bytes(),
+        serde_json::to_string_pretty(spec)
+            .unwrap_or_default()
+            .as_bytes(),
     );
     Ok(dst)
 }
@@ -1695,8 +1700,7 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                         interpreter,
                     });
                 } else {
-                    let (u_script, u_interp) =
-                        script_file(&snapshot, "uninstall", "uninstall.sh")?;
+                    let (u_script, u_interp) = script_file(&snapshot, "uninstall", "uninstall.sh")?;
                     steps.push(ScriptStep {
                         script: u_script,
                         env: env.clone(),

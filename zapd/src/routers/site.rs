@@ -2986,21 +2986,14 @@ pub(crate) async fn provision_site(
         group_scope_cond("s.user_id")
     );
     let found: Option<ProvisionSiteRow> = sqlx::query_as(&sql)
-            .bind(&d)
-            .bind(gid)
-            .bind(USER_KIND_MEMBER)
-            .bind(gid)
-            .fetch_optional(pool)
-            .await?;
+        .bind(&d)
+        .bind(gid)
+        .bind(USER_KIND_MEMBER)
+        .bind(gid)
+        .fetch_optional(pool)
+        .await?;
     if let Some((id, root, php, username, linux_user)) = found {
-        return Ok(provisioned_site_of(
-            id,
-            d,
-            root,
-            php,
-            username,
-            linux_user,
-        ));
+        return Ok(provisioned_site_of(id, d, root, php, username, linux_user));
     }
 
     if matches!(
@@ -3009,7 +3002,9 @@ pub(crate) async fn provision_site(
     ) {
         return Err(ZapError::New(
             -1,
-            format!("站点 {d} 不存在：请先在「站点」中创建该站点，或把包改为 provision.site.mode: create"),
+            format!(
+                "站点 {d} 不存在：请先在「站点」中创建该站点，或把包改为 provision.site.mode: create"
+            ),
         ));
     }
 
@@ -3040,10 +3035,7 @@ pub(crate) async fn provision_site(
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| "none".to_string());
     if !PSEUDO_PRESETS.contains(&pseudo.as_str()) {
-        return Err(ZapError::New(
-            -1,
-            format!("伪静态预设不支持：{pseudo}"),
-        ));
+        return Err(ZapError::New(-1, format!("伪静态预设不支持：{pseudo}")));
     }
     let now = chrono::Local::now().timestamp();
     let mut tx = pool.begin().await?;
@@ -3081,7 +3073,19 @@ pub(crate) async fn provision_site(
     }
     tx.commit().await?;
     let _ = save_profile(
-        id, "php", &pseudo, "", false, &[], &[], 0, false, "", "", false, false,
+        id,
+        "php",
+        &pseudo,
+        "",
+        false,
+        &[],
+        &[],
+        0,
+        false,
+        "",
+        "",
+        false,
+        false,
     )
     .await;
     // vhost 同步失败不阻断：站点已入库，用户可在站点页重新同步
@@ -3089,21 +3093,17 @@ pub(crate) async fn provision_site(
         warn!("provision 建站后 vhost 同步失败 (id={id}): {e}");
     }
 
-    let row: Option<(String, String)> = sqlx::query_as("SELECT username, linux_user FROM user WHERE id = ?")
-        .bind(owner)
-        .fetch_optional(pool)
-        .await?;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT username, linux_user FROM user WHERE id = ?")
+            .bind(owner)
+            .fetch_optional(pool)
+            .await?;
     let (username, linux_user) = match row {
         Some((u, l)) => (Some(u), Some(l)),
         None => (None, None),
     };
     Ok(provisioned_site_of(
-        id,
-        d,
-        web_root,
-        php,
-        username,
-        linux_user,
+        id, d, web_root, php, username, linux_user,
     ))
 }
 
