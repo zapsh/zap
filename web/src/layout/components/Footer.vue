@@ -21,6 +21,9 @@
         Web v{{ WEB_VERSION }}
       </span>
     </template>
+    <!-- 文档：入口已整合进「系统设置 → About ZAP」，这里只留常驻直达链接 -->
+    <span class="sep">·</span>
+    <span class="docs-link verlink" @click="goAbout">{{ t('layout.docs') }}</span>
     <span class="copyright">© {{ year }}</span>
   </div>
 </template>
@@ -67,6 +70,11 @@ onMounted(async () => {
 function goUpdate() {
   if (canGoUpdate.value) router.push('/system/update')
 }
+
+/** 文档入口（系统设置 → About ZAP）：所有角色可见 */
+function goAbout() {
+  router.push('/system/about')
+}
 </script>
 
 <style scoped>
@@ -106,6 +114,10 @@ function goUpdate() {
 
 .no-cursor {
   cursor: default;
+}
+
+.docs-link {
+  color: var(--el-color-primary);
 }
 
 .copyright {

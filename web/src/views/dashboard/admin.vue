@@ -133,7 +133,7 @@
             </el-descriptions-item>
           </el-descriptions>
           <div class="about-actions">
-            <el-link type="primary" underline="never" @click="go('/docs/manual')">
+            <el-link type="primary" underline="never" @click="go('/system/about')">
               {{ t('dashboardAdmin.docs') }}
             </el-link>
             <el-link type="primary" underline="never" @click="go('/dev/api-docs')">

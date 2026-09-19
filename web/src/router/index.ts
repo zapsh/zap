@@ -69,6 +69,45 @@ export const constantRoutes: Array<RouteRecordRaw> = [
       },
     ],
   },
+  // 文档正文（CHANGELOG / 用户手册 / FAQ / 升级指南）
+  //
+  // 侧栏入口已整合进「系统设置 → About ZAP」（`/system/about`），这里只保留
+  // **路由**并 hidden：About 页与旧链接 `/docs/<id>` 始终可达，但不再占用侧边栏。
+  {
+    path: '/docs',
+    component: Layout,
+    redirect: '/system/about',
+    // title 只为面包屑服务（侧栏由后端 menus 下发，不看 constantRoutes）
+    meta: { hidden: true, title: '文档' },
+    children: [
+      // 旧着陆页 /docs/index 直接送到 About ZAP
+      { path: 'index', redirect: '/system/about', meta: { hidden: true } },
+      {
+        path: 'changelog',
+        name: 'DocsChangelog',
+        component: () => import('@/views/docs/doc.vue'),
+        meta: { title: '更新日志', hidden: true },
+      },
+      {
+        path: 'manual',
+        name: 'DocsManual',
+        component: () => import('@/views/docs/doc.vue'),
+        meta: { title: '用户手册', hidden: true },
+      },
+      {
+        path: 'faq',
+        name: 'DocsFaq',
+        component: () => import('@/views/docs/doc.vue'),
+        meta: { title: 'FAQ', hidden: true },
+      },
+      {
+        path: 'upgrade',
+        name: 'DocsUpgrade',
+        component: () => import('@/views/docs/doc.vue'),
+        meta: { title: '升级指南', hidden: true },
+      },
+    ],
+  },
 ]
 
 // 动态路由，基于用户权限动态加载
@@ -118,6 +157,12 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         name: 'SystemTasks',
         component: () => import('@/views/system/tasks/index.vue'),
         meta: { title: '任务队列', icon: 'material-symbols:view-list' },
+      },
+      {
+        path: 'about',
+        name: 'SystemAbout',
+        component: () => import('@/views/system/about/index.vue'),
+        meta: { title: 'About ZAP', icon: 'material-symbols:info' },
       },
     ],
   },
@@ -300,48 +345,6 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         name: 'Terminal',
         component: () => import('@/views/terminal/index.vue'),
         meta: { title: '终端', icon: 'material-symbols:monitor', affix: true },
-      },
-    ],
-  },
-  // 文档（Layout 包裹 + 一级直链：admin / user / reseller / demo）
-  // 四份 md 共享一个 doc.vue 组件，靠 `route.path` 末段区分：
-  // /docs/changelog · /docs/manual · /docs/faq · /docs/upgrade。
-  // 即使后端菜单接口挂了回退到本表，也能完整打开文档。
-  {
-    path: '/docs',
-    component: Layout,
-    redirect: '/docs/index',
-    meta: { title: '文档', icon: 'material-symbols:menu-book', roles: ['admin', 'user', 'reseller', 'demo'] },
-    children: [
-      {
-        path: 'index',
-        name: 'Docs',
-        component: () => import('@/views/docs/index.vue'),
-        meta: { title: '文档概览', icon: 'material-symbols:menu-book', affix: true },
-      },
-      {
-        path: 'changelog',
-        name: 'DocsChangelog',
-        component: () => import('@/views/docs/doc.vue'),
-        meta: { title: '更新日志', icon: 'material-symbols:history' },
-      },
-      {
-        path: 'manual',
-        name: 'DocsManual',
-        component: () => import('@/views/docs/doc.vue'),
-        meta: { title: '用户手册', icon: 'material-symbols:book' },
-      },
-      {
-        path: 'faq',
-        name: 'DocsFaq',
-        component: () => import('@/views/docs/doc.vue'),
-        meta: { title: 'FAQ', icon: 'material-symbols:help' },
-      },
-      {
-        path: 'upgrade',
-        name: 'DocsUpgrade',
-        component: () => import('@/views/docs/doc.vue'),
-        meta: { title: '升级指南', icon: 'material-symbols:upgrade' },
       },
     ],
   },

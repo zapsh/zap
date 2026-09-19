@@ -97,6 +97,8 @@ const enUS: Messages = {
     tagsCloseAll: 'Close all',
     goUpdateTip: 'System Settings → System Update',
     demoTip: 'Demo accounts are read-only. No actions can be performed.',
+    // Persistent footer entry: docs now live under System Settings → About ZAP
+    docs: 'Docs',
   },
 
   menu: {
@@ -122,6 +124,8 @@ const enUS: Messages = {
     team: 'Team',
     'team-index': 'Team',
     docs: 'Docs',
+    // About ZAP (backend menus id=30, under System Settings; absorbed the old Docs menu)
+    about: 'About ZAP',
     profile: 'Profile',
     messages: 'Messages',
     'zap-config': 'Zap Settings',

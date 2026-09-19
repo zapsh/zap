@@ -2,9 +2,10 @@
 /**
  * 单篇文档渲染页。
  *
- * 与 `views/docs/index.vue`（卡片列表）共用同一组件，根据路由末段
+ * 四份 md 共用本组件，根据路由末段
  * (`/docs/changelog` · `/docs/manual` · `/docs/faq` · `/docs/upgrade`)
- * 决定拉哪一份 md。
+ * 决定拉哪一份 md。入口在「系统设置 → About ZAP」(`/system/about`)，
+ * 本路由在 constantRoutes 里以 hidden 常驻，只保证链接可达。
  *
  * 后端已经把 md 渲染为 HTML 片段，这里直接 `v-html` 展示。
  * 样式靠 `:deep(.docs-md ...)` 限制作用域，只对 Markdown 内容生效，
@@ -81,7 +82,8 @@ onMounted(async () => {
 watch([docId, () => locale.value], () => load())
 
 function back() {
-  router.push('/docs/index')
+  // 文档入口已整合进「系统设置 → About ZAP」
+  router.push('/system/about')
 }
 </script>
 

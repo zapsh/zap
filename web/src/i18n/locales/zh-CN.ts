@@ -102,6 +102,8 @@ export default {
     tagsCloseAll: '关闭所有',
     goUpdateTip: '系统设置 → 系统更新',
     demoTip: '演示账号仅支持浏览，不能执行任何操作',
+    // 页脚常驻入口：文档已整合进「系统设置 → About ZAP」
+    docs: '文档',
   },
 
   /**
@@ -137,6 +139,8 @@ export default {
     team: '团队成员',
     'team-index': '团队成员',
     docs: '文档',
+    // About ZAP（后端 menus id=30，位于「系统设置」下，整合了原「文档」菜单）
+    about: 'About ZAP',
     // 二级
     // 备注：这些标题同时被 translateTitle 用作「中文原文 → key」的反查源，
     // 静态路由（router/index.ts）里的中文标题也靠它翻译，改动文案前先确认路由里的写法。

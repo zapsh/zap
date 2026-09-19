@@ -446,6 +446,42 @@ async fn sync_added_menus() {
     )
     .execute(pool)
     .await;
+
+    // About ZAP（版本信息 + 文档入口）：原侧栏「文档」一级菜单（16 / 161-164）
+    // 已整合进来，挂在「系统设置」下只留一个入口。
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO menus
+            (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+         SELECT 30, 2, 'about', 'about', 'system/about/index', 'menu', 'About ZAP',
+                'material-symbols:info', 0, 'admin,user,reseller,demo', 9, 1,
+                strftime('%s','now'), strftime('%s','now')
+         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 2)",
+    )
+    .execute(pool)
+    .await;
+    // 文档 md 无敏感信息，沿用原「文档」菜单的授权集合（admin/user/reseller/demo），
+    // 避免普通用户升级后找不到文档。
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+         SELECT role_id, 30 FROM role_menus WHERE menu_id = 16",
+    )
+    .execute(pool)
+    .await;
+    // 父目录也要一并授权：子菜单授权父不授权时，整棵子树在 build_menu_tree 里消失。
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+         SELECT role_id, 2 FROM role_menus WHERE menu_id = 16",
+    )
+    .execute(pool)
+    .await;
+    // 旧「文档」菜单整组隐藏：菜单保留（菜单管理里仍可查到），路由 /docs/<id> 由前端
+    // 以隐藏路由常驻，旧链接不会 404。
+    let _ = sqlx::query(
+        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now')
+         WHERE id IN (16, 161, 162, 163, 164) AND hidden <> 1",
+    )
+    .execute(pool)
+    .await;
 }
 
 async fn init_menus_table() {
