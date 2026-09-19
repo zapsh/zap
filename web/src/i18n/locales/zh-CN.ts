@@ -125,7 +125,6 @@ export default {
     automation: '脚本/自动化',
     'ssl-tls': 'SSL/TLS',
     dev: '开发',
-    services: '服务配置',
     database: '数据库',
     crontab: '计划任务',
     // 顶部独立 /crontab（src/zap-d/src/db/init_db.rs id=151）叶子用「定时任务」作 title，
@@ -159,6 +158,8 @@ export default {
     'server-monitor': 'Server Monitor',
     process: '进程管理',
     'system-service': '系统服务',
+    // 服务配置（后端 menus id=82，位于「服务器配置」下，页面内 nav pill 切换各服务）
+    'server-service-conf': '服务配置',
     runtime: '运行环境',
     'sync-runtime': '同步运行环境',
     'php-config': 'PHP 配置',
@@ -1733,6 +1734,13 @@ export default {
     procMaster: '主进程',
     procWorkers: '工作进程',
     procCache: '缓存进程',
+  },
+
+  /** 服务配置页（服务器配置 → 服务配置：nav pill 切换各项服务） */
+  serviceConf: {
+    nginx: 'Nginx',
+    php: 'PHP',
+    mysql: 'MySQL / MariaDB',
   },
 
   /** 服务配置 - 通用（ServiceConfPage） */

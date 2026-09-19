@@ -509,42 +509,33 @@ async fn init_menus_table() {
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (27, 2, 'system-update', 'update', 'system/update/index', 'menu', '系统更新', 'material-symbols:refresh', 1, 'admin', 8, 1, strftime('%s','now'), strftime('%s','now'));
 
-    -- Server config dir（服务器配置，紧随服务配置之后；运维项）
+    -- Server config dir（服务器配置：运维项；原「服务配置」一级菜单已并入其中）
     INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (7, 0, 'server', '/server', 'Layout', '/server/time', 'dir', '服务器配置', 'material-symbols:tune', 1, 'admin', 10, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- Service config dir（服务配置：运行服务（应用商店安装）的配置页，位于服务器配置上方）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (13, 0, 'services', '/services', 'Layout', '/services/nginx', 'dir', '服务配置', 'material-symbols:dns', 1, 'admin', 9, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (131, 13, 'service-nginx', 'nginx', 'services/nginx/index', 'menu', 'Nginx 配置', 'material-symbols:description', 1, 'admin', 1, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (132, 13, 'service-php', 'php', 'services/php/index', 'menu', 'PHP 配置', 'material-symbols:database', 1, 'admin', 2, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (133, 13, 'service-mysql', 'mysql', 'services/mysql/index', 'menu', 'MySQL / MariaDB', 'material-symbols:analytics', 1, 'admin', 3, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (135, 13, 'service-docker', 'docker', 'services/docker/index', 'menu', 'Docker 服务', 'material-symbols:deployed-code', 1, 'admin', 5, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (7, 0, 'server', '/server', 'Layout', '/server/time', 'dir', '服务器配置', 'material-symbols:tune', 1, 'admin', 9, 1, strftime('%s','now'), strftime('%s','now'));
 
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (71, 7, 'server-time', 'time', 'server/time/index', 'menu', '服务器时间', 'material-symbols:schedule', 1, 'admin', 1, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (72, 7, 'server-services', 'services', 'server/services/index', 'menu', '系统服务', 'material-symbols:build', 1, 'admin', 2, 1, strftime('%s','now'), strftime('%s','now'));
+    -- 服务配置：Nginx / PHP / MySQL 的配置合到一页，页面内用 nav pill 切换
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (73, 7, 'server-ssh', 'ssh', 'server/ssh/index', 'menu', 'SSH 服务', 'material-symbols:cable', 1, 'admin', 3, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (82, 7, 'server-service-conf', 'service-conf', 'server/service-conf/index', 'menu', '服务配置', 'material-symbols:dns', 1, 'admin', 3, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (74, 7, 'server-process', 'process', 'server/process/index', 'menu', '进程管理', 'material-symbols:memory', 1, 'admin', 4, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (73, 7, 'server-ssh', 'ssh', 'server/ssh/index', 'menu', 'SSH 服务', 'material-symbols:cable', 1, 'admin', 4, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (75, 7, 'server-network', 'network', 'server/network/index', 'menu', '网络设置', 'material-symbols:link', 1, 'admin', 5, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (74, 7, 'server-process', 'process', 'server/process/index', 'menu', '进程管理', 'material-symbols:memory', 1, 'admin', 5, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (76, 7, 'server-ip', 'ip', 'server/ip/index', 'menu', 'IP 设置', 'material-symbols:badge', 1, 'admin', 6, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (75, 7, 'server-network', 'network', 'server/network/index', 'menu', '网络设置', 'material-symbols:link', 1, 'admin', 6, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (80, 7, 'server-firewall', 'firewall', 'server/firewall/index', 'menu', '防火墙', 'material-symbols:lock', 1, 'admin', 7, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (76, 7, 'server-ip', 'ip', 'server/ip/index', 'menu', 'IP 设置', 'material-symbols:badge', 1, 'admin', 7, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (77, 7, 'server-env', 'env', 'server/env/index', 'menu', '运行环境', 'material-symbols:auto-fix-high', 1, 'admin', 8, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (80, 7, 'server-firewall', 'firewall', 'server/firewall/index', 'menu', '防火墙', 'material-symbols:lock', 1, 'admin', 8, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (78, 7, 'server-entities', 'entities', 'server/entities/index', 'menu', '同步运行环境', 'material-symbols:account-circle', 1, 'admin', 9, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (77, 7, 'server-env', 'env', 'server/env/index', 'menu', '运行环境', 'material-symbols:auto-fix-high', 1, 'admin', 9, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (79, 7, 'server-migrate', 'migrate', 'server/migrate/index', 'menu', '数据迁移', 'material-symbols:sort', 1, 'admin', 10, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (78, 7, 'server-entities', 'entities', 'server/entities/index', 'menu', '同步运行环境', 'material-symbols:account-circle', 1, 'admin', 10, 1, strftime('%s','now'), strftime('%s','now'));
+    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
+    VALUES (79, 7, 'server-migrate', 'migrate', 'server/migrate/index', 'menu', '数据迁移', 'material-symbols:sort', 1, 'admin', 11, 1, strftime('%s','now'), strftime('%s','now'));
 
     -- Terminal（Layout 包裹 + 一级直链：单个子菜单）
     INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
@@ -693,10 +684,11 @@ async fn init_role_menus_table() {
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 8);
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 81);
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 87);
-    -- Server config: admin 专属（Nginx 配置已移入服务配置）
+    -- Server config: admin 专属（服务配置已并入其中，见菜单 82）
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 7);
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 71);
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 72);
+    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 82);
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 73);
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 74);
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 75);
@@ -724,12 +716,6 @@ async fn init_role_menus_table() {
     INSERT INTO role_menus (role_id, menu_id) VALUES (2, 11);
     INSERT INTO role_menus (role_id, menu_id) VALUES (2, 111);
     INSERT INTO role_menus (role_id, menu_id) VALUES (2, 112);
-    -- 服务配置（Nginx/PHP/MySQL 与 MariaDB 合一/Docker）：仅 admin
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 13);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 131);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 132);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 133);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 135);
     -- 已安装应用：admin / user / reseller
     INSERT INTO role_menus (role_id, menu_id) VALUES (1, 62);
     INSERT INTO role_menus (role_id, menu_id) VALUES (2, 62);

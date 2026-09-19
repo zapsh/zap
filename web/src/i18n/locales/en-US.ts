@@ -112,7 +112,6 @@ const enUS: Messages = {
     automation: 'Scripts / Automation',
     'ssl-tls': 'SSL/TLS',
     dev: 'Development',
-    services: 'Service Config',
     database: 'Databases',
     crontab: 'Scheduled Tasks',
     'crontab-index': 'Cron Jobs',
@@ -141,6 +140,8 @@ const enUS: Messages = {
     'server-monitor': 'Server Monitor',
     process: 'Processes',
     'system-service': 'System Services',
+    // Service config (backend menus id=82, under Server config; nav pills per service)
+    'server-service-conf': 'Service Config',
     runtime: 'Runtime',
     'sync-runtime': 'Sync Runtime',
     'php-config': 'PHP Config',
@@ -1736,6 +1737,13 @@ const enUS: Messages = {
     procMaster: 'Master process',
     procWorkers: 'Worker processes',
     procCache: 'Cache processes',
+  },
+
+  /** Service config page (Server config → Service config: nav pills per service) */
+  serviceConf: {
+    nginx: 'Nginx',
+    php: 'PHP',
+    mysql: 'MySQL / MariaDB',
   },
 
   /** Service config - shared (ServiceConfPage) */

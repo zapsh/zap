@@ -203,44 +203,6 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
       },
     ],
   },
-  // 服务配置（各运行服务的配置：应用商店安装后可用；未安装时页面引导）
-  {
-    path: '/services',
-    component: Layout,
-    redirect: '/services/nginx',
-    meta: { title: '服务配置', icon: 'material-symbols:dns', roles: ['admin'] },
-    children: [
-      {
-        path: 'nginx',
-        name: 'ServiceNginx',
-        component: () => import('@/views/services/nginx/index.vue'),
-        meta: { title: 'Nginx 配置', icon: 'material-symbols:description', affix: true },
-      },
-      {
-        path: 'php',
-        name: 'ServicePhp',
-        component: () => import('@/views/services/php/index.vue'),
-        meta: { title: 'PHP 配置', icon: 'material-symbols:database', affix: true },
-      },
-      {
-        path: 'mysql',
-        name: 'ServiceMysql',
-        component: () => import('@/views/services/mysql/index.vue'),
-        meta: { title: 'MySQL / MariaDB', icon: 'material-symbols:analytics', affix: true },
-      },
-      // 旧入口 /services/mariadb 保留跳转（页面已合并为 MySQL / MariaDB）
-      {
-        path: 'mariadb',
-        redirect: '/services/mysql',
-      },
-      {
-        path: 'docker',
-        name: 'ServiceDocker',
-        component: () => import('@/views/services/docker/index.vue'),
-        meta: { title: 'Docker 服务', icon: 'material-symbols:deployed-code', affix: true },
-      },
-    ],
-  },
   // 服务器配置
   {
     path: '/server',
@@ -259,6 +221,13 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         name: 'ServerServices',
         component: () => import('@/views/server/services/index.vue'),
         meta: { title: '系统服务', icon: 'material-symbols:build', affix: true },
+      },
+      // 服务配置：Nginx / PHP / MySQL 各自的配置，页面内用 nav pill 切换
+      {
+        path: 'service-conf',
+        name: 'ServerServiceConf',
+        component: () => import('@/views/server/service-conf/index.vue'),
+        meta: { title: '服务配置', icon: 'material-symbols:dns', affix: true },
       },
       {
         path: 'ssh',
