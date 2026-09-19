@@ -354,6 +354,33 @@ mod tests {
         );
         assert!(!crate::zap::task::user_visible(&alice, "bob").await.unwrap());
     }
+
+    /// 仓库自带的 WordPress 样板包（`webapps/wordpress`）是「建站 + 建库编排」的
+    /// 参考实现：字段写错会让 provision 静默失效（脚本拿不到站点与库），
+    /// 因此在这里钉住它的关键声明。
+    #[test]
+    fn sample_wordpress_package_declares_provision() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../data/appstore/repos/zap-appstore");
+        let app = parse_app_yaml(&repo.join("webapps/wordpress/app.yaml"))
+            .expect("样板包 app.yaml 解析失败");
+        assert_eq!(app.category.as_deref(), Some("webapps"));
+        assert_eq!(app.run_as.as_deref(), Some("user"));
+        assert_eq!(app.scope.as_deref(), Some("site"));
+
+        let provision = app.provision.expect("缺少 provision 声明");
+        let site = provision.site.expect("缺少 provision.site");
+        assert_eq!(site.domain_option.as_deref(), Some("SITE_DOMAIN"));
+        assert_eq!(site.mode.as_deref(), Some("create"));
+        let db = provision.database.expect("缺少 provision.database");
+        assert_eq!(db.name.as_deref(), Some("wp"));
+        assert_eq!(db.charset.as_deref(), Some("utf8mb4"));
+
+        // 脚本用 python 编写：解释器按扩展名推导为 python3
+        let scripts = app.scripts.expect("缺少 scripts").to_string();
+        assert!(scripts.contains("install.py"), "实际: {scripts}");
+        assert!(scripts.contains("uninstall.py"), "实际: {scripts}");
+    }
 }
 
 /// 后台监控日志直到出现 `__ZAP_DONE__ <code>`，随后更新运行状态。

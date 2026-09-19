@@ -22,3 +22,6 @@ data/backups/
 data/users/
 data/server_env.yaml
 data/update_config.yaml
+# Python 脚本运行/编译产物
+__pycache__/
+*.pyc

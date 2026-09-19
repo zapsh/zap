@@ -372,6 +372,7 @@ render(os.path.join(env_required("PKG_SRC_PATH"), "wp-config.php.tpl"),
 write_info(env_required("APP_PATH"), domain=env("SITE_DOMAIN"),
            site_root=root, version=env("APP_VERSION"), db=env("DB_NAME"))</pre>
           <ul>
+            <li><strong>完整样板</strong>：<code>data/appstore/repos/zap-appstore/webapps/wordpress/</code>（<code>app.yaml</code> + <code>install.py</code> + <code>uninstall.py</code> + <code>upgrade.py</code> + <code>wp-config.php.tpl</code>），可直接照抄结构改自己的包。</li>
             <li><strong>卸载默认不删库</strong>：库里可能有用户数据，脚本可在 <code>uninstall.sh</code> 里自行决定是否 <code>drop</code>（已回传 <code>DB_*</code>）。</li>
             <li><strong>不要尝试自己建库</strong>：脚本没有 <code>zapadm</code> 凭据，也不要把凭据写进包里——那会绕过套餐配额与多租户隔离。</li>
             <li><strong>密码处理</strong>：只从 <code>$DB_PASS</code> 读取、写进配置文件后不再出现；日志里用 <code>mask()</code>；<code>wp-config.php</code> 建议 <code>chmod 640</code>。</li>
