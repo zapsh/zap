@@ -198,7 +198,14 @@ pub async fn container_action(
 }
 
 /// 是否持有某个动作级权限点（与访问守卫同源，避免两处判定不一致）。
+///
+/// 只读账号（`user.read_only`）只看收敛后的生效权限：角色默认权限不再兜底，
+/// 否则「角色 ∪ 用户」的并集会让角色自带的权限点整体绕过只读。
 async fn has_perm(claims: &ValidatedClaims, key: &str) -> bool {
+    if crate::routers::access::user_is_read_only(claims.id).await {
+        let user_map = crate::routers::access::user_perm_map().await;
+        return crate::routers::access::user_has_perm(user_map.as_ref(), claims.id, key);
+    }
     let role_map = crate::routers::access::perm_map().await;
     if crate::routers::access::role_has_perm(role_map.as_ref(), claims, key) {
         return true;

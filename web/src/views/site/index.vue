@@ -234,6 +234,8 @@ const userStore = useUserStore()
 const canManageAll = computed(
   () => userStore.roles.includes('admin') || userStore.roles.includes('reseller'),
 )
+// 只读账号（或演示账号）：写操作直接禁用，避免点了才收到后端的拒绝提示
+const readonly = computed(() => userStore.readOnly || userStore.roles.includes('demo'))
 // 归属用户（普通用户新增/编辑时固定为当前登录用户）
 const currentUserName = computed(
   () => `${userStore.userInfo.nickname}（${userStore.userInfo.username}）`,
@@ -1346,12 +1348,12 @@ onMounted(() => {
             type="danger"
             plain
             :icon="Delete"
-            :disabled="!selection.length"
+            :disabled="readonly || !selection.length"
             @click="removeRows(selection)"
           >
             {{ t('site.deleteSelected') }}
           </el-button>
-          <el-button type="primary" :icon="Plus" @click="openAdd">{{
+          <el-button type="primary" :icon="Plus" :disabled="readonly" @click="openAdd">{{
             t('site.addSite')
           }}</el-button>
         </div>
@@ -1559,15 +1561,15 @@ onMounted(() => {
                     link
                     type="primary"
                     :loading="syncingId === row.id"
-                    :disabled="syncingId !== 0 && syncingId !== row.id"
+                    :disabled="readonly || (syncingId !== 0 && syncingId !== row.id)"
                     @click="syncSite(row.id)"
                   >
                     {{ isSyncFailed(row) ? t('site.retry') : t('site.sync') }}
                   </el-button>
-                  <el-button link type="primary" @click="openEdit(row)">{{
+                  <el-button link type="primary" :disabled="readonly" @click="openEdit(row)">{{
                     t('common.edit')
                   }}</el-button>
-                  <el-button link type="danger" @click="removeRows([row])">{{
+                  <el-button link type="danger" :disabled="readonly" @click="removeRows([row])">{{
                     t('common.delete')
                   }}</el-button>
                 </div>
@@ -1678,7 +1680,7 @@ onMounted(() => {
                 class="icon-btn"
                 :icon="Refresh"
                 :loading="syncingId === row.id"
-                :disabled="syncingId !== 0 && syncingId !== row.id"
+                :disabled="readonly || (syncingId !== 0 && syncingId !== row.id)"
                 @click.stop="syncSite(row.id)"
               />
             </el-tooltip>
@@ -1688,6 +1690,7 @@ onMounted(() => {
                 type="primary"
                 class="icon-btn"
                 :icon="Edit"
+                :disabled="readonly"
                 @click.stop="openEdit(row)"
               />
             </el-tooltip>
@@ -1697,6 +1700,7 @@ onMounted(() => {
                 type="danger"
                 class="icon-btn"
                 :icon="Delete"
+                :disabled="readonly"
                 @click.stop="removeRows([row])"
               />
             </el-tooltip>
@@ -2378,7 +2382,7 @@ onMounted(() => {
       </el-form>
       <template #footer>
         <el-button @click="formVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="formLoading" @click="submitForm">{{
+        <el-button type="primary" :loading="formLoading" :disabled="readonly" @click="submitForm">{{
           t('common.save')
         }}</el-button>
       </template>

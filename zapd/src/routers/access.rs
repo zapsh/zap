@@ -1170,9 +1170,12 @@ fn user_cache_slot() -> &'static RwLock<Option<Arc<UserPermMap>>> {
     USER_PERM_CACHE.get_or_init(|| RwLock::new(None))
 }
 
-/// 用户新增 / 修改 / 删除后调用。
+/// 用户新增 / 修改 / 删除后调用（只读标记随之一起失效）。
 pub fn invalidate_user_perm_cache() {
     if let Ok(mut guard) = user_cache_slot().write() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = readonly_slot().write() {
         *guard = None;
     }
 }
@@ -1289,6 +1292,70 @@ pub async fn user_perm_map() -> Arc<UserPermMap> {
     map
 }
 
+// ── 只读账号 ───────────────────────────────────────────────
+//
+// `user.read_only=1` 的账号「共享可见但不能改」。生效权限已在
+// `load_user_perm_map` 里收敛为 `{ns}:view`，但门禁还有一路**角色授予**：
+// 角色默认权限（user 角色自带 `site:update`）不经过收敛，若照旧取
+// 「角色 ∪ 用户」的并集，只读会被角色路径整体绕过。只读账号因此单独
+// 只走「用户生效权限」这一路。
+
+type ReadOnlySet = HashSet<i64>;
+static READONLY_CACHE: OnceLock<RwLock<Option<Arc<ReadOnlySet>>>> = OnceLock::new();
+
+fn readonly_slot() -> &'static RwLock<Option<Arc<ReadOnlySet>>> {
+    READONLY_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+/// `read_only` 用户集合（进程内缓存，随用户变更一起失效）。
+async fn readonly_set() -> Arc<ReadOnlySet> {
+    if let Ok(guard) = readonly_slot().read()
+        && let Some(cached) = guard.as_ref()
+    {
+        return cached.clone();
+    }
+    let Some(pool) = crate::db::get_db_pool_opt().await else {
+        return Arc::new(ReadOnlySet::new());
+    };
+    let rows: Vec<(i64,)> = sqlx::query_as("SELECT id FROM user WHERE read_only <> 0")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let set = Arc::new(rows.into_iter().map(|(id,)| id).collect::<ReadOnlySet>());
+    if let Ok(mut guard) = readonly_slot().write() {
+        *guard = Some(set.clone());
+    }
+    set
+}
+
+/// 该用户是否被标记为只读（`user.read_only=1`）。
+pub async fn user_is_read_only(uid: u64) -> bool {
+    readonly_set().await.contains(&(uid as i64))
+}
+
+/// 只读账号可放行的写接口白名单：**个人账户操作**（改自己密码 / 2FA、消息已读）。
+///
+/// 其余没登记权限点的写接口（如成员管理 `/user/team/*`）一律拒绝。
+const READONLY_WRITE_WHITELIST: &[&str] = &["/auth", "/user/notices"];
+
+/// 只读账号是否可发起该请求 —— 用于**未登记权限点**的接口兜底。
+///
+/// 登记了权限点的接口走 `action_gate`：只读只剩 `{ns}:view`，写操作自然被拒；
+/// 没登记权限点的接口（`lookup` 第三列为 `None`）没有 key 可校验，只能按
+/// 方法 + 白名单判定，否则 `/user/team/add` 这类写接口会被整个漏掉。
+pub fn readonly_allows(path: &str, method: &Method) -> bool {
+    // Web 终端虽走 GET，连上就是交互式 shell（等于间接写），只读账号不给
+    if prefix_hit(path, "/terminal/ws") {
+        return false;
+    }
+    if method == Method::GET || method == Method::HEAD {
+        return true;
+    }
+    READONLY_WRITE_WHITELIST
+        .iter()
+        .any(|prefix| prefix_hit(path, prefix))
+}
+
 /// 用户是否持有该权限点（**生效**权限：含成员继承与父账号收紧）。
 pub fn user_has_perm(map: &UserPermMap, uid: u64, key: &str) -> bool {
     map.get(&(uid as i64)).is_some_and(|set| set.contains(key))
@@ -1331,6 +1398,40 @@ fn satisfies(claims: &Claims, required: Required) -> bool {
 
 fn deny(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "code": -1, "message": message }))).into_response()
+}
+
+/// 第二层（动作级）校验的结果：通过，或附带原因的拒绝。
+enum ActionGate {
+    Allowed,
+    Denied(String),
+}
+
+/// 动作级校验：权限点 + 只读兜底，接口与页面共用同一套判定。
+///
+/// - 已登记权限点：只读账号**只看收敛后的生效权限**（仅 `{ns}:view`），
+///   角色授予不再兜底 —— 否则角色默认权限（如 user 角色的 `site:update`）
+///   会整体绕过 `read_only`；其余账号取「角色 ∪ 用户」并集。
+/// - 未登记权限点：正常账号放行（只剩角色下限），只读账号按
+///   [`readonly_allows`] 兜底，避免 `/user/team/*` 这类写接口漏判。
+async fn action_gate(claims: &Claims, path: &str, method: &Method) -> ActionGate {
+    let readonly = user_is_read_only(claims.id).await;
+    if let Some(key) = perm_key_for(path, method) {
+        let allowed = if readonly {
+            user_has_perm(user_perm_map().await.as_ref(), claims.id, &key)
+        } else {
+            role_has_perm(perm_map().await.as_ref(), claims, &key)
+                || user_has_perm(user_perm_map().await.as_ref(), claims.id, &key)
+        };
+        if allowed {
+            ActionGate::Allowed
+        } else {
+            ActionGate::Denied(format!("权限不足，需要权限点：{key}"))
+        }
+    } else if readonly && !readonly_allows(path, method) {
+        ActionGate::Denied("只读账号只能查看，不能执行该操作".to_string())
+    } else {
+        ActionGate::Allowed
+    }
 }
 
 /// 取请求凭据：优先 `Authorization: Bearer`，回退查询串 `?token=`。
@@ -1392,23 +1493,15 @@ pub async fn guard(req: Request, next: Next) -> Result<Response, Response> {
         ));
     }
 
-    // 第二层：动作级权限点。admin 恒直通，避免配置失误锁死内置管理员。
+    // 第二层：动作级权限点 + 只读兜底。admin 恒直通，避免配置失误锁死内置管理员。
     if !jwt::is_admin(&claims)
-        && let Some(key) = perm_key_for(&path, &method)
+        && let ActionGate::Denied(reason) = action_gate(&claims, &path, &method).await
     {
-        // 角色授予 ∪ 个人附加权限（附加权限只做加法）
-        let allowed = role_has_perm(perm_map().await.as_ref(), &claims, &key)
-            || user_has_perm(user_perm_map().await.as_ref(), claims.id, &key);
-        if !allowed {
-            warn!(
-                "permission denied: user={} path={} required={}",
-                claims.sub, path, key
-            );
-            return Err(deny(
-                StatusCode::FORBIDDEN,
-                &format!("权限不足，需要权限点：{key}"),
-            ));
-        }
+        warn!(
+            "permission denied: user={} path={} reason={}",
+            claims.sub, path, reason
+        );
+        return Err(deny(StatusCode::FORBIDDEN, &reason));
     }
 
     Ok(next.run(req).await)
@@ -1431,16 +1524,9 @@ pub async fn authorize_page(
         ));
     }
     if !jwt::is_admin(claims)
-        && let Some(key) = perm_key_for(path, method)
+        && let ActionGate::Denied(reason) = action_gate(claims, path, method).await
     {
-        let allowed = role_has_perm(perm_map().await.as_ref(), claims, &key)
-            || user_has_perm(user_perm_map().await.as_ref(), claims.id, &key);
-        if !allowed {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("权限不足，需要权限点：{key}"),
-            ));
-        }
+        return Err((StatusCode::FORBIDDEN, reason));
     }
     Ok(())
 }
@@ -2000,6 +2086,30 @@ mod tests {
     fn unknown_paths_are_admin_only() {
         // 新增接口未登记时的兜底行为：默认拒绝
         assert_eq!(required_for("/some/new/endpoint"), Required::Admin);
+    }
+
+    /// 只读账号在**没登记权限点**的接口上的兜底：只放行个人账户操作。
+    #[test]
+    fn readonly_accounts_cannot_write_unregistered_paths() {
+        // 成员管理没有权限点可校验，只读账号不能借这个口子写
+        for path in ["/user/team/add", "/user/team/update", "/user/team/delete"] {
+            assert!(
+                !readonly_allows(path, &Method::POST),
+                "{path} 不该对只读账号放行"
+            );
+        }
+        // 个人账户操作放行：否则只读账号改不了自己的密码 / 2FA
+        for path in [
+            "/auth/change_password",
+            "/auth/totp/verify",
+            "/user/notices/read",
+        ] {
+            assert!(readonly_allows(path, &Method::POST), "{path} 应当放行");
+        }
+        // 读取一律放行；Web 终端例外（GET 但连上就是交互式 shell）
+        assert!(readonly_allows("/site/list", &Method::GET));
+        assert!(readonly_allows("/system/files/list", &Method::GET));
+        assert!(!readonly_allows("/terminal/ws/1", &Method::GET));
     }
 
     #[test]
