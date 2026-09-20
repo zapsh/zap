@@ -1,23 +1,28 @@
+use std::collections::HashMap;
+
 use sqlx::Executor;
 
 use super::get_db_pool;
+use super::menu_seed;
 
 /// 建表与种子数据入口。
 ///
-/// **约定（开发阶段）**：表结构改动以 `CREATE TABLE` 为准，全新数据库直接按此建表；
-/// 对**已存在**的库，新增列通过 `migrate_add_columns()` 幂等 `ALTER TABLE ... ADD COLUMN`
-/// 补齐（只加列，不做数据搬运 / 改类型 / 版本水位表），所以加列后**不必** `--reset-db`；
-/// 删列、改类型、改约束仍需重建数据库。
+/// **约定（开发阶段）**：表结构与初始数据都以 `CREATE TABLE` + 种子清单为准，新建库
+/// 一次建齐（列、菜单、授权都在里面），所以加列 / 加菜单后**不必** `--reset-db`；
+/// 对**已存在**的库，留给将来升级用的机制是 `migrate_add_columns()`（补列）与
+/// `sync_added_menus()`（补菜单），两者当前为空（见各自注释）。
+/// 删列、改类型、改约束、改菜单种子（已存在的库不会被覆盖）仍需重建数据库。
 pub async fn init_schema() {
     init_system_user_table_schema().await;
     init_system_monitor_table_schema().await;
     init_system_monitor_networks_table_schema().await;
     init_roles_table().await;
-    init_menus_table().await;
-    init_role_menus_table().await;
+    // 菜单：建表 + 结构化种子（id 自增），随后按种子里的 roles 生成 role_menus
+    let menu_ids = init_menus_table().await;
+    init_role_menus_table(&menu_ids).await;
     // 用户级菜单例外：给单个用户开小灶 / 收窄入口（仅渲染层）
     init_user_menus_table().await;
-    // 老库补入口：新增菜单对已存在的库同样生效（见函数注释）
+    // 老库补入口：开发阶段为空，将来新增菜单时在这里补（见函数注释）
     sync_added_menus().await;
     // 动作级权限点（请求级鉴权依据；role_menus 仅用于菜单渲染）
     init_role_permissions_table().await;
@@ -56,6 +61,10 @@ pub async fn init_schema() {
 }
 
 /// 幂等补列：列已存在则跳过，否则 `ALTER TABLE ... ADD COLUMN`。
+///
+/// 开发阶段没有存量库要补，暂无人调用（见 [`migrate_add_columns`]），
+/// 保留待将来系统升级时使用。
+#[allow(dead_code)]
 async fn ensure_column(table: &str, column: &str, decl: &str) {
     if !table_exists(table).await {
         return;
@@ -77,57 +86,29 @@ async fn ensure_column(table: &str, column: &str, decl: &str) {
     }
 }
 
-/// 历史库新增列清单：CREATE TABLE 里加列后，同步登记到这里即可自动迁移。
-async fn migrate_add_columns() {
-    // user：磁盘用量（du 家目录）+ 本月带宽（access.log 汇总）
-    ensure_column("user", "disk_used_bytes", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("user", "disk_stat_at", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("user", "bandwidth_used_bytes", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("user", "bandwidth_period", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("user", "bandwidth_stat_at", "INTEGER NOT NULL DEFAULT 0").await;
-    // site：access.log 增量解析游标 + 流量计数
-    ensure_column("site", "traffic_offset", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("site", "traffic_inode", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site", "traffic_total_bytes", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("site", "traffic_month_bytes", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("site", "traffic_month", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site", "traffic_stat_at", "INTEGER NOT NULL DEFAULT 0").await;
-    // site：磁盘占用（web_root + log_root）
-    ensure_column("site", "disk_used_bytes", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("site", "disk_stat_at", "INTEGER NOT NULL DEFAULT 0").await;
-    // user：子账号（成员）支持
-    ensure_column("user", "user_kind", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("user", "perm_deny", "TEXT NOT NULL DEFAULT ''").await;
-    // user：只读账号（共享可见但不可改）
-    ensure_column("user", "read_only", "INTEGER NOT NULL DEFAULT 0").await;
-    // menus：能力门禁列（依赖后台组件的菜单靠它决定是否下发）
-    ensure_column("menus", "feature", "TEXT NOT NULL DEFAULT ''").await;
-    // task_queue：由 appstore_runs 改名而来的旧库缺这些通用队列列
-    ensure_column("task_queue", "kind", "TEXT NOT NULL DEFAULT 'appstore'").await;
-    ensure_column("task_queue", "group_key", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("task_queue", "group_limit", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("task_queue", "title", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("task_queue", "progress", "INTEGER NOT NULL DEFAULT -1").await;
-    ensure_column("task_queue", "control", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("task_queue", "payload", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("task_queue", "updated_at", "INTEGER NOT NULL DEFAULT 0").await;
-}
-
-/// 菜单能力门禁赋值：给「依赖后台组件」的菜单打上 `feature` 标记。
+/// 历史库新增列清单：**开发阶段为空**——所有列都已直接写进各自的 CREATE TABLE
+/// （见 `init_system_user_table_schema` / `init_site_table` / `init_menus_table` /
+/// `init_task_queue_table`），新库建表即完整，不必靠 ALTER 补。
 ///
-/// 必须在 `migrate_add_columns()` 之后跑（老库要先补出 `feature` 列），
-/// 故独立成一个函数而不是并进 `sync_added_menus()`。幂等，只改未标记的行。
-async fn sync_menu_features() {
-    let pool = get_db_pool().await;
-    // 容器管理（17 父 / 171 子）：没装 Docker 的机器不该出现入口，
-    // 装包后 `zap::feature` 重新探测到即自动出现在侧栏。
-    let _ = sqlx::query(
-        "UPDATE menus SET feature = 'docker', updated_at = strftime('%s','now') \
-         WHERE id IN (17, 171) AND feature <> 'docker'",
-    )
-    .execute(pool)
-    .await;
-}
+/// 等有存量库要升级时再用：在 CREATE TABLE 里加列的同时，把同一行登记到这里，
+/// 老库启动时由 [`ensure_column`] 幂等补上。示例（取消注释即可用）：
+///
+/// ```ignore
+/// ensure_column("user", "new_col", "TEXT NOT NULL DEFAULT ''").await;
+/// ```
+async fn migrate_add_columns() {}
+
+/// 菜单能力门禁赋值（**老库升级**用）。
+///
+/// **开发阶段为空**：新库的 `feature` 直接写在种子里（如 docker / docker-index，
+/// 见 [`menu_seed::MENU_SEEDS`]）。存量库需要时在这里按 name 补，同样不要写 id：
+///
+/// ```ignore
+/// sqlx::query("UPDATE menus SET feature = 'docker', updated_at = strftime('%s','now') \
+///              WHERE name IN ('docker', 'docker-index') AND feature <> 'docker'")
+///     .execute(pool).await;
+/// ```
+async fn sync_menu_features() {}
 
 // ── user ───────────────────────────────────────────────────
 
@@ -338,259 +319,44 @@ async fn init_roles_table() {
 
 // ── menus ──────────────────────────────────────────────────
 
-/// 幂等补齐「后续版本新增」的菜单入口。
+/// 幂等补齐「后续版本新增」的菜单入口（**老库升级**用）。
 ///
-/// `init_menus_table` 只在建表时跑一次，老库升级后拿不到新功能的入口，
-/// 于是新页面做了也看不见（侧边栏由 menus 表驱动）。这里只 INSERT 缺失项：
+/// **开发阶段为空**：初始菜单已全部写在 [`menu_seed::MENU_SEEDS`] 里，且写的是
+/// 最终形态（父级 / 隐藏 / 停用 / feature 都在种子里），新库建表即完整。
 ///
-/// - 菜单：父菜单存在才补；
-/// - 授权：已拥有同级菜单（SSL 证书）的角色一并获得新入口，
-///   免得老安装升级后管理员还得手工去「角色权限」里勾。
+/// 等有存量库要升级时再往这里加，注意**按 name 定位、不要写 id**：新库 id 是
+/// 自增的，写死的数字会打到完全无关的菜单上。模板：
 ///
-/// 重复执行无副作用（主键 / UNIQUE(role_id, menu_id) 冲突即忽略）。
-async fn sync_added_menus() {
-    let pool = get_db_pool().await;
-    // 应用商店收敛为侧栏单一入口：原来「应用商店 / 已安装应用」两个子菜单改成
-    // 页面内的 nav pill（全部应用 / 已安装 / 我的站点应用），任务队列与日志走抽屉。
-    // 只隐藏不删除：菜单管理里仍可查到，/appstore/installed 由前端重定向兜底。
-    let _ = sqlx::query(
-        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now') \
-         WHERE id = 62 AND hidden <> 1",
-    )
-    .execute(pool)
-    .await;
-    // 子菜单只剩 index 一个时，侧栏会把父项渲染成单一链接（SidebarItem.hasOneShowingChild）
-    let _ = sqlx::query(
-        "UPDATE menus SET hidden = 0, updated_at = strftime('%s','now') \
-         WHERE id = 61 AND hidden <> 0",
-    )
-    .execute(pool)
-    .await;
-    // SSL/TLS → DNS 服务商（ACME DNS-01 自动模式的服务商凭据）
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO menus
-            (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-         SELECT 112, 11, 'ssl-dns-providers', 'dns-providers', 'ssl-tls/dns-providers/index',
-                'menu', 'DNS服务商', 'material-symbols:dns', 0, 'admin,user', 2, 1,
-                strftime('%s','now'), strftime('%s','now')
-         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 11)",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
-         SELECT role_id, 112 FROM role_menus WHERE menu_id = 111",
-    )
-    .execute(pool)
-    .await;
-    // SSL/TLS 收敛为侧栏单一入口：「DNS服务商」子菜单（112）收起，
-    // 改为证书列表页头部按钮 + 抽屉（DnsProvidersPane）。
-    // 只隐藏不删除：页面路由 /ssl-tls/dns-providers 仍可达，菜单管理里也还能勾回来。
-    let _ = sqlx::query(
-        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now') \
-         WHERE id = 112 AND hidden <> 1",
-    )
-    .execute(pool)
-    .await;
+/// ```ignore
+/// // 补菜单（父用 name 查，避免写 id）
+/// sqlx::query("INSERT OR IGNORE INTO menus (parent_id, name, path, component, type, title, icon, roles, sort_order, status, created_at, updated_at)
+///              SELECT (SELECT id FROM menus WHERE name='system'), 'xxx', 'xxx', 'xxx/index', 'menu', '新页面', 'material-symbols:star', 'admin', 20, 1,
+///                     strftime('%s','now'), strftime('%s','now')
+///              WHERE NOT EXISTS (SELECT 1 FROM menus WHERE name='xxx')")
+///     .execute(pool).await;
+/// // 补授权：沿用同级菜单（如 ssl-certs）的授权集合
+/// sqlx::query("INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+///              SELECT rm.role_id, m.id FROM role_menus rm JOIN menus m ON m.name='xxx'
+///              WHERE rm.menu_id = (SELECT id FROM menus WHERE name='ssl-certs')")
+///     .execute(pool).await;
+/// ```
+async fn sync_added_menus() {}
 
-    // 「脚本/自动化」收进「系统设置」：一级目录只为两个页面而存在，太占地方。
-    // 子菜单改挂到 system（id=2）下排在末尾 —— 路径是相对父级的，所以 URL 跟着
-    // 变成 /system/scripts 与 /system/cron，无需改 component。
-    // 目录 10 保留但 hidden=1：id 段已分配、role_menus 里还有指向它的行，
-    // 删掉会让这些授权记录变成孤儿，隐藏即可让侧栏干净。
-    let _ = sqlx::query(
-        "UPDATE menus SET parent_id = 2, sort_order = 10, updated_at = strftime('%s','now') \
-         WHERE id = 101 AND parent_id <> 2",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "UPDATE menus SET parent_id = 2, sort_order = 11, updated_at = strftime('%s','now') \
-         WHERE id = 102 AND parent_id <> 2",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now') \
-         WHERE id = 10 AND hidden <> 1",
-    )
-    .execute(pool)
-    .await;
-    // 自定义脚本（101）+ 计划任务（102）合并为一页「自动化脚本」（页面内 nav pill 切换）：
-    // 101 改名改路径指向合并页 automation/index，102 停用（保留行以免 role_menus 变孤儿），
-    // 旧入口 /system/scripts · /system/cron 由前端重定向到 /system/automation?tab=...
-    let _ = sqlx::query(
-        "UPDATE menus SET name = 'automation-scripts', path = 'automation', \
-         component = 'automation/index', title = '自动化脚本', icon = 'material-symbols:timer', \
-         updated_at = strftime('%s','now') \
-         WHERE id = 101 AND path <> 'automation'",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "UPDATE menus SET component = 'automation/index', status = 0, \
-         updated_at = strftime('%s','now') \
-         WHERE id = 102 AND status <> 0",
-    )
-    .execute(pool)
-    .await;
-    // 系统更新（27）并入 About ZAP（30）的第二个 nav pill：改指向合并页并停用，
-    // 保留行以免 role_menus 变孤儿；旧入口 /system/update 由前端重定向到 ?tab=update。
-    let _ = sqlx::query(
-        "UPDATE menus SET component = 'system/about/index', status = 0, \
-         updated_at = strftime('%s','now') \
-         WHERE id = 27 AND status <> 0",
-    )
-    .execute(pool)
-    .await;
-
-    // 容器管理（Docker）：位于「计划任务」之下，管理员专属单页（nav pill 内切换
-    // 容器 / 镜像 / 卷 / 网络 / Compose，故只需要一个子菜单）。
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO menus
-            (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-         SELECT 17, 0, 'docker', '/docker', 'Layout', '/docker/index', 'dir', '容器管理',
-                'material-symbols:deployed-code', 0, 'admin', 5, 1,
-                strftime('%s','now'), strftime('%s','now')
-         WHERE NOT EXISTS (SELECT 1 FROM menus WHERE id = 17)",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO menus
-            (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-         SELECT 171, 17, 'docker-index', 'index', 'docker/index', '', 'menu', '容器',
-                'material-symbols:deployed-code', 0, 'admin', 1, 1,
-                strftime('%s','now'), strftime('%s','now')
-         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 17)",
-    )
-    .execute(pool)
-    .await;
-    // 菜单授权：menus.roles 只用于前端排序参考，侧栏可见性由 role_menus 决定，
-    // 不补这条的话管理员在新菜单上线后依然看不到入口。
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
-         SELECT r.id, 17 FROM roles r WHERE r.role_key = 'admin'",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
-         SELECT r.id, 171 FROM roles r WHERE r.role_key = 'admin'",
-    )
-    .execute(pool)
-    .await;
-
-    // 任务队列：管理员的全局任务视角（应用商店安装 / Docker 构建 / 备份 / 升级 /
-    // 计划任务的运行记录都汇总在这里），挂在「系统设置」下。
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO menus
-            (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-         SELECT 29, 2, 'tasks', 'tasks', 'system/tasks/index', 'menu', '任务队列',
-                'material-symbols:view-list', 0, 'admin', 6, 1,
-                strftime('%s','now'), strftime('%s','now')
-         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 2)",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
-         SELECT r.id, 29 FROM roles r WHERE r.role_key = 'admin'",
-    )
-    .execute(pool)
-    .await;
-
-    // 团队成员（子账号）：任意用户管理自己名下的成员，故对 admin/user/reseller 全部开放。
-    // 入口已并入「个人中心」（顶栏头像 → 个人中心 → 团队成员 pill），侧边栏不再单列，
-    // 故两条都 hidden=1；路由 /team 仍保留，旧链接不会 404。
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO menus
-            (id, parent_id, name, path, component, redirect, type, title, icon, hidden, affix, roles, sort_order, status, created_at, updated_at)
-         SELECT 18, 0, 'team', '/team', 'Layout', '/team/index', 'dir', '团队成员',
-                'material-symbols:group', 1, 0, 'admin,user,reseller', 9, 1,
-                strftime('%s','now'), strftime('%s','now')
-         WHERE NOT EXISTS (SELECT 1 FROM menus WHERE id = 18)",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO menus
-            (id, parent_id, name, path, component, type, title, icon, hidden, affix, roles, sort_order, status, created_at, updated_at)
-         SELECT 181, 18, 'team-index', 'index', 'team/index', 'menu', '团队成员',
-                'material-symbols:group', 1, 1, 'admin,user,reseller', 1, 1,
-                strftime('%s','now'), strftime('%s','now')
-         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 18)",
-    )
-    .execute(pool)
-    .await;
-    // 老库在入口下线前已存在这两行，INSERT OR IGNORE 改不到，这里补一道幂等收敛。
-    // 只改 hidden：菜单保留（界面「菜单管理」里仍可查到），不删是为了避免下次启动被重新补齐。
-    let _ = sqlx::query(
-        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now')
-         WHERE id IN (18, 181) AND hidden <> 1",
-    )
-    .execute(pool)
-    .await;
-    // 侧栏可见性由 role_menus 决定：沿用「站点」菜单（91）的授权集合
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
-         SELECT role_id, 18 FROM role_menus WHERE menu_id = 91",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
-         SELECT role_id, 181 FROM role_menus WHERE menu_id = 91",
-    )
-    .execute(pool)
-    .await;
-
-    // About ZAP（版本信息 + 文档入口）：原侧栏「文档」一级菜单（16 / 161-164）
-    // 已整合进来，挂在「系统设置」下只留一个入口。
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO menus
-            (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-         SELECT 30, 2, 'about', 'about', 'system/about/index', 'menu', 'About ZAP',
-                'material-symbols:info', 0, 'admin,user,reseller,demo', 9, 1,
-                strftime('%s','now'), strftime('%s','now')
-         WHERE EXISTS (SELECT 1 FROM menus WHERE id = 2)",
-    )
-    .execute(pool)
-    .await;
-    // 文档 md 无敏感信息，沿用原「文档」菜单的授权集合（admin/user/reseller/demo），
-    // 避免普通用户升级后找不到文档。
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
-         SELECT role_id, 30 FROM role_menus WHERE menu_id = 16",
-    )
-    .execute(pool)
-    .await;
-    // 父目录也要一并授权：子菜单授权父不授权时，整棵子树在 build_menu_tree 里消失。
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
-         SELECT role_id, 2 FROM role_menus WHERE menu_id = 16",
-    )
-    .execute(pool)
-    .await;
-    // 旧「文档」菜单整组隐藏：菜单保留（菜单管理里仍可查到），路由 /docs/<id> 由前端
-    // 以隐藏路由常驻，旧链接不会 404。
-    let _ = sqlx::query(
-        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now')
-         WHERE id IN (16, 161, 162, 163, 164) AND hidden <> 1",
-    )
-    .execute(pool)
-    .await;
-}
-
-async fn init_menus_table() {
+/// 建表 + 播种菜单（仅新建库）。
+///
+/// 种子是 [`menu_seed::MENU_SEEDS`] 那张结构化清单：id 由 SQLite 自增、父子用
+/// name 关联、隐藏 / 停用 / feature 都写在种子里（最终形态，不用再靠 UPDATE 收敛）。
+/// 返回 `name → id`，交给 [`init_role_menus_table`] 生成授权。
+async fn init_menus_table() -> HashMap<String, i64> {
     if table_exists("menus").await {
-        return;
+        return HashMap::new();
     }
     let sql = r#"
     CREATE TABLE menus (
         id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
         parent_id INTEGER DEFAULT 0,
-        name VARCHAR(64) NOT NULL,
+        -- name 同时是前端路由名与种子的逻辑键：父子关联靠它，故唯一
+        name VARCHAR(64) NOT NULL UNIQUE,
         path VARCHAR(128) NOT NULL DEFAULT '',
         component VARCHAR(256) DEFAULT '',
         redirect VARCHAR(128) DEFAULT '',
@@ -609,173 +375,20 @@ async fn init_menus_table() {
         created_at INTEGER,
         updated_at INTEGER
     );
-
-    -- Dashboard
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (1, 0, 'dashboard', '/dashboard', 'dashboard/index', '', 'menu', '仪表盘', 'material-symbols:home', 1, 'admin,user', 1, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- 站点管理（Layout 包裹 + 一级直链：单个子菜单，位于仪表盘之下）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (9, 0, 'site', '/site', 'Layout', '/site/index', 'menu', '站点', 'material-symbols:public', 1, 'admin,user,reseller', 2, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (91, 9, 'site-index', 'index', 'site/index', 'menu', '站点', 'material-symbols:public', 1, 'admin,user,reseller', 1, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- 数据库管理（Layout 包裹 + 一级直链：紧随站点之后；user 仅能管自己前缀的库）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (14, 0, 'database', '/database', 'Layout', '/database/index', 'menu', '数据库', 'material-symbols:database', 1, 'admin,user', 3, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (141, 14, 'database-index', 'index', 'database/index', 'menu', '数据库', 'material-symbols:database', 1, 'admin,user', 1, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- System dir
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (2, 0, 'system', '/system', 'Layout', '/system/access', 'dir', '系统设置', 'material-symbols:settings', 1, 'admin', 12, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- System children
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (26, 2, 'basic-config', 'basic-config', 'system/config/basic', 'menu', '基础设置', 'material-symbols:tune', 1, 'admin', 1, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (28, 2, 'zap-config', 'zap-config', 'system/config/zap', 'menu', 'Zap 设置', 'material-symbols:settings-applications', 1, 'admin', 2, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 用户管理 + 角色管理合到一页（页面内 nav pill 切换）
-    VALUES (21, 2, 'access', 'access', 'system/access/index', 'menu', '用户与角色', 'material-symbols:badge', 1, 'admin', 3, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 角色管理已并入 21；保留本行只为兼容既有 role_menus 授权，status=0 不进侧栏
-    VALUES (22, 2, 'roles', 'roles', 'system/access/index', 'menu', '角色管理', 'material-symbols:visibility', 1, 'admin', 4, 0, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (23, 2, 'menus', 'menus', 'system/menus/index', 'menu', '菜单管理', 'material-symbols:menu', 1, 'admin', 5, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (24, 2, 'audit', 'audit', 'system/audit/index', 'menu', '审计日志', 'material-symbols:confirmation-number', 1, 'admin', 7, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 系统更新已并入 30「About ZAP」的第二个 nav pill；保留本行只为兼容既有 role_menus 授权，status=0 不进侧栏
-    VALUES (27, 2, 'system-update', 'update', 'system/about/index', 'menu', '系统更新', 'material-symbols:refresh', 1, 'admin', 8, 0, strftime('%s','now'), strftime('%s','now'));
-
-    -- Server config dir（服务器配置：运维项；原「服务配置」一级菜单已并入其中）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (7, 0, 'server', '/server', 'Layout', '/server/system', 'dir', '服务器配置', 'material-symbols:tune', 1, 'admin', 9, 1, strftime('%s','now'), strftime('%s','now'));
-
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 系统管理：服务器时间 / 系统服务 / SSH 服务 / 进程管理 合到一页（页面内 nav pill 切换）
-    VALUES (71, 7, 'server-system', 'system', 'server/system/index', 'menu', '系统管理', 'material-symbols:settings', 1, 'admin', 1, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 系统服务已并入 71；保留本行只为兼容既有 role_menus 授权，status=0 不进侧栏
-    VALUES (72, 7, 'server-services', 'services', 'server/system/index', 'menu', '系统服务', 'material-symbols:build', 1, 'admin', 2, 0, strftime('%s','now'), strftime('%s','now'));
-    -- 服务配置：Nginx / PHP / MySQL 的配置合到一页，页面内用 nav pill 切换
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (82, 7, 'server-service-conf', 'service-conf', 'server/service-conf/index', 'menu', '服务配置', 'material-symbols:dns', 1, 'admin', 3, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- SSH 服务已并入 71
-    VALUES (73, 7, 'server-ssh', 'ssh', 'server/system/index', 'menu', 'SSH 服务', 'material-symbols:cable', 1, 'admin', 4, 0, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 进程管理已并入 71
-    VALUES (74, 7, 'server-process', 'process', 'server/system/index', 'menu', '进程管理', 'material-symbols:memory', 1, 'admin', 5, 0, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 网络配置：网络设置 + IP 设置 合到一页
-    VALUES (75, 7, 'server-network', 'network', 'server/network/index', 'menu', '网络配置', 'material-symbols:link', 1, 'admin', 6, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- IP 设置已并入 75
-    VALUES (76, 7, 'server-ip', 'ip', 'server/network/index', 'menu', 'IP 设置', 'material-symbols:badge', 1, 'admin', 7, 0, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (80, 7, 'server-firewall', 'firewall', 'server/firewall/index', 'menu', '防火墙', 'material-symbols:lock', 1, 'admin', 8, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (77, 7, 'server-env', 'env', 'server/env/index', 'menu', '运行环境', 'material-symbols:auto-fix-high', 1, 'admin', 9, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 同步运行环境已并入 77（运行环境页第二个 nav pill）
-    VALUES (78, 7, 'server-entities', 'entities', 'server/env/index', 'menu', '同步运行环境', 'material-symbols:account-circle', 1, 'admin', 10, 0, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (79, 7, 'server-migrate', 'migrate', 'server/migrate/index', 'menu', '数据迁移', 'material-symbols:sort', 1, 'admin', 11, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- Terminal（Layout 包裹 + 一级直链：单个子菜单）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (4, 0, 'terminal', '/terminal', 'Layout', '/terminal/index', 'menu', '终端', 'material-symbols:monitor', 1, 'admin,user', 4, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (41, 4, 'terminal-index', 'index', 'terminal/index', 'menu', '终端', 'material-symbols:monitor', 1, 'admin,user', 1, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- File manager（Layout 包裹 + 一级直链：单个子菜单）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (3, 0, 'files', '/files', 'Layout', '/files/index', 'menu', '文件管理', 'material-symbols:folder', 1, 'admin,user', 3, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (31, 3, 'files-index', 'index', 'files/index', 'menu', '文件管理', 'material-symbols:folder', 1, 'admin,user', 1, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- Reseller customer management (Layout + child page)
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (5, 0, 'reseller-users', '/reseller/users', 'Layout', '/reseller/users/index', 'menu', '客户管理', 'material-symbols:account-circle', 1, 'reseller', 5, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (51, 5, 'reseller-users-index', 'index', 'system/access/index', 'menu', '客户管理', 'material-symbols:account-circle', 1, 'reseller', 1, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (52, 5, 'reseller-packages', 'packages', 'system/packages/index', 'menu', '套餐', 'material-symbols:storefront', 0, 'admin,reseller', 2, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- SSL/TLS（Layout + 子菜单，位于应用商店之前，admin/user）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (11, 0, 'ssl-tls', '/ssl-tls', 'Layout', '/ssl-tls/certs', 'dir', 'SSL/TLS', 'material-symbols:lock', 1, 'admin,user', 6, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (111, 11, 'ssl-certs', 'certs', 'ssl-tls/certs/index', 'menu', 'SSL证书', 'material-symbols:lock', 1, 'admin,user', 1, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (112, 11, 'ssl-dns-providers', 'dns-providers', 'ssl-tls/dns-providers/index', 'menu', 'DNS服务商', 'material-symbols:dns', 0, 'admin,user', 2, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- AppStore (Layout + children)
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (6, 0, 'appstore', '/appstore', 'Layout', '/appstore/index', 'menu', '应用商店', 'material-symbols:storefront', 1, 'admin,user', 7, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (61, 6, 'appstore-index', 'index', 'appstore/index', 'menu', '应用商店', 'material-symbols:storefront', 1, 'admin,user', 1, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (62, 6, 'installed', 'installed', 'appstore/installed', 'menu', '已安装应用', 'material-symbols:deployed-code', 1, 'admin,user,reseller', 2, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- Server status（子菜单：服务器信息 tabs + Nginx Server，应用商店之后，admin）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (8, 0, 'server-status', '/server-status', 'Layout', '/server-status/index', 'dir', '服务器状态', 'material-symbols:monitor-heart', 1, 'admin', 8, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (81, 8, 'server-status-index', 'index', 'server-status/index', 'menu', 'Server Monitor', 'material-symbols:monitoring', 1, 'admin', 1, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (87, 8, 'server-status-nginx', 'nginx-server', 'server-status/nginx-server/index', 'menu', 'Nginx Server', 'material-symbols:monitor', 1, 'admin', 2, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- 原「脚本/自动化」的两个页面如今挂在「系统设置」下，并已合并成一条「自动化脚本」
-    -- （页面内 nav pill 切换：自定义脚本 / 计划任务），入口是 /system/automation。
-    -- id=10 这个顶层目录保留是为了不占掉已分配的 id，也为了让老版本的 role_menus 行不变成孤儿；
-    -- hidden=1 让它不出现在侧栏。
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, hidden, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (10, 0, 'automation', '/automation', 'Layout', '/system/automation', 'dir', '脚本/自动化', 'material-symbols:timer', 1, 1, 'admin', 11, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 自动化脚本：自定义脚本 + 计划任务 合到一页（页面内 nav pill 切换）
-    VALUES (101, 2, 'automation-scripts', 'automation', 'automation/index', 'menu', '自动化脚本', 'material-symbols:timer', 1, 'admin', 10, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    -- 计划任务已并入 101；保留本行只为兼容既有 role_menus 授权，status=0 不进侧栏
-    VALUES (102, 2, 'script-cron', 'cron', 'automation/index', 'menu', '计划任务', 'material-symbols:alarm', 1, 'admin', 11, 0, strftime('%s','now'), strftime('%s','now'));
-
-    -- Dev（Layout + 子菜单，位于最下方，admin/user/reseller）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (12, 0, 'dev', '/dev', 'Layout', '/dev/api-tokens', 'dir', '开发', 'material-symbols:build', 1, 'admin,user,reseller', 13, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (121, 12, 'api-tokens', 'api-tokens', 'dev/api-tokens/index', 'menu', 'API Tokens', 'material-symbols:key', 1, 'admin,user,reseller', 1, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (122, 12, 'api-docs', 'api-docs', 'dev/api-docs/index', 'menu', 'API 文档', 'material-symbols:description', 1, 'admin,user,reseller', 2, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (123, 12, 'app-script-guide', 'app-script-guide', 'dev/app-script-guide/index', 'menu', '应用脚本编写', 'material-symbols:menu-book', 1, 'admin,user,reseller', 3, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- 计划任务（Layout + 子菜单，所有角色可用；执行身份由后端收敛，admin 可选执行用户）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (15, 0, 'crontab', '/crontab', 'Layout', '/crontab/index', 'dir', '计划任务', 'material-symbols:schedule', 1, 'admin,user,reseller,demo', 4, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (151, 15, 'crontab-index', 'index', 'crontab/index', 'menu', '定时任务', 'material-symbols:alarm', 1, 'admin,user,reseller,demo', 1, 1, strftime('%s','now'), strftime('%s','now'));
-
-    -- 文档（Layout + 子菜单：更新日志 / 用户手册 / FAQ / 升级指南）
-    -- 顺序排在最末：放在 sort_order=14，避免挤掉系统设置/开发等更常用的入口
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (16, 0, 'docs', '/docs', 'Layout', '/docs/index', 'dir', '文档', 'material-symbols:menu-book', 1, 'admin,user,reseller,demo', 14, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (161, 16, 'docs-changelog', 'changelog', 'docs/doc', 'menu', '更新日志', 'material-symbols:history', 0, 'admin,user,reseller,demo', 1, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (162, 16, 'docs-manual', 'manual', 'docs/doc', 'menu', '用户手册', 'material-symbols:book', 0, 'admin,user,reseller,demo', 2, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (163, 16, 'docs-faq', 'faq', 'docs/doc', 'menu', 'FAQ', 'material-symbols:help', 0, 'admin,user,reseller,demo', 3, 1, strftime('%s','now'), strftime('%s','now'));
-    INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (164, 16, 'docs-upgrade', 'upgrade', 'docs/doc', 'menu', '升级指南', 'material-symbols:upgrade', 0, 'admin,user,reseller,demo', 4, 1, strftime('%s','now'), strftime('%s','now'));
     "#;
-    let _ = get_db_pool().await.execute(sql).await;
+    let pool = get_db_pool().await;
+    let _ = pool.execute(sql).await;
+    menu_seed::seed_menus(pool).await
 }
 
 // ── role_menus ─────────────────────────────────────────────
 
-async fn init_role_menus_table() {
+/// 角色 → 菜单授权（仅新建库）。
+///
+/// 授权集合来自菜单种子的 `roles` 字段（见 [`menu_seed::seed_role_menus`]）：
+/// 角色按 role_key、菜单按 name 解析 id，不再手写数字对，也就不会出现
+/// 「菜单加了、授权忘了」的孤儿入口。
+async fn init_role_menus_table(menu_ids: &HashMap<String, i64>) {
     if table_exists("role_menus").await {
         return;
     }
@@ -786,149 +399,10 @@ async fn init_role_menus_table() {
         menu_id INTEGER NOT NULL,
         UNIQUE(role_id, menu_id)
     );
-    -- Admin gets all menu IDs
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 1);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 2);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 21);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 22);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 23);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 25);
-    -- User gets dashboard only
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 1);
-    -- File manager: admin gets all, user gets read access
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 3);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 3);
-    -- Terminal: both admin and user
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 4);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 4);
-    -- Terminal / File manager 子菜单授权（admin/user/reseller/demo）
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 41);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 41);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 41);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 41);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 31);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 31);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 31);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 31);
-    -- Reseller: same base permissions as user + customer management
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 1);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 3);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 4);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 5);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 51);
-    -- 套餐（Packages）：admin 与 reseller 均可使用
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 52);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 52);
-    -- AppStore: admin / user / reseller 均可访问
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 6);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 61);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 6);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 61);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 6);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 61);
-    -- Demo: dashboard, files, terminal, appstore（与普通用户一致）
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 1);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 3);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 4);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 6);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 61);
-    -- Server status: admin 专属（服务器信息 tabs 81 + Nginx Server 87）
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 8);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 81);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 87);
-    -- Server config: admin 专属（服务配置已并入其中，见菜单 82）
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 7);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 71);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 72);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 82);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 73);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 74);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 75);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 76);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 80);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 77);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 78);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 79);
-    -- 站点管理：admin 全部 / user 自己的站点 / reseller 所属客户的站点
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 9);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 9);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 9);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 91);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 91);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 91);
-    -- 数据库管理：admin 全部 / user 仅自己前缀的库
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 14);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 14);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 141);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 141);
-    -- SSL/TLS：admin / user
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 11);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 111);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 112);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 11);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 111);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 112);
-    -- 已安装应用：admin / user / reseller
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 62);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 62);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 62);
-    -- 基础设置：仅 admin
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 26);
-    -- Zap 设置：仅 admin
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 28);
-    -- 审计日志：仅 admin
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 24);
-    -- 系统更新：仅 admin
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 27);
-    -- 脚本/自动化（自定义脚本 + 计划任务）：仅 admin
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 10);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 101);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 102);
-    -- 开发：admin / user / reseller
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 12);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 121);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 122);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 123);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 12);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 121);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 122);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 123);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 12);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 121);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 122);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 123);
-    -- 计划任务（每用户管理自己的定时任务）：admin / user / reseller / demo 均可见
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 15);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 151);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 15);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 151);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 15);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 151);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 15);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 151);
-    -- 文档（CHANGELOG / 用户手册 / FAQ / 升级指南）：admin / user / reseller / demo 均可见
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 16);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 161);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 162);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 163);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (1, 164);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 16);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 161);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 162);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 163);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (2, 164);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 16);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 161);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 162);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 163);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (3, 164);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 16);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 161);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 162);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 163);
-    INSERT INTO role_menus (role_id, menu_id) VALUES (4, 164);
     "#;
-    let _ = get_db_pool().await.execute(sql).await;
+    let pool = get_db_pool().await;
+    let _ = pool.execute(sql).await;
+    menu_seed::seed_role_menus(pool, menu_ids).await;
 }
 
 // ── user_menus（用户级菜单例外）────────────────────────────
