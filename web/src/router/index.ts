@@ -354,6 +354,12 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
     component: () => import('@/views/error-page/404.vue'),
     meta: { hidden: true },
   },
+  // 旧入口：已安装应用已并入应用商店页内页签（nav pill），这里兜底重定向
+  {
+    path: '/appstore/installed',
+    redirect: '/appstore',
+    meta: { hidden: true },
+  },
 ]
 
 // 路由滚动策略：

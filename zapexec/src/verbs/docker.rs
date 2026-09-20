@@ -1056,10 +1056,14 @@ pub async fn image_build(
     }
 
     // `safe_log_path` 已保证父目录在 data/users 下，这里只是补建出来
-    if let Some(parent) = log_path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        return Response::err(-1, format!("创建日志目录失败: {e}"));
+    if let Some(parent) = log_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return Response::err(-1, format!("创建日志目录失败: {e}"));
+        }
+        // 用户目录属主交给面板进程（面板要自己写 crontab / 云存储配置）
+        if let Err(e) = super::ensure_panel_dir_for_path(parent) {
+            return Response::err(-1, format!("修改日志目录属主失败: {e}"));
+        }
     }
 
     // ── 组装参数（全部作为独立 argv 传递，无 shell 参与，无注入面）──

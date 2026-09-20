@@ -25,7 +25,7 @@ mod upgrade;
 mod user;
 mod webconf;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::net::unix::OwnedWriteHalf;
@@ -168,25 +168,32 @@ pub async fn dispatch(req: Request) -> Response {
             version,
             action,
             options,
+            instance,
             provision,
             user,
             run_mode,
             run_id,
         } => {
             appstore::install(
-                pkg_path, source, repo_id, version, action, options, provision, user, run_mode,
-                run_id,
+                pkg_path, source, repo_id, version, action, options, instance, provision, user,
+                run_mode, run_id,
             )
             .await
         }
         Request::AppstoreUninstall {
             pkg_path,
             options,
+            instance,
             provision,
             user,
             run_mode,
             run_id,
-        } => appstore::uninstall(pkg_path, options, provision, user, run_mode, run_id).await,
+        } => {
+            appstore::uninstall(
+                pkg_path, options, instance, provision, user, run_mode, run_id,
+            )
+            .await
+        }
         Request::AppstoreUpgrade {
             pkg_path,
             source,
@@ -195,6 +202,8 @@ pub async fn dispatch(req: Request) -> Response {
             old_version,
             action,
             options,
+            instance,
+            provision,
             user,
             run_mode,
             run_id,
@@ -207,6 +216,8 @@ pub async fn dispatch(req: Request) -> Response {
                 old_version,
                 action,
                 options,
+                instance,
+                provision,
                 user,
                 run_mode,
                 run_id,
@@ -243,9 +254,11 @@ pub async fn dispatch(req: Request) -> Response {
             appstore::run_retry(run_id, new_run_id).await
         }
         Request::AppstoreInstalled => appstore::installed().await,
-        Request::AppstoreInstanceAction { pkg_path, action } => {
-            appstore::instance_action(pkg_path, action).await
-        }
+        Request::AppstoreInstanceAction {
+            pkg_path,
+            instance,
+            action,
+        } => appstore::instance_action(pkg_path, instance, action).await,
         Request::SiteVhostSync {
             site_id,
             name,
@@ -526,6 +539,104 @@ pub(crate) struct LinuxAccount {
     pub uid: u32,
     pub gid: u32,
     pub home: PathBuf,
+}
+
+// ── 用户私有目录的属主 ──────────────────────────────────────
+//
+// `{ZAP_PATH}/data/users/<user>/` 下混着两类数据，属主边界必须分清：
+//
+//   - **面板自己的数据**：`crontab.yaml` / `cloud/` / `docker-build-logs/` / `scripts/`
+//     → 由非 root 的 zapd 直接读写，所以 `users/<user>` 这一层必须归**面板进程**；
+//   - **站点应用数据**：`webapps/<name>/<site_id>/`
+//     → 归站点账号（见 `appstore::prepare_user_run`），隔离不变。
+//
+// 坑在于 `users/<user>` 常常是 root（zapexec）装站点应用 / 跑脚本时先建出来的，
+// 属主 root 之后面板进程就 Permission denied（「创建配置目录失败: Permission denied」）。
+// 因此 root 侧每次触碰用户目录，都顺手把这一层交还给面板进程。
+
+/// `{ZAP_PATH}/data/users`。
+pub(super) fn users_root() -> PathBuf {
+    zap_path().join("data").join("users")
+}
+
+fn zap_path() -> PathBuf {
+    std::env::var("ZAP_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"))
+}
+
+/// 把路径属主改为面板进程（未记录身份时跳过）。
+fn chown_to_panel(path: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let Some(id) = crate::server::panel_identity() else {
+        return Ok(());
+    };
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("非法路径: {}", path.display()))?;
+    if unsafe { libc::chown(c.as_ptr(), id.uid, id.gid) } != 0 {
+        return Err(format!(
+            "修改属主失败 {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+/// 从 `{data}/users/<user>/…` 取出 `<user>`。
+pub(super) fn panel_user_of(path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(users_root()).ok()?;
+    match rel.components().next()? {
+        std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+        _ => None,
+    }
+}
+
+/// 确保 `{data}/users/<user>` 存在且归面板进程所有。
+pub(super) fn ensure_panel_user_dir(username: &str) -> Result<PathBuf, String> {
+    let dir = users_root().join(username);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("创建用户目录失败 {}: {e}", dir.display()))?;
+    chown_to_panel(&dir)?;
+    // `data/users` 本身：面板进程要能在其中创建新用户目录
+    chown_to_panel(&users_root())?;
+    Ok(dir)
+}
+
+/// 按路径定位用户私有目录并修正属主；路径不在 `data/users/` 下时什么都不做。
+pub(super) fn ensure_panel_dir_for_path(path: &Path) -> Result<(), String> {
+    match panel_user_of(path) {
+        Some(user) => ensure_panel_user_dir(&user).map(|_| ()),
+        None => Ok(()),
+    }
+}
+
+/// 启动时修一遍历史遗留：`data/users` 与其中已存在的每个用户目录。
+///
+/// 老版本装出来的这些目录属主是 root，升级后不修就会一直 Permission denied，
+/// 而且成功与否不影响执行端可用性，所以只记日志、不返回错误。
+pub(crate) fn fixup_user_dirs() {
+    let root = users_root();
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        tracing::warn!("创建 {} 失败: {e}", root.display());
+        return;
+    }
+    if let Err(e) = chown_to_panel(&root) {
+        tracing::warn!("{e}");
+    }
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        if let Err(e) = chown_to_panel(&dir) {
+            tracing::warn!("{e}");
+        }
+    }
 }
 
 /// 查询 Linux 账号（uid / gid / 家目录），账号不存在或名非法时报错。

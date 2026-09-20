@@ -62,6 +62,8 @@ async fn main() {
 
     let identity = resolve_client(&cli.client_user)
         .unwrap_or_else(|| panic!("无法解析用户 {}，请确认其存在", cli.client_user));
+    // 面板进程身份：动词层据此把 data/users/<user> 的属主交还给 zapd
+    server::set_panel_identity(identity);
     let secret = load_or_create_secret(&cli.secret, identity);
 
     let zap_path = std::env::var("ZAP_PATH").unwrap_or_else(|_| "/usr/local/zap".to_string());
@@ -72,6 +74,10 @@ async fn main() {
         zap_path = %zap_path,
         "zapexec 以 root 启动"
     );
+
+    // 历史遗留的 data/users/* 属主是 root，把用户目录交还给面板进程，
+    // 否则面板写 crontab / 云存储配置时会 Permission denied
+    verbs::fixup_user_dirs();
 
     server::serve(&cli.socket, &secret, identity).await;
 }

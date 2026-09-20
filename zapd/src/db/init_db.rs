@@ -328,6 +328,22 @@ async fn init_roles_table() {
 /// 重复执行无副作用（主键 / UNIQUE(role_id, menu_id) 冲突即忽略）。
 async fn sync_added_menus() {
     let pool = get_db_pool().await;
+    // 应用商店收敛为侧栏单一入口：原来「应用商店 / 已安装应用」两个子菜单改成
+    // 页面内的 nav pill（全部应用 / 已安装 / 我的站点应用），任务队列与日志走抽屉。
+    // 只隐藏不删除：菜单管理里仍可查到，/appstore/installed 由前端重定向兜底。
+    let _ = sqlx::query(
+        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now') \
+         WHERE id = 62 AND hidden <> 1",
+    )
+    .execute(pool)
+    .await;
+    // 子菜单只剩 index 一个时，侧栏会把父项渲染成单一链接（SidebarItem.hasOneShowingChild）
+    let _ = sqlx::query(
+        "UPDATE menus SET hidden = 0, updated_at = strftime('%s','now') \
+         WHERE id = 61 AND hidden <> 0",
+    )
+    .execute(pool)
+    .await;
     // SSL/TLS → DNS 服务商（ACME DNS-01 自动模式的服务商凭据）
     let _ = sqlx::query(
         "INSERT OR IGNORE INTO menus

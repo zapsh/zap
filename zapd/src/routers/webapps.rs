@@ -437,7 +437,8 @@ async fn resolve_fpm_socket() -> Result<String, (StatusCode, String)> {
             let name = e.file_name().to_string_lossy().into_owned();
             // 非「系统默认 pool」：用户 pool 单独记录，便于报错时说明为什么不用它
             let Some(ver) = system_pool_ver(&name) else {
-                if name.starts_with("php-fpm") && name.ends_with(".sock")
+                if name.starts_with("php-fpm")
+                    && name.ends_with(".sock")
                     && !excluded.contains(&name)
                 {
                     excluded.push(name);
@@ -467,7 +468,7 @@ async fn resolve_fpm_socket() -> Result<String, (StatusCode, String)> {
     }
 
     // 版本号降序：未显式指定时优先较新的 PHP
-    others.sort_by(|a, b| socket_ver_key(b).cmp(&socket_ver_key(a)));
+    others.sort_by_key(|a| std::cmp::Reverse(socket_ver_key(a)));
     let candidates: Vec<String> = preferred.into_iter().chain(others).collect();
 
     let mut tried = Vec::new();

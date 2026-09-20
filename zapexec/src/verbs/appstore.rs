@@ -73,6 +73,169 @@ pub(crate) fn apps_dir() -> PathBuf {
     zap_path().join("data/apps")
 }
 
+/// 面板数据根目录（`{ZAP_PATH}/data`）：apps/ 与 users/ 都挂在它下面。
+fn data_dir() -> PathBuf {
+    zap_path().join("data")
+}
+
+// ── 实例槽位 ───────────────────────────────────────────────
+//
+// 一个包的每个安装实例独占一个目录，路径规则由 `zap_proto::appstore` 唯一决定
+// （zapd 用同一份，避免「装在一处、卸载找另一处」）：
+//   - 站点类（webapps）：`{data}/users/<owner>/webapps/<name>/<site_id>/`
+//   - 其余：`{data}/apps/<category>/<name>/<instance>/`
+//
+// 旧版本安装的包没有 instance 层（直接落在 `apps/<category>/<name>/`），
+// 卸载 / 升级 / 启停时由 `legacy_slot()` 兜住，老安装不会因为升级面板而失联。
+
+use zap_proto::appstore::{DEFAULT_INSTANCE, Slot, WEBAPPS_CATEGORY, parse_site_instance};
+
+/// 一个已安装实例的定位结果。
+#[derive(Debug, Clone)]
+pub(crate) struct SlotPath {
+    pub category: String,
+    pub name: String,
+    /// 槽位目录：`meta.yaml` / `info.yaml` / `provision.json` 都在这里
+    pub dir: PathBuf,
+    /// 实例名（站点类为 `site:<id>`）
+    pub instance: String,
+    /// 归属面板用户（站点类有）
+    pub owner: Option<String>,
+    /// 站点 id（站点类有）
+    pub site_id: Option<String>,
+}
+
+impl SlotPath {
+    /// 稳定主键：`<category>/<name>@<instance>`
+    pub fn key(&self) -> String {
+        format!("{}/{}@{}", self.category, self.name, self.instance)
+    }
+
+    /// 包路径：`<category>/<name>`（定位包源用，多实例时不唯一）
+    pub fn pkg_path(&self) -> String {
+        format!("{}/{}", self.category, self.name)
+    }
+}
+
+/// 按实例定位槽位（新布局）。
+pub(crate) fn resolve_slot(
+    cat: &str,
+    name: &str,
+    instance: Option<&str>,
+    user: Option<&str>,
+    provision: Option<&BTreeMap<String, String>>,
+) -> SlotPath {
+    let data = data_dir();
+    let base = |instance: String, owner: Option<String>, site_id: Option<String>| SlotPath {
+        category: cat.to_string(),
+        name: name.to_string(),
+        dir: Slot::global(cat, name, &instance).dir(&data),
+        instance,
+        owner,
+        site_id,
+    };
+
+    // 站点类：落到站点账号的私有目录，带上「属于谁」这一维度
+    if cat == WEBAPPS_CATEGORY {
+        let site_id = provision
+            .and_then(|p| p.get("SITE_ID"))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .or_else(|| instance.and_then(parse_site_instance).map(String::from));
+        if let Some(sid) = site_id {
+            let owner = provision
+                .and_then(|p| p.get("SITE_OWNER"))
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .or_else(|| user.map(String::from))
+                .unwrap_or_default();
+            if !owner.is_empty() {
+                let dir = Slot::site(name, &owner, &sid).dir(&data);
+                if dir.is_dir() {
+                    return SlotPath {
+                        category: cat.to_string(),
+                        name: name.to_string(),
+                        dir,
+                        instance: Slot::site_instance(&sid),
+                        owner: Some(owner),
+                        site_id: Some(sid),
+                    };
+                }
+            }
+            // owner 取不到 / 站点已转手：扫一遍用户目录找同名站点
+            if let Some(found) = find_site_slot(cat, name, &sid) {
+                return found;
+            }
+        }
+    }
+
+    let inst = instance
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| DEFAULT_INSTANCE.to_string());
+    base(inst, None, None)
+}
+
+/// 在 `users/*/webapps/<name>/<site_id>/` 里找已存在的槽位。
+fn find_site_slot(cat: &str, name: &str, site_id: &str) -> Option<SlotPath> {
+    let entries = std::fs::read_dir(data_dir().join("users")).ok()?;
+    for e in entries.flatten() {
+        if !e.path().is_dir() {
+            continue;
+        }
+        let owner = e.file_name().to_string_lossy().to_string();
+        let dir = Slot::site(name, &owner, site_id).dir(&data_dir());
+        if dir.is_dir() {
+            return Some(SlotPath {
+                category: cat.to_string(),
+                name: name.to_string(),
+                dir,
+                instance: Slot::site_instance(site_id),
+                owner: Some(owner),
+                site_id: Some(site_id.to_string()),
+            });
+        }
+    }
+    None
+}
+
+/// 旧布局槽位：`apps/<category>/<name>/`（meta.yaml 直接在包目录下）。
+fn legacy_slot(cat: &str, name: &str) -> Option<PathBuf> {
+    let dir = apps_dir().join(cat).join(name);
+    if dir.join("meta.yaml").is_file() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// 带旧布局兜底的定位（卸载 / 升级 / 启停 / 重跑走这里）。
+pub(crate) fn resolve_slot_with_legacy(
+    cat: &str,
+    name: &str,
+    instance: Option<&str>,
+    user: Option<&str>,
+    provision: Option<&BTreeMap<String, String>>,
+) -> SlotPath {
+    let slot = resolve_slot(cat, name, instance, user, provision);
+    if !slot.dir.is_dir()
+        && let Some(old) = legacy_slot(cat, name)
+    {
+        return SlotPath {
+            category: cat.to_string(),
+            name: name.to_string(),
+            dir: old,
+            instance: DEFAULT_INSTANCE.to_string(),
+            owner: None,
+            site_id: None,
+        };
+    }
+    slot
+}
+
 /// 已安装应用的登记信息（`apps/<category>/<name>/info.yaml`）。
 ///
 /// 安装脚本在这里登记实例名、安装目录、主配置与 systemd 单元 —— 这是**权威来源**：
@@ -89,40 +252,25 @@ pub(crate) struct AppRegistration {
 /// 枚举全部已安装应用的登记信息（无 info.yaml 的应用也会列出，字段为 None）。
 pub(crate) fn registered_apps() -> Vec<AppRegistration> {
     let mut out = Vec::new();
-    let Ok(categories) = std::fs::read_dir(apps_dir()) else {
-        return out;
-    };
-    for cat in categories.flatten() {
-        let cat_path = cat.path();
-        if !cat_path.is_dir() {
-            continue;
-        }
-        let Ok(apps) = std::fs::read_dir(&cat_path) else {
-            continue;
+    // 走槽位扫描：多实例（多版本 PHP）各有自己的 info.yaml，旧布局也一并覆盖
+    for slot in scan_slots() {
+        let info = read_info_yaml(&slot.dir);
+        let pick = |k: &str| -> Option<String> {
+            info.as_ref()?
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
         };
-        for app in apps.flatten() {
-            let app_path = app.path();
-            if !app_path.is_dir() {
-                continue;
-            }
-            let name = app.file_name().to_string_lossy().to_string();
-            let info = read_info_yaml(&app_path);
-            let pick = |k: &str| -> Option<String> {
-                info.as_ref()?
-                    .get(k)
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            };
-            let instance = pick("instance")
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| name.clone());
-            out.push(AppRegistration {
-                instance,
-                install_dir: pick("install_dir").map(PathBuf::from),
-                config_file: pick("config_file").map(PathBuf::from),
-                svc_name: pick("svc_name"),
-            });
-        }
+        // 脚本登记优先，没有就用槽位实例名（旧布局为 default）
+        let instance = pick("instance")
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| slot.instance.clone());
+        out.push(AppRegistration {
+            instance,
+            install_dir: pick("install_dir").map(PathBuf::from),
+            config_file: pick("config_file").map(PathBuf::from),
+            svc_name: pick("svc_name"),
+        });
     }
     out
 }
@@ -594,6 +742,34 @@ fn read_meta(app_path: &Path) -> Result<MetaInfo, String> {
     serde_yaml::from_str(&content).map_err(|e| format!("解析 meta.yaml 失败: {e}"))
 }
 
+/// 面板编排结果（站点 / 数据库）落盘：`apps/<pkg_path>/provision.json`。
+///
+/// 必须由 zapexec（root）写：webapps 的槽位目录在降权运行时会被 chown 给站点账号
+/// （见 prepare_user_run），之后面板进程（非 root）就写不进去了 —— 这正是
+/// provision.json 曾经静默缺失、导致卸载报「缺少 SITE_ROOT」的原因。
+/// 0600：里面有数据库明文密码，只有 root 能读。
+fn write_provision(app_path: &Path, env: &BTreeMap<String, String>) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::create_dir_all(app_path)?;
+    let json = serde_json::to_string_pretty(env)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(app_path.join("provision.json"))?;
+    f.write_all(json.as_bytes())
+}
+
+/// 读取落盘的编排结果（卸载 / 升级复用同一站点与库）。
+fn read_provision(app_path: &Path) -> Option<BTreeMap<String, String>> {
+    let content = std::fs::read_to_string(app_path.join("provision.json")).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
 fn now_ts() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -754,6 +930,11 @@ fn prepare_user_run(
     let acc = super::linux_account(linux_user)?;
     for d in dirs {
         std::fs::create_dir_all(d).map_err(|e| format!("创建目录 {} 失败: {e}", d.display()))?;
+        // `users/<user>` 这一层归面板进程（crontab / cloud / scripts 在它下面），
+        // 末端实例目录才是站点账号的（下面 chown）
+        super::ensure_panel_dir_for_path(d)?;
+    }
+    for d in dirs {
         chown_path(d, acc.uid, acc.gid)?;
     }
     env.push(("ZAP_LINUX_USER".into(), linux_user.to_string()));
@@ -863,7 +1044,10 @@ fn spawn_background(
     std::thread::spawn(move || {
         use std::io::Write;
         let mut log = log_file;
-        let _ = writeln!(log, "── Queued, automatically runs after the previous task completes ──");
+        let _ = writeln!(
+            log,
+            "── Queued, automatically runs after the previous task completes ──"
+        );
         // 全局串行闸门：install/uninstall/upgrade/script_run 一次只执行一个
         let _queue_token = QueueToken::new();
         let _ = writeln!(log, "── Task Started ──");
@@ -1246,6 +1430,8 @@ pub async fn install(
     version: String,
     action: Option<String>,
     options: Option<BTreeMap<String, String>>,
+    // 实例名（多实例包区分同包的不同安装；站点类由面板按 SITE_ID 给出）
+    instance: Option<String>,
     provision: Option<BTreeMap<String, String>>,
     user: Option<String>,
     run_mode: Option<String>,
@@ -1265,6 +1451,7 @@ pub async fn install(
             "version": version.clone(),
             "action": action.clone(),
             "options": options.clone(),
+            "instance": instance.clone(),
             // 面板编排结果（站点 / 数据库）：随 spec 落盘供「重跑」复用同一套资源
             "provision": provision.clone(),
             "user": user.clone(),
@@ -1272,7 +1459,15 @@ pub async fn install(
         });
         let snapshot = prepare_snapshot(&run_id, &pkg_dir, &spec)?;
         let (script, interpreter) = script_file(&snapshot, "install", "install.sh")?;
-        let app_path = apps_dir().join(&pkg_path);
+        // 槽位：同一包的每个实例独占一个目录（多版本 PHP / 多站点 WordPress 不再互相覆盖）
+        let slot = resolve_slot(
+            &cat,
+            &name,
+            instance.as_deref(),
+            user.as_deref(),
+            provision.as_ref(),
+        );
+        let app_path = slot.dir.clone();
         let mut env = task_env(&snapshot, &app_path, &name, Some(&version), &run_id);
         // 选项落盘 options.env / options.json 并注入 env
         env.extend(write_run_options(&snapshot, options.as_ref())?);
@@ -1287,8 +1482,16 @@ pub async fn install(
         {
             env.push(("ACTION".into(), a.to_string()));
         }
+        // 实例名交给脚本登记进 info.yaml（面板据此区分同包的多个安装）
+        env.push(("APP_INSTANCE".into(), slot.instance.clone()));
         // 面板编排结果（站点 / 数据库）：后注入，避免被同名选项覆盖
         push_provision_env(&mut env, provision.as_ref());
+        // 落盘（root 写）：卸载 / 升级靠它找回同一个站点与库
+        if let Some(p) = provision.as_ref()
+            && let Err(e) = write_provision(&app_path, p)
+        {
+            eprintln!("写入 provision.json 失败: {e}");
+        }
         // 降权运行：先把安装目录与编译目录建好并交给该 Linux 账号
         let build = build_dir(&run_id);
         if let RunAs::User(u) = &run_as {
@@ -1340,6 +1543,8 @@ pub async fn install(
 pub async fn uninstall(
     pkg_path: String,
     options: Option<BTreeMap<String, String>>,
+    // 实例名（站点类 `site:<id>`）：决定要卸掉哪个安装
+    instance: Option<String>,
     provision: Option<BTreeMap<String, String>>,
     user: Option<String>,
     run_mode: Option<String>,
@@ -1347,7 +1552,15 @@ pub async fn uninstall(
 ) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let (cat, name) = validate_pkg_path(&pkg_path)?;
-        let app_path = apps_dir().join(&pkg_path);
+        // 按实例定位槽位（站点类在用户私有目录下）；旧布局自动兜底
+        let slot = resolve_slot_with_legacy(
+            &cat,
+            &name,
+            instance.as_deref(),
+            user.as_deref(),
+            provision.as_ref(),
+        );
+        let app_path = slot.dir.clone();
         if !app_path.is_dir() {
             return Err("该包未安装".into());
         }
@@ -1364,6 +1577,7 @@ pub async fn uninstall(
             "source": source.clone(),
             "repo_id": repo_id.clone(),
             "options": options.clone(),
+            "instance": instance.clone(),
             "provision": provision.clone(),
             "user": user.clone(),
             "run_mode": run_mode.clone(),
@@ -1387,8 +1601,16 @@ pub async fn uninstall(
             "PKG_SRC_PATH".into(),
             pkg_dir.to_string_lossy().into_owned(),
         ));
-        // 回传站点 / 数据库信息（脚本可能要先 mysqldump 备份再删文件）
-        push_provision_env(&mut env, provision.as_ref());
+        env.push(("APP_INSTANCE".into(), slot.instance.clone()));
+        // 回传站点 / 数据库信息（脚本可能要先 mysqldump 备份再删文件）。
+        // 面板传来的优先；缺失时自己读安装时落盘的 provision.json —— 那是 0600
+        // root-only，面板进程读不到，只能由 zapexec 兜底，否则卸载脚本会因
+        // 缺少 SITE_ROOT 直接中止、什么都没删成。
+        let effective_provision = provision
+            .clone()
+            .filter(|p: &BTreeMap<String, String>| !p.is_empty())
+            .or_else(|| read_provision(&app_path));
+        push_provision_env(&mut env, effective_provision.as_ref());
         let build = build_dir(&run_id);
         if let RunAs::User(u) = &run_as {
             prepare_user_run(&mut env, &[app_path.clone(), build], u)?;
@@ -1429,13 +1651,24 @@ pub async fn upgrade(
     old_version: String,
     action: Option<String>,
     options: Option<BTreeMap<String, String>>,
+    // 实例名（站点类 `site:<id>`）：决定要升级哪个安装
+    instance: Option<String>,
+    provision: Option<BTreeMap<String, String>>,
     user: Option<String>,
     run_mode: Option<String>,
     run_id: String,
 ) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let (cat, name) = validate_pkg_path(&pkg_path)?;
-        let app_path = apps_dir().join(&pkg_path);
+        // 按实例定位槽位（站点类在用户私有目录下）；旧布局自动兜底
+        let slot = resolve_slot_with_legacy(
+            &cat,
+            &name,
+            instance.as_deref(),
+            user.as_deref(),
+            provision.as_ref(),
+        );
+        let app_path = slot.dir.clone();
         if !app_path.is_dir() {
             return Err("该包未安装，无法升级".into());
         }
@@ -1461,6 +1694,8 @@ pub async fn upgrade(
             "old_version": old_version.clone(),
             "action": action.clone(),
             "options": options.clone(),
+            "instance": instance.clone(),
+            "provision": provision.clone(),
             "user": user.clone(),
             "run_mode": run_mode.clone(),
         });
@@ -1475,6 +1710,14 @@ pub async fn upgrade(
             pkg_dir.to_string_lossy().into_owned(),
         ));
         env.push(("APP_OLD_VERSION".into(), old_version.clone()));
+        env.push(("APP_INSTANCE".into(), slot.instance.clone()));
+        // 站点 / 数据库信息：优先用面板回传的，没有就自己读安装时落盘的 provision.json
+        // （0600 root-only，面板进程读不到，只能由 zapexec 兜底）
+        let effective_provision = provision
+            .clone()
+            .filter(|p: &BTreeMap<String, String>| !p.is_empty())
+            .or_else(|| read_provision(&app_path));
+        push_provision_env(&mut env, effective_provision.as_ref());
         if let Some(a) = action.as_deref()
             && !a.is_empty()
         {
@@ -1635,13 +1878,24 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
             return Err("运行快照缺失，无法重跑".into());
         }
         let pkg_path = spec["pkg_path"].as_str().unwrap_or("").to_string();
-        let app_path = apps_dir().join(&pkg_path);
         let name = pkg_path.rsplit('/').next().unwrap_or("").to_string();
         let version = spec["version"].as_str().unwrap_or("").to_string();
         let action = spec["action"].as_str().unwrap_or("").to_string();
         let old_version = spec["old_version"].as_str().unwrap_or("").to_string();
         // 运行身份：与首次执行一致（快照里的 app.yaml + run.json 记录的面板用户）
         let cat = pkg_path.split('/').next().unwrap_or("").to_string();
+        // 槽位：重跑必须落在与首次相同的实例上（旧布局自动兜底）
+        let provision: Option<BTreeMap<String, String>> = spec
+            .get("provision")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let slot = resolve_slot_with_legacy(
+            &cat,
+            &name,
+            spec["instance"].as_str(),
+            spec["user"].as_str(),
+            provision.as_ref(),
+        );
+        let app_path = slot.dir.clone();
         let run_as = resolve_run_as(&snapshot, &cat, spec["user"].as_str())?;
 
         let mut env = task_env(&snapshot, &app_path, &name, Some(&version), &new_run_id);
@@ -1905,6 +2159,8 @@ pub async fn script_write(path: String, content: String, username: String) -> Re
         if let Some(parent) = resolved.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
+        // `scripts/` 与 `crontab.yaml` / `cloud/` 同级，用户目录属主必须归面板进程
+        super::ensure_panel_user_dir(&username)?;
         std::fs::write(&resolved, &content).map_err(|e| format!("写入失败: {e}"))?;
         // 脚本保持可执行
         let _ = std::fs::set_permissions(&resolved, std::fs::Permissions::from_mode(0o755));
@@ -1948,52 +2204,134 @@ pub async fn script_delete(path: String, username: String) -> Response {
     .unwrap_or_else(|e| Response::err(-1, e))
 }
 
+/// 扫描全部实例槽位（含用户私有的 webapps 与旧布局）。
+///
+/// 布局（规则见 `zap_proto::appstore`）：
+/// - `apps/<category>/<name>/<instance>/` —— 全局类；旧布局没有 instance 层，
+///   meta.yaml 直接在包目录下，这里仍认，按 `default` 实例返回，老安装不会消失；
+/// - `users/<owner>/webapps/<name>/<site_id>/` —— 站点类，登记信息跟随站点账号。
+fn scan_slots() -> Vec<SlotPath> {
+    let mut out = Vec::new();
+
+    // 1) 全局类
+    if let Ok(cats) = std::fs::read_dir(apps_dir()) {
+        for cat in cats.flatten() {
+            let cat_path = cat.path();
+            if !cat_path.is_dir() {
+                continue;
+            }
+            let category = cat.file_name().to_string_lossy().to_string();
+            let Ok(pkgs) = std::fs::read_dir(&cat_path) else {
+                continue;
+            };
+            for pkg in pkgs.flatten() {
+                let pkg_dir = pkg.path();
+                if !pkg_dir.is_dir() {
+                    continue;
+                }
+                let name = pkg.file_name().to_string_lossy().to_string();
+                // 旧布局：meta.yaml 直接在包目录下 → 视为 default 实例
+                if pkg_dir.join("meta.yaml").is_file() {
+                    out.push(SlotPath {
+                        category: category.clone(),
+                        name: name.clone(),
+                        dir: pkg_dir.clone(),
+                        instance: DEFAULT_INSTANCE.to_string(),
+                        owner: None,
+                        site_id: None,
+                    });
+                }
+                // 新布局：包目录下的每个子目录是一个实例
+                let Ok(insts) = std::fs::read_dir(&pkg_dir) else {
+                    continue;
+                };
+                for inst in insts.flatten() {
+                    let dir = inst.path();
+                    if !dir.is_dir() || !dir.join("meta.yaml").is_file() {
+                        continue;
+                    }
+                    out.push(SlotPath {
+                        category: category.clone(),
+                        name: name.clone(),
+                        dir,
+                        instance: inst.file_name().to_string_lossy().to_string(),
+                        owner: None,
+                        site_id: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // 2) 站点类：每个用户的私有 webapps 目录
+    if let Ok(owners) = std::fs::read_dir(data_dir().join("users")) {
+        for owner in owners.flatten() {
+            let owner_dir = owner.path();
+            if !owner_dir.is_dir() {
+                continue;
+            }
+            let owner_name = owner.file_name().to_string_lossy().to_string();
+            let Ok(pkgs) = std::fs::read_dir(owner_dir.join(WEBAPPS_CATEGORY)) else {
+                continue;
+            };
+            for pkg in pkgs.flatten() {
+                let pkg_dir = pkg.path();
+                if !pkg_dir.is_dir() {
+                    continue;
+                }
+                let name = pkg.file_name().to_string_lossy().to_string();
+                let Ok(sites) = std::fs::read_dir(&pkg_dir) else {
+                    continue;
+                };
+                for site in sites.flatten() {
+                    let dir = site.path();
+                    if !dir.is_dir() || !dir.join("meta.yaml").is_file() {
+                        continue;
+                    }
+                    let site_id = site.file_name().to_string_lossy().to_string();
+                    out.push(SlotPath {
+                        category: WEBAPPS_CATEGORY.to_string(),
+                        name: name.clone(),
+                        dir,
+                        instance: Slot::site_instance(&site_id),
+                        owner: Some(owner_name.clone()),
+                        site_id: Some(site_id),
+                    });
+                }
+            }
+        }
+    }
+
+    out
+}
+
 pub async fn installed() -> Response {
     tokio::task::spawn_blocking(move || {
         let mut items = Vec::new();
-        let root = apps_dir();
-        if let Ok(cats) = std::fs::read_dir(&root) {
-            for cat in cats.flatten() {
-                let cat_path = cat.path();
-                if !cat_path.is_dir() {
-                    continue;
-                }
-                let category = cat.file_name().to_string_lossy().to_string();
-                if let Ok(pkgs) = std::fs::read_dir(&cat_path) {
-                    for pkg in pkgs.flatten() {
-                        let app_path = pkg.path();
-                        if !app_path.is_dir() {
-                            continue;
-                        }
-                        let Ok(meta) = read_meta(&app_path) else {
-                            continue;
-                        };
-                        let name = pkg.file_name().to_string_lossy().to_string();
-                        let pkg_path = format!("{category}/{name}");
-                        let info = read_info_yaml(&app_path);
-                        let state = probe_instance_state(&app_path, info.as_ref());
-                        let instance = info
-                            .as_ref()
-                            .and_then(|i| i.get("instance").and_then(|v| v.as_str()))
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| name.clone());
-                        items.push(json!({
-                            "pkg_path": pkg_path,
-                            "name": meta.name,
-                            "version": meta.version,
-                            "category": meta.category,
-                            "source": meta.source,
-                            "repo_id": meta.repo_id,
-                            "installed_at": meta.installed_at,
-                            "upgraded_from": meta.upgraded_from,
-                            "run_id": meta.run_id,
-                            "instance": instance,
-                            "state": state,
-                            "info": info.as_ref().map(yaml_to_json).unwrap_or_else(|| json!({})),
-                        }));
-                    }
-                }
-            }
+        for slot in scan_slots() {
+            let Ok(meta) = read_meta(&slot.dir) else {
+                continue;
+            };
+            let info = read_info_yaml(&slot.dir);
+            let state = probe_instance_state(&slot.dir, info.as_ref());
+            items.push(json!({
+                // pkg_path 在多实例时不再唯一，定位请用 instance_key
+                "pkg_path": slot.pkg_path(),
+                "instance_key": slot.key(),
+                "instance": slot.instance,
+                "owner": slot.owner,
+                "site_id": slot.site_id,
+                "name": meta.name,
+                "version": meta.version,
+                "category": meta.category,
+                "source": meta.source,
+                "repo_id": meta.repo_id,
+                "installed_at": meta.installed_at,
+                "upgraded_from": meta.upgraded_from,
+                "run_id": meta.run_id,
+                "state": state,
+                "info": info.as_ref().map(yaml_to_json).unwrap_or_else(|| json!({})),
+            }));
         }
         items.sort_by(|a, b| {
             a.get("category")
@@ -2003,6 +2341,11 @@ pub async fn installed() -> Response {
                     a.get("name")
                         .and_then(|n| n.as_str())
                         .cmp(&b.get("name").and_then(|n| n.as_str()))
+                })
+                .then_with(|| {
+                    a.get("instance")
+                        .and_then(|i| i.as_str())
+                        .cmp(&b.get("instance").and_then(|i| i.as_str()))
                 })
         });
         Response::ok("ok", Some(json!({ "items": items })))
@@ -2095,14 +2438,20 @@ fn yaml_to_json(v: &serde_yaml::Value) -> Value {
 
 /// 对已安装应用的实例执行 start/stop/restart。
 /// 要求脚本在 info.yaml 中登记 svc_name（systemd unit），由 root 执行 systemctl。
-pub async fn instance_action(pkg_path: String, action: String) -> Response {
+pub async fn instance_action(
+    pkg_path: String,
+    instance: Option<String>,
+    action: String,
+) -> Response {
     let allowed = ["start", "stop", "restart"];
     if !allowed.contains(&action.as_str()) {
         return Response::err(-1, format!("不支持的实例操作: {action}"));
     }
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let (cat, name) = validate_pkg_path(&pkg_path)?;
-        let app_path = apps_dir().join(&cat).join(&name);
+        // 按实例定位槽位（旧布局自动兜底）
+        let slot = resolve_slot_with_legacy(&cat, &name, instance.as_deref(), None, None);
+        let app_path = slot.dir.clone();
         if !app_path.is_dir() {
             return Err("该应用未安装".into());
         }
@@ -2169,6 +2518,47 @@ mod tests {
         assert!(safe_rel("../etc").is_err());
         assert!(safe_rel("a/../../b").is_err());
         assert!(safe_rel("a/b/c.sh").is_ok());
+    }
+
+    #[test]
+    fn fixup_user_dirs_creates_root_and_keeps_existing() {
+        let (_guard, root) = with_zap_root();
+        let user = root.join("data/users/admin");
+        std::fs::create_dir_all(&user).unwrap();
+        // 启动时修一遍：目录本身不能被删/改名，缺失的 users/ 会补建
+        super::super::fixup_user_dirs();
+        assert!(root.join("data/users").is_dir());
+        assert!(user.is_dir());
+    }
+
+    #[test]
+    fn panel_user_of_derives_first_level() {
+        let (_guard, root) = with_zap_root();
+        let cloud = root.join("data/users/admin/cloud/stores");
+        assert_eq!(
+            super::super::panel_user_of(&cloud).as_deref(),
+            Some("admin")
+        );
+        // 不在 users/ 下（或只是 users 本身）时不做任何归属推断
+        assert_eq!(super::super::panel_user_of(&root.join("data/apps")), None);
+        assert_eq!(super::super::panel_user_of(&root.join("data/users")), None);
+    }
+
+    #[test]
+    fn ensure_panel_dir_creates_user_root_for_site_slot() {
+        let (_guard, root) = with_zap_root();
+        // 站点应用槽位：users/<user>/webapps/<name>/<site_id>
+        let slot = root.join("data/users/admin/webapps/wordpress/12");
+        std::fs::create_dir_all(&slot).unwrap();
+        // 安装时 root 侧触碰用户目录 → 顺手把 users/<user> 交还给面板进程
+        super::super::ensure_panel_dir_for_path(&slot).unwrap();
+        assert!(root.join("data/users/admin").is_dir());
+        assert!(root.join("data/users").is_dir());
+        // 与站点数据无关的路径不产生副作用
+        let other = root.join("data/apps/application/php");
+        std::fs::create_dir_all(&other).unwrap();
+        super::super::ensure_panel_dir_for_path(&other).unwrap();
+        assert!(!root.join("data/users/apps").exists());
     }
 
     #[test]

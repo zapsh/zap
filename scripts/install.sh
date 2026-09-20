@@ -252,9 +252,14 @@ ok "站点配置目录已就绪（/etc/zap/webservers）"
 # 面板数据区：zap.db（sqlite 还会写 -wal/-shm）、AppStore、升级包目录都必须可写；
 # 证书改为 zapd 首次启动自行生成，故安装脚本只负责把目录/文件归属准备好。
 info "设置运行目录权限（zapadm）..."
-mkdir -p "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/upgrade"
+mkdir -p "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/upgrade" "$ZAP_DIR/data/users"
 chown zapadm:zapadm "$ZAP_DIR/data" \
-    "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/upgrade"
+    "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/upgrade" "$ZAP_DIR/data/users"
+# 用户私有目录（crontab.yaml / cloud / scripts）由面板进程直接读写：
+# 只放开 `users/<user>` 这一层，站点应用数据（webapps/<name>/<site_id>）仍归站点账号
+for d in "$ZAP_DIR"/data/users/*/; do
+    [ -d "$d" ] && chown zapadm:zapadm "$d" 2>/dev/null || true
+done
 # 老版本以 root 跑过的话，库文件与 WAL 也需要一并改属，否则 sqlite 无法写入
 for f in zap.db zap.db-wal zap.db-shm; do
     [ -e "$ZAP_DIR/data/$f" ] && chown zapadm:zapadm "$ZAP_DIR/data/$f" || true

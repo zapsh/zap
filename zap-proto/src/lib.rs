@@ -6,6 +6,7 @@
 //!
 //! 注意：`Request` 只包含白名单动词，**没有**任意 shell 执行入口。
 
+pub mod appstore;
 pub mod auth;
 pub mod frame;
 pub mod types;

@@ -56,14 +56,188 @@ pub fn appstore_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("data/appstore"))
 }
 
-/// 已安装软件目录（apps/）
-pub fn apps_dir() -> PathBuf {
+/// 面板数据根目录（apps/ 与 users/ 的父目录；对应 zapexec 的 `{ZAP_PATH}/data`）。
+pub fn data_dir() -> PathBuf {
     let cfg = config::get_config().read().unwrap();
     let db_path = Path::new(&cfg.db.path);
     db_path
         .parent()
-        .map(|p| p.join("apps"))
-        .unwrap_or_else(|| PathBuf::from("data/apps"))
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("data"))
+}
+
+/// 已安装软件目录（apps/）：规则统一在 `zap_proto::appstore`，两边不再各算一套
+pub fn apps_dir() -> PathBuf {
+    zap_proto::appstore::apps_dir(&data_dir())
+}
+
+/// 一个已安装实例的定位信息。
+///
+/// 同一个包可以装多份（多版本 PHP、多站点 WordPress），因此定位实例不能只靠
+/// `pkg_path`，还要有 `instance`（站点类为 `site:<id>`，并带上归属用户）。
+#[derive(Debug, Clone)]
+pub struct InstalledSlot {
+    pub category: String,
+    pub name: String,
+    pub instance: String,
+    /// 归属面板用户（站点类有）
+    pub owner: Option<String>,
+    /// 站点 id（站点类有）
+    pub site_id: Option<String>,
+    /// 槽位目录（meta.yaml / info.yaml / provision.json 都在这里）
+    pub dir: PathBuf,
+    /// 脚本在 info.yaml 里登记的实例名（可能与槽位目录名不同，如 php74 / default）
+    pub registered: Option<String>,
+}
+
+/// 读槽位里脚本登记的实例名（info.yaml: instance）。
+fn registered_instance_in(dir: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(dir.join("info.yaml")).ok()?;
+    let v: Value = serde_yaml::from_str(&content).ok()?;
+    v.get("instance")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+impl InstalledSlot {
+    /// 包路径：`<category>/<name>`（定位包源用，多实例时不唯一）
+    pub fn pkg_path(&self) -> String {
+        format!("{}/{}", self.category, self.name)
+    }
+
+    /// 稳定主键：`<category>/<name>@<instance>`
+    pub fn key(&self) -> String {
+        format!("{}/{}@{}", self.category, self.name, self.instance)
+    }
+}
+
+/// 扫描全部已安装实例（与 zapexec 的 `scan_slots` 对称）。
+///
+/// - `apps/<category>/<name>/<instance>/`：全局类；旧布局没有 instance 层
+///   （meta.yaml 直接在包目录下），仍按 `default` 实例识别，老安装不会消失；
+/// - `users/<owner>/webapps/<name>/<site_id>/`：站点类，登记信息跟随站点账号。
+pub fn scan_slots() -> Vec<InstalledSlot> {
+    use zap_proto::appstore::{DEFAULT_INSTANCE, Slot, WEBAPPS_CATEGORY};
+
+    let mut out = Vec::new();
+
+    // 1) 全局类
+    if let Ok(cats) = std::fs::read_dir(apps_dir()) {
+        for cat in cats.flatten() {
+            let cat_path = cat.path();
+            if !cat_path.is_dir() {
+                continue;
+            }
+            let category = cat.file_name().to_string_lossy().to_string();
+            let Ok(pkgs) = std::fs::read_dir(&cat_path) else {
+                continue;
+            };
+            for pkg in pkgs.flatten() {
+                let pkg_dir = pkg.path();
+                if !pkg_dir.is_dir() {
+                    continue;
+                }
+                let name = pkg.file_name().to_string_lossy().to_string();
+                if pkg_dir.join("meta.yaml").is_file() {
+                    out.push(InstalledSlot {
+                        category: category.clone(),
+                        name: name.clone(),
+                        instance: DEFAULT_INSTANCE.to_string(),
+                        owner: None,
+                        site_id: None,
+                        dir: pkg_dir.clone(),
+                        registered: registered_instance_in(&pkg_dir),
+                    });
+                }
+                let Ok(insts) = std::fs::read_dir(&pkg_dir) else {
+                    continue;
+                };
+                for inst in insts.flatten() {
+                    let dir = inst.path();
+                    if !dir.is_dir() || !dir.join("meta.yaml").is_file() {
+                        continue;
+                    }
+                    out.push(InstalledSlot {
+                        category: category.clone(),
+                        name: name.clone(),
+                        instance: inst.file_name().to_string_lossy().to_string(),
+                        owner: None,
+                        site_id: None,
+                        registered: registered_instance_in(&dir),
+                        dir,
+                    });
+                }
+            }
+        }
+    }
+
+    // 2) 站点类：每个用户的私有 webapps 目录
+    if let Ok(owners) = std::fs::read_dir(data_dir().join("users")) {
+        for owner in owners.flatten() {
+            let owner_dir = owner.path();
+            if !owner_dir.is_dir() {
+                continue;
+            }
+            let owner_name = owner.file_name().to_string_lossy().to_string();
+            let Ok(pkgs) = std::fs::read_dir(owner_dir.join(WEBAPPS_CATEGORY)) else {
+                continue;
+            };
+            for pkg in pkgs.flatten() {
+                let pkg_dir = pkg.path();
+                if !pkg_dir.is_dir() {
+                    continue;
+                }
+                let name = pkg.file_name().to_string_lossy().to_string();
+                let Ok(sites) = std::fs::read_dir(&pkg_dir) else {
+                    continue;
+                };
+                for site in sites.flatten() {
+                    let dir = site.path();
+                    if !dir.is_dir() || !dir.join("meta.yaml").is_file() {
+                        continue;
+                    }
+                    let site_id = site.file_name().to_string_lossy().to_string();
+                    out.push(InstalledSlot {
+                        category: WEBAPPS_CATEGORY.to_string(),
+                        name: name.clone(),
+                        instance: Slot::site_instance(&site_id),
+                        owner: Some(owner_name.clone()),
+                        site_id: Some(site_id),
+                        registered: registered_instance_in(&dir),
+                        dir,
+                    });
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// 按 `pkg_path` + 实例名找已安装槽位（instance 为 None 时取该包的第一个）。
+pub fn find_slot(pkg_path: &str, instance: Option<&str>) -> Option<InstalledSlot> {
+    let mut slots = scan_slots()
+        .into_iter()
+        .filter(|s| s.pkg_path() == pkg_path)
+        .collect::<Vec<_>>();
+    if let Some(inst) = instance.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(hit) = slots
+            .iter()
+            .find(|s| s.instance == inst || s.registered.as_deref() == Some(inst))
+        {
+            return Some(hit.clone());
+        }
+        // 该包只有一个槽位：没有歧义（脚本没在 info.yaml 登记实例名也能对上）
+        if slots.len() == 1 {
+            return slots.into_iter().next();
+        }
+        // 多实例又对不上：宁可不补齐，也不要把归属信息张冠李戴
+        return None;
+    }
+    slots.sort_by(|a, b| a.instance.cmp(&b.instance));
+    slots.into_iter().next()
 }
 
 pub fn logs_dir() -> PathBuf {
@@ -690,6 +864,43 @@ pub async fn package_provision_of(pkg_path: &str) -> Option<ProvisionSpec> {
     .flatten()
 }
 
+/// 读取某个包是否声明了「允许多实例安装」（app.yaml: allow_multiple_instances）。
+///
+/// 多实例包（多版本 PHP）在装第二个版本时要落进另一个槽位，否则新登记会覆盖旧的。
+pub async fn package_multi_instance_of(pkg_path: &str) -> Option<bool> {
+    let (cat, name) = pkg_path.split_once('/')?;
+    if cat.is_empty() || name.is_empty() {
+        return None;
+    }
+    let pkg_rel = format!("{cat}/{name}");
+    let appstore = appstore_dir();
+    let repos_root = appstore.join("repos");
+    let custom_dir = appstore.join("custom");
+    let repo_list = read_repos_value().await.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(repos) = repo_list.get("repos").and_then(|r| r.as_array()) {
+            for repo in repos {
+                if let Some(id) = repo.get("id").and_then(|v| v.as_str()) {
+                    dirs.push(repos_root.join(id));
+                }
+            }
+        }
+        dirs.push(custom_dir);
+        // 倒序命中：custom 优先级最高
+        for dir in dirs.iter().rev() {
+            let yaml_path = dir.join(&pkg_rel).join("app.yaml");
+            if let Some(a) = parse_app_yaml(&yaml_path) {
+                return Some(a.allow_multiple_instances);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// 扫描全部 Git 源 + 自定义包。同名覆盖顺序（优先级从低到高）：
 /// 内置源 < 后添加的源 < custom。
 pub async fn scan_packages() -> Vec<Value> {
@@ -797,32 +1008,21 @@ fn scan_source_dir(
 pub async fn scan_installed() -> Vec<Value> {
     tokio::task::spawn_blocking(|| {
         let mut items = Vec::new();
-        let Ok(cats) = std::fs::read_dir(apps_dir()) else {
-            return items;
-        };
-        for cat in cats.flatten() {
-            let cat_path = cat.path();
-            if !cat_path.is_dir() {
-                continue;
-            }
-            let Ok(pkgs) = std::fs::read_dir(&cat_path) else {
+        for slot in scan_slots() {
+            let Some(meta) = parse_slot_meta(&slot) else {
                 continue;
             };
-            for pkg in pkgs.flatten() {
-                let app_path = pkg.path();
-                if !app_path.is_dir() {
-                    continue;
-                }
-                let Some(meta) = parse_meta_yaml(&app_path.join("meta.yaml")) else {
-                    continue;
-                };
-                items.push(meta);
-            }
+            items.push(meta);
         }
         items.sort_by(|a, b| {
             a.get("pkg_path")
                 .and_then(|x| x.as_str())
                 .cmp(&b.get("pkg_path").and_then(|x| x.as_str()))
+                .then_with(|| {
+                    a.get("instance")
+                        .and_then(|x| x.as_str())
+                        .cmp(&b.get("instance").and_then(|x| x.as_str()))
+                })
         });
         items
     })
@@ -830,20 +1030,21 @@ pub async fn scan_installed() -> Vec<Value> {
     .unwrap_or_default()
 }
 
-/// 读取某个已安装包的版本（升级时获取 old_version）。
+/// 读取某个实例已安装的版本（升级时获取 old_version）。
+///
+/// 必须按槽位定位：多版本 PHP 各自有 meta.yaml，只认 `pkg_path` 会读到错的那个
+/// （甚至读到已经被覆盖掉的旧记录）。instance 为 None 时取该包的第一个实例。
 pub async fn installed_version_of(pkg_path: &str) -> Option<String> {
-    let apps = apps_dir();
-    let pkg_path = pkg_path.to_string();
-    tokio::task::spawn_blocking(move || {
-        let p = apps.join(&pkg_path).join("meta.yaml");
-        parse_meta_yaml(&p).and_then(|m| {
-            m.get("version")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-    })
-    .await
-    .unwrap_or(None)
+    installed_version_for(pkg_path, None).await
+}
+
+/// 按 `pkg_path` + 实例名读取已安装版本。
+pub async fn installed_version_for(pkg_path: &str, instance: Option<&str>) -> Option<String> {
+    let slot = find_slot(pkg_path, instance)?;
+    parse_slot_meta(&slot)?
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// 读取 repos.yaml 并返回 Value；不存在时兜底返回内置源（不落盘，写盘由 zapexec 负责）。
@@ -907,25 +1108,16 @@ fn parse_app_yaml(path: &Path) -> Option<AppYaml> {
     serde_yaml::from_str(&content).ok()
 }
 
-fn parse_meta_yaml(path: &Path) -> Option<Value> {
-    let content = std::fs::read_to_string(path).ok()?;
+/// 解析槽位里的 meta.yaml，并补上实例定位信息（前端据此区分同包的多个安装）。
+fn parse_slot_meta(slot: &InstalledSlot) -> Option<Value> {
+    let content = std::fs::read_to_string(slot.dir.join("meta.yaml")).ok()?;
     let v: Value = serde_yaml::from_str(&content).ok()?;
-    // meta.yaml 位于 apps/{category}/{name}/meta.yaml，pkg_path 取其父目录的相对路径
-    let pkg_path = path
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|cat_dir| cat_dir.file_name())
-        .map(|cat| {
-            let name = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            format!("{}/{}", cat.to_string_lossy(), name)
-        })
-        .unwrap_or_default();
     Some(json!({
-        "pkg_path": pkg_path,
+        "pkg_path": slot.pkg_path(),
+        "instance_key": slot.key(),
+        "instance": slot.instance,
+        "owner": slot.owner,
+        "site_id": slot.site_id,
         "name": v.get("name"),
         "version": v.get("version"),
         "category": v.get("category"),

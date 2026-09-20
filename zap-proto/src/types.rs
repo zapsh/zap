@@ -376,6 +376,10 @@ pub enum Request {
         /// 用户在安装表单中填写的选项（app.yaml options，键=选项名，值=字符串化表单值）
         #[serde(skip_serializing_if = "Option::is_none")]
         options: Option<BTreeMap<String, String>>,
+        /// 实例名：同一个包的多个安装靠它区分（多版本 PHP → `74` / `83`；
+        /// 站点类 → `site:<站点id>`）。缺省 `default`（老版本安装就是这个）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instance: Option<String>,
         /// 发起操作的面板登录用户名（注入 ZAP_USER，供安装脚本按操作者归属）
         #[serde(skip_serializing_if = "Option::is_none")]
         user: Option<String>,
@@ -398,6 +402,10 @@ pub enum Request {
         /// 用户在卸载表单中填写的选项（app.yaml options.uninstall，键=选项名，值=字符串化表单值）
         #[serde(skip_serializing_if = "Option::is_none")]
         options: Option<BTreeMap<String, String>>,
+        /// 实例名：同一个包的多个安装靠它区分（多版本 PHP → `74` / `83`；
+        /// 站点类 → `site:<站点id>`）。缺省 `default`（老版本安装就是这个）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instance: Option<String>,
         /// 安装时面板编排结果（站点 / 数据库），卸载时回传以便脚本备份或清理
         #[serde(skip_serializing_if = "Option::is_none")]
         provision: Option<BTreeMap<String, String>>,
@@ -425,6 +433,14 @@ pub enum Request {
         /// 升级表单选项（键=选项名，值=字符串化表单值）；缺省复用安装选项定义
         #[serde(skip_serializing_if = "Option::is_none")]
         options: Option<BTreeMap<String, String>>,
+        /// 实例名：同一个包的多个安装靠它区分（多版本 PHP → `74` / `83`；
+        /// 站点类 → `site:<站点id>`）。缺省 `default`（老版本安装就是这个）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instance: Option<String>,
+        /// 安装时的编排结果（站点 / 数据库）：升级脚本要接着用同一个站点与库，
+        /// 与 uninstall 同源（provision.json，取不到时由 info.yaml 兜底）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provision: Option<BTreeMap<String, String>>,
         /// 发起操作的面板登录用户名（注入 ZAP_USER）
         #[serde(skip_serializing_if = "Option::is_none")]
         user: Option<String>,
@@ -481,6 +497,9 @@ pub enum Request {
     AppstoreInstanceAction {
         /// 形如 application/php 的包路径
         pkg_path: String,
+        /// 实例名（缺省 default；站点类为 `site:<id>`）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instance: Option<String>,
         /// start | stop | restart
         action: String,
     },
@@ -1206,6 +1225,7 @@ mod tests {
                 version: "11.4.4".into(),
                 action: None,
                 options: None,
+                instance: None,
                 provision: None,
                 user: None,
                 run_mode: None,
@@ -1222,6 +1242,7 @@ mod tests {
                 version: "8.3.3".into(),
                 action: Some("build".into()),
                 options: None,
+                instance: None,
                 provision: Some(
                     [("DB_NAME".to_string(), "u_wp1".to_string())]
                         .into_iter()
@@ -1265,6 +1286,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&Request::AppstoreInstanceAction {
                 pkg_path: "application/php".into(),
+                instance: None,
                 action: "stop".into(),
             })
             .unwrap(),

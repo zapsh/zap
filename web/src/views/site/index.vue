@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 import {
   ArrowRight,
   Delete,
@@ -1220,8 +1220,28 @@ async function removeRows(rows: SiteItem[]) {
     ElMessage.warning(t('site.selectSiteFirst'))
     return
   }
-  // 确认框：列出站点名 + 绑定域名，并给出「同时删除网站数据与日志」选项
-  const removeData = ref(false)
+  // 确认框：列出站点名 + 绑定域名，并给出「同时删除网站数据与日志」选项。
+  // ElMessageBox 的内容是一次性渲染的，直接把响应式 ref 塞进 VNode 不会触发重渲染
+  // （点了勾但界面不变，看起来就是「勾不上」），所以把勾选做成自带状态的小组件，
+  // 由它自己在组件内部的响应式上下文里更新，再把结果写回外层变量。
+  let removeData = false
+  const DeleteDataOption = defineComponent({
+    setup() {
+      const checked = ref(false)
+      return () =>
+        h(
+          ElCheckbox,
+          {
+            modelValue: checked.value,
+            'onUpdate:modelValue': (v: unknown) => {
+              checked.value = v === true
+              removeData = checked.value
+            },
+          },
+          { default: () => t('site.deleteDataOpt') },
+        )
+    },
+  })
   const shown = rows.slice(0, 6)
   try {
     await ElMessageBox.confirm(
@@ -1240,18 +1260,7 @@ async function removeRows(rows: SiteItem[]) {
         rows.length > shown.length
           ? h('div', { class: 'dc-more' }, t('site.deleteMore', { n: rows.length - shown.length }))
           : null,
-        h(
-          'div',
-          { class: 'dc-check' },
-          h(
-            ElCheckbox,
-            {
-              modelValue: removeData.value,
-              'onUpdate:modelValue': (v: unknown) => (removeData.value = v === true),
-            },
-            { default: () => t('site.deleteDataOpt') },
-          ),
-        ),
+        h('div', { class: 'dc-check' }, h(DeleteDataOption)),
         h('div', { class: 'dc-tip' }, t('site.deleteDataTip')),
       ]),
       t('site.confirmDeleteTitle'),
@@ -1266,7 +1275,7 @@ async function removeRows(rows: SiteItem[]) {
   }
   const res = await http.post<{ code: number; message: string }>('/site/delete', {
     ids: rows.map((r) => r.id),
-    remove_data: removeData.value,
+    remove_data: removeData,
   })
   ElMessage.success(res.message)
   load()

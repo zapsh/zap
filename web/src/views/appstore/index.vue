@@ -68,8 +68,25 @@
       </div>
     </el-card>
 
+    <!-- 页内导航：应用商店是单一菜单，已安装 / 我的站点应用都在本页切换 -->
+    <div class="view-tabs">
+      <el-radio-group v-model="activeTab" size="default">
+        <el-radio-button value="store">{{ t('appstore.tabStore') }}</el-radio-button>
+        <el-radio-button value="installed">{{ t('appstore.tabInstalled') }}</el-radio-button>
+        <el-radio-button value="mine">{{ t('appstore.tabMine') }}</el-radio-button>
+      </el-radio-group>
+    </div>
+
+    <!-- 已安装实例（按实例操作：启停 / 卸载） -->
+    <InstalledPane
+      v-if="activeTab === 'installed'"
+      @task="onPaneTask"
+      :key="'installed'"
+    />
+    <InstalledPane v-if="activeTab === 'mine'" scope="mine" @task="onPaneTask" :key="'mine'" />
+
     <!-- 分类 + 搜索 -->
-    <div class="filter-bar">
+    <div v-if="activeTab === 'store'" class="filter-bar">
       <el-radio-group v-model="activeCategory" size="small">
         <el-radio-button value="all">{{ t('appstore.catAll') }}</el-radio-button>
         <el-radio-button value="infra">{{ t('appstore.catInfra') }}</el-radio-button>
@@ -92,13 +109,15 @@
     </div>
 
     <!-- 包列表 -->
-    <div class="pkg-grid" v-loading="loading">
+    <div v-if="activeTab === 'store'" class="pkg-grid" v-loading="loading">
       <el-card v-for="pkg in filteredPackages" :key="pkg.pkg_path" shadow="hover" class="pkg-card">
         <div class="pkg-head">
           <div class="pkg-name">
             {{ pkg.name }}
             <el-tag v-if="pkg.installed" size="small" type="success" effect="light">{{
-              t('appstore.tagInstalled')
+              (pkg.installed_instances || []).length > 1
+                ? `${t('appstore.tagInstalled')} × ${(pkg.installed_instances || []).length}`
+                : t('appstore.tagInstalled')
             }}</el-tag>
             <el-tag v-else size="small" type="info" effect="plain">{{
               t('appstore.tagNotInstalled')
@@ -453,10 +472,19 @@ import {
   type VersionMeta,
 } from '@/api/appstore'
 import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
+import InstalledPane from '@/views/appstore/installed.vue'
 
 const { t } = useI18n()
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.roles.includes('admin'))
+
+/** 当前页签：store=应用商店；installed=已安装实例；mine=我的站点应用 */
+const activeTab = ref<'store' | 'installed' | 'mine'>('store')
+
+/** 已安装面板提交任务后，在这里打开日志抽屉（与商店页共用一个抽屉） */
+function onPaneTask(runId: string, title: string) {
+  logDrawerRef.value?.openDrawer(runId, title)
+}
 
 /**
  * 当前用户能否浏览该包（应用商店列表可见）：
@@ -963,13 +991,23 @@ async function handleUninstall(pkg: AppPackage) {
 
 /** 真正发起卸载;成功返回 true（关闭选项对话框） */
 async function doUninstall(pkg: AppPackage, options?: FormOptions): Promise<boolean> {
+  // 多实例包（多版本 PHP / 多站点 WordPress）不能只按包名卸：切到「已安装」按实例操作
+  if ((pkg.installed_instances || []).length > 1) {
+    ElMessage.warning(t('appstore.multiInstanceHint'))
+    activeTab.value = 'installed'
+    return false
+  }
   try {
     await ElMessageBox.confirm(
       t('appstore.uninstallConfirm', { name: pkg.title || pkg.name }),
       t('appstore.uninstallTitle'),
       { type: 'warning' },
     )
-    const resp = await uninstallPackage({ pkg_path: pkg.pkg_path, options })
+    const resp = await uninstallPackage({
+      pkg_path: pkg.pkg_path,
+      instance: (pkg.installed_instances || [])[0]?.instance,
+      options,
+    })
     ElMessage.success(t('appstore.uninstallStarted'))
     logDrawerRef.value?.openDrawer(resp.data.run_id, `${t('appstore.btnUninstall')} ${pkg.name}`)
     trackRun(resp.data.run_id, `${pkg.title || pkg.name} ${t('appstore.btnUninstall')}`)
@@ -1031,6 +1069,7 @@ async function doUpgrade(pkg: AppPackage, options?: FormOptions): Promise<boolea
       source: pkg.source,
       repo_id: pkg.source === 'official' ? pkg.repo_id : undefined,
       version: ver || pkg.version,
+      instance: (pkg.installed_instances || [])[0]?.instance,
       options,
     })
     // 升级同样是编译任务，可能要排队
@@ -1327,6 +1366,11 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+}
+
+/* 页内导航（应用商店单一菜单，已安装 / 我的站点应用在这里切） */
+.view-tabs {
+  margin: 12px 0 2px;
 }
 
 .filter-bar {

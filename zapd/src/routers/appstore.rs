@@ -53,41 +53,70 @@ async fn check_pkg_run_as(pkg_path: &str) -> Result<(), ZapError> {
 // - 套餐配额、多租户前缀（{用户名}_）、随机密码策略自动生效；
 // - 重跑 / 卸载复用同一份资源（存于 apps/<pkg>/provision.json，0600 仅 root 可读）。
 
-/// 编排结果存放位置：`data/apps/<pkg_path>/provision.json`（root only）。
-fn provision_file(pkg_path: &str) -> PathBuf {
-    ast::apps_dir().join(pkg_path).join("provision.json")
+/// 编排结果存放位置：实例槽位下的 `provision.json`（root only，0600）。
+///
+/// 站点类槽位在用户私有目录里，全局类在 `apps/<category>/<name>/<instance>/`；
+/// 查不到实例时回退旧布局，保证升级面板前装的应用依然能卸载 / 升级。
+fn provision_file(pkg_path: &str, instance: Option<&str>) -> PathBuf {
+    let legacy = ast::apps_dir().join(pkg_path).join("provision.json");
+    if let Some(slot) = ast::find_slot(pkg_path, instance) {
+        let p = slot.dir.join("provision.json");
+        if p.is_file() {
+            return p;
+        }
+    }
+    legacy
 }
 
-/// 落盘编排结果（0600：里面可能有数据库密码）。
-fn save_provision(pkg_path: &str, env: &BTreeMap<String, String>) {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let path = provision_file(pkg_path);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let mut f = match std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)
-    {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-    use std::io::Write;
-    let _ = f.write_all(
-        serde_json::to_string_pretty(env)
-            .unwrap_or_default()
-            .as_bytes(),
-    );
+/// 实例槽位目录；查不到就回退旧布局 `apps/<pkg_path>/`。
+fn slot_dir_of(pkg_path: &str, instance: Option<&str>) -> PathBuf {
+    ast::find_slot(pkg_path, instance)
+        .map(|s| s.dir)
+        .unwrap_or_else(|| ast::apps_dir().join(pkg_path))
 }
 
 /// 读取上次安装的编排结果（卸载 / 升级复用同一站点与库）。
-pub(crate) fn load_provision(pkg_path: &str) -> Option<BTreeMap<String, String>> {
-    let content = std::fs::read_to_string(provision_file(pkg_path)).ok()?;
-    serde_json::from_str(&content).ok()
+///
+/// provision.json 由 zapexec（root）以 0600 落盘：面板以 root 运行时能读，
+/// 降权运行时读不到，所以这里只把它当「可选」来源，读不到就退到脚本登记的
+/// info.yaml（0644）里取站点 / 库字段。info.yaml 没有密码，卸载脚本会自动
+/// 跳过备份与删库，但仍能正确清理站点文件 —— 比直接报「缺少 SITE_ROOT」
+/// 把卸载卡死要好。
+pub(crate) fn load_provision(
+    pkg_path: &str,
+    instance: Option<&str>,
+) -> Option<BTreeMap<String, String>> {
+    if let Ok(content) = std::fs::read_to_string(provision_file(pkg_path, instance))
+        && let Ok(env) = serde_json::from_str::<BTreeMap<String, String>>(&content)
+        && !env.is_empty()
+    {
+        return Some(env);
+    }
+    provision_from_info(pkg_path, instance)
+}
+
+/// 从脚本登记的 info.yaml 还原站点 / 数据库字段（不含密码）。
+fn provision_from_info(pkg_path: &str, instance: Option<&str>) -> Option<BTreeMap<String, String>> {
+    let content =
+        std::fs::read_to_string(slot_dir_of(pkg_path, instance).join("info.yaml")).ok()?;
+    let v: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
+    let mut env: BTreeMap<String, String> = BTreeMap::new();
+    for (key, dst) in [
+        ("site_id", "SITE_ID"),
+        ("site_root", "SITE_ROOT"),
+        ("domain", "SITE_DOMAIN"),
+        ("db_name", "DB_NAME"),
+        ("db_user", "DB_USER"),
+    ] {
+        if let Some(s) = v
+            .get(key)
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            env.insert(dst.to_string(), (*s).to_string());
+        }
+    }
+    if env.is_empty() { None } else { Some(env) }
 }
 
 /// 按包声明准备站点与数据库，返回待注入脚本的环境变量。
@@ -176,8 +205,43 @@ async fn provision_for(
     if env.is_empty() {
         return Ok(None);
     }
-    save_provision(pkg_path, &env);
+    // 落盘交给 zapexec（root）在任务里做：webapps 槽位会被 chown 给站点账号，
+    // 面板进程之后写不进去 —— 早期 save_provision 静默失败正是 provision.json
+    // 缺失、卸载报「缺少 SITE_ROOT」的根因。
     Ok(Some(env))
+}
+
+/// 决定这次安装落在哪个实例槽位。
+///
+/// - 站点类（webapps）：`site:<站点id>` —— 同一站点重复安装是同一个实例，
+///   不同站点各占一个槽位，第二个站点装 WordPress 不会再覆盖第一个的登记；
+/// - 声明 `allow_multiple_instances` 的包：用版本短名（`7.4.33` → `74`），
+///   多版本 PHP 各占一个槽位；
+/// - 其余：None（zapexec 按 `default` 处理，与旧布局一致）。
+async fn install_instance(
+    pkg_path: &str,
+    version: &str,
+    provision: Option<&BTreeMap<String, String>>,
+) -> Option<String> {
+    use zap_proto::appstore::{Slot, WEBAPPS_CATEGORY};
+
+    let cat = pkg_path.split('/').next().unwrap_or_default();
+    if cat == WEBAPPS_CATEGORY
+        && let Some(site_id) = provision
+            .and_then(|p| p.get("SITE_ID"))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+    {
+        return Some(Slot::site_instance(site_id));
+    }
+    if !ast::package_multi_instance_of(pkg_path)
+        .await
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let short: String = version.split('.').take(2).collect();
+    if short.is_empty() { None } else { Some(short) }
 }
 
 fn require_admin(claims: &Claims) -> Result<(), ZapError> {
@@ -387,10 +451,15 @@ pub async fn repo_update(
 pub async fn packages(_claims: ValidatedClaims) -> ZapJsonResult {
     let pkgs = ast::scan_packages().await;
     let installed = ast::scan_installed().await;
-    let mut installed_map = std::collections::HashMap::new();
+    // 一个包可以有多个实例（多版本 PHP / 多站点 WordPress），所以是列表而不是单值
+    let mut installed_map: std::collections::HashMap<String, Vec<Value>> =
+        std::collections::HashMap::new();
     for inst in &installed {
         if let Some(p) = inst.get("pkg_path").and_then(|x| x.as_str()) {
-            installed_map.insert(p.to_string(), inst.clone());
+            installed_map
+                .entry(p.to_string())
+                .or_default()
+                .push(inst.clone());
         }
     }
     let mut items: Vec<Value> = Vec::new();
@@ -400,14 +469,33 @@ pub async fn packages(_claims: ValidatedClaims) -> ZapJsonResult {
             .and_then(|x| x.as_str())
             .unwrap_or_default()
             .to_string();
-        if let Some(inst) = installed_map.get(&pkg_path) {
-            pkg["installed"] = json!(true);
-            pkg["installed_version"] = inst.get("version").cloned().unwrap_or(Value::Null);
-            pkg["installed_source"] = inst.get("source").cloned().unwrap_or(Value::Null);
-            pkg["installed_at"] = inst.get("installed_at").cloned().unwrap_or(Value::Null);
-            pkg["upgraded_from"] = inst.get("upgraded_from").cloned().unwrap_or(Value::Null);
+        if let Some(insts) = installed_map.get(&pkg_path) {
+            if let Some(inst) = insts.first() {
+                // 兼容旧字段：取第一个实例（多实例时看 installed_instances）
+                pkg["installed"] = json!(true);
+                pkg["installed_version"] = inst.get("version").cloned().unwrap_or(Value::Null);
+                pkg["installed_source"] = inst.get("source").cloned().unwrap_or(Value::Null);
+                pkg["installed_at"] = inst.get("installed_at").cloned().unwrap_or(Value::Null);
+                pkg["upgraded_from"] = inst.get("upgraded_from").cloned().unwrap_or(Value::Null);
+            }
+            // 全部实例：前端据此显示「已装 N 个实例」并逐个操作
+            pkg["installed_instances"] = json!(
+                insts
+                    .iter()
+                    .map(|i| {
+                        json!({
+                            "instance": i.get("instance"),
+                            "instance_key": i.get("instance_key"),
+                            "version": i.get("version"),
+                            "owner": i.get("owner"),
+                            "site_id": i.get("site_id"),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            );
         } else {
             pkg["installed"] = json!(false);
+            pkg["installed_instances"] = json!([]);
         }
         items.push(pkg);
     }
@@ -498,6 +586,8 @@ pub async fn install(
     // 面板侧编排：建站类包（webapps）先由面板建好站点 / 数据库；
     // 失败直接返回，任务不会入队（避免脚本跑一半发现没库可用）
     let provision = provision_for(&claims, &payload.pkg_path, options.as_ref()).await?;
+    // 决定这次安装落在哪个实例槽位（多版本 / 多站点各占一个槽位，互不覆盖）
+    let instance = install_instance(&payload.pkg_path, &payload.version, provision.as_ref()).await;
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
 
@@ -509,6 +599,7 @@ pub async fn install(
         version: payload.version.clone(),
         action: payload.action.clone(),
         options,
+        instance: instance.clone(),
         provision,
         user: Some(claims.sub.clone()),
         run_mode: Some(system_env::VHOST_MODE.to_string()),
@@ -565,6 +656,8 @@ pub async fn install(
 #[derive(Debug, Deserialize)]
 pub struct UninstallPayload {
     pub pkg_path: String,
+    /// 实例名（缺省 default；站点类为 `site:<id>`）：多实例时指明卸掉哪一个
+    pub instance: Option<String>,
     /// 卸载表单选项：选项名 -> 字符串化值（app.yaml options.uninstall）
     pub options: Option<BTreeMap<String, String>>,
 }
@@ -594,10 +687,11 @@ pub async fn uninstall(
     let run_mode = system_env::VHOST_MODE.to_string();
 
     // 回传安装时的编排结果（站点 / 数据库），供 uninstall.sh 先备份数据再删文件
-    let provision = load_provision(&payload.pkg_path);
+    let provision = load_provision(&payload.pkg_path, payload.instance.as_deref());
     let resp = zapexec::call(Request::AppstoreUninstall {
         pkg_path: payload.pkg_path.clone(),
         options,
+        instance: payload.instance.clone(),
         provision,
         user: Some(user),
         run_mode: Some(run_mode),
@@ -640,6 +734,8 @@ pub struct UpgradePayload {
     pub source: String,
     pub repo_id: Option<String>,
     pub version: String,
+    /// 实例名（缺省 default；站点类为 `site:<id>`）：多实例时指明升级哪一个
+    pub instance: Option<String>,
     /// 用户点击的操作（app.yaml actions 键）
     pub action: Option<String>,
     /// 升级表单选项：选项名 -> 字符串化值
@@ -655,7 +751,8 @@ pub async fn upgrade(
     check_pkg_roles(&claims, &payload.pkg_path).await?;
     // 运行身份门禁：run_as: user 仅 webapps 分类可用
     check_pkg_run_as(&payload.pkg_path).await?;
-    let old_version = ast::installed_version_of(&payload.pkg_path)
+    // 版本要按实例读：多版本 PHP 各自有 meta.yaml，只认 pkg_path 会读到错的那个
+    let old_version = ast::installed_version_for(&payload.pkg_path, payload.instance.as_deref())
         .await
         .unwrap_or_default();
     let options = match sanitize_options(payload.options.clone()) {
@@ -673,6 +770,8 @@ pub async fn upgrade(
         old_version,
         action: payload.action.clone(),
         options,
+        instance: payload.instance.clone(),
+        provision: load_provision(&payload.pkg_path, payload.instance.as_deref()),
         user: Some(claims.sub.clone()),
         run_mode: Some(system_env::VHOST_MODE.to_string()),
         run_id: run_id.clone(),
@@ -1172,20 +1271,57 @@ pub async fn log(
 // ── 已安装应用（实例管理）───────────────────────────────────
 
 /// 已安装应用列表：root 侧扫描 apps/*/meta.yaml + info.yaml 并探测运行状态。
-pub async fn installed_apps(_claims: ValidatedClaims) -> ZapJsonResult {
+pub async fn installed_apps(claims: ValidatedClaims) -> ZapJsonResult {
     let resp = zapexec::call(Request::AppstoreInstalled).await?;
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(
-        json!({ "code": 0, "message": "OK", "data": resp.data }),
-    ))
+    let mut data = resp.data.unwrap_or_else(|| json!({}));
+    // 执行端可能还是旧版本（不返回 owner / instance_key）：用面板本地扫描补齐，
+    // 保证「只看到自己的站点应用」这条隔离规则不依赖两端同时升级。
+    for it in data
+        .get_mut("items")
+        .and_then(|v| v.as_array_mut())
+        .unwrap_or(&mut Vec::new())
+    {
+        let pkg = it
+            .get("pkg_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let inst = it
+            .get("instance")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if let Some(slot) = ast::find_slot(pkg, inst.as_deref()) {
+            it["instance_key"] = json!(slot.key());
+            if it.get("owner").map(|v| v.is_null()).unwrap_or(true) {
+                it["owner"] = json!(slot.owner);
+            }
+            if it.get("site_id").map(|v| v.is_null()).unwrap_or(true) {
+                it["site_id"] = json!(slot.site_id);
+            }
+        }
+    }
+    // 按用户隔离：站点类应用（webapps）跟着站点账号走，只给归属者看；
+    // 全局类（nginx / php …）是系统级服务，所有人可见，但启停仍需管理员权限。
+    if !jwt::is_admin(&claims) {
+        let me = claims.sub.as_str();
+        if let Some(items) = data.get_mut("items").and_then(|v| v.as_array_mut()) {
+            items.retain(|it| match it.get("owner").and_then(|o| o.as_str()) {
+                Some(owner) => owner == me,
+                None => true,
+            });
+        }
+    }
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": data })))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct InstanceActionPayload {
     /// 形如 application/php 的包路径
     pub pkg_path: String,
+    /// 实例名（缺省 default）：多实例时指明操作哪一个
+    pub instance: Option<String>,
     /// start | stop | restart
     pub action: String,
 }
@@ -1202,6 +1338,7 @@ pub async fn instance_action(
     }
     let resp = zapexec::call(Request::AppstoreInstanceAction {
         pkg_path: payload.pkg_path.clone(),
+        instance: payload.instance.clone(),
         action: payload.action.clone(),
     })
     .await?;

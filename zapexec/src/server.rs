@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, mpsc};
@@ -18,7 +18,26 @@ pub struct ClientIdentity {
     pub gid: u32,
 }
 
+/// 面板进程（zapd）的运行身份，启动时记录一次，供动词层使用。
+///
+/// 面板自己的数据（`crontab.yaml` / `cloud/` / `docker-build-logs/` / `scripts/`）
+/// 都落在 `{data}/users/<user>/` 下、且由非 root 的 zapd 直接读写；
+/// 这些目录常常是 root（zapexec）先建出来的，需要把属主交还给面板进程，
+/// 所以动词层要能拿到它的 uid/gid。
+static PANEL_IDENTITY: OnceLock<ClientIdentity> = OnceLock::new();
+
+/// 记录面板进程身份（重复调用无副作用）。
+pub fn set_panel_identity(identity: ClientIdentity) {
+    let _ = PANEL_IDENTITY.set(identity);
+}
+
+/// 面板进程身份；未初始化时为 `None`（此时不做属主调整）。
+pub fn panel_identity() -> Option<ClientIdentity> {
+    PANEL_IDENTITY.get().copied()
+}
+
 pub async fn serve(socket: &Path, secret: &[u8], identity: ClientIdentity) {
+    set_panel_identity(identity);
     if let Some(dir) = socket.parent() {
         let _ = std::fs::create_dir_all(dir);
         set_owner_mode(dir, identity, 0o750);

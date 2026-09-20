@@ -73,6 +73,19 @@
             <el-tag size="small" effect="plain">{{ catLabel(row.category) }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column :label="t('appstoreInstalled.colOwner')" width="130">
+          <template #default="{ row }">
+            <template v-if="row.owner">
+              <div class="mono">{{ row.owner }}</div>
+              <div v-if="row.site_id" class="app-sub">
+                {{ t('appstoreInstalled.siteTag', { id: row.site_id }) }}
+              </div>
+            </template>
+            <el-tag v-else size="small" effect="plain" type="info">{{
+              t('appstoreInstalled.scopeGlobal')
+            }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="version" :label="t('appstoreInstalled.colVersion')" width="110" />
         <el-table-column label="expose" min-width="180">
           <template #default="{ row }">
@@ -100,7 +113,7 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('common.operation')" width="240" fixed="right">
+        <el-table-column :label="t('common.operation')" width="300" fixed="right">
           <template #default="{ row }">
             <template v-if="canControl(row)">
               <template v-if="isAdmin">
@@ -108,7 +121,7 @@
                   size="small"
                   type="success"
                   plain
-                  :disabled="busy === row.pkg_path || !canStart(row)"
+                  :disabled="busy === keyOf(row) || !canStart(row)"
                   @click="handleAction(row, 'start')"
                   >{{ t('appstoreInstalled.actStart') }}</el-button
                 >
@@ -116,7 +129,7 @@
                   size="small"
                   type="warning"
                   plain
-                  :disabled="busy === row.pkg_path || !canStop(row)"
+                  :disabled="busy === keyOf(row) || !canStop(row)"
                   @click="handleAction(row, 'stop')"
                   >{{ t('appstoreInstalled.actStop') }}</el-button
                 >
@@ -124,7 +137,7 @@
                   size="small"
                   type="primary"
                   plain
-                  :disabled="busy === row.pkg_path || !canRestart(row)"
+                  :disabled="busy === keyOf(row) || !canRestart(row)"
                   @click="handleAction(row, 'restart')"
                   >{{ t('appstoreInstalled.actRestart') }}</el-button
                 >
@@ -140,6 +153,15 @@
                 t('appstoreInstalled.actControl')
               }}</el-button>
             </el-tooltip>
+            <el-button
+              v-if="isAdmin"
+              size="small"
+              type="danger"
+              plain
+              :disabled="busy === keyOf(row)"
+              @click="handleUninstall(row)"
+              >{{ t('appstoreInstalled.actUninstall') }}</el-button
+            >
             <el-button size="small" text type="primary" @click="showDetail(row)">{{
               t('appstoreInstalled.detail')
             }}</el-button>
@@ -380,13 +402,28 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Box, Refresh, Search } from '@/icons'
 import { useUserStore } from '@/stores/user'
-import { getInstalledApps, instanceAction, type InstalledApp } from '@/api/appstore'
+import {
+  getInstalledApps,
+  instanceAction,
+  uninstallPackage,
+  type InstalledApp,
+} from '@/api/appstore'
 import { readFile, writeFile } from '@/api/file'
 import CodeEditor from '@/components/CodeEditor.vue'
 
 const { t } = useI18n()
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.roles.includes('admin'))
+
+// scope: all=全部可见（管理员）；mine=只看当前用户的站点应用
+const props = withDefaults(defineProps<{ scope?: 'all' | 'mine' }>(), { scope: 'all' })
+// 提交任务后把 run_id 交给外层（商店页据此打开日志抽屉）
+const emit = defineEmits<{ (e: 'task', runId: string, title: string): void }>()
+
+/** 实例的稳定标识：多实例时 pkg_path 不唯一，操作与加载态都以它为准 */
+function keyOf(app: InstalledApp): string {
+  return app.instance_key || `${app.pkg_path}@${app.instance || 'default'}`
+}
 
 const categoryLabels = computed<Record<string, string>>(() => ({
   infra: t('appstoreInstalled.catInfra'),
@@ -448,9 +485,11 @@ const filtered = computed(() => {
   return list.value.filter((i) => {
     if (filterCategory.value && i.category !== filterCategory.value) return false
     if (filterState.value && i.state !== filterState.value) return false
+    // 「我的站点应用」只看归属自己的站点类应用（后端已隔离，这里再兜一层）
+    if (props.scope === 'mine' && !i.owner) return false
     if (!kw) return true
     const hay =
-      `${i.name} ${i.instance} ${i.pkg_path} ${i.info.install_dir || ''} ${i.info.expose || ''}`.toLowerCase()
+      `${i.name} ${i.instance} ${i.pkg_path} ${i.owner || ''} ${i.site_id || ''} ${i.info.install_dir || ''} ${i.info.expose || ''}`.toLowerCase()
     return hay.includes(kw)
   })
 })
@@ -505,7 +544,8 @@ async function load(force = false) {
     // 保留抽屉里的引用以实时刷新
     list.value = items
     if (current.value) {
-      current.value = items.find((i) => i.pkg_path === current.value!.pkg_path) || current.value
+      current.value =
+        items.find((i) => keyOf(i) === keyOf(current.value!)) || current.value
     }
   } catch (e: any) {
     ElMessage.error(e.message || t('appstoreInstalled.loadFailed'))
@@ -525,9 +565,13 @@ async function handleAction(app: InstalledApp, action: string) {
   } catch {
     return
   }
-  busy.value = app.pkg_path
+  busy.value = keyOf(app)
   try {
-    const resp = await instanceAction({ pkg_path: app.pkg_path, action })
+    const resp = await instanceAction({
+      pkg_path: app.pkg_path,
+      instance: app.instance,
+      action,
+    })
     const st = resp.data?.state
     const meta = stateMeta.value[st]
     ElMessage.success(
@@ -543,6 +587,31 @@ async function handleAction(app: InstalledApp, action: string) {
       e.message ||
         t('appstoreInstalled.actionFailed', { action: actLabels.value[action] || action }),
     )
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function handleUninstall(app: InstalledApp) {
+  const label = `${app.name}${app.instance && app.instance !== app.name ? ` · ${app.instance}` : ''}`
+  try {
+    await ElMessageBox.confirm(
+      t('appstore.uninstallConfirm', { name: label }),
+      t('appstore.uninstallTitle'),
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  busy.value = keyOf(app)
+  try {
+    const resp = await uninstallPackage({ pkg_path: app.pkg_path, instance: app.instance })
+    ElMessage.success(t('appstoreInstalled.uninstallOk'))
+    // 外层（商店页）会拿 run_id 打开日志抽屉；独立路由页则忽略
+    if (resp.data?.run_id) emit('task', resp.data.run_id, `${t('appstoreInstalled.actUninstall')} ${label}`)
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.message || t('appstore.uninstallFailed'))
   } finally {
     busy.value = ''
   }

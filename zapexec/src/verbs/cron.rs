@@ -107,6 +107,8 @@ pub async fn run(
         let log_path = safe_log_path(&log_path)?;
         if let Some(parent) = log_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            // 用户目录属主交给面板进程（否则面板自己写 crontab / 云存储会 Permission denied）
+            super::ensure_panel_dir_for_path(parent)?;
         }
 
         // kind=script：以 `bash <脚本>` 方式执行，不依赖可执行位 / shebang

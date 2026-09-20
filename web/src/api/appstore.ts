@@ -94,6 +94,14 @@ export interface AppPackage {
   installed_source?: string
   installed_at?: number
   upgraded_from?: string | null
+  /** 全部已安装实例（多版本 / 多站点各一项）；操作按实例定位，不能只认包名 */
+  installed_instances?: Array<{
+    instance?: string
+    instance_key?: string
+    version?: string
+    owner?: string | null
+    site_id?: string | number | null
+  }>
 }
 
 export interface RunItem {
@@ -141,6 +149,8 @@ export const installPackage = (data: {
 
 export const uninstallPackage = (data: {
   pkg_path: string
+  /** 实例名（缺省 default；站点类 `site:<id>`）：多实例时指明卸掉哪一个 */
+  instance?: string
   /** 卸载表单选项 */
   options?: FormOptions
 }) => http.post<any>('/appstore/uninstall', data)
@@ -150,6 +160,8 @@ export const upgradePackage = (data: {
   source: string
   repo_id?: string
   version: string
+  /** 实例名（缺省 default；站点类 `site:<id>`）：多实例时指明升级哪一个 */
+  instance?: string
   /** 用户点击的动作键（app.yaml actions），随请求透传到 shell 环境变量 ACTION */
   action?: string
   /** 升级表单选项 */
@@ -223,6 +235,12 @@ export interface InstalledApp {
   run_id?: string
   /** 实例标识（默认同包名，php74/php85 之类由脚本在 info.yaml 登记） */
   instance: string
+  /** 实例的稳定主键 `<category>/<name>@<instance>`：多实例时 pkg_path 不唯一，定位请用这个 */
+  instance_key?: string
+  /** 归属面板用户（站点类应用有）：非管理员据此与其他用户的站点应用隔离 */
+  owner?: string | null
+  /** 站点 id（站点类应用有） */
+  site_id?: string | number | null
   /** 动态状态：running / stopped / failed / starting / stopping / unknown */
   state: string
   /** 脚本登记的实例信息：install_dir / expose / port / pid_file / config_file / svc_name 等 */
@@ -231,5 +249,9 @@ export interface InstalledApp {
 
 export const getInstalledApps = () => http.get<any>('/appstore/installed')
 
-export const instanceAction = (data: { pkg_path: string; action: string }) =>
-  http.post<any>('/appstore/instance/action', data)
+export const instanceAction = (data: {
+  pkg_path: string
+  /** 实例名（缺省 default）：多实例时指明操作哪一个 */
+  instance?: string
+  action: string
+}) => http.post<any>('/appstore/instance/action', data)

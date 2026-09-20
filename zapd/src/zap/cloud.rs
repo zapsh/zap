@@ -371,7 +371,8 @@ fn read_store_file(path: &Path) -> Result<CloudStore, ZapError> {
 /// 原子写：先写临时文件再 rename，避免中断留下半截 JSON。
 fn write_store_file(username: &str, store: &CloudStore) -> Result<(), ZapError> {
     let dir = stores_dir(username);
-    std::fs::create_dir_all(&dir).map_err(|e| fail(format!("创建配置目录失败：{e}")))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| fail(format!("创建配置目录失败 {}：{e}", dir.display())))?;
     tighten_dir(&dir);
     if let Some(parent) = dir.parent() {
         tighten_dir(parent);
