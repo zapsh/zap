@@ -264,20 +264,15 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
   {
     path: '/server',
     component: Layout,
-    redirect: '/server/time',
+    redirect: '/server/system',
     meta: { title: '服务器配置', icon: 'material-symbols:tune', roles: ['admin'] },
     children: [
+      // 系统管理：服务器时间 / 系统服务 / SSH 服务 / 进程管理 合成一页（页内 nav pill）
       {
-        path: 'time',
-        name: 'ServerTime',
-        component: () => import('@/views/server/time/index.vue'),
-        meta: { title: '服务器时间', icon: 'material-symbols:schedule', affix: true },
-      },
-      {
-        path: 'services',
-        name: 'ServerServices',
-        component: () => import('@/views/server/services/index.vue'),
-        meta: { title: '系统服务', icon: 'material-symbols:build', affix: true },
+        path: 'system',
+        name: 'ServerSystem',
+        component: () => import('@/views/server/system/index.vue'),
+        meta: { title: '系统管理', icon: 'material-symbols:settings', affix: true },
       },
       // 服务配置：Nginx / PHP / MySQL 各自的配置，页面内用 nav pill 切换
       {
@@ -286,41 +281,31 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/server/service-conf/index.vue'),
         meta: { title: '服务配置', icon: 'material-symbols:dns', affix: true },
       },
-      {
-        path: 'ssh',
-        name: 'ServerSsh',
-        component: () => import('@/views/server/ssh/index.vue'),
-        meta: { title: 'SSH 服务', icon: 'material-symbols:cable', affix: true },
-      },
-      {
-        path: 'process',
-        name: 'ServerProcess',
-        component: () => import('@/views/server/process/index.vue'),
-        meta: { title: '进程管理', icon: 'material-symbols:memory', affix: true },
-      },
-      {
-        path: 'entities',
-        name: 'ServerEntities',
-        component: () => import('@/views/server/entities/index.vue'),
-        meta: { title: '同步运行环境', icon: 'material-symbols:account-circle', affix: true },
-      },
+      // 网络配置：网络设置 + IP 设置 合成一页
       {
         path: 'network',
         name: 'ServerNetwork',
         component: () => import('@/views/server/network/index.vue'),
-        meta: { title: '网络设置', icon: 'material-symbols:link', affix: true },
-      },
-      {
-        path: 'ip',
-        name: 'ServerIp',
-        component: () => import('@/views/server/ip/index.vue'),
-        meta: { title: 'IP 设置', icon: 'material-symbols:badge', affix: true },
+        meta: { title: '网络配置', icon: 'material-symbols:link', affix: true },
       },
       {
         path: 'firewall',
         name: 'ServerFirewall',
         component: () => import('@/views/server/firewall/index.vue'),
         meta: { title: '防火墙', icon: 'material-symbols:lock', affix: true },
+      },
+      // 运行环境：探测结果 + 同步运行实体 合成一页
+      {
+        path: 'env',
+        name: 'ServerEnv',
+        component: () => import('@/views/server/env/index.vue'),
+        meta: { title: '运行环境', icon: 'material-symbols:auto-fix-high', affix: true },
+      },
+      {
+        path: 'migrate',
+        name: 'ServerMigrate',
+        component: () => import('@/views/server/migrate/index.vue'),
+        meta: { title: '数据迁移', icon: 'material-symbols:sort', affix: true },
       },
     ],
   },

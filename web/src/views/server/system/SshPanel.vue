@@ -326,7 +326,7 @@ onUnmounted(() => {
 
 <style scoped>
 .ssh-container {
-  padding: 20px;
+  padding: 0;
 }
 .card-header {
   display: flex;

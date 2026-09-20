@@ -207,7 +207,7 @@ onMounted(loadServices)
 
 <style scoped>
 .services-container {
-  padding: 20px;
+  padding: 0;
 }
 .card-header {
   display: flex;

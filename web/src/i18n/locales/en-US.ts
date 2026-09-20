@@ -1132,6 +1132,17 @@ const enUS: Messages = {
   },
 
   /** Server - system time */
+  serverGroups: {
+    hintTime: 'Server clock and time zone — one NTP sync calibrates it',
+    hintServices: 'Start, stop and enable systemd units',
+    hintSsh: 'SSH service state, listening port and login policy',
+    hintProcess: 'Running processes by memory / CPU; kill the odd one out here',
+    hintNetwork: 'Hostname and DNS resolver settings',
+    hintIp: 'IP pool: shared (public) vs dedicated addresses',
+    hintRuntime: 'Auto-detected Nginx / PHP / MySQL components',
+    hintEntities: 'Backfill Linux accounts, home permissions and FPM pools for existing users',
+  },
+
   serverTime: {
     title: 'Server Time',
     currentTime: 'Current Time',
@@ -1186,6 +1197,7 @@ const enUS: Messages = {
 
   /** Server - IP addresses */
   serverIp: {
+    title: 'IP Addresses',
     statTotal: 'Total IPs',
     statShared: 'Shared (pool)',
     statDedicated: 'Dedicated',
@@ -1227,6 +1239,7 @@ const enUS: Messages = {
   /** Server - runtime environment */
   serverEnv: {
     title: 'Server Runtime Environment',
+    runtimeTab: 'Detected Environment',
     autoRefreshed: 'Auto-refreshed',
     detectedAt: 'Detected {time}',
     redetect: 'Detect Again',
@@ -1458,6 +1471,7 @@ const enUS: Messages = {
 
   /** Server - network (hostname / DNS) */
   serverNetwork: {
+    title: 'Network',
     tabHostname: 'Hostname',
     tabResolver: 'Resolver',
     curHostname: 'Active Hostname',
@@ -1539,6 +1553,7 @@ const enUS: Messages = {
   /** Server - runtime environment sync */
   serverEntities: {
     title: 'Sync Runtime Environment',
+    syncTab: 'Sync Entities',
     sub: 'Provision Linux accounts and grant home directory ownership for existing users',
     syncBtn: 'One-click Repair / Sync',
     point1: 'Each panel user maps to one Linux account (nologin)',

@@ -1148,6 +1148,18 @@ export default {
   },
 
   /** 服务器 - 时间设置 */
+  /** 服务器配置几组合并页（nav pill）的分组说明文案 */
+  serverGroups: {
+    hintTime: '服务器时间与时区；点一次 NTP 同步即可校准',
+    hintServices: 'systemd 单元的启停、重启与开机自启',
+    hintSsh: 'SSH 服务的运行状态、端口与登录策略',
+    hintProcess: '按内存 / CPU 看当前进程，异常进程可直接终止',
+    hintNetwork: '主机名与 DNS resolver 配置',
+    hintIp: 'IP 地址池：公共（共享）IP 与独享 IP 的分配',
+    hintRuntime: 'Nginx / PHP / MySQL 等组件的自动探测结果',
+    hintEntities: '为存量用户补齐 Linux 账号、家目录赋权与 FPM pool',
+  },
+
   serverTime: {
     title: '服务器时间',
     currentTime: '当前时间',
@@ -1202,6 +1214,7 @@ export default {
 
   /** 服务器 - IP 管理 */
   serverIp: {
+    title: 'IP 设置',
     statTotal: 'IP 总数',
     statShared: '公共 IP（共享）',
     statDedicated: '独享 IP',
@@ -1243,6 +1256,8 @@ export default {
   /** 服务器 - 运行环境 */
   serverEnv: {
     title: '服务器运行环境',
+    /** nav pill 上的短标题（页面标题太长，放下太挤） */
+    runtimeTab: '运行环境检测',
     autoRefreshed: '已自动刷新',
     detectedAt: '检测于 {time}',
     redetect: '重新检测',
@@ -1465,6 +1480,7 @@ export default {
 
   /** 服务器 - 网络（主机名 / DNS） */
   serverNetwork: {
+    title: '网络设置',
     tabHostname: 'Hostname 设置',
     tabResolver: 'Resolver 设置',
     curHostname: '当前有效主机名',
@@ -1542,6 +1558,8 @@ export default {
   /** 服务器 - 同步运行环境 */
   serverEntities: {
     title: '同步运行环境',
+    /** nav pill 上的短标题 */
+    syncTab: '同步运行实体',
     sub: '为存量用户补齐 Linux 账号与家目录赋权',
     syncBtn: '一键修复/同步',
     point1: '每个面板用户对应一个 Linux 账号（nologin）',

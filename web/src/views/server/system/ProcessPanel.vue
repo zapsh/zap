@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { http } from '@/utils/request'
@@ -93,13 +93,35 @@ function isProtected(pid: number) {
   return pid <= 1
 }
 
+function startPolling() {
+  if (timer) return
+  timer = setInterval(loadProcesses, 5000)
+}
+
+function stopPolling() {
+  if (!timer) return
+  clearInterval(timer)
+  timer = null
+}
+
+// 进程表在「系统管理」页里是 KeepAlive 的一个面板：切到别的 pill 时停轮询，
+// 切回来立刻拉一次（挂载时的那次不重复拉，避免首屏两次请求）
+let firstActivate = true
+
 onMounted(() => {
   loadProcesses()
-  timer = setInterval(loadProcesses, 5000)
+  startPolling()
 })
-onBeforeUnmount(() => {
-  if (timer) clearInterval(timer)
+onActivated(() => {
+  startPolling()
+  if (firstActivate) {
+    firstActivate = false
+    return
+  }
+  loadProcesses()
 })
+onDeactivated(stopPolling)
+onBeforeUnmount(stopPolling)
 </script>
 
 <template>
@@ -203,7 +225,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .process-container {
-  padding: 20px;
+  padding: 0;
 }
 .card-header {
   display: flex;
