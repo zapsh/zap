@@ -404,53 +404,121 @@ async fn serve_static(path: &Path) -> Result<Response, (StatusCode, String)> {
     Ok(resp)
 }
 
-/// 定位系统 PHP-FPM 通道：
-/// 1) 面板默认 PHP（conf 区的 php_default）对应的 socket；
-/// 2) 任意已存在的 `php-fpm-*.sock`。
+/// 定位系统 PHP-FPM 通道。
+///
+/// **只认「系统默认 pool」的 socket**（`php-fpm-{ver}.sock`，如 `/run/php-fpm-74.sock`，
+/// 属主 `www`、0666），**排除用户专属 pool**（`php-fpm-{linux_user}-{ver}.sock`）。
+/// 后者是按面板用户隔离的私有通道 —— `pool_sync` 生成时写死了
+/// `listen.owner = {linux_user}` / `listen.group = www` / `listen.mode = 0660`：
+/// - 面板进程既不是该 Linux 账号、也不在 `www` 组里，`connect` 必然
+///   `Permission denied (os error 13)`；
+/// - 就算把面板账号塞进 `www` 组勉强连上，phpMyAdmin 作为系统级入口也不该跑在某个用户的
+///   pool 里（那份 pool 的 worker 身份、`open_basedir`、session 目录都是按该用户裁剪的）。
+///
+/// 挑选顺序：
+/// 1) 面板默认 PHP（conf 区 `php_default`）对应的 socket；
+/// 2) 其余系统默认 socket（版本号降序，较新的 PHP 优先）；
+/// 3) 逐个**实际试探连接**，取第一个真正连得上的候选 —— 权限/属组问题自动跳过；
+///    全部失败时把候选连同失败原因一并返回，避免只剩一句 Permission denied 无从下手。
 async fn resolve_fpm_socket() -> Result<String, (StatusCode, String)> {
     let prefer = crate::zap::server_env::conf_get("php_default").unwrap_or_default();
-    // 版本写法兼容：`8.3` / `83` / `php83` 都能命中 /run/php-fpm-8.3.sock
-    let prefer_alt = prefer.replace('.', "");
-    let prefer_ver = prefer.trim_start_matches("php").to_string();
+    let prefer_ver = normalize_ver(&prefer);
 
-    let mut fallback: Option<String> = None;
+    let mut preferred: Vec<String> = Vec::new();
+    let mut others: Vec<String> = Vec::new();
+    let mut excluded: Vec<String> = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
+
     for dir in ["/run", "/var/run"] {
         let Ok(rd) = std::fs::read_dir(dir) else {
             continue;
         };
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if !name.starts_with("php-fpm") || !name.ends_with(".sock") {
+            // 非「系统默认 pool」：用户 pool 单独记录，便于报错时说明为什么不用它
+            let Some(ver) = system_pool_ver(&name) else {
+                if name.starts_with("php-fpm") && name.ends_with(".sock")
+                    && !excluded.contains(&name)
+                {
+                    excluded.push(name);
+                }
                 continue;
-            }
+            };
             let is_socket = std::fs::metadata(e.path())
                 .map(|m| m.file_type().is_socket())
                 .unwrap_or(false);
             if !is_socket {
                 continue;
             }
-            let path = e.path().to_string_lossy().into_owned();
-            if !prefer.is_empty()
-                && (name.contains(&prefer)
-                    || name.contains(&prefer_alt)
-                    || name.contains(&prefer_ver))
-            {
-                return Ok(path);
+            // /run 与 /var/run 通常指向同一处，按真实路径去重
+            let real = std::fs::canonicalize(e.path()).unwrap_or_else(|_| e.path());
+            if seen.contains(&real) {
+                continue;
             }
-            if fallback.is_none() {
-                fallback = Some(path);
+            seen.push(real);
+
+            let path = e.path().to_string_lossy().into_owned();
+            if !prefer_ver.is_empty() && ver == prefer_ver {
+                preferred.push(path);
+            } else {
+                others.push(path);
             }
         }
     }
 
-    fallback.ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "未找到 PHP-FPM socket（/run/php-fpm-*.sock）；\
-             请先在应用商店安装 PHP 并启动 FPM 服务。"
-                .to_string(),
+    // 版本号降序：未显式指定时优先较新的 PHP
+    others.sort_by(|a, b| socket_ver_key(b).cmp(&socket_ver_key(a)));
+    let candidates: Vec<String> = preferred.into_iter().chain(others).collect();
+
+    let mut tried = Vec::new();
+    for path in &candidates {
+        match tokio::net::UnixStream::connect(path).await {
+            Ok(_) => return Ok(path.clone()),
+            Err(e) => tried.push(format!("{path}（{e}）")),
+        }
+    }
+
+    let msg = if candidates.is_empty() {
+        let mut m = "未找到可用的系统 PHP-FPM socket（/run/php-fpm-{版本}.sock）".to_string();
+        if !excluded.is_empty() {
+            m.push_str("；以下为用户专属 pool，phpMyAdmin 不使用：");
+            m.push_str(&excluded.join("、"));
+        }
+        m.push_str("。请先在应用商店安装 PHP 并启动 FPM 服务。");
+        m
+    } else {
+        format!(
+            "所有系统 PHP-FPM socket 均无法连接：{}。\
+             请确认 FPM 已在运行、且面板运行账号有该 socket 的读写权限。",
+            tried.join("；")
         )
-    })
+    };
+    Err((StatusCode::SERVICE_UNAVAILABLE, msg))
+}
+
+/// 判断 socket 文件名是否属于「系统默认 pool」，是则返回归一化后的版本号。
+///
+/// - 系统默认：`php-fpm-{ver}.sock`；
+/// - 用户 pool：`php-fpm-{linux_user}-{ver}.sock`（版本号前面多一段 Linux 账号名）。
+fn system_pool_ver(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("php-fpm-")?.strip_suffix(".sock")?;
+    if rest.is_empty() || rest.contains('-') {
+        return None;
+    }
+    Some(normalize_ver(rest))
+}
+
+/// 版本号归一化：`8.3` / `83` / `php83` 统一为 `83`，便于互相比较。
+fn normalize_ver(v: &str) -> String {
+    v.trim_start_matches("php").replace('.', "")
+}
+
+/// 从 socket 路径取版本号数值用于排序：`/run/php-fpm-8.3.sock` → 83。
+fn socket_ver_key(path: &str) -> u64 {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    system_pool_ver(name)
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 /// 构造 CGI/FastCGI 参数。
@@ -615,4 +683,38 @@ fn build_response(fcgi: fastcgi::FcgiResponse) -> Result<Response, (StatusCode, 
     builder
         .body(Body::from(fcgi.body))
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("构造响应失败: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_system_pool_is_picked() {
+        // 系统默认 pool：版本号紧跟前缀，中间没有额外 '-'
+        assert_eq!(system_pool_ver("php-fpm-74.sock"), Some("74".into()));
+        assert_eq!(system_pool_ver("php-fpm-8.3.sock"), Some("83".into()));
+        // 用户专属 pool（`{linux_user}-{ver}`）必须排除：连上去必然 Permission denied
+        assert_eq!(system_pool_ver("php-fpm-admin-74.sock"), None);
+        assert_eq!(system_pool_ver("php-fpm-zap_user-8.3.sock"), None);
+        // 无关文件
+        assert_eq!(system_pool_ver("php-fpm.conf"), None);
+        assert_eq!(system_pool_ver("php-fpm-.sock"), None);
+        assert_eq!(system_pool_ver("nginx.sock"), None);
+    }
+
+    #[test]
+    fn version_key_puts_newer_first() {
+        assert_eq!(socket_ver_key("/run/php-fpm-8.3.sock"), 83);
+        assert!(socket_ver_key("/run/php-fpm-8.3.sock") > socket_ver_key("/run/php-fpm-74.sock"));
+        // 版本号无法解析的排最后
+        assert_eq!(socket_ver_key("/run/php-fpm-.sock"), 0);
+    }
+
+    #[test]
+    fn version_forms_are_normalized() {
+        assert_eq!(normalize_ver("8.3"), "83");
+        assert_eq!(normalize_ver("php83"), "83");
+        assert_eq!(normalize_ver("74"), "74");
+    }
 }
