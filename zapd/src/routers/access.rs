@@ -595,6 +595,11 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::action("system.menu", "view")),
     ),
     (
+        "/system/menus/revision",
+        Required::User,
+        Some(Perm::action("system.menu", "view")),
+    ),
+    (
         "/system/menus/list",
         Required::Admin,
         Some(Perm::action("system.menu", "view")),

@@ -1,8 +1,18 @@
 import { defineStore } from 'pinia'
 import type { RouteRecordRaw } from 'vue-router'
 import { constantRoutes, asyncRoutes } from '@/router'
-import { getMenuTree } from '@/api/menu'
+import { getMenuTree, getMenusRevision } from '@/api/menu'
 import { menuTreeToRoutes } from '@/utils/menu-to-routes'
+
+/** 取可见菜单指纹；接口不可用时返回空串（留给下一次比对，不阻塞建路由） */
+async function safeRevision(): Promise<string> {
+  try {
+    const resp = await getMenusRevision()
+    return String(resp.data?.revision ?? '')
+  } catch {
+    return ''
+  }
+}
 
 /**
  * 使用meta.roles确定当前用户是否具有权限
@@ -42,6 +52,8 @@ export const usePermissionStore = defineStore('permission', {
     routes: [] as RouteRecordRaw[],
     addRoutes: [] as RouteRecordRaw[],
     menus: [] as RouteRecordRaw[],
+    /** 建路由那一刻的可见菜单指纹（后端能力 / 授权变化时随之变） */
+    revision: '',
   }),
   actions: {
     setRoutes(routes: RouteRecordRaw[]) {
@@ -62,6 +74,9 @@ export const usePermissionStore = defineStore('permission', {
         const accessedRoutes = menuTreeToRoutes(resp.data)
 
         this.setRoutes(accessedRoutes)
+        // 指纹在建路由的同一时刻取：能力变化（如后台装了 Docker）之后旧指纹不再成立，
+        // 守卫据此重建菜单，用户不必手动刷新浏览器。
+        this.revision = await safeRevision()
         return accessedRoutes
       } catch (error) {
         // 如果获取菜单失败，回退到本地路由配置
@@ -73,6 +88,8 @@ export const usePermissionStore = defineStore('permission', {
         }
 
         this.setRoutes(accessedRoutes)
+        // 回退分支不记指纹：留空，让守卫下一次比对仍能发现「后端菜单其实变了」
+        this.revision = ''
         return accessedRoutes
       }
     },

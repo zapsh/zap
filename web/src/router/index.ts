@@ -5,6 +5,7 @@ import { BASE } from '@/utils/base'
 import Layout from '@/layout/index.vue'
 import { useUserStore } from '@/stores/user'
 import { usePermissionStore } from '@/stores/permission'
+import { getMenusRevision } from '@/api/menu'
 import NProgress from 'nprogress'
 import 'nprogress/nprogress.css'
 
@@ -398,6 +399,59 @@ export function resetRouter() {
 
 
 
+/**
+ * 挂载后端菜单生成的路由（含 404 兜底）。
+ *
+ * 调用方保证：尚未挂载，或已 `resetRouter()` —— 否则同一份路由会被重复 addRoute。
+ */
+async function mountMenus(roles: string[]) {
+  const permissionStore = usePermissionStore()
+  await permissionStore.generateRoutes(roles)
+
+  permissionStore.routes.forEach((route) => {
+    router.addRoute(route)
+  })
+
+  // 添加404页面
+  router.addRoute({
+    path: '/:pathMatch(.*)*',
+    redirect: '/404',
+    meta: { hidden: true },
+  })
+}
+
+/** 菜单指纹的最小比对间隔：能力变化（装上 / 卸载 Docker）很低频，没必要每次导航都问。 */
+const MENU_REVISION_MIN_INTERVAL = 30_000
+let lastMenuRevisionCheckAt = 0
+
+/**
+ * 能力 / 授权变化后重建菜单：指纹变了就重拉菜单树。
+ *
+ * 背景：像「容器管理」这种入口依赖宿主机有没有装 Docker，但这个信息在**登录那一刻**
+ * 就固化进侧栏了。装完之后若没有任何感知手段，用户只能手动刷新浏览器。
+ *
+ * @returns 菜单是否被重建（守卫据此决定是否重写导航目标）
+ */
+async function ensureMenusFresh(roles: string[]): Promise<boolean> {
+  const now = Date.now()
+  if (now - lastMenuRevisionCheckAt < MENU_REVISION_MIN_INTERVAL) return false
+  lastMenuRevisionCheckAt = now
+
+  const permissionStore = usePermissionStore()
+  let revision = ''
+  try {
+    const resp = await getMenusRevision()
+    revision = String(resp.data?.revision ?? '')
+  } catch {
+    return false
+  }
+  if (!revision || revision === permissionStore.revision) return false
+
+  resetRouter()
+  await mountMenus(roles)
+  return true
+}
+
 router.beforeEach(async (to, from, next) => {
   NProgress.start()
 
@@ -418,26 +472,20 @@ router.beforeEach(async (to, from, next) => {
       const hasMenus = permissionStore.routes && permissionStore.routes.length > 0
 
       if (hasRoles && hasMenus) {
-        next()
+        // 菜单已是上一版：先按需同步（能力变化 → 重建），再放行。
+        const remounted = await ensureMenusFresh(userStore.roles)
+        if (remounted) {
+          next({ ...to, replace: true })
+        } else {
+          next()
+        }
       } else {
         try {
           // 获取用户信息
           await userStore.getInfoAction()
 
-          // 根据角色生成可访问路由
-          await permissionStore.generateRoutes(userStore.roles)
-
-          // 动态添加可访问路由
-          permissionStore.routes.forEach((route) => {
-            router.addRoute(route)
-          })
-
-          // 添加404页面
-          router.addRoute({
-            path: '/:pathMatch(.*)*',
-            redirect: '/404',
-            meta: { hidden: true },
-          })
+          // 根据角色生成可访问路由并挂载（含 404 兜底）
+          await mountMenus(userStore.roles)
 
           // 请求带有 redirect 重定向时，登录自动重定向到该地址
           const redirectPath = from.query.redirect || to.path

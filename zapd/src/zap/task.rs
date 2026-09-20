@@ -370,6 +370,10 @@ pub async fn finish(task_id: &str, status: &str, exit_code: i64) -> Option<Task>
         warn!("任务收尾失败 {task_id}: {e}");
     }
 
+    // 任务可能改变了宿主机能力（装／卸载 Docker、更新组件…），能力台账当场失效，
+    // 下一次请求菜单就重新探测，不等 TTL —— 否则侧栏要过一分钟才长出/收起入口。
+    crate::zap::feature::invalidate_all();
+
     match group {
         Some(g) if !g.is_empty() => next_pending(&g).await,
         _ => None,

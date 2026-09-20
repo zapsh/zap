@@ -14,6 +14,7 @@ pub mod cloud;
 pub mod crypto;
 pub mod docker_build;
 pub mod fastcgi;
+pub mod feature;
 pub mod global;
 pub mod job;
 pub mod jwt;

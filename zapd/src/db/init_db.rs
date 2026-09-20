@@ -49,6 +49,8 @@ pub async fn init_schema() {
     init_ssl_acme_dns_provider_table().await;
     // 老库补列：新增列自动 ALTER 到已有表，避免每次加列都必须重建数据库
     migrate_add_columns().await;
+    // 依赖上面的补列结果，必须排在其后
+    sync_menu_features().await;
 }
 
 /// 幂等补列：列已存在则跳过，否则 `ALTER TABLE ... ADD COLUMN`。
@@ -96,6 +98,8 @@ async fn migrate_add_columns() {
     ensure_column("user", "perm_deny", "TEXT NOT NULL DEFAULT ''").await;
     // user：只读账号（共享可见但不可改）
     ensure_column("user", "read_only", "INTEGER NOT NULL DEFAULT 0").await;
+    // menus：能力门禁列（依赖后台组件的菜单靠它决定是否下发）
+    ensure_column("menus", "feature", "TEXT NOT NULL DEFAULT ''").await;
     // task_queue：由 appstore_runs 改名而来的旧库缺这些通用队列列
     ensure_column("task_queue", "kind", "TEXT NOT NULL DEFAULT 'appstore'").await;
     ensure_column("task_queue", "group_key", "TEXT NOT NULL DEFAULT ''").await;
@@ -105,6 +109,22 @@ async fn migrate_add_columns() {
     ensure_column("task_queue", "control", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("task_queue", "payload", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("task_queue", "updated_at", "INTEGER NOT NULL DEFAULT 0").await;
+}
+
+/// 菜单能力门禁赋值：给「依赖后台组件」的菜单打上 `feature` 标记。
+///
+/// 必须在 `migrate_add_columns()` 之后跑（老库要先补出 `feature` 列），
+/// 故独立成一个函数而不是并进 `sync_added_menus()`。幂等，只改未标记的行。
+async fn sync_menu_features() {
+    let pool = get_db_pool().await;
+    // 容器管理（17 父 / 171 子）：没装 Docker 的机器不该出现入口，
+    // 装包后 `zap::feature` 重新探测到即自动出现在侧栏。
+    let _ = sqlx::query(
+        "UPDATE menus SET feature = 'docker', updated_at = strftime('%s','now') \
+         WHERE id IN (17, 171) AND feature <> 'docker'",
+    )
+    .execute(pool)
+    .await;
 }
 
 // ── user ───────────────────────────────────────────────────
@@ -527,6 +547,9 @@ async fn init_menus_table() {
         hidden INTEGER DEFAULT 0,
         keep_alive INTEGER DEFAULT 0,
         affix INTEGER DEFAULT 0,
+        -- 环境能力门禁：空串=常显；'docker' 等表示仅在该能力可用时才下发
+        -- （见 zap::feature）。控制的是「能不能用」，与人工开关 hidden 无关。
+        feature TEXT NOT NULL DEFAULT '',
         roles TEXT DEFAULT '',
         sort_order INTEGER DEFAULT 0,
         status INTEGER DEFAULT 1,

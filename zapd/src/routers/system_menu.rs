@@ -8,7 +8,7 @@ use tracing::info;
 
 use crate::{
     db,
-    zap::{ZapError, ZapJsonResult, audit, jwt, jwt::ValidatedClaims},
+    zap::{ZapError, ZapJsonResult, audit, feature, jwt, jwt::ValidatedClaims},
 };
 
 // ── types ──────────────────────────────────────────────────
@@ -28,6 +28,8 @@ pub struct MenuRow {
     pub hidden: i64,
     pub keep_alive: i64,
     pub affix: i64,
+    /// 环境能力门禁（空串 = 常显），判定见 `zap::feature::available`。
+    pub feature: String,
     pub roles: String,
     pub sort_order: i64,
     pub status: i64,
@@ -47,6 +49,8 @@ pub struct CreateMenuPayload {
     pub hidden: Option<i64>,
     pub keep_alive: Option<i64>,
     pub affix: Option<i64>,
+    /// 环境能力门禁（空串 = 常显，见 `zap::feature`）。
+    pub feature: Option<String>,
     pub roles: Option<String>,
     pub sort_order: Option<i64>,
     pub status: Option<i64>,
@@ -67,6 +71,8 @@ pub struct UpdateMenuPayload {
     pub hidden: Option<i64>,
     pub keep_alive: Option<i64>,
     pub affix: Option<i64>,
+    /// 环境能力门禁（空串 = 常显，见 `zap::feature`）。
+    pub feature: Option<String>,
     pub roles: Option<String>,
     pub sort_order: Option<i64>,
     pub status: Option<i64>,
@@ -204,6 +210,39 @@ pub async fn visible_menu_rows(claims: &jwt::Claims) -> Result<Vec<MenuRow>, sql
     qb2.build_query_as::<MenuRow>().fetch_all(pool).await
 }
 
+/// 按**环境能力**过滤：`feature` 为空常显，其余由 `zap::feature` 判定。
+///
+/// 这一层必须套在 `visible_menu_rows` 的结果之上（含 admin 分支）：
+/// 该函数对 admin 直接返回全部 `status = 1` 的菜单，若放在里面会被那条 return 跳过，
+/// 变成「管理员永远看得见 Docker」——而这类容量恰恰主要影响管理员。
+pub async fn filter_by_feature(rows: Vec<MenuRow>) -> Vec<MenuRow> {
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        if feature::available(&row.feature).await {
+            out.push(row);
+        }
+    }
+    out
+}
+
+/// 可见菜单集合的指纹：前端据此判断要不要重拉菜单。
+///
+/// 刻意做成「id 序列」而不是逐个 feature 的布尔开关 —— 这样无论是装了 Docker、
+/// 改了角色授权、还是调整了 status，只要**最终可见集合**变了指纹就会变，
+/// 前端逻辑保持一行比较即可。用 FNV-1a（结果不依赖进程随机种子）。
+fn revision_of(rows: &[MenuRow]) -> String {
+    let mut ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+    ids.sort_unstable();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for id in ids {
+        for b in id.to_le_bytes() {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash.to_string()
+}
+
 // ── handlers ───────────────────────────────────────────────
 
 /// Get menu tree visible to the current user (for rendering sidebar)。
@@ -214,9 +253,24 @@ pub async fn visible_menu_rows(claims: &jwt::Claims) -> Result<Vec<MenuRow>, sql
 /// - 最后并上 **用户级例外**（`user_menus`），见 `visible_menu_rows`。
 pub async fn get_menus_tree(claims: ValidatedClaims) -> ZapJsonResult {
     let rows = visible_menu_rows(&claims).await?;
+    let rows = filter_by_feature(rows).await;
     let extra = extra_menu_ids(claims.id as i64).await;
     let tree = build_menu_tree(&rows, 0, &extra);
     Ok(Json(json!({ "code": 0, "message": "ok", "data": tree })))
+}
+
+/// GET /system/menus/revision —— 可见菜单集合的指纹（轻量）。
+///
+/// 存在意义：菜单是登录时拉一次的，装完 Docker 不会自动冒出来。
+/// 前端在路由切换时（节流）比对一次，指纹变了就重拉菜单树重建侧栏，
+/// 用户不需要手动刷新浏览器。
+pub async fn menus_revision(claims: ValidatedClaims) -> ZapJsonResult {
+    let rows = filter_by_feature(visible_menu_rows(&claims).await?).await;
+    Ok(Json(json!({
+        "code": 0,
+        "message": "ok",
+        "data": { "revision": revision_of(&rows), "total": rows.len() }
+    })))
 }
 
 /// Get flat menu list (for admin management)
@@ -240,8 +294,8 @@ pub async fn menu_add(
     let now = chrono::Local::now().timestamp();
 
     let result = sqlx::query(
-        "INSERT INTO menus (parent_id, name, path, component, redirect, type, title, icon, hidden, keep_alive, affix, roles, sort_order, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO menus (parent_id, name, path, component, redirect, type, title, icon, hidden, keep_alive, affix, feature, roles, sort_order, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(payload.parent_id.unwrap_or(0))
     .bind(&payload.name)
@@ -254,6 +308,7 @@ pub async fn menu_add(
     .bind(payload.hidden.unwrap_or(0))
     .bind(payload.keep_alive.unwrap_or(0))
     .bind(payload.affix.unwrap_or(0))
+    .bind(payload.feature.unwrap_or_default())
     .bind(payload.roles.unwrap_or_default())
     .bind(payload.sort_order.unwrap_or(0))
     .bind(payload.status.unwrap_or(1))
@@ -324,6 +379,9 @@ pub async fn menu_update(
     }
     if let Some(v) = payload.affix {
         sep.push("affix = ").push_bind_unseparated(v);
+    }
+    if let Some(ref v) = payload.feature {
+        sep.push("feature = ").push_bind_unseparated(v);
     }
     if let Some(ref v) = payload.roles {
         sep.push("roles = ").push_bind_unseparated(v);
@@ -430,4 +488,48 @@ pub async fn menu_status(
     )
     .await;
     Ok(Json(json!({ "code": 0, "message": "OK" })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: i64) -> MenuRow {
+        MenuRow {
+            id,
+            parent_id: 0,
+            name: String::new(),
+            path: String::new(),
+            component: String::new(),
+            redirect: String::new(),
+            menu_type: "menu".into(),
+            title: String::new(),
+            icon: String::new(),
+            hidden: 0,
+            keep_alive: 0,
+            affix: 0,
+            feature: String::new(),
+            roles: String::new(),
+            sort_order: 0,
+            status: 1,
+        }
+    }
+
+    /// 行顺序不影响指纹：同一批菜单按不同 sort_order 返回必须是同一个值，
+    /// 否则前端会因为「排序调整」这种无关变化去重建整棵菜单。
+    #[test]
+    fn revision_ignores_row_order() {
+        let a = revision_of(&[row(1), row(2), row(3)]);
+        let b = revision_of(&[row(3), row(1), row(2)]);
+        assert_eq!(a, b);
+    }
+
+    /// 可见集合一变指纹就得变（装上 Docker 会多出 17 / 171）——这是前端
+    /// 判断要不要重拉菜单的唯一依据，漏一处入口就永远长不出来。
+    #[test]
+    fn revision_tracks_visible_set() {
+        let without_docker = revision_of(&[row(1), row(2)]);
+        let with_docker = revision_of(&[row(1), row(2), row(17), row(171)]);
+        assert_ne!(without_docker, with_docker);
+    }
 }

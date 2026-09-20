@@ -44,6 +44,16 @@ export function getMenuTree() {
   return http.get<ApiResponse<MenuTreeNode[]>>('/system/menus/tree')
 }
 
+/**
+ * 可见菜单集合的指纹。
+ *
+ * 侧栏依赖的**环境能力**会变（例如后台刚装上 Docker），但菜单只在登录时拉一次，
+ * 于是拿这个轻量指纹做比对：变了就重建菜单，用户不必手动刷新浏览器。
+ */
+export function getMenusRevision() {
+  return http.get<ApiResponse<{ revision: string; total: number }>>('/system/menus/revision')
+}
+
 /** Get menu tree for admin management */
 export function getMenuList() {
   return http.get<ApiResponse<MenuItem[]>>('/system/menus/list')
