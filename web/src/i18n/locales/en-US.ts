@@ -273,8 +273,10 @@ const enUS: Messages = {
   users: {
     title: 'Users',
     titleReseller: 'Customers',
+    titleHint: 'Accounts, roles, packages and home directories live here',
     addUser: 'New User',
     addReseller: 'New Customer',
+    editUser: 'Edit User',
     username: 'Username',
     nickname: 'Nickname',
     email: 'Email',
@@ -389,6 +391,18 @@ const enUS: Messages = {
     detailUsage: 'Usage',
     detailAccount: 'Account',
     lastLogin: 'Last Login',
+    sectionBasic: 'Basic',
+    sectionAccess: 'Role & Permissions',
+    sectionQuota: 'Resources',
+    sectionMenus: 'Extra Menus',
+    genPassword: 'Generate',
+    roleFilter: 'All roles',
+    pillAll: 'All',
+    pillEnabled: 'Enabled',
+    pillDisabled: 'Disabled',
+    pillMember: 'Members',
+    memberQuotaTip:
+      'Members share the parent account home directory, package and FPM spec — nothing to set here',
   },
 
   /** Team members (sub-accounts) */
@@ -438,6 +452,8 @@ const enUS: Messages = {
   },
 
   roles: {
+    title: 'Roles',
+    titleHint: 'A role decides two things: what shows in the sidebar, and which APIs can be called',
     add: 'New Role',
     name: 'Role Name',
     roleKey: 'Key',
@@ -458,6 +474,8 @@ const enUS: Messages = {
     permSaveSuccess: 'Permissions saved',
     nameRequired: 'Please enter a role name',
     keyRequired: 'Please enter a role key',
+    keyImmutable: 'The key cannot be changed after creation — the backend authorizes by it',
+    builtinProtected: 'Built-in roles cannot be disabled',
   },
 
   menus: {
@@ -477,7 +495,7 @@ const enUS: Messages = {
     menuType: 'Menu Type',
     namePlaceholder: 'Unique key, e.g. system',
     pathPlaceholder: 'e.g. /system or user',
-    componentPlaceholder: 'e.g. system/users/index',
+    componentPlaceholder: 'e.g. system/access/index',
     redirect: 'Redirect',
     redirectPlaceholder: 'e.g. /system/user',
     displayName: 'Display Name',

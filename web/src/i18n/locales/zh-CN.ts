@@ -303,8 +303,11 @@ export default {
   users: {
     title: '用户管理',
     titleReseller: '客户管理',
+    /** nav pill 下方的一句话说明 */
+    titleHint: '账号、角色、套餐与家目录都在这里维护',
     addUser: '新增用户',
     addReseller: '新增客户',
+    editUser: '编辑用户',
     username: '用户名',
     nickname: '昵称',
     email: '邮箱',
@@ -418,6 +421,20 @@ export default {
     detailUsage: '资源用量',
     detailAccount: '账号信息',
     lastLogin: '最近登录',
+
+    // 编辑抽屉：分区与列表筛选
+    sectionBasic: '基本信息',
+    sectionAccess: '角色与权限',
+    sectionQuota: '资源配额',
+    sectionMenus: '额外菜单',
+    genPassword: '随机生成',
+    roleFilter: '全部角色',
+    pillAll: '全部',
+    pillEnabled: '已启用',
+    pillDisabled: '已禁用',
+    pillMember: '成员',
+    /** 成员（子账号）共享父账号的运行实体，资源分区无配置项时给出解释 */
+    memberQuotaTip: '成员共享父账号的家目录、套餐与 FPM 规格，这里无需单独配置',
   },
 
   /** 团队成员（子账号） */
@@ -466,6 +483,9 @@ export default {
 
   /** 系统管理 · 角色管理 */
   roles: {
+    /** 与「用户管理」并列的 nav pill 标题 */
+    title: '角色管理',
+    titleHint: '角色只管两件事：侧边栏能看到什么、接口能调用什么',
     add: '新增角色',
     name: '角色名称',
     roleKey: '标识',
@@ -485,6 +505,9 @@ export default {
     permSaveSuccess: '权限设置成功',
     nameRequired: '请输入角色名称',
     keyRequired: '请输入角色标识',
+    /** 标识创建后不可改（后端以此为鉴权依据） */
+    keyImmutable: '标识创建后不可修改：后端按它做鉴权，改了等于换角色',
+    builtinProtected: '内置角色不可停用',
   },
 
   /** 系统管理 · 菜单管理 */
@@ -505,7 +528,7 @@ export default {
     menuType: '菜单类型',
     namePlaceholder: '唯一标识，如 system',
     pathPlaceholder: '如 /system 或 user',
-    componentPlaceholder: '如 system/users/index',
+    componentPlaceholder: '如 system/access/index',
     redirect: '重定向',
     redirectPlaceholder: '如 /system/user',
     displayName: '显示名称',

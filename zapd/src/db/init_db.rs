@@ -599,7 +599,7 @@ async fn init_menus_table() {
 
     -- System dir
     INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (2, 0, 'system', '/system', 'Layout', '/system/user', 'dir', '系统设置', 'material-symbols:settings', 1, 'admin', 12, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (2, 0, 'system', '/system', 'Layout', '/system/access', 'dir', '系统设置', 'material-symbols:settings', 1, 'admin', 12, 1, strftime('%s','now'), strftime('%s','now'));
 
     -- System children
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
@@ -607,9 +607,11 @@ async fn init_menus_table() {
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (28, 2, 'zap-config', 'zap-config', 'system/config/zap', 'menu', 'Zap 设置', 'material-symbols:settings-applications', 1, 'admin', 2, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (21, 2, 'user', 'user', 'system/users/index', 'menu', '用户管理', 'material-symbols:person', 1, 'admin', 3, 1, strftime('%s','now'), strftime('%s','now'));
+    -- 用户管理 + 角色管理合到一页（页面内 nav pill 切换）
+    VALUES (21, 2, 'access', 'access', 'system/access/index', 'menu', '用户与角色', 'material-symbols:badge', 1, 'admin', 3, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (22, 2, 'roles', 'roles', 'system/roles/index', 'menu', '角色管理', 'material-symbols:visibility', 1, 'admin', 4, 1, strftime('%s','now'), strftime('%s','now'));
+    -- 角色管理已并入 21；保留本行只为兼容既有 role_menus 授权，status=0 不进侧栏
+    VALUES (22, 2, 'roles', 'roles', 'system/access/index', 'menu', '角色管理', 'material-symbols:visibility', 1, 'admin', 4, 0, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (23, 2, 'menus', 'menus', 'system/menus/index', 'menu', '菜单管理', 'material-symbols:menu', 1, 'admin', 5, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
@@ -661,7 +663,7 @@ async fn init_menus_table() {
     INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (5, 0, 'reseller-users', '/reseller/users', 'Layout', '/reseller/users/index', 'menu', '客户管理', 'material-symbols:account-circle', 1, 'reseller', 5, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (51, 5, 'reseller-users-index', 'index', 'system/users/index', 'menu', '客户管理', 'material-symbols:account-circle', 1, 'reseller', 1, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (51, 5, 'reseller-users-index', 'index', 'system/access/index', 'menu', '客户管理', 'material-symbols:account-circle', 1, 'reseller', 1, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (52, 5, 'reseller-packages', 'packages', 'system/packages/index', 'menu', '套餐', 'material-symbols:storefront', 0, 'admin,reseller', 2, 1, strftime('%s','now'), strftime('%s','now'));
 

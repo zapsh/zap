@@ -1,11 +1,34 @@
 <template>
-  <div class="roles-container">
+  <div class="roles-panel">
     <el-card>
-      <el-button type="primary" @click="handleAdd" style="margin-bottom: 16px">
-        <el-icon><Plus /></el-icon>{{ t('roles.add') }}
-      </el-button>
+      <template #header>
+        <div class="card-header">
+          <div class="nav-pills">
+            <span class="pill" :class="{ active: statusFilter === 'all' }" @click="statusFilter = 'all'">
+              {{ t('common.all') }} <b>{{ rows.length }}</b>
+            </span>
+            <span class="pill" :class="{ active: statusFilter === 'on' }" @click="statusFilter = 'on'">
+              {{ t('common.enable') }} <b>{{ rows.filter((r) => r.status === 1).length }}</b>
+            </span>
+            <span class="pill" :class="{ active: statusFilter === 'off' }" @click="statusFilter = 'off'">
+              {{ t('common.disable') }} <b>{{ rows.filter((r) => r.status !== 1).length }}</b>
+            </span>
+          </div>
+          <div class="head-right">
+            <el-input
+              v-model="keyword"
+              :placeholder="t('common.inputPlaceholder', { field: t('roles.name') })"
+              clearable
+              style="width: 180px"
+            />
+            <el-button type="primary" @click="handleAdd">
+              <el-icon><Plus /></el-icon>{{ t('roles.add') }}
+            </el-button>
+          </div>
+        </div>
+      </template>
 
-      <el-table :data="tableData" v-loading="loading" stripe>
+      <el-table :data="filteredData" v-loading="loading" stripe>
         <el-table-column prop="id" label="ID" width="70" />
         <el-table-column prop="name" :label="t('roles.name')" width="140" />
         <el-table-column :label="t('roles.roleKey')" width="170">
@@ -58,43 +81,69 @@
       </el-table>
     </el-card>
 
-    <!-- 角色表单 -->
-    <el-dialog
-      v-model="dialogVisible"
-      :title="dialogType === 'add' ? t('roles.addTitle') : t('roles.editTitle')"
-      width="480px"
+    <!-- 新增 / 编辑角色 -->
+    <el-drawer
+      v-model="drawerVisible"
+      :size="drawerSize"
+      :close-on-click-modal="false"
       @closed="resetForm"
     >
+      <template #header>
+        <div class="drawer-head">
+          <div class="avatar">{{ avatarText }}</div>
+          <div class="head-main">
+            <div class="head-title">
+              {{ dialogType === 'add' ? t('roles.addTitle') : t('roles.editTitle') }}
+            </div>
+            <div class="head-sub">{{ form.name || form.role_key || t('roles.name') }}</div>
+          </div>
+        </div>
+      </template>
+
       <el-form ref="formRef" :model="form" :rules="rules" label-width="80px" @submit.prevent>
         <el-form-item :label="t('roles.formName')" prop="name">
           <el-input v-model="form.name" />
         </el-form-item>
         <el-form-item :label="t('roles.formKey')" prop="role_key">
           <el-input v-model="form.role_key" :disabled="dialogType === 'edit'" />
+          <div v-if="dialogType === 'edit'" class="form-tip">{{ t('roles.keyImmutable') }}</div>
         </el-form-item>
         <el-form-item :label="t('common.description')">
-          <el-input v-model="form.description" type="textarea" />
+          <el-input v-model="form.description" type="textarea" :rows="3" />
         </el-form-item>
         <el-form-item :label="t('common.status')">
-          <el-radio-group
+          <el-switch
             v-model="form.status"
+            :active-value="1"
+            :inactive-value="0"
+            :active-text="t('common.enable')"
+            :inactive-text="t('common.disable')"
+            inline-prompt
             :disabled="dialogType === 'edit' && isBuiltinRole(form.role_key)"
-          >
-            <el-radio :value="1">{{ t('common.enable') }}</el-radio>
-            <el-radio :value="0">{{ t('common.disable') }}</el-radio>
-          </el-radio-group>
+          />
+          <div v-if="dialogType === 'edit' && isBuiltinRole(form.role_key)" class="form-tip">
+            {{ t('roles.builtinProtected') }}
+          </div>
         </el-form-item>
       </el-form>
+
       <template #footer>
-        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitForm">
-          {{ t('common.confirm') }}
-        </el-button>
+        <div class="drawer-footer">
+          <el-button @click="drawerVisible = false">{{ t('common.cancel') }}</el-button>
+          <el-button type="primary" :loading="submitting" @click="submitForm">
+            {{ t('common.save') }}
+          </el-button>
+        </div>
       </template>
-    </el-dialog>
+    </el-drawer>
 
     <!-- 权限设置 -->
-    <el-dialog v-model="permVisible" :title="t('roles.permTitle')" width="640px">
+    <el-drawer
+      v-model="permVisible"
+      :size="permSize"
+      :title="t('roles.permTitle')"
+      :close-on-click-modal="false"
+    >
       <el-alert type="info" :closable="false" show-icon :title="t('roles.permAlert')" />
       <el-divider content-position="left">{{ t('roles.menuVisibility') }}</el-divider>
       <el-tree
@@ -105,6 +154,7 @@
         node-key="id"
         :default-checked-keys="checkedPerms"
         default-expand-all
+        class="menu-tree"
       />
 
       <el-divider content-position="left">{{ t('roles.actionPerm') }}</el-divider>
@@ -119,18 +169,21 @@
           </el-checkbox-group>
         </div>
       </div>
+
       <template #footer>
-        <el-button @click="permVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="savingPerms" @click="savePermissions">
-          {{ t('common.save') }}
-        </el-button>
+        <div class="drawer-footer">
+          <el-button @click="permVisible = false">{{ t('common.cancel') }}</el-button>
+          <el-button type="primary" :loading="savingPerms" @click="savePermissions">
+            {{ t('common.save') }}
+          </el-button>
+        </div>
       </template>
-    </el-dialog>
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Plus } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -154,13 +207,13 @@ import { translateTitle, getLocale } from '@/i18n'
 const { t } = useI18n()
 
 const loading = ref(false)
-const tableData = ref<RoleItem[]>([])
+const rows = ref<RoleItem[]>([])
 
 async function loadList() {
   loading.value = true
   try {
     const res = await getRoleList()
-    tableData.value = res.data ?? []
+    rows.value = res.data ?? []
   } catch {
     /* handled by interceptor */
   } finally {
@@ -168,8 +221,30 @@ async function loadList() {
   }
 }
 
+// ── 筛选 ───────────────────────────────────────────────────
+const statusFilter = ref<'all' | 'on' | 'off'>('all')
+const keyword = ref('')
+
+const filteredData = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  return rows.value.filter((r) => {
+    if (statusFilter.value === 'on' && r.status !== 1) return false
+    if (statusFilter.value === 'off' && r.status === 1) return false
+    if (!kw) return true
+    return [r.name, r.role_key, r.description].some((f) => (f ?? '').toLowerCase().includes(kw))
+  })
+})
+
+// ── 窄屏抽屉铺满 ───────────────────────────────────────────
+const narrow = ref(false)
+function syncNarrow() {
+  narrow.value = window.innerWidth < 900
+}
+const drawerSize = computed(() => (narrow.value ? '100%' : '480px'))
+const permSize = computed(() => (narrow.value ? '100%' : '640px'))
+
 // ── 表单 ───────────────────────────────────────────────────
-const dialogVisible = ref(false)
+const drawerVisible = ref(false)
 const dialogType = ref<'add' | 'edit'>('add')
 const submitting = ref(false)
 const formRef = ref<FormInstance>()
@@ -188,6 +263,12 @@ const rules = computed<FormRules<F>>(() => ({
   role_key: [{ required: true, message: t('roles.keyRequired'), trigger: 'blur' }],
 }))
 
+/** 抽屉头像：角色名首字母 */
+const avatarText = computed(() => {
+  const n = (form.name || form.role_key).trim()
+  return n ? n[0].toUpperCase() : '+'
+})
+
 function resetForm() {
   formRef.value?.resetFields()
 }
@@ -196,7 +277,7 @@ function handleAdd() {
   dialogType.value = 'add'
   editingId.value = 0
   Object.assign(form, { name: '', role_key: '', description: '', status: 1 })
-  dialogVisible.value = true
+  drawerVisible.value = true
 }
 
 function handleEdit(row: RoleItem) {
@@ -208,7 +289,7 @@ function handleEdit(row: RoleItem) {
     description: row.description,
     status: row.status,
   })
-  dialogVisible.value = true
+  drawerVisible.value = true
 }
 
 async function submitForm() {
@@ -228,7 +309,7 @@ async function submitForm() {
       })
       ElMessage.success(t('common.updateSuccess'))
     }
-    dialogVisible.value = false
+    drawerVisible.value = false
     loadList()
   } catch {
     /* handled by interceptor */
@@ -291,7 +372,7 @@ async function handlePermission(row: RoleItem) {
     checkedPerms.value = permsRes.data?.menu_ids ?? []
     checkedActions.value = permsRes.data?.permissions ?? []
     permVisible.value = true
-    // dialog 非销毁式，第二次打开需手动同步勾选状态
+    // drawer 非销毁式，第二次打开需手动同步勾选状态
     await nextTick()
     treeRef.value?.setCheckedKeys(checkedPerms.value)
   } catch {
@@ -318,13 +399,117 @@ function fmtTime(ts: number) {
   return ts ? new Date(ts * 1000).toLocaleString(getLocale()) : '-'
 }
 
-onMounted(loadList)
+onMounted(() => {
+  syncNarrow()
+  window.addEventListener('resize', syncNarrow)
+  loadList()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncNarrow)
+})
+
+/** 供父级（access/index）在切回本面板时刷新 */
+defineExpose({ reload: loadList })
 </script>
 
 <style scoped>
-.roles-container {
-  padding: 20px;
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
+
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.nav-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--el-fill-color-light);
+}
+
+.nav-pills .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.nav-pills .pill:hover {
+  background: var(--el-fill-color);
+}
+
+.nav-pills .pill.active {
+  background: var(--el-color-primary);
+  color: #fff;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.drawer-head .avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--el-color-primary);
+}
+
+.head-main {
+  min-width: 0;
+}
+
+.head-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.head-sub {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.form-tip {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .perm-grid {
   display: flex;
   flex-direction: column;
@@ -332,15 +517,26 @@ onMounted(loadList)
   max-height: 320px;
   overflow-y: auto;
 }
+
 .perm-row {
   display: flex;
   align-items: center;
   gap: 12px;
 }
+
 .perm-title {
   width: 120px;
   flex-shrink: 0;
   font-size: 13px;
   color: var(--el-text-color-regular);
+}
+
+.menu-tree {
+  width: 100%;
+  max-height: 280px;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
 }
 </style>

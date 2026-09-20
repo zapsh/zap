@@ -1,11 +1,42 @@
 <template>
-  <div class="users-container">
+  <div class="users-panel">
     <el-card>
       <template #header>
         <div class="card-header">
-          <span class="page-title">{{ pageTitle }}</span>
-          <!-- 搜索 + 新增：统一放在卡片右上角 -->
+          <!-- 状态胶囊：点击即筛选（与站点列表同一套交互） -->
+          <div class="nav-pills">
+            <span class="pill" :class="{ active: statusFilter === 'all' }" @click="statusFilter = 'all'">
+              {{ t('users.pillAll') }} <b>{{ counts.all }}</b>
+            </span>
+            <span class="pill" :class="{ active: statusFilter === 'on' }" @click="statusFilter = 'on'">
+              {{ t('users.pillEnabled') }} <b>{{ counts.on }}</b>
+            </span>
+            <span class="pill" :class="{ active: statusFilter === 'off' }" @click="statusFilter = 'off'">
+              {{ t('users.pillDisabled') }} <b>{{ counts.off }}</b>
+            </span>
+            <span
+              class="pill"
+              :class="{ active: statusFilter === 'member' }"
+              @click="statusFilter = 'member'"
+            >
+              {{ t('users.pillMember') }} <b>{{ counts.member }}</b>
+            </span>
+          </div>
           <div class="head-right">
+            <el-select
+              v-if="isAdmin"
+              v-model="roleFilter"
+              clearable
+              :placeholder="t('users.roleFilter')"
+              style="width: 150px"
+            >
+              <el-option
+                v-for="opt in roleOptions"
+                :key="opt.value"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </el-select>
             <el-input
               v-model="searchForm.username"
               :placeholder="t('common.inputPlaceholder', { field: t('users.username') })"
@@ -298,205 +329,269 @@
       </el-table>
     </el-card>
 
-    <!-- 新增 / 编辑 对话框 -->
-    <el-dialog
-      v-model="dialogVisible"
-      :title="
-        dialogType === 'add'
-          ? isAdmin
-            ? t('users.addUser')
-            : t('users.addReseller')
-          : t('common.edit')
-      "
-      width="480px"
+    <!-- 新增 / 编辑抽屉：分区 tab，避免一屏塞满十几个字段 -->
+    <el-drawer
+      v-model="drawerVisible"
+      :size="drawerSize"
+      :close-on-click-modal="false"
       @closed="resetForm"
     >
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="70px" @submit.prevent>
-        <el-form-item :label="t('users.username')" prop="username">
-          <el-input v-model="form.username" :disabled="dialogType === 'edit'" />
-        </el-form-item>
-        <el-form-item :label="t('users.nickname')" prop="nickname">
-          <el-input v-model="form.nickname" :placeholder="t('users.nicknameTip')" clearable />
-        </el-form-item>
-        <el-form-item :label="t('users.email')" prop="email">
-          <el-input v-model="form.email" />
-        </el-form-item>
-        <el-form-item v-if="dialogType === 'add'" :label="t('users.password')" prop="password">
-          <el-input v-model="form.password" type="password" show-password />
-        </el-form-item>
-        <el-form-item v-if="isAdmin" :label="t('users.roles')" prop="roles">
-          <el-select v-model="form.roles" :disabled="editingId === ROOT_USER_ID">
-            <el-option
-              v-for="opt in roleOptions"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="isAdmin" :label="t('users.extraPerm')">
-          <el-select
-            v-model="form.permissions"
-            multiple
-            filterable
-            clearable
-            collapse-tags
-            collapse-tags-tooltip
-            :placeholder="t('users.extraPermPlaceholder')"
-            style="width: 100%"
-          >
-            <!-- 权限点文案按 ns / action 标识符翻译，见 utils/perm.ts -->
-            <el-option-group v-for="g in permCatalog" :key="g.ns" :label="permGroupLabel(g.ns)">
-              <el-option
-                v-for="a in g.actions"
-                :key="a.key"
-                :label="permKeyLabel(a.key)"
-                :value="a.key"
-              />
-            </el-option-group>
-          </el-select>
-          <div class="form-tip">{{ t('users.extraPermTip') }}</div>
-        </el-form-item>
-        <!-- 额外菜单：用户级例外（表 user_menus），在角色之外单独开 / 收侧边栏入口 -->
-        <el-form-item v-if="dialogType === 'edit'" :label="t('users.extraMenu')">
-          <el-tree
-            ref="menuTreeRef"
-            v-loading="menuTreeLoading"
-            :data="menuTreeData"
-            :props="menuTreeProps"
-            show-checkbox
-            node-key="id"
-            default-expand-all
-            class="menu-tree"
-          />
-          <div class="form-tip">{{ t('users.extraMenuTip') }}</div>
-        </el-form-item>
-        <!-- 用户类型：成员共享归属用户的家目录与 Linux 系统账号，权限默认继承父账号 -->
-        <el-form-item v-if="dialogType === 'add'" :label="t('users.kind')">
-          <el-radio-group v-model="form.user_kind">
-            <el-radio :value="0">{{ t('users.kindCustomer') }}</el-radio>
-            <el-radio :value="1">{{ t('users.kindMember') }}</el-radio>
-          </el-radio-group>
-          <div v-if="form.user_kind === 1" class="form-tip">
-            {{
-              t('users.kindMemberTip', {
-                owner: form.owner_id ? ownerName(form.owner_id) : t('users.ownerSystem'),
-              })
-            }}
+      <template #header>
+        <div class="drawer-head">
+          <div class="avatar">{{ avatarText }}</div>
+          <div class="head-main">
+            <div class="head-title">{{ drawerTitle }}</div>
+            <div class="head-sub">
+              {{ form.username || t('users.username') }}
+              <el-tag v-if="form.user_kind === 1" size="small" type="warning" effect="plain">
+                {{ t('users.kindMember') }}
+              </el-tag>
+            </div>
           </div>
-        </el-form-item>
-        <el-form-item v-if="form.user_kind === 1" :label="t('users.denyPerm')">
-          <el-select
-            v-model="form.perm_deny"
-            multiple
-            filterable
-            clearable
-            collapse-tags
-            collapse-tags-tooltip
-            :placeholder="t('users.denyPermPlaceholder')"
-            style="width: 100%"
-          >
-            <el-option-group v-for="g in permCatalog" :key="g.ns" :label="permGroupLabel(g.ns)">
-              <el-option
-                v-for="a in g.actions"
-                :key="a.key"
-                :label="permKeyLabel(a.key)"
-                :value="a.key"
-              />
-            </el-option-group>
-          </el-select>
-          <div class="form-tip">{{ t('users.denyPermTip') }}</div>
-        </el-form-item>
-        <!-- 只读：共享可见但不可改（后端收敛为只保留 {ns}:view 权限点） -->
-        <el-form-item v-if="form.user_kind === 1" :label="t('users.readOnly')">
-          <el-switch v-model="form.read_only" />
-          <div class="form-tip">{{ t('users.readOnlyTip') }}</div>
-        </el-form-item>
-        <el-form-item v-if="isAdmin && dialogType === 'add'" :label="t('users.owner')">
-          <el-select v-model="form.owner_id" @change="onOwnerChange">
-            <el-option :label="t('users.ownerSystem')" :value="0" />
-            <el-option v-for="r in resellerList" :key="r.id" :label="r.username" :value="r.id" />
-          </el-select>
-        </el-form-item>
-        <!-- 成员共享父账号的运行实体：套餐 / FPM 规格一律跟随父账号 -->
-        <el-form-item
-          v-if="(isAdmin || isReseller) && form.user_kind !== 1"
-          :label="t('users.fpmSpec')"
-        >
-          <el-select
-            v-model="fpmMode"
-            :loading="fpmLoading"
-            :placeholder="t('users.fpmDefault')"
-            style="width: 100%"
-          >
-            <el-option
-              v-if="inheritOwnerName"
-              :value="'inherit'"
-              :label="t('users.fpmInheritOption', { owner: inheritOwnerName })"
-            />
-            <el-option
-              v-for="opt in fpmOptions"
-              :key="opt.value"
-              :value="opt.value"
-              :label="opt.label"
-            />
-            <el-option v-if="isAdmin" :value="'custom'" :label="t('users.fpmCustomOption')" />
-          </el-select>
-          <div class="form-tip">{{ fpmModeTip() }}</div>
-          <el-input
-            v-if="fpmMode === 'custom'"
-            v-model="fpmCustomJson"
-            type="textarea"
-            :rows="4"
-            spellcheck="false"
-            style="margin-top: 8px"
-            :placeholder="t('users.fpmCustomPlaceholder')"
+          <!-- 启停直接放在头部：最常用的开关不必翻 tab -->
+          <el-switch
+            v-model="form.status"
+            :active-value="1"
+            :inactive-value="0"
+            :active-text="t('common.enable')"
+            :inactive-text="t('common.disable')"
+            inline-prompt
+            style="margin-left: auto"
           />
-          <el-alert
-            v-else-if="fpmMode === '__keep__'"
-            :title="t('users.fpmKeepTip', { json: keepJsonPreview })"
-            type="info"
-            :closable="false"
-            show-icon
-            style="margin-top: 8px"
-          />
-        </el-form-item>
-        <el-form-item v-if="form.user_kind !== 1" :label="t('users.package')">
-          <el-select
-            v-model="form.package_id"
-            :loading="pkgLoading"
-            :placeholder="t('users.packageNone')"
-            style="width: 100%"
-          >
-            <el-option :label="t('users.packageNoneOption')" :value="0" />
-            <el-option
-              v-for="p in packageOptions"
-              :key="p.value"
-              :label="p.label"
-              :value="p.value"
-            />
-          </el-select>
-          <div class="form-tip">{{ packageTip() }}</div>
-        </el-form-item>
-        <el-form-item :label="t('common.status')">
-          <el-radio-group v-model="form.status">
-            <el-radio :value="1">{{ t('common.enable') }}</el-radio>
-            <el-radio :value="0">{{ t('common.disable') }}</el-radio>
-          </el-radio-group>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitForm">
-          {{ t('common.confirm') }}
-        </el-button>
+        </div>
       </template>
-    </el-dialog>
+
+      <el-form
+        ref="formRef"
+        :model="form"
+        :rules="rules"
+        label-width="80px"
+        @submit.prevent
+      >
+        <el-tabs v-model="activeTab">
+          <!-- 基本信息 -->
+          <el-tab-pane :label="t('users.sectionBasic')" name="basic">
+            <el-form-item :label="t('users.username')" prop="username">
+              <el-input v-model="form.username" :disabled="dialogType === 'edit'" />
+            </el-form-item>
+            <el-form-item :label="t('users.nickname')" prop="nickname">
+              <el-input v-model="form.nickname" :placeholder="t('users.nicknameTip')" clearable />
+            </el-form-item>
+            <el-form-item :label="t('users.email')" prop="email">
+              <el-input v-model="form.email" />
+            </el-form-item>
+            <el-form-item v-if="dialogType === 'add'" :label="t('users.password')" prop="password">
+              <div class="pwd-row">
+                <el-input v-model="form.password" type="password" show-password />
+                <el-button @click="genPassword">{{ t('users.genPassword') }}</el-button>
+              </div>
+            </el-form-item>
+            <!-- 用户类型：成员共享归属用户的家目录与 Linux 系统账号，权限默认继承父账号 -->
+            <el-form-item v-if="dialogType === 'add'" :label="t('users.kind')">
+              <el-radio-group v-model="form.user_kind">
+                <el-radio :value="0">{{ t('users.kindCustomer') }}</el-radio>
+                <el-radio :value="1">{{ t('users.kindMember') }}</el-radio>
+              </el-radio-group>
+              <div v-if="form.user_kind === 1" class="form-tip">
+                {{
+                  t('users.kindMemberTip', {
+                    owner: form.owner_id ? ownerName(form.owner_id) : t('users.ownerSystem'),
+                  })
+                }}
+              </div>
+            </el-form-item>
+          </el-tab-pane>
+
+          <!-- 角色与权限 -->
+          <el-tab-pane :label="t('users.sectionAccess')" name="access">
+            <el-form-item v-if="isAdmin" :label="t('users.roles')" prop="roles">
+              <el-select
+                v-model="form.roles"
+                :disabled="editingId === ROOT_USER_ID"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="opt in roleOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+              <div v-if="editingId === ROOT_USER_ID" class="form-tip">
+                {{ t('users.rootProtected') }}
+              </div>
+            </el-form-item>
+            <el-form-item v-if="isAdmin" :label="t('users.extraPerm')">
+              <el-select
+                v-model="form.permissions"
+                multiple
+                filterable
+                clearable
+                collapse-tags
+                collapse-tags-tooltip
+                :placeholder="t('users.extraPermPlaceholder')"
+                style="width: 100%"
+              >
+                <!-- 权限点文案按 ns / action 标识符翻译，见 utils/perm.ts -->
+                <el-option-group v-for="g in permCatalog" :key="g.ns" :label="permGroupLabel(g.ns)">
+                  <el-option
+                    v-for="a in g.actions"
+                    :key="a.key"
+                    :label="permKeyLabel(a.key)"
+                    :value="a.key"
+                  />
+                </el-option-group>
+              </el-select>
+              <div class="form-tip">{{ t('users.extraPermTip') }}</div>
+            </el-form-item>
+            <!-- 成员专属：从父账号继承来的权限里再收回一部分 -->
+            <template v-if="form.user_kind === 1">
+              <el-form-item :label="t('users.denyPerm')">
+                <el-select
+                  v-model="form.perm_deny"
+                  multiple
+                  filterable
+                  clearable
+                  collapse-tags
+                  collapse-tags-tooltip
+                  :placeholder="t('users.denyPermPlaceholder')"
+                  style="width: 100%"
+                >
+                  <el-option-group v-for="g in permCatalog" :key="g.ns" :label="permGroupLabel(g.ns)">
+                    <el-option
+                      v-for="a in g.actions"
+                      :key="a.key"
+                      :label="permKeyLabel(a.key)"
+                      :value="a.key"
+                    />
+                  </el-option-group>
+                </el-select>
+                <div class="form-tip">{{ t('users.denyPermTip') }}</div>
+              </el-form-item>
+              <!-- 只读：共享可见但不可改（后端收敛为只保留 {ns}:view 权限点） -->
+              <el-form-item :label="t('users.readOnly')">
+                <el-switch v-model="form.read_only" />
+                <div class="form-tip">{{ t('users.readOnlyTip') }}</div>
+              </el-form-item>
+            </template>
+          </el-tab-pane>
+
+          <!-- 资源配额 -->
+          <el-tab-pane :label="t('users.sectionQuota')" name="quota">
+            <!-- 成员共享父账号的运行实体，这里没有可配项 -->
+            <el-alert
+              v-if="form.user_kind === 1"
+              type="info"
+              :closable="false"
+              show-icon
+              :title="t('users.memberQuotaTip')"
+            />
+            <template v-else>
+              <el-form-item v-if="isAdmin && dialogType === 'add'" :label="t('users.owner')">
+                <el-select v-model="form.owner_id" style="width: 100%" @change="onOwnerChange">
+                  <el-option :label="t('users.ownerSystem')" :value="0" />
+                  <el-option
+                    v-for="r in resellerList"
+                    :key="r.id"
+                    :label="r.username"
+                    :value="r.id"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item :label="t('users.package')">
+                <el-select
+                  v-model="form.package_id"
+                  :loading="pkgLoading"
+                  :placeholder="t('users.packageNone')"
+                  style="width: 100%"
+                >
+                  <el-option :label="t('users.packageNoneOption')" :value="0" />
+                  <el-option
+                    v-for="p in packageOptions"
+                    :key="p.value"
+                    :label="p.label"
+                    :value="p.value"
+                  />
+                </el-select>
+                <div class="form-tip">{{ packageTip() }}</div>
+              </el-form-item>
+              <el-form-item v-if="isAdmin || isReseller" :label="t('users.fpmSpec')">
+                <el-select
+                  v-model="fpmMode"
+                  :loading="fpmLoading"
+                  :placeholder="t('users.fpmDefault')"
+                  style="width: 100%"
+                >
+                  <el-option
+                    v-if="inheritOwnerName"
+                    :value="'inherit'"
+                    :label="t('users.fpmInheritOption', { owner: inheritOwnerName })"
+                  />
+                  <el-option
+                    v-for="opt in fpmOptions"
+                    :key="opt.value"
+                    :value="opt.value"
+                    :label="opt.label"
+                  />
+                  <el-option v-if="isAdmin" :value="'custom'" :label="t('users.fpmCustomOption')" />
+                </el-select>
+                <div class="form-tip">{{ fpmModeTip() }}</div>
+                <el-input
+                  v-if="fpmMode === 'custom'"
+                  v-model="fpmCustomJson"
+                  type="textarea"
+                  :rows="4"
+                  spellcheck="false"
+                  style="margin-top: 8px"
+                  :placeholder="t('users.fpmCustomPlaceholder')"
+                />
+                <el-alert
+                  v-else-if="fpmMode === '__keep__'"
+                  :title="t('users.fpmKeepTip', { json: keepJsonPreview })"
+                  type="info"
+                  :closable="false"
+                  show-icon
+                  style="margin-top: 8px"
+                />
+              </el-form-item>
+            </template>
+          </el-tab-pane>
+
+          <!-- 额外菜单：用户级例外（表 user_menus），在角色之外单独开 / 收侧边栏入口 -->
+          <el-tab-pane
+            v-if="dialogType === 'edit'"
+            :label="t('users.sectionMenus')"
+            name="menus"
+          >
+            <el-tree
+              ref="menuTreeRef"
+              v-loading="menuTreeLoading"
+              :data="menuTreeData"
+              :props="menuTreeProps"
+              show-checkbox
+              node-key="id"
+              default-expand-all
+              class="menu-tree"
+            />
+            <div class="form-tip">{{ t('users.extraMenuTip') }}</div>
+          </el-tab-pane>
+        </el-tabs>
+      </el-form>
+
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="drawerVisible = false">{{ t('common.cancel') }}</el-button>
+          <el-button type="primary" :loading="submitting" @click="submitForm">
+            {{ t('common.save') }}
+          </el-button>
+        </div>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, nextTick, onMounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ArrowRight, Plus } from '@/icons'
@@ -544,7 +639,6 @@ const ROOT_USER_ID = 1
 const isRootLocked = (row: UserListItem) =>
   row.id === ROOT_USER_ID && userStore.userInfo.id !== ROOT_USER_ID
 const isReseller = computed(() => userStore.roles.includes('reseller'))
-const pageTitle = computed(() => t(isReseller.value ? 'users.titleReseller' : 'users.title'))
 
 // ── 搜索 ───────────────────────────────────────────────────
 const searchForm = reactive({ username: '' })
@@ -566,16 +660,41 @@ async function loadList() {
   }
 }
 
-/**
- * 列表过滤：后端 /system/user/list 暂不支持关键字过滤，这里按用户名 / 昵称 / 邮箱本地过滤，
- * 用户输入即时生效（点「搜索」或回车会顺带刷新一次列表）。
- */
-const filteredData = computed(() => {
+// ── 列表筛选：状态胶囊 + 角色 + 关键字 ─────────────────────
+/** 状态胶囊：all=全部 / on=启用 / off=禁用 / member=成员（子账号） */
+const statusFilter = ref<'all' | 'on' | 'off' | 'member'>('all')
+/** 角色筛选（仅 admin）：空 = 不限 */
+const roleFilter = ref('')
+
+/** 胶囊上的计数：按当前关键字过滤后的结果统计，点哪个筛哪个 */
+const counts = computed(() => {
+  const base = keywordFiltered.value
+  return {
+    all: base.length,
+    on: base.filter((u) => u.status === 1).length,
+    off: base.filter((u) => u.status !== 1).length,
+    member: base.filter((u) => u.user_kind === 1).length,
+  }
+})
+
+/** 关键字过滤：后端 /system/user/list 暂不支持，本地按用户名 / 昵称 / 邮箱过滤 */
+const keywordFiltered = computed(() => {
   const kw = searchForm.username.trim().toLowerCase()
   if (!kw) return tableData.value
   return tableData.value.filter((u) =>
     [u.username, u.nickname, u.email].some((f) => (f ?? '').toLowerCase().includes(kw)),
   )
+})
+
+const filteredData = computed(() => {
+  const f = statusFilter.value
+  return keywordFiltered.value.filter((u) => {
+    if (f === 'on' && u.status !== 1) return false
+    if (f === 'off' && u.status === 1) return false
+    if (f === 'member' && u.user_kind !== 1) return false
+    if (roleFilter.value && !(u.roles ?? []).includes(roleFilter.value)) return false
+    return true
+  })
 })
 
 // ── 行展开：当前展开行高亮；站点入口跳到站点管理 ────────────
@@ -810,6 +929,8 @@ function handleSearch() {
 
 function resetSearch() {
   searchForm.username = ''
+  statusFilter.value = 'all'
+  roleFilter.value = ''
   loadList()
 }
 
@@ -875,12 +996,37 @@ async function saveUserMenus(userId: number) {
   await setUserMenus(userId, [...keys, ...half])
 }
 
-// ── 对话框 ─────────────────────────────────────────────────
-const dialogVisible = ref(false)
-const dialogType = ref<'add' | 'edit'>('add')
+// ── 抽屉（新增 / 编辑）────────────────────────────────────
+const drawerVisible = ref(false)
+const drawerType = ref<'add' | 'edit'>('add')
+/** 兼容旧命名：dialogType 在多处逻辑里被引用 */
+const dialogType = drawerType
 const submitting = ref(false)
 const formRef = ref<FormInstance>()
 const editingId = ref<number | null>(null)
+/** 抽屉内当前分区：basic / access / quota / menus */
+const activeTab = ref('basic')
+
+/** 窄屏时抽屉铺满，宽屏固定 560px */
+const narrow = ref(false)
+const drawerSize = computed(() => (narrow.value ? '100%' : '560px'))
+function syncNarrow() {
+  narrow.value = window.innerWidth < 900
+}
+
+const drawerTitle = computed(() =>
+  drawerType.value === 'add'
+    ? isAdmin.value
+      ? t('users.addUser')
+      : t('users.addReseller')
+    : t('users.editUser'),
+)
+
+/** 抽屉头像文字：用户名首字母，未输入时用「+」 */
+const avatarText = computed(() => {
+  const u = form.username.trim()
+  return u ? u[0].toUpperCase() : '+'
+})
 
 interface FormData {
   username: string
@@ -922,6 +1068,14 @@ const defaultForm = (): FormData => ({
 
 const form = reactive<FormData>(defaultForm())
 
+/** 随机密码：新增时省去想密码的功夫（12 位，含大小写与数字） */
+function genPassword() {
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
+  const buf = new Uint32Array(12)
+  crypto.getRandomValues(buf)
+  form.password = Array.from(buf, (n) => chars[n % chars.length]).join('')
+}
+
 // computed：切换语言时校验提示跟着变（普通对象只在 setup 时求值一次）
 const rules = computed<FormRules<FormData>>(() => ({
   username: [
@@ -940,14 +1094,15 @@ const rules = computed<FormRules<FormData>>(() => ({
 }))
 
 function handleAdd() {
-  dialogType.value = 'add'
+  drawerType.value = 'add'
   editingId.value = null
   Object.assign(form, defaultForm())
   fpmMode.value = ''
   fpmCustomJson.value = ''
+  activeTab.value = 'basic'
   // 新增时没有 user_id，额外菜单等创建后再编辑
   menuTreeData.value = []
-  dialogVisible.value = true
+  drawerVisible.value = true
 }
 
 function handleEdit(row: UserListItem) {
@@ -955,7 +1110,7 @@ function handleEdit(row: UserListItem) {
     ElMessage.warning(t('users.rootProtected'))
     return
   }
-  dialogType.value = 'edit'
+  drawerType.value = 'edit'
   editingId.value = row.id
   Object.assign(form, {
     username: row.username,
@@ -974,8 +1129,9 @@ function handleEdit(row: UserListItem) {
   })
   fpmMode.value = fpmEditInitial(row)
   fpmCustomJson.value = row.fpm_pool && row.fpm_pool.trim() ? row.fpm_pool : ''
-  dialogVisible.value = true
-  // 额外菜单异步加载，不阻塞弹窗打开
+  activeTab.value = 'basic'
+  drawerVisible.value = true
+  // 额外菜单异步加载，不阻塞抽屉打开
   void loadUserMenus(row.id)
 }
 
@@ -1006,14 +1162,21 @@ function resetForm() {
 
 async function submitForm() {
   const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) return
+  if (!valid) {
+    // 校验不通过时跳回出错的分区，别让用户在别的 tab 里找不存在的红字
+    if (formRef.value) activeTab.value = 'basic'
+    return
+  }
 
   const fpmPayload = resolveFpmPayload()
-  if (fpmPayload === null) return
+  if (fpmPayload === null) {
+    activeTab.value = 'quota'
+    return
+  }
 
   submitting.value = true
   try {
-    if (dialogType.value === 'add') {
+    if (drawerType.value === 'add') {
       const payload: CreateUserPayload = {
         username: form.username,
         password: form.password,
@@ -1074,7 +1237,7 @@ async function submitForm() {
       await saveUserMenus(editingId.value!)
       ElMessage.success(t('common.updateSuccess'))
     }
-    dialogVisible.value = false
+    drawerVisible.value = false
     loadList()
   } catch (e: unknown) {
     // 业务错误（如「邮箱已存在」）由拦截器 reject，这里统一提示
@@ -1176,6 +1339,8 @@ async function loadPermCatalog() {
 }
 
 onMounted(() => {
+  syncNarrow()
+  window.addEventListener('resize', syncNarrow)
   loadList()
   loadRoles()
   loadResellers()
@@ -1183,13 +1348,16 @@ onMounted(() => {
   loadPackages()
   loadPermCatalog()
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncNarrow)
+})
+
+/** 供父级（access/index）在切回本面板时刷新 */
+defineExpose({ reload: loadList })
 </script>
 
 <style scoped>
-.users-container {
-  padding: 20px;
-}
-
 .card-header {
   display: flex;
   align-items: center;
@@ -1198,16 +1366,47 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
-.page-title {
-  font-size: 16px;
-  font-weight: 600;
-}
-
 .head-right {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+/* ── 状态胶囊（与站点列表同一套视觉）────────────────────── */
+.nav-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--el-fill-color-light);
+}
+
+.nav-pills .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.nav-pills .pill:hover {
+  background: var(--el-fill-color);
+}
+
+.nav-pills .pill.active {
+  background: var(--el-color-primary);
+  color: #fff;
 }
 
 /* ── 行展开（与站点列表同一套交互）───────────────────────── */
@@ -1336,16 +1535,67 @@ code.v {
   font-weight: 600;
 }
 
+/* ── 抽屉 ─────────────────────────────────────────────────── */
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.drawer-head .avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--el-color-primary);
+}
+
+.head-main {
+  min-width: 0;
+}
+
+.head-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.head-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pwd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
 .form-tip {
   color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.6;
 }
 
-/* 额外菜单树：限高滚动，菜单再多也不会撑破弹窗 */
+/* 额外菜单树：限高滚动，菜单再多也不会撑破抽屉 */
 .menu-tree {
   width: 100%;
-  max-height: 260px;
+  max-height: calc(100vh - 320px);
   padding: 4px;
   overflow: auto;
   border: 1px solid var(--el-border-color-lighter);

@@ -120,7 +120,7 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
   {
     path: '/system',
     component: Layout,
-    redirect: '/system/users',
+    redirect: '/system/access',
     meta: { title: '系统设置', icon: 'material-symbols:settings', roles: ['admin'] },
     children: [
       {
@@ -129,17 +129,12 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/system/config/zap.vue'),
         meta: { title: 'Zap 设置', icon: 'material-symbols:settings-applications' },
       },
+      // 用户管理与角色管理已合并为一页（页内 nav pill 切换）：见 menus 21 / 22
       {
-        path: 'users',
-        name: 'Users',
-        component: () => import('@/views/system/users/index.vue'),
-        meta: { title: '用户管理', icon: 'material-symbols:person', affix: true },
-      },
-      {
-        path: 'roles',
-        name: 'Roles',
-        component: () => import('@/views/system/roles/index.vue'),
-        meta: { title: '角色管理', icon: 'material-symbols:account-circle' , affix: true},
+        path: 'access',
+        name: 'Access',
+        component: () => import('@/views/system/access/index.vue'),
+        meta: { title: '用户与角色', icon: 'material-symbols:badge', affix: true },
       },
       {
         path: 'menus',
