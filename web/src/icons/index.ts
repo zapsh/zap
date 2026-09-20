@@ -213,6 +213,7 @@ export const Cut = IconContentCut
 export const DataLine = IconMonitoring
 export const Delete = IconDelete
 export const Document = IconDescription
+export const Dns = IconDns
 export const DocumentAdd = IconNoteAdd
 export const Download = IconDownload
 export const Edit = IconEdit

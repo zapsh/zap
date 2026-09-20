@@ -244,7 +244,9 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         path: 'dns-providers',
         name: 'SslDnsProviders',
         component: () => import('@/views/ssl-tls/dns-providers/index.vue'),
-        meta: { title: 'DNS 服务商', icon: 'material-symbols:dns' },
+        // 侧栏入口已改到证书页的抽屉里（与后端 menus.hidden 保持一致）：
+        // 路由保留让旧链接可达，回退到本表时也不会再画出二级菜单。
+        meta: { title: 'DNS 服务商', icon: 'material-symbols:dns', hidden: true },
       },
     ],
   },

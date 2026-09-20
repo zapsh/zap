@@ -15,6 +15,9 @@
             <el-button type="success" :icon="MagicStick" @click="openLetsEncrypt">{{
               t('sslCerts.letsEncryptBtn')
             }}</el-button>
+            <el-button :icon="IconDns" @click="openDnsDrawer">{{
+              t('sslCerts.dnsProviderBtn')
+            }}</el-button>
             <el-badge :value="orders.length" :hidden="!orders.length" type="primary">
               <el-button :icon="Loading" @click="openOrders">{{
                 t('sslCerts.leOrdersBtn')
@@ -24,25 +27,9 @@
         </div>
       </template>
 
-      <el-alert type="info" :closable="false" class="tip">
-        <p style="margin: 0 0 4px">
-          {{ t('sslCerts.tip1a') }}<strong>{{ t('sslCerts.tipSelfSigned') }}</strong
-          >{{ t('sslCerts.tip1b') }}<strong>{{ t('sslCerts.tipLetsEncrypt') }}</strong
-          >{{ t('sslCerts.tip1c') }}<code>crt</code>{{ t('sslCerts.tipCertName') }}<code>key</code
-          >{{ t('sslCerts.tipPrivateKeyName') }}<code>ca-bundle</code>{{ t('sslCerts.tipChainName')
-          }}<code>csr</code>{{ t('sslCerts.tipCsrName')
-          }}<strong>{{ t('sslCerts.tipAutoParse') }}</strong
-          >{{ t('sslCerts.tip1d') }}<code>ca-bundle</code>{{ t('sslCerts.tipAnd') }}<code>csr</code
-          >{{ t('sslCerts.tip1e') }}
-        </p>
-        <p style="margin: 0 0 4px">
-          {{ t('sslCerts.tip2a') }}<strong>{{ t('sslCerts.tipOwner') }}</strong
-          >{{ t('sslCerts.tip2b') }}
-        </p>
-        <p style="margin: 0">
-          {{ t('sslCerts.tipSecurity') }}
-        </p>
-      </el-alert>
+      <!-- <el-alert type="info" :closable="false" class="tip">
+    
+      </el-alert> -->
 
       <el-table :data="tableData" v-loading="loading" stripe style="margin-top: 14px">
         <el-table-column prop="id" label="ID" width="60" />
@@ -607,6 +594,17 @@
         </el-table-column>
       </el-table>
     </el-dialog>
+
+    <!-- DNS 服务商凭据：原二级子菜单，现改为抽屉，侧栏只留「SSL证书」一个入口 -->
+    <el-drawer
+      v-model="dnsDrawerVisible"
+      :title="t('dnsProvider.cardTitle')"
+      size="70%"
+      destroy-on-close
+      @closed="onDnsDrawerClosed"
+    >
+      <DnsProvidersPane embedded @changed="loadDnsProviders" />
+    </el-drawer>
   </div>
 </template>
 
@@ -621,10 +619,11 @@ import {
   CircleCheckFilled,
   CircleCloseFilled,
   WarningFilled,
+  Dns as IconDns,
 } from '@/icons'
+import DnsProvidersPane from '@/views/ssl-tls/dns-providers/DnsProvidersPane.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
 import { http } from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 import {
@@ -652,7 +651,6 @@ import {
 } from '@/api/ssl'
 
 const { t } = useI18n()
-const router = useRouter()
 
 const nowTs = ref(Math.floor(Date.now() / 1000))
 const loading = ref(false)
@@ -1159,10 +1157,29 @@ async function loadDnsProviders() {
   }
 }
 
-/** 跳到 DNS 服务商管理页：配完回来刷新下拉即可选中 */
+// ── DNS 服务商抽屉（侧栏不再给二级入口）────────────────────
+const dnsDrawerVisible = ref(false)
+/** 从 Let's Encrypt 表单跳进来时记一笔：抽屉关掉后把表单还给 user */
+const dnsBackToLe = ref(false)
+
+function openDnsDrawer() {
+  dnsBackToLe.value = false
+  dnsDrawerVisible.value = true
+}
+
+/** 申请表单里的「前往配置」：填了一半跑来配服务商，配完回到原有填写内容 */
 function goDnsProviders() {
+  dnsBackToLe.value = true
   leVisible.value = false
-  router.push('/ssl-tls/dns-providers')
+  dnsDrawerVisible.value = true
+}
+
+function onDnsDrawerClosed() {
+  loadDnsProviders()
+  if (dnsBackToLe.value) {
+    dnsBackToLe.value = false
+    leVisible.value = true
+  }
 }
 
 /** 域名里含通配符时强制切到 DNS 验证（HTTP-01 不支持，后端也会拦，这里即时提示） */

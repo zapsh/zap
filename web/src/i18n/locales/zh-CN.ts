@@ -2794,25 +2794,6 @@ export default {
     addCert: '添加证书',
     selfSignBtn: '生成自签名',
     letsEncryptBtn: "申请 Let's Encrypt",
-    tip1a: '支持三种来源：手动导入（粘贴 / 从文件读取 PEM）、rcgen 生成',
-    tipSelfSigned: '自签名',
-    tip1b: '证书、通过 ACME HTTP-01 向 ',
-    tipLetsEncrypt: "Let's Encrypt",
-    tip1c: ' 自动申请。每份证书保存四段材料：',
-    tipCertName: '（证书）、',
-    tipPrivateKeyName: '（私钥）、',
-    tipChainName: '（中间链）、',
-    tipCsrName: '（签名请求）。手动添加时只需粘贴证书，',
-    tipAutoParse: '域名与有效期会自动解析',
-    tip1d: '；',
-    tipAnd: ' 与 ',
-    tip1e: ' 为选填项，默认折叠，点标题即可展开填写。',
-    tip2a: '证书按',
-    tipOwner: '归属用户',
-    tip2b:
-      '隔离：页面默认只展示当前账号自己的证书；管理员 / 经销商可为客户代建（把归属选为该客户后，该客户站点的「SSL/TLS」即可选择此证书绑定）。',
-    tipSecurity:
-      '安全提示：私钥属敏感信息，仅存储在服务器数据库中；请勿将本页面内容分享给无关人员。',
     colOwner: '归属',
     tagSystem: '系统',
     colName: '名称',
@@ -2899,6 +2880,12 @@ export default {
     leDnsProviderPlaceholder: '请选择已配置的 DNS 服务商',
     leDnsProviderHint: '尚未配置？请到「DNS 服务商」页面添加 API 凭据',
     leGoDnsProviders: '前往配置',
+    /** 证书页头文件里的 DNS 服务商抽屉入口 */
+    dnsProviderBtn: 'DNS服务商',
+    /** Staging（测试）环境开关：正式签发前先跑通流程，避免撞上 LE 的失败重试限流 */
+    leStaging: '测试环境',
+    leStagingHint:
+      "先用 Let's Encrypt 测试环境签发：不限流、但浏览器不信任，验证流程无误后关掉再正式签发",
     leStepApply: '填写申请',
     leStepAuth: '域名验证',
     leStepDone: '签发结果',

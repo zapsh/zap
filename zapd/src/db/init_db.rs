@@ -361,6 +361,15 @@ async fn sync_added_menus() {
     )
     .execute(pool)
     .await;
+    // SSL/TLS 收敛为侧栏单一入口：「DNS服务商」子菜单（112）收起，
+    // 改为证书列表页头部按钮 + 抽屉（DnsProvidersPane）。
+    // 只隐藏不删除：页面路由 /ssl-tls/dns-providers 仍可达，菜单管理里也还能勾回来。
+    let _ = sqlx::query(
+        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now') \
+         WHERE id = 112 AND hidden <> 1",
+    )
+    .execute(pool)
+    .await;
 
     // 容器管理（Docker）：位于「计划任务」之下，管理员专属单页（nav pill 内切换
     // 容器 / 镜像 / 卷 / 网络 / Compose，故只需要一个子菜单）。
