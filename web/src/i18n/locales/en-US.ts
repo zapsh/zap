@@ -1142,6 +1142,14 @@ const enUS: Messages = {
     hintRuntime: 'Auto-detected Nginx / PHP / MySQL components',
     hintEntities: 'Backfill Linux accounts, home permissions and FPM pools for existing users',
   },
+  aboutGroups: {
+    hintAbout: 'Version, build info and documentation entries',
+    hintUpdate: 'Check for new versions, upgrade manually and tune auto-update',
+  },
+  automationGroups: {
+    hintScripts: 'Write and keep script files; run them instantly and read the output log',
+    hintCron: 'Give a script a cron schedule and let it run as root automatically',
+  },
 
   serverTime: {
     title: 'Server Time',
@@ -2201,7 +2209,7 @@ const enUS: Messages = {
     title: 'Scheduled Tasks',
     newJob: 'New Task',
     alert:
-      'Automatically runs "custom scripts" at the configured time; scripts run as root. Prepare them under "Scripts/Automation → Custom Scripts" first.',
+      'Automatically runs "custom scripts" at the configured time; scripts run as root. Prepare them in the "Custom Scripts" tab on this page first.',
     colName: 'Name',
     colScript: 'Script',
     colSchedule: 'Frequency',

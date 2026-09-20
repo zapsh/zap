@@ -52,7 +52,7 @@ const year = new Date().getFullYear()
 const router = useRouter()
 const userStore = useUserStore()
 
-/** 系统更新页仅 admin 可见：非管理员不提供跳转 */
+/** 系统更新页已并入 About ZAP（页签 tab=update），仍仅 admin 可见：非管理员不提供跳转 */
 const canGoUpdate = computed(() => userStore.roles.includes('admin'))
 
 onMounted(async () => {
@@ -68,7 +68,7 @@ onMounted(async () => {
 })
 
 function goUpdate() {
-  if (canGoUpdate.value) router.push('/system/update')
+  if (canGoUpdate.value) router.push('/system/about?tab=update')
 }
 
 /** 文档入口（系统设置 → About ZAP）：所有角色可见 */

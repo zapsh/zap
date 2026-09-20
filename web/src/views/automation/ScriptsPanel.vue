@@ -303,8 +303,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .scripts-page {
   display: flex;
-  /* 视口高 - 顶部导航 50 - 标签栏 34 - 底部 Footer 50 - app-main 上下 padding 20 */
-  height: calc(100vh - 154px);
+  /* 视口高 - 顶部导航 50 - 标签栏 34 - 底部 Footer 50 - app-main 上下 padding 20
+     - 所属页「自动化脚本」顶部 nav pill 一行（38 + 间距 12） */
+  height: calc(100vh - 204px);
   background: var(--el-bg-color);
   border-radius: 4px;
   overflow: hidden;

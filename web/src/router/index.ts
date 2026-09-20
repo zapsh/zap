@@ -143,36 +143,25 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         meta: { title: '菜单管理', icon: 'material-symbols:menu' , affix: true},
       },
       {
-        path: 'update',
-        name: 'SystemUpdate',
-        component: () => import('@/views/system/update/index.vue'),
-        meta: { title: '系统更新', icon: 'material-symbols:refresh', affix: true },
-      },
-      {
         path: 'tasks',
         name: 'SystemTasks',
         component: () => import('@/views/system/tasks/index.vue'),
         meta: { title: '任务队列', icon: 'material-symbols:view-list' },
       },
+      // 系统更新已并入 About ZAP（页内 nav pill 切换）：见 menus 30 / 27
       {
         path: 'about',
         name: 'SystemAbout',
         component: () => import('@/views/system/about/index.vue'),
         meta: { title: 'About ZAP', icon: 'material-symbols:info' },
       },
-      // 「脚本/自动化」已收进系统设置（后端 menus id=101/102 挂在 system 下）：
-      // 菜单接口挂掉时回退到本表，这两个页面不能跟着一起消失。
+      // 自定义脚本 + 计划任务已合并为一页「自动化脚本」（页内 nav pill 切换）：见 menus 101 / 102
+      // 菜单接口挂掉时回退到本表，这个页面不能跟着一起消失。
       {
-        path: 'scripts',
-        name: 'AppstoreScripts',
-        component: () => import('@/views/automation/scripts/index.vue'),
-        meta: { title: '自定义脚本', icon: 'material-symbols:description' },
-      },
-      {
-        path: 'cron',
-        name: 'ScriptCron',
-        component: () => import('@/views/automation/cron/index.vue'),
-        meta: { title: '计划任务', icon: 'material-symbols:alarm' },
+        path: 'automation',
+        name: 'AutomationScripts',
+        component: () => import('@/views/automation/index.vue'),
+        meta: { title: '自动化脚本', icon: 'material-symbols:timer' },
       },
     ],
   },
@@ -355,6 +344,23 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
   {
     path: '/appstore/installed',
     redirect: '/appstore',
+    meta: { hidden: true },
+  },
+  // 旧入口：自定义脚本 / 计划任务已并入「自动化脚本」页内页签，连 tab 一起带到新地址
+  {
+    path: '/system/scripts',
+    redirect: '/system/automation?tab=scripts',
+    meta: { hidden: true },
+  },
+  {
+    path: '/system/cron',
+    redirect: '/system/automation?tab=cron',
+    meta: { hidden: true },
+  },
+  // 旧入口：系统更新已并入 About ZAP 页内页签，连 tab 一起带到新地址
+  {
+    path: '/system/update',
+    redirect: '/system/about?tab=update',
     meta: { hidden: true },
   },
 ]

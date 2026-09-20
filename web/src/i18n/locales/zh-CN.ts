@@ -1159,6 +1159,14 @@ export default {
     hintRuntime: 'Nginx / PHP / MySQL 等组件的自动探测结果',
     hintEntities: '为存量用户补齐 Linux 账号、家目录赋权与 FPM pool',
   },
+  aboutGroups: {
+    hintAbout: '版本、构建信息与文档入口',
+    hintUpdate: '检查新版本、手动升级与自动更新策略',
+  },
+  automationGroups: {
+    hintScripts: '编写与维护脚本文件，可即时运行并查看输出日志',
+    hintCron: '给脚本配 cron 频率，到点自动以 root 执行',
+  },
 
   serverTime: {
     title: '服务器时间',
@@ -2194,7 +2202,7 @@ export default {
     title: '计划任务',
     newJob: '新建任务',
     alert:
-      '按设定时间自动运行「自定义脚本」，脚本以 root 执行；请先在「脚本/自动化 → 自定义脚本」中准备脚本。',
+      '按设定时间自动运行「自定义脚本」，脚本以 root 执行；请先在同页的「自定义脚本」标签里准备脚本。',
     colName: '名称',
     colScript: '脚本',
     colSchedule: '执行频率',

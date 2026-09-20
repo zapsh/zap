@@ -8,7 +8,7 @@
 
 | Method | When to use | Entry point |
 | --- | --- | --- |
-| Panel | day-to-day: progress, history, scheduled auto-update | System Settings → System Update → Check / Update now |
+| Panel | day-to-day: progress, history, scheduled auto-update | System Settings → About ZAP → System Update → Check / Update now |
 | CLI | panel is down, services won't start, fleet ops | `zapupgrade upgrade --to latest` |
 | Install script | first deploy, offline, release tarball already at hand | `bash scripts/install.sh [version]` |
 
@@ -102,4 +102,4 @@ restarting the panel.
 
 Any leftover `server_env` / `update_config` tables are dropped on the first start after
 the upgrade and their rows are **not** migrated — the environment is re-detected and the
-auto-update settings can be re-saved from **System Settings → System Update**.
+auto-update settings can be re-saved from **System Settings → About ZAP → System Update**.

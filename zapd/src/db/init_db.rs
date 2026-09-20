@@ -414,6 +414,33 @@ async fn sync_added_menus() {
     )
     .execute(pool)
     .await;
+    // 自定义脚本（101）+ 计划任务（102）合并为一页「自动化脚本」（页面内 nav pill 切换）：
+    // 101 改名改路径指向合并页 automation/index，102 停用（保留行以免 role_menus 变孤儿），
+    // 旧入口 /system/scripts · /system/cron 由前端重定向到 /system/automation?tab=...
+    let _ = sqlx::query(
+        "UPDATE menus SET name = 'automation-scripts', path = 'automation', \
+         component = 'automation/index', title = '自动化脚本', icon = 'material-symbols:timer', \
+         updated_at = strftime('%s','now') \
+         WHERE id = 101 AND path <> 'automation'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "UPDATE menus SET component = 'automation/index', status = 0, \
+         updated_at = strftime('%s','now') \
+         WHERE id = 102 AND status <> 0",
+    )
+    .execute(pool)
+    .await;
+    // 系统更新（27）并入 About ZAP（30）的第二个 nav pill：改指向合并页并停用，
+    // 保留行以免 role_menus 变孤儿；旧入口 /system/update 由前端重定向到 ?tab=update。
+    let _ = sqlx::query(
+        "UPDATE menus SET component = 'system/about/index', status = 0, \
+         updated_at = strftime('%s','now') \
+         WHERE id = 27 AND status <> 0",
+    )
+    .execute(pool)
+    .await;
 
     // 容器管理（Docker）：位于「计划任务」之下，管理员专属单页（nav pill 内切换
     // 容器 / 镜像 / 卷 / 网络 / Compose，故只需要一个子菜单）。
@@ -617,7 +644,8 @@ async fn init_menus_table() {
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (24, 2, 'audit', 'audit', 'system/audit/index', 'menu', '审计日志', 'material-symbols:confirmation-number', 1, 'admin', 7, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (27, 2, 'system-update', 'update', 'system/update/index', 'menu', '系统更新', 'material-symbols:refresh', 1, 'admin', 8, 1, strftime('%s','now'), strftime('%s','now'));
+    -- 系统更新已并入 30「About ZAP」的第二个 nav pill；保留本行只为兼容既有 role_menus 授权，status=0 不进侧栏
+    VALUES (27, 2, 'system-update', 'update', 'system/about/index', 'menu', '系统更新', 'material-symbols:refresh', 1, 'admin', 8, 0, strftime('%s','now'), strftime('%s','now'));
 
     -- Server config dir（服务器配置：运维项；原「服务配置」一级菜单已并入其中）
     INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
@@ -698,15 +726,18 @@ async fn init_menus_table() {
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (87, 8, 'server-status-nginx', 'nginx-server', 'server-status/nginx-server/index', 'menu', 'Nginx Server', 'material-symbols:monitor', 1, 'admin', 2, 1, strftime('%s','now'), strftime('%s','now'));
 
-    -- 脚本/自动化的两个页面如今挂在「系统设置」下（见 sync_added_menus 的迁移说明）。
+    -- 原「脚本/自动化」的两个页面如今挂在「系统设置」下，并已合并成一条「自动化脚本」
+    -- （页面内 nav pill 切换：自定义脚本 / 计划任务），入口是 /system/automation。
     -- id=10 这个顶层目录保留是为了不占掉已分配的 id，也为了让老版本的 role_menus 行不变成孤儿；
-    -- hidden=1 让它不出现在侧栏，页面 /system/scripts · /system/cron 才是入口。
+    -- hidden=1 让它不出现在侧栏。
     INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, hidden, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (10, 0, 'automation', '/automation', 'Layout', '/automation/scripts', 'dir', '脚本/自动化', 'material-symbols:timer', 1, 1, 'admin', 11, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (10, 0, 'automation', '/automation', 'Layout', '/system/automation', 'dir', '脚本/自动化', 'material-symbols:timer', 1, 1, 'admin', 11, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (101, 2, 'appstore-scripts', 'scripts', 'automation/scripts/index', 'menu', '自定义脚本', 'material-symbols:description', 1, 'admin', 10, 1, strftime('%s','now'), strftime('%s','now'));
+    -- 自动化脚本：自定义脚本 + 计划任务 合到一页（页面内 nav pill 切换）
+    VALUES (101, 2, 'automation-scripts', 'automation', 'automation/index', 'menu', '自动化脚本', 'material-symbols:timer', 1, 'admin', 10, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (102, 2, 'script-cron', 'cron', 'automation/cron/index', 'menu', '计划任务', 'material-symbols:alarm', 1, 'admin', 11, 1, strftime('%s','now'), strftime('%s','now'));
+    -- 计划任务已并入 101；保留本行只为兼容既有 role_menus 授权，status=0 不进侧栏
+    VALUES (102, 2, 'script-cron', 'cron', 'automation/index', 'menu', '计划任务', 'material-symbols:alarm', 1, 'admin', 11, 0, strftime('%s','now'), strftime('%s','now'));
 
     -- Dev（Layout + 子菜单，位于最下方，admin/user/reseller）
     INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
