@@ -285,6 +285,25 @@ pub async fn active_in_group(group_key: &str) -> i64 {
     .unwrap_or(0)
 }
 
+/// 并发组内**正在运行**的任务数。
+///
+/// 与 [`active_in_group`] 的唯一区别：不含 `pending`。调度放行只关心"槽位被谁占着"，
+/// 而被放行的候选本身就是 `pending` —— 若把它也算进来，组内只要有一条排队任务就恒
+/// 判定为满，那条任务永远等不到放行（`limit = 1` 的编译组必现死锁）。
+pub async fn running_in_group(group_key: &str) -> i64 {
+    if group_key.is_empty() {
+        return 0;
+    }
+    let pool = db::get_db_pool().await;
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM task_queue WHERE group_key = ? AND status = 'running'",
+    )
+    .bind(group_key)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+}
+
 /// 并发组内最早的一条 `pending` 任务（供调度器放行）。
 ///
 /// 只挑选、不改状态：真正的 pending→running 由 [`start`] 在**启动成功后**改写，
@@ -400,7 +419,9 @@ async fn schedule_once() -> Result<(), sqlx::Error> {
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-        if limit <= 0 || active_in_group(&g).await >= limit {
+        // 槽位是否被占满，只看"正在跑"的任务：这里若用 `active_in_group`（含 pending），
+        // 候选自己就会被算成占坑者，`limit = 1` 的组永远放行不了。`limit <= 0` 视为不限制。
+        if limit > 0 && running_in_group(&g).await >= limit {
             continue;
         }
         if let Some(next) = next_pending(&g).await {

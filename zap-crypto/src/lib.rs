@@ -299,14 +299,14 @@ pub fn read_cred(service: &str, user: &str) -> Result<String, String> {
         Ok(m) if m.is_file() => {}
         Ok(_) => return Err(format!("凭据路径不是普通文件: {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("凭据不存在: {}", path.display()))
+            return Err(format!("凭据不存在: {}", path.display()));
         }
         Err(e) => {
             return Err(format!(
                 "凭据不可访问（{e}）：请检查 {} 及上级目录是否对面板组 {} 放开读权限",
                 path.display(),
                 panel_group()
-            ))
+            ));
         }
     }
     let raw = fs::read_to_string(&path).map_err(|e| format!("读取凭据失败: {e}"))?;

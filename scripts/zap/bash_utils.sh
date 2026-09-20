@@ -528,22 +528,15 @@ wzap_conf() {
 
 # ── 系统编译依赖(按发行版分组,可用环境变量整体覆盖) ─────────────────────
 # 用法: ZAP_UBUNTU_DEPS="..." 自定义后再调用 prepare_install_env / install_system_deps
-UBUNTU_DEPS="${ZAP_UBUNTU_DEPS:-wget curl git ca-certificates build-essential autoconf automake libtool bison re2c pkg-config libxml2-dev libssl-dev libsqlite3-dev libcurl4-openssl-dev libpcre3-dev libbz2-dev zlib1g-dev libpq-dev libzip-dev libonig-dev libpng-dev libjpeg-dev libwebp-dev libavif-dev libicu-dev libreadline-dev libffi-dev libxslt1-dev libfreetype6-dev libgd-dev libsodium-dev}"
+UBUNTU_DEPS="${ZAP_UBUNTU_DEPS:-wget curl git ca-certificates build-essential gcc g++ autoconf automake libtool bison re2c pkg-config libxml2-dev libssl-dev libsqlite3-dev libcurl4-openssl-dev libpcre3-dev libbz2-dev zlib1g-dev libpq-dev libzip-dev libonig-dev libpng-dev libjpeg-dev libwebp-dev libavif-dev libicu-dev libreadline-dev libffi-dev libxslt1-dev libfreetype6-dev libgd-dev libsodium-dev}"
 RH_DEPS="${ZAP_RH_DEPS:-wget curl git make gcc gcc-c++ autoconf automake libtool bison re2c pkgconfig openssl-devel libxml2-devel sqlite-devel libcurl-devel libpcre-devel bzip2-devel zlib-devel ncurses-devel libpng-devel libjpeg-turbo-devel libwebp-devel}"
 RH_DNF_EXTRA="${ZAP_RH_DNF_EXTRA:-libzip-devel oniguruma-devel libicu-devel libffi-devel libxslt-devel gd-devel libsodium-devel}"
 ALPINE_DEPS="${ZAP_ALPINE_DEPS:-build-base autoconf automake libtool bison re2c pkgconf curl wget git openssl-dev libxml2-dev zlib-dev ncurses-dev bzip2-dev libpng-dev libjpeg-turbo-dev}"
 
 # ── 运行时库 / 系统包(发行版与版本间包名不同) ──────────────────────
-# 背景:同一个运行库在不同发行版、甚至同一发行版的不同大版本里包名不同,典型:
 #   libaio    : libaio1(Ubuntu 22.04-/Debian 12-) / libaio1t64(Ubuntu 24.04+/Debian 13+)
 #   libncurses: libncurses5(旧) / libncurses6(新) / ncurses-compat-libs(RHEL)
-# 而 apt-get install 只要有一个包名找不到就整条命令失败、一个都不装,
-# 所以 `apt-get install -y libncurses5 libaio1 libncurses6 || true` 在
-# Ubuntu 24.04 上是「静默什么都不装」,直到 mysqld 起来才报缺 libaio.so.1。
-# 正确姿势:先按「能力」判断库是否已在,再按候选包名逐个尝试。
 
-# ldconfig 可执行文件:它在 /sbin、/usr/sbin,而守护进程拉起的脚本常是精简 PATH,
-# 直接写 `ldconfig -p` 会「命令未找到」→ 缓存查不到 → 被误判成缺库,故显式兜底
 ldconfig_bin() {
   local c
   for c in ldconfig /sbin/ldconfig /usr/sbin/ldconfig /usr/bin/ldconfig; do

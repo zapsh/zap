@@ -863,10 +863,10 @@ fn spawn_background(
     std::thread::spawn(move || {
         use std::io::Write;
         let mut log = log_file;
-        let _ = writeln!(log, "── 任务进入执行队列，等待前序任务完成后自动开始 ──");
+        let _ = writeln!(log, "── Queued, automatically runs after the previous task completes ──");
         // 全局串行闸门：install/uninstall/upgrade/script_run 一次只执行一个
         let _queue_token = QueueToken::new();
-        let _ = writeln!(log, "── 开始执行（队列闸门已获得） ──");
+        let _ = writeln!(log, "── Task Started ──");
         let mut final_code = 0;
         for step in steps {
             // 建站类包（run_as: user）走降权通道，其余沿用 root
@@ -875,7 +875,7 @@ fn spawn_background(
                 RunAs::User(u) => match super::user_cmd(&step.interpreter.program(), u) {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ = writeln!(log, "启动脚本失败: {e}");
+                        let _ = writeln!(log, "start script failed: {e}");
                         final_code = -1;
                         break;
                     }
