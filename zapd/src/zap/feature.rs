@@ -239,7 +239,7 @@ mod tests {
         prev.insert(FEATURE_DOCKER.to_string(), true);
         let (map, degraded) = merge_results(Some(&prev), &results(&[(FEATURE_DOCKER, None)]));
 
-        assert_eq!(map[FEATURE_DOCKER], true);
+        assert!(map[FEATURE_DOCKER]);
         // 降格后只缓存 DEGRADED_TTL，exec 恢复能尽快重新收敛
         assert!(degraded);
         assert_eq!(DEGRADED_TTL.as_secs(), 10);
@@ -254,7 +254,7 @@ mod tests {
         let (map, degraded) =
             merge_results(Some(&prev), &results(&[(FEATURE_DOCKER, Some(false))]));
 
-        assert_eq!(map[FEATURE_DOCKER], false);
+        assert!(!map[FEATURE_DOCKER]);
         assert!(!degraded);
     }
 
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn no_history_fails_closed() {
         let (map, degraded) = merge_results(None, &results(&[(FEATURE_DOCKER, None)]));
-        assert_eq!(map[FEATURE_DOCKER], false);
+        assert!(!map[FEATURE_DOCKER]);
         assert!(degraded);
     }
 }
