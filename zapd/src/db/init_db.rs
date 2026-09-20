@@ -391,6 +391,30 @@ async fn sync_added_menus() {
     .execute(pool)
     .await;
 
+    // 「脚本/自动化」收进「系统设置」：一级目录只为两个页面而存在，太占地方。
+    // 子菜单改挂到 system（id=2）下排在末尾 —— 路径是相对父级的，所以 URL 跟着
+    // 变成 /system/scripts 与 /system/cron，无需改 component。
+    // 目录 10 保留但 hidden=1：id 段已分配、role_menus 里还有指向它的行，
+    // 删掉会让这些授权记录变成孤儿，隐藏即可让侧栏干净。
+    let _ = sqlx::query(
+        "UPDATE menus SET parent_id = 2, sort_order = 10, updated_at = strftime('%s','now') \
+         WHERE id = 101 AND parent_id <> 2",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "UPDATE menus SET parent_id = 2, sort_order = 11, updated_at = strftime('%s','now') \
+         WHERE id = 102 AND parent_id <> 2",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now') \
+         WHERE id = 10 AND hidden <> 1",
+    )
+    .execute(pool)
+    .await;
+
     // 容器管理（Docker）：位于「计划任务」之下，管理员专属单页（nav pill 内切换
     // 容器 / 镜像 / 卷 / 网络 / Compose，故只需要一个子菜单）。
     let _ = sqlx::query(
@@ -665,13 +689,15 @@ async fn init_menus_table() {
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
     VALUES (87, 8, 'server-status-nginx', 'nginx-server', 'server-status/nginx-server/index', 'menu', 'Nginx Server', 'material-symbols:monitor', 1, 'admin', 2, 1, strftime('%s','now'), strftime('%s','now'));
 
-    -- 脚本/自动化（Layout + 子菜单，仅 admin，位于服务器配置之后）
-    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (10, 0, 'automation', '/automation', 'Layout', '/automation/scripts', 'dir', '脚本/自动化', 'material-symbols:timer', 1, 'admin', 11, 1, strftime('%s','now'), strftime('%s','now'));
+    -- 脚本/自动化的两个页面如今挂在「系统设置」下（见 sync_added_menus 的迁移说明）。
+    -- id=10 这个顶层目录保留是为了不占掉已分配的 id，也为了让老版本的 role_menus 行不变成孤儿；
+    -- hidden=1 让它不出现在侧栏，页面 /system/scripts · /system/cron 才是入口。
+    INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, hidden, affix, roles, sort_order, status, created_at, updated_at)
+    VALUES (10, 0, 'automation', '/automation', 'Layout', '/automation/scripts', 'dir', '脚本/自动化', 'material-symbols:timer', 1, 1, 'admin', 11, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (101, 10, 'appstore-scripts', 'scripts', 'automation/scripts/index', 'menu', '自定义脚本', 'material-symbols:description', 1, 'admin', 1, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (101, 2, 'appstore-scripts', 'scripts', 'automation/scripts/index', 'menu', '自定义脚本', 'material-symbols:description', 1, 'admin', 10, 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO menus (id, parent_id, name, path, component, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)
-    VALUES (102, 10, 'script-cron', 'cron', 'automation/cron/index', 'menu', '计划任务', 'material-symbols:alarm', 1, 'admin', 2, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES (102, 2, 'script-cron', 'cron', 'automation/cron/index', 'menu', '计划任务', 'material-symbols:alarm', 1, 'admin', 11, 1, strftime('%s','now'), strftime('%s','now'));
 
     -- Dev（Layout + 子菜单，位于最下方，admin/user/reseller）
     INSERT INTO menus (id, parent_id, name, path, component, redirect, type, title, icon, affix, roles, sort_order, status, created_at, updated_at)

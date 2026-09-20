@@ -20,6 +20,12 @@
 //!
 //! 探测要连 Docker daemon，绝不能挂在每次请求菜单上，所以这里进程内缓存 + TTL；
 //! 安装 / 卸载属于低频动作，由调用方显式 `invalidate_all()` 收口（见各 install handler）。
+//!
+//! 缓存还有一层职责：**stale-while-error**。探测失败要区分两种——
+//! exec 明确回答「没装」要立刻生效（卸载可被感知），而「连不上 exec / 超时」
+//! 不代表能力消失（zapexec 重启、IPC 抖动都会碰上），此时沿用上一次的结论，
+//! 且快照只缓存较短的时间，免得把入口跟着抖动一起藏掉，也免得恢复后迟迟不收敛。
+//! 完全没有历史可沿用时才 fail-closed。
 
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
@@ -29,8 +35,14 @@ use zap_proto::Request;
 
 use crate::zapexec;
 
-/// 探测结果有效期：装包 / 卸载是分钟级的动作，60s 足够感知。
+/// 探测成功结果的有效期：装包 / 卸载是分钟级的动作，60s 足够感知。
 const CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// 「这一轮没探到」时的有效期：明显短于正常值。
+///
+/// 场景是 zapexec 重启 / IPC 抖动：此时值是沿用旧值得来的，不算可靠，
+/// 缓存太久会让 exec 恢复后迟迟才重新收敛。
+const DEGRADED_TTL: Duration = Duration::from_secs(10);
 
 /// 单次探测超时：daemon 卡住时不能把登录、菜单请求一起拖死。
 const DETECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -38,10 +50,39 @@ const DETECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// 容器管理（`/docker`）：宿主机装了 Docker 才给入口。
 pub const FEATURE_DOCKER: &str = "docker";
 
-type FeatureMap = HashMap<String, bool>;
-static CACHE: OnceLock<RwLock<Option<(Instant, FeatureMap)>>> = OnceLock::new();
+/// 所有已实现的能力。菜单管理页的「环境门禁」下拉据此出选项，
+/// 新增能力只要在这里登记，不必再改前端。
+pub const ALL: &[&str] = &[FEATURE_DOCKER];
 
-fn cache_slot() -> &'static RwLock<Option<(Instant, FeatureMap)>> {
+type FeatureMap = HashMap<String, bool>;
+
+/// 探测结果：`Some` 表示探到了；`None` 表示**链路不通**——exec 没起、IPC 失败、超时。
+///
+/// 「exec 明确回答没装」和「压根连不上 exec」必须分开：后者不代表能力消失，
+/// 按 fail-closed 处理会让 Docker 入口随着 zapexec 重启而闪没。
+type ProbeResult = Option<bool>;
+
+/// 一轮结果的快照。
+struct Snapshot {
+    at: Instant,
+    map: FeatureMap,
+    /// 本轮至少有一项是「沿用旧值 / 兜底」得来的，结果可靠性打折 → 缓存时间也打折。
+    degraded: bool,
+}
+
+impl Snapshot {
+    fn ttl(&self) -> Duration {
+        if self.degraded {
+            DEGRADED_TTL
+        } else {
+            CACHE_TTL
+        }
+    }
+}
+
+static CACHE: OnceLock<RwLock<Option<Snapshot>>> = OnceLock::new();
+
+fn cache_slot() -> &'static RwLock<Option<Snapshot>> {
     CACHE.get_or_init(|| RwLock::new(None))
 }
 
@@ -56,6 +97,17 @@ pub async fn available(feature: &str) -> bool {
     snapshot().await.get(feature).copied().unwrap_or(true)
 }
 
+/// 能力清单及其当前可用性：给菜单管理页的「环境门禁」下拉用。
+///
+/// 顺带把可用性一并返回，管理员才能在下拉旁看到「当前环境未安装」——
+/// 否则配完一脸困惑：侧栏为什么没有。
+pub async fn catalog() -> Vec<(String, bool)> {
+    let snap = snapshot().await;
+    ALL.iter()
+        .map(|k| (k.to_string(), snap.get(*k).copied().unwrap_or(true)))
+        .collect()
+}
+
 /// 能力变更后立即失效缓存：下次请求菜单时重新探测，不等 TTL。
 pub fn invalidate_all() {
     if let Ok(mut guard) = cache_slot().write() {
@@ -66,46 +118,95 @@ pub fn invalidate_all() {
 /// 只失效某一个能力的记录（`invalidate_all` 的细化版本）。
 pub fn invalidate(feature: &str) {
     if let Ok(mut guard) = cache_slot().write()
-        && let Some((_, map)) = guard.as_mut()
+        && let Some(s) = guard.as_mut()
+        && s.map.remove(feature.trim()).is_some()
     {
-        map.remove(feature.trim());
+        // 抠掉一项就当作整体过期：留着半张 map 会让 `available` 对这个「未知 key」
+        // fail-open 地返回 true，然后在 TTL 内一直错下去。ALL 目前只有一项，整体重探成本可忽略。
+        s.at = Instant::now() - s.ttl();
     }
 }
 
 async fn snapshot() -> FeatureMap {
     if let Ok(guard) = cache_slot().read()
-        && let Some((at, map)) = guard.as_ref()
-        && at.elapsed() < CACHE_TTL
+        && let Some(s) = guard.as_ref()
+        && s.at.elapsed() < s.ttl()
     {
-        return map.clone();
+        return s.map.clone();
     }
     refresh().await
 }
 
+/// 上一份快照（可能已过期）：拿它是为了在探不到时兜底，而不是为了跳过探测。
+fn previous_map() -> Option<FeatureMap> {
+    cache_slot().read().ok()?.as_ref().map(|s| s.map.clone())
+}
+
 async fn refresh() -> FeatureMap {
-    let mut map = FeatureMap::new();
-    map.insert(FEATURE_DOCKER.to_string(), probe_docker().await);
+    let prev = previous_map();
+
+    let mut results: Vec<(String, ProbeResult)> = Vec::with_capacity(ALL.len());
+    for key in ALL {
+        let value = match *key {
+            FEATURE_DOCKER => probe_docker().await,
+            // 没实现探测的能力不算「降格」，交给 `available` 的 fail-open 放行
+            _ => None,
+        };
+        results.push((key.to_string(), value));
+    }
+
+    let (map, degraded) = merge_results(prev.as_ref(), &results);
     if let Ok(mut guard) = cache_slot().write() {
-        *guard = Some((Instant::now(), map.clone()));
+        *guard = Some(Snapshot {
+            at: Instant::now(),
+            map: map.clone(),
+            degraded,
+        });
     }
     map
+}
+
+/// 合并本轮探测结果与上一份快照（stale-while-error）。
+///
+/// 抽成纯函数是为了能单测——这块逻辑的坑在于「探测失败」有两种，
+/// 混在一起就会让菜单跟着 exec 抖动。
+fn merge_results(
+    prev: Option<&FeatureMap>,
+    results: &[(String, ProbeResult)],
+) -> (FeatureMap, bool) {
+    let mut map = FeatureMap::new();
+    let mut degraded = false;
+    for (key, value) in results {
+        match value {
+            Some(v) => {
+                map.insert(key.clone(), *v);
+            }
+            None => {
+                degraded = true;
+                // 沿用上一次的结论；连历史都没有才 fail-closed
+                let fallback = prev.and_then(|p| p.get(key)).copied().unwrap_or(false);
+                map.insert(key.clone(), fallback);
+            }
+        }
+    }
+    (map, degraded)
 }
 
 /// Docker 是否可用：复用 zapexec 的 `/docker/status` 探测（一次 IPC call）。
 ///
 /// 取 `installed`（socket 存在 ≈ 装过）即可：daemon 临时没起属于运行态问题，
 /// 由容器页自己提示，不该把入口藏掉——否则用户会以为 Docker 没了而重复安装。
-async fn probe_docker() -> bool {
+async fn probe_docker() -> ProbeResult {
     match tokio::time::timeout(DETECT_TIMEOUT, zapexec::call(Request::DockerStatus)).await {
-        Ok(Ok(resp)) => resp
-            .data
-            .as_ref()
-            .and_then(|d| d.get("installed"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        // 连不通 exec / 探测失败：当成「没有该能力」，入口先不出现，
-        // 但结果不进长期缓存由 TTL 兜底，装好后会重新出现。
-        Ok(Err(_)) | Err(_) => false,
+        Ok(Ok(resp)) => Some(
+            resp.data
+                .as_ref()
+                .and_then(|d| d.get("installed"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        ),
+        // exec 没起 / IPC 不通 / 超时：不是「没装」，交给 `merge_results` 兜底
+        Ok(Err(_)) | Err(_) => None,
     }
 }
 
@@ -125,5 +226,43 @@ mod tests {
     #[tokio::test]
     async fn unknown_feature_fails_open() {
         assert!(available("nonexistent-feature").await);
+    }
+
+    fn results(kv: &[(&str, ProbeResult)]) -> Vec<(String, ProbeResult)> {
+        kv.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    /// 核心诉求：zapexec 重启期间 Docker 入口不能闪没。探不到时沿用上一次的结论。
+    #[test]
+    fn probe_failure_keeps_previous_value() {
+        let mut prev = FeatureMap::new();
+        prev.insert(FEATURE_DOCKER.to_string(), true);
+        let (map, degraded) = merge_results(Some(&prev), &results(&[(FEATURE_DOCKER, None)]));
+
+        assert_eq!(map[FEATURE_DOCKER], true);
+        // 降格后只缓存 DEGRADED_TTL，exec 恢复能尽快重新收敛
+        assert!(degraded);
+        assert_eq!(DEGRADED_TTL.as_secs(), 10);
+        assert!(DEGRADED_TTL < CACHE_TTL);
+    }
+
+    /// 探测明确回答「没装」时，哪怕历史是 true 也要跟着变——卸载必须能被感知。
+    #[test]
+    fn explicit_not_installed_overrides_history() {
+        let mut prev = FeatureMap::new();
+        prev.insert(FEATURE_DOCKER.to_string(), true);
+        let (map, degraded) =
+            merge_results(Some(&prev), &results(&[(FEATURE_DOCKER, Some(false))]));
+
+        assert_eq!(map[FEATURE_DOCKER], false);
+        assert!(!degraded);
+    }
+
+    /// 冷启动第一次就探不到（exec 还没起）：没有历史可沿用，只能 fail-closed。
+    #[test]
+    fn no_history_fails_closed() {
+        let (map, degraded) = merge_results(None, &results(&[(FEATURE_DOCKER, None)]));
+        assert_eq!(map[FEATURE_DOCKER], false);
+        assert!(degraded);
     }
 }

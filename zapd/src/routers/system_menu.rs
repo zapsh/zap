@@ -118,6 +118,9 @@ fn menu_to_tree_value(m: &MenuRow, children: Vec<Value>, explicit: bool) -> Valu
         "component": m.component,
         "type": m.menu_type,
         "meta": meta,
+        // 环境门禁原样下发：菜单管理页要据此回填下拉（tree/list 共用本函数），
+        // 过滤发生在 visible_menu_rows 之后，带 feature 的节点不会泄漏给侧栏。
+        "feature": m.feature,
         "order": m.sort_order,
         "status": m.status,
     });
@@ -244,6 +247,19 @@ fn revision_of(rows: &[MenuRow]) -> String {
 }
 
 // ── handlers ───────────────────────────────────────────────
+
+/// GET /system/menus/features —— 可选的环境门禁清单 + 当前可用性。
+///
+/// 菜单管理页下拉用。清单来自 `feature::ALL`（新增能力只改 Rust 一侧），
+/// 可用性来自同一份带 TTL 的探测结果，所以与侧栏判定永远不会打架。
+pub async fn menus_features(_claims: ValidatedClaims) -> ZapJsonResult {
+    let data: Vec<Value> = feature::catalog()
+        .await
+        .into_iter()
+        .map(|(key, available)| json!({ "key": key, "available": available }))
+        .collect();
+    Ok(Json(json!({ "code": 0, "message": "ok", "data": data })))
+}
 
 /// Get menu tree visible to the current user (for rendering sidebar)。
 ///

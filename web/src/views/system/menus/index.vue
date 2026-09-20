@@ -5,12 +5,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
   getMenuList,
+  getFeatureCatalog,
   createMenu,
   updateMenu,
   deleteMenu,
   toggleMenuStatus,
   type MenuItem,
   type MenuForm,
+  type FeatureOption,
 } from '@/api/menu'
 // 图标必须是 @/icons 图标表里的名字，否则侧边栏渲染不出图标，因此做成下拉选择
 import { Icon, ICON_NAMES, ICON_PREFIX } from '@/icons'
@@ -34,6 +36,25 @@ async function loadMenus() {
   }
 }
 
+// ── 环境能力门禁 ────────────────────────────────────────────
+/** 后端下发可选门禁清单，顺带带上「当前环境是否可用」 */
+const featureCatalog = ref<FeatureOption[]>([])
+
+async function loadFeatures() {
+  try {
+    const res = await getFeatureCatalog()
+    featureCatalog.value = res.data ?? []
+  } catch {
+    featureCatalog.value = []
+  }
+}
+
+/** 某条菜单挂的门禁现在是否可用：没有门禁恒为 true（= 常显） */
+function gateAvailable(feature?: string) {
+  if (!feature) return true
+  return featureCatalog.value.find((f) => f.key === feature)?.available ?? true
+}
+
 // ── 表单 ───────────────────────────────────────────────────
 const dialogVisible = ref(false)
 /** 存 i18n key 而非文案：切语言时标题跟着变 */
@@ -52,6 +73,8 @@ interface FormData {
   hidden: number
   keep_alive: number
   affix: number
+  /** 环境能力门禁：'' = 常显 */
+  feature: string
   roles: string
   sort_order: number
   status: number
@@ -69,6 +92,7 @@ const emptyForm = (): FormData => ({
   hidden: 0,
   keep_alive: 0,
   affix: 0,
+  feature: '',
   roles: '',
   sort_order: 0,
   status: 1,
@@ -107,6 +131,7 @@ function handleEdit(row: MenuItem) {
     hidden: row.meta?.hidden ? 1 : 0,
     keep_alive: row.meta?.keepAlive ? 1 : 0,
     affix: row.meta?.affix ? 1 : 0,
+    feature: row.feature ?? '',
     roles: row.meta?.roles?.join(',') ?? '',
     sort_order: row.order,
     status: row.status,
@@ -130,6 +155,8 @@ async function submitForm() {
       hidden: form.value.hidden || undefined,
       keep_alive: form.value.keep_alive || undefined,
       affix: form.value.affix || undefined,
+      // 显式传空串才能「取消门禁」，省略会被后端当成不改
+      feature: form.value.feature,
       roles: form.value.roles || undefined,
       sort_order: form.value.sort_order || undefined,
       status: form.value.status,
@@ -177,7 +204,10 @@ async function handleStatusChange(row: MenuItem) {
   }
 }
 
-onMounted(loadMenus)
+onMounted(() => {
+  loadMenus()
+  loadFeatures()
+})
 </script>
 
 <template>
@@ -196,7 +226,19 @@ onMounted(loadMenus)
     >
       <!-- 菜单名称来自后端 menus.title（中文），由 translateTitle 按语言显示 -->
       <el-table-column prop="meta.title" :label="t('menus.menuName')" min-width="180">
-        <template #default="{ row }">{{ translateTitle(row.meta?.title) }}</template>
+        <template #default="{ row }">
+          <span>{{ translateTitle(row.meta?.title) }}</span>
+          <!-- 挂了门禁且当前环境不满足：说明为什么侧栏里看不到这一条 -->
+          <el-tooltip
+            v-if="row.feature && !gateAvailable(row.feature)"
+            :content="t('menus.featureBlockedHint', { feature: row.feature })"
+            placement="top"
+          >
+            <el-tag type="danger" size="small" style="margin-left: 6px">
+              {{ row.feature }}
+            </el-tag>
+          </el-tooltip>
+        </template>
       </el-table-column>
       <el-table-column prop="name" :label="t('menus.routeName')" width="120" />
       <el-table-column prop="path" :label="t('menus.routePath')" width="120" />
@@ -283,6 +325,29 @@ onMounted(loadMenus)
         <el-form-item :label="t('menus.sort')">
           <el-input-number v-model="form.sort_order" :min="0" />
         </el-form-item>
+        <!-- 环境门禁：组件没装就自动不出现在侧栏，装好自动回来 -->
+        <el-form-item v-if="form.type !== 'button'" :label="t('menus.feature')">
+          <el-select
+            v-model="form.feature"
+            clearable
+            :clear-value="''"
+            :placeholder="t('menus.featurePlaceholder')"
+            style="width: 100%"
+          >
+            <el-option :label="t('menus.featureAlways')" value="" />
+            <el-option v-for="f in featureCatalog" :key="f.key" :label="f.key" :value="f.key">
+              <span class="feature-option">
+                <span>{{ f.key }}</span>
+                <el-tag :type="f.available ? 'success' : 'danger'" size="small">
+                  {{ f.available ? t('menus.featureReady') : t('menus.featureMissing') }}
+                </el-tag>
+              </span>
+            </el-option>
+          </el-select>
+          <div v-if="form.feature && !gateAvailable(form.feature)" class="feature-hint">
+            {{ t('menus.featureBlockedHint', { feature: form.feature }) }}
+          </div>
+        </el-form-item>
         <el-form-item v-if="form.type !== 'button'" :label="t('menus.roles')">
           <el-input v-model="form.roles" :placeholder="t('menus.rolesPlaceholder')" />
         </el-form-item>
@@ -324,5 +389,16 @@ onMounted(loadMenus)
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.feature-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.feature-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-color-danger);
 }
 </style>

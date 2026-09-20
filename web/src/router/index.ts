@@ -165,6 +165,20 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/system/about/index.vue'),
         meta: { title: 'About ZAP', icon: 'material-symbols:info' },
       },
+      // 「脚本/自动化」已收进系统设置（后端 menus id=101/102 挂在 system 下）：
+      // 菜单接口挂掉时回退到本表，这两个页面不能跟着一起消失。
+      {
+        path: 'scripts',
+        name: 'AppstoreScripts',
+        component: () => import('@/views/automation/scripts/index.vue'),
+        meta: { title: '自定义脚本', icon: 'material-symbols:description' },
+      },
+      {
+        path: 'cron',
+        name: 'ScriptCron',
+        component: () => import('@/views/automation/cron/index.vue'),
+        meta: { title: '计划任务', icon: 'material-symbols:alarm' },
+      },
     ],
   },
   // 文件管理（Layout 包裹 + 一级直链）

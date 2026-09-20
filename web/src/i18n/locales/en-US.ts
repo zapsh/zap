@@ -488,6 +488,13 @@ const enUS: Messages = {
     rolesPlaceholder: 'Comma separated, e.g. admin,user',
     options: 'Options',
     hidden: 'Hidden',
+    feature: 'Requires',
+    featurePlaceholder: 'Pick the component it depends on (always visible by default)',
+    featureAlways: 'Always visible',
+    featureReady: 'installed',
+    featureMissing: 'not installed',
+    featureBlockedHint:
+      'Requires {feature}, which is missing on this host — this menu stays out of the sidebar',
     keepAlive: 'Keep Alive',
     affix: 'Affix',
     deleteConfirm: 'Delete menu "{name}" and its sub-menus?',

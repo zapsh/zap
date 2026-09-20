@@ -305,6 +305,8 @@ fn api_routers() -> Router {
         .route("/system/menus/tree", get(system_menu::get_menus_tree))
         // 可见菜单集合指纹：前端据此发现「能力变化」（如装了 Docker）并重拉菜单
         .route("/system/menus/revision", get(system_menu::menus_revision))
+        // 可选环境门禁清单（给菜单管理页下拉），与侧栏判定同源
+        .route("/system/menus/features", get(system_menu::menus_features))
         .route("/system/menus/list", get(system_menu::menu_list))
         .route("/system/menus/add", post(system_menu::menu_add))
         .route("/system/menus/update", post(system_menu::menu_update))

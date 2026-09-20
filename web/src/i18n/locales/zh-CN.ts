@@ -516,6 +516,13 @@ export default {
     rolesPlaceholder: '逗号分隔，如 admin,user',
     options: '选项',
     hidden: '隐藏',
+    /** 环境能力门禁：宿主机没装对应组件时，入口自动不出现在侧栏 */
+    feature: '环境门禁',
+    featurePlaceholder: '选择依赖的组件（默认常显）',
+    featureAlways: '常显（不限制）',
+    featureReady: '已安装',
+    featureMissing: '未安装',
+    featureBlockedHint: '依赖 {feature}，当前环境未安装，侧栏不会显示该菜单',
     keepAlive: '缓存',
     affix: '固定',
     deleteConfirm: '确认删除菜单「{name}」及其子菜单？',
