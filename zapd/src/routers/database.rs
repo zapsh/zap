@@ -166,6 +166,26 @@ fn check_host(host: &str) -> Result<String, ZapError> {
     Ok(h.to_string())
 }
 
+/// 本机来源的等价写法。
+///
+/// MySQL 的 `user@host` 是**按来源字符串精确匹配**的：`'u'@'localhost'` 只覆盖
+/// unix socket 连接，以及开启了反解（127.0.0.1 → localhost）时的回环 TCP 连接；
+/// 一旦实例开了 `skip-name-resolve`，应用用 `127.0.0.1:3306` 连就会匹配不上而被拒。
+/// 因此建库时统一把「本机来源」展开成这三种写法，socket / IPv4 / IPv6 入口都能连。
+const LOCAL_HOST_ALIASES: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+/// 把请求里的 host 展开成需要授权的来源列表。
+///
+/// 本机来源（localhost / 127.0.0.1 / ::1 任一）→ 全部等价写法；
+/// 其它（远程 IP / 域名 / `%`）→ 原样返回，不做猜测。
+fn host_targets(host: &str) -> Vec<String> {
+    let h = host.trim();
+    if LOCAL_HOST_ALIASES.iter().any(|a| a.eq_ignore_ascii_case(h)) {
+        return LOCAL_HOST_ALIASES.iter().map(|a| a.to_string()).collect();
+    }
+    vec![h.to_string()]
+}
+
 /// 非管理员可见的库名前缀；管理员返回 None 表示不限制。
 fn schema_prefix(claims: &jwt::Claims) -> Option<String> {
     if is_admin(claims) {
@@ -506,6 +526,8 @@ pub(crate) async fn create_schema(
     };
     let user = check_ident(&raw_user, "用户名")?;
     let host = check_host(&req.host)?;
+    // 本机来源展开成 localhost / 127.0.0.1 / ::1：应用用什么写法连都能进
+    let hosts = host_targets(&host);
     let password = match req.password.as_deref().map(str::trim) {
         Some(p) if !p.is_empty() => {
             if p.len() < 8 {
@@ -517,19 +539,30 @@ pub(crate) async fn create_schema(
         _ => gen_db_password(),
     };
 
-    let sqls = [
-        format!(
-            "CREATE USER '{user}'@'{host}' IDENTIFIED BY '{}'",
-            escape_literal(&password)
-        ),
-        format!("GRANT ALL PRIVILEGES ON `{name}`.* TO '{user}'@'{host}'"),
-        "FLUSH PRIVILEGES".to_string(),
-    ];
-    if let Err(e) = run_sqls(&sqls) {
-        // 回滚：不留「有库无用户」的半成品
-        let _ = run_sqls(&[format!("DROP DATABASE `{name}`")]);
-        return Err(e);
+    // 逐个来源建号并授权：任何一个失败，只回滚**本次新建**的账号，
+    // 不动同名的既有账号（那可能是用户自己建的，删掉会误伤）。
+    let mut created: Vec<String> = Vec::new();
+    for h in &hosts {
+        let sqls = [
+            format!(
+                "CREATE USER '{user}'@'{h}' IDENTIFIED BY '{}'",
+                escape_literal(&password)
+            ),
+            format!("GRANT ALL PRIVILEGES ON `{name}`.* TO '{user}'@'{h}'"),
+        ];
+        if let Err(e) = run_sqls(&sqls) {
+            let mut undo: Vec<String> = created
+                .iter()
+                .map(|c| format!("DROP USER '{user}'@'{c}'"))
+                .collect();
+            undo.push(format!("DROP DATABASE `{name}`"));
+            undo.push("FLUSH PRIVILEGES".to_string());
+            let _ = run_sqls(&undo);
+            return Err(e);
+        }
+        created.push(h.clone());
     }
+    let _ = run_sqls(&["FLUSH PRIVILEGES".to_string()]);
 
     Ok(CreatedDb {
         name,
@@ -831,4 +864,28 @@ pub async fn remote_revoke(claims: ValidatedClaims, Json(req): Json<UserDropReq>
         "FLUSH PRIVILEGES".to_string(),
     ])?;
     ok(json!({ "ok": true, "user": user, "host": host }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_host_expands_to_all_loopback_forms() {
+        // 本机来源 → 三种写法都授权：应用用 localhost / 127.0.0.1 / ::1 连都能进
+        let all = vec!["localhost", "127.0.0.1", "::1"];
+        assert_eq!(host_targets("localhost"), all);
+        assert_eq!(host_targets("127.0.0.1"), all);
+        assert_eq!(host_targets("::1"), all);
+        // 大小写、两侧空白都归一
+        assert_eq!(host_targets(" LocalHost "), all);
+    }
+
+    #[test]
+    fn remote_host_is_kept_as_is() {
+        assert_eq!(host_targets("10.0.0.5"), vec!["10.0.0.5"]);
+        assert_eq!(host_targets("db.internal"), vec!["db.internal"]);
+        // `%` 已覆盖所有来源，不再展开
+        assert_eq!(host_targets("%"), vec!["%"]);
+    }
 }
