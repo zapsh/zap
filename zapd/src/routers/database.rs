@@ -79,7 +79,12 @@ fn socket_path() -> Option<&'static str> {
         .find(|s| std::path::Path::new(s).exists())
 }
 
-/// 从 /etc/zap/credentials 解密读取 zapadm 密码（库内解密，不起子进程）。
+/// 从 /etc/zap/credentials 解密读取 zapadm 密码
+///
+/// 凭据文件由 root 侧（zapctl / zapexec）写入、属组为面板组 zapadm、权限 0440，
+/// 凭据目录 0750 —— 本进程以 zapadm 运行正是靠这个属组读到的。
+/// 若目录/文件退回 root-only（0700 / 0400），本函数会报「凭据不存在」，
+/// 但文件其实在：用 `ls -ld /etc/zap/credentials /etc/zap/credentials/*.cred` 核对。
 fn zapadm_password() -> Result<String, ZapError> {
     zap_crypto::read_cred(CRED_SERVICE, CRED_USER)
         .map_err(|e| ZapError::New(-1, format!("读取数据库凭据失败：{e}")))

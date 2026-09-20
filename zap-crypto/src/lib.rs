@@ -12,9 +12,16 @@
 //! `decrypt` 对非 `v1:` 前缀的历史明文原样返回（迁移期兼容）。
 //!
 //! ## 凭据文件
-//! - 目录：`/etc/zap/credentials`（`0700`，root 所有）
+//! - 目录：`/etc/zap/credentials`（`0750`，root:面板组）
 //! - 文件名：`{service}_{user}.cred`，如 `mysql_root.cred`
-//! - 权限：`0400`；内容为单行密文
+//! - 权限：`0440`（root 写、面板组读）；内容为单行密文
+//!
+//! ## 权限模型（root 写 / 面板读）
+//! `zapd` 以 `zapadm` 运行（见 zapd.service 的 `User=`），却是凭据的**主要读者**；
+//! 凭据与主密钥由 root 侧（`zapctl` / `zapexec`）写入。因此写入时统一把属组设为面
+//! 板组并放开组读：目录 `0750`、凭据 `0440`、主密钥 `0640`。
+//! 面板组默认 `zapadm`，自定义部署改动了服务运行用户时用 `ZAP_PANEL_GROUP` 覆盖。
+//! 非 root 运行时（开发）chown 会失败，忽略即可，退回按当前用户读写。
 
 use aes_gcm::{
     Aes256Gcm, Nonce,
@@ -51,10 +58,47 @@ pub fn active_key_path() -> Option<PathBuf> {
     key_paths().into_iter().find(|p| p.is_file())
 }
 
+/// 面板运行组（zapd 的运行身份），凭据与主密钥需对它的成员可读。
+///
+/// 默认 `zapadm`；自定义部署改了 zapd.service 的 `User=` 时用 `ZAP_PANEL_GROUP` 覆盖。
+fn panel_group() -> String {
+    std::env::var("ZAP_PANEL_GROUP").unwrap_or_else(|_| "zapadm".to_string())
+}
+
+/// 查 `/etc/group` 取组 GID；找不到（或平台不支持）返回 `None`。
+#[cfg(unix)]
+fn gid_of(group: &str) -> Option<u32> {
+    let content = fs::read_to_string("/etc/group").ok()?;
+    for line in content.lines() {
+        let mut parts = line.split(':');
+        let Some(name) = parts.next() else { continue };
+        if name != group {
+            continue;
+        }
+        parts.next(); // 密码位
+        return parts.next().and_then(|g| g.parse::<u32>().ok());
+    }
+    None
+}
+
+/// 把文件/目录的属组改为面板组（保持属主不变）。非 root 时静默失败。
+#[cfg(unix)]
+fn chgrp_panel(path: &Path) {
+    if let Some(gid) = gid_of(&panel_group()) {
+        let _ = std::os::unix::fs::chown(path, None, Some(gid));
+    }
+}
+
+#[cfg(not(unix))]
+fn chgrp_panel(_path: &Path) {}
+
 #[cfg(unix)]
 fn set_key_permissions(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).is_ok()
+    // 0640 + 属组=面板组：zapd(zapadm) 必须能读主密钥，否则会静默回退到
+    // `conf/secret.key` 自行生成一把，与 root 侧密钥分裂（凭据互相解不开）。
+    chgrp_panel(path);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o640)).is_ok()
 }
 
 #[cfg(not(unix))]
@@ -65,7 +109,24 @@ fn set_key_permissions(_path: &Path) -> bool {
 fn load_or_create_key() -> Result<[u8; KEY_LEN], String> {
     for path in key_paths() {
         if path.exists() {
-            let data = fs::read(&path).map_err(|e| format!("读取密钥 {}: {e}", path.display()))?;
+            // 存在却读不到 = 权限配错。这里不静默跳过：回退会让本机出现两把密钥，
+            // 表现为「凭据存在但解密失败（密钥不匹配）」，极难排查。
+            // 仍继续尝试下一候选（避免面板直接起不来），但把修正方法打到 stderr。
+            let data = match fs::read(&path) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!(
+                        "[zap-crypto][warn] 主密钥 {} 存在但不可读（{e}）：已回退到其它候选。\
+                         这会导致本机出现两把密钥，root 侧与面板侧密文无法互解。\
+                         修复：chgrp {} {} && chmod 640 {}",
+                        path.display(),
+                        panel_group(),
+                        path.display(),
+                        path.display()
+                    );
+                    continue;
+                }
+            };
             if data.len() == KEY_LEN {
                 let mut key = [0u8; KEY_LEN];
                 key.copy_from_slice(&data);
@@ -200,11 +261,15 @@ fn write_secure(path: &Path, content: &str) -> Result<(), String> {
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建凭据目录失败: {e}"))?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+        // 目录 0750 + 属组=面板组：zapd(zapadm) 要能进入并列出/打开凭据文件，
+        // 只有 0700 root 时它连 stat 都失败，read_cred 会误报「凭据不存在」。
+        chgrp_panel(parent);
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o750))
             .map_err(|e| format!("设置目录权限失败: {e}"))?;
     }
     fs::write(path, content).map_err(|e| format!("写入凭据失败: {e}"))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o400))
+    chgrp_panel(path);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o440))
         .map_err(|e| format!("设置凭据权限失败: {e}"))?;
     Ok(())
 }
@@ -228,8 +293,21 @@ pub fn save_cred(service: &str, user: &str, password: &str) -> Result<PathBuf, S
 /// 读取并解密凭据。
 pub fn read_cred(service: &str, user: &str) -> Result<String, String> {
     let path = cred_path(service, user)?;
-    if !path.is_file() {
-        return Err(format!("凭据不存在: {}", path.display()));
+    // 不能用 `path.is_file()`：权限不足时它也返回 false，会把「读不到」误报成
+    // 「不存在」（文件明明在 /etc/zap/credentials 里）。这里区分三种情况。
+    match fs::metadata(&path) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => return Err(format!("凭据路径不是普通文件: {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("凭据不存在: {}", path.display()))
+        }
+        Err(e) => {
+            return Err(format!(
+                "凭据不可访问（{e}）：请检查 {} 及上级目录是否对面板组 {} 放开读权限",
+                path.display(),
+                panel_group()
+            ))
+        }
     }
     let raw = fs::read_to_string(&path).map_err(|e| format!("读取凭据失败: {e}"))?;
     decrypt(raw.trim())

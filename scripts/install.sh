@@ -273,21 +273,20 @@ systemctl restart zapexec.service || warn "zapexec 启动失败"
 systemctl restart zapd.service    || warn "zapd 启动失败"
 ok "systemd 服务已启用"
 
-# ── 清理临时文件 ────────────────────────────────────────────
-# 解压目录 $WORK_DIR 由 EXIT trap 自动清理
+# ── Cleanup ────────────────────────────────────────────
 rm -f "$ZAP_FILENAME"
-
+systemctl status zapd.service
 # ── 完成总结 ────────────────────────────────────────────────
 printf "\n"
 printf "${GREEN}========================================${NC}\n"
-printf "${GREEN}           ZAP 安装完成${NC}\n"
+printf "${GREEN}           ZAP Installation Complete${NC}\n"
 printf "${GREEN}========================================${NC}\n"
-echo "  版本:      ${VERSION}"
-echo "  程序目录:  /usr/local/zap"
-echo "  配置目录:  /etc/zap"
-echo "  访问地址:  https://<服务器IP>:2600"
-echo "  默认账号:  admin"
-echo "  默认密码:  123456"
+echo "  Version:      ${VERSION}"
+echo "  Program Directory:  /usr/local/zap"
+echo "  Configuration Directory:  /etc/zap"
+echo "  Access URL:  https://<Server IP>:2600"
+echo "  Default Username:  admin"
+echo "  Default Password:  123456"
 printf "\n"
 printf "  后续升级:  zapupgrade upgrade --to latest（回滚: zapupgrade rollback --list）\n"
 printf "\n"
