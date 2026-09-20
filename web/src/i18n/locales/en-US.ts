@@ -2399,6 +2399,7 @@ const enUS: Messages = {
       action: 'Action',
       user: 'User',
       status: 'Status',
+      exitCode: 'Exit code',
       started: 'Started',
       duration: 'Duration',
       ops: 'Actions',

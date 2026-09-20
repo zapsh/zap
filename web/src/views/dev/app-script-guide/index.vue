@@ -132,7 +132,7 @@
             <li><code>PKG_PATH</code> 指向的是这个快照目录（含 <code>app.yaml</code>、脚本、<code>options.env</code> 等），不是仓库源目录；运行中修改仓库不会影响已在队列/运行中的任务；</li>
             <li><code>run.json</code> 记录本次运行的原始参数（动作 / 版本 / 选项 / 操作者与运行模式），供重跑还原环境（重跑时 <code>ZAP_USER</code> / <code>ZAP_RUN_MODE</code> 与原任务保持一致）；</li>
             <li>全部步骤退出码为 0（成功）后，系统自动清理 <code>runs/&lt;run_id&gt;</code>（脚本快照与 <code>build/</code> 编译目录一并清理），避免磁盘堆积；</li>
-            <li>失败（任一退出码非 0）则保留整个运行现场：<code>pkg/</code> 内脚本与 <code>options.env</code> 可在「应用商店 → 运行记录」中读取/编辑，<code>build/</code> 编译残留一并保留便于排查，之后「编辑脚本 / 重跑」复用同一快照重试；</li>
+            <li>失败（任一退出码非 0）则保留整个运行现场：<code>pkg/</code> 内脚本与 <code>options.env</code> 可在「系统设置 → 任务队列」的任务列表里用「编辑脚本」读取/编辑，<code>build/</code> 编译残留一并保留便于排查，之后「编辑脚本 / 重跑」复用同一快照重试；</li>
             <li>全局串行队列：同一时间仅执行一个脚本任务，后续任务先排队，日志中会提示「任务进入执行队列，等待前序任务完成后自动开始」；</li>
             <li>日志结束时追加一行 <code>__ZAP_DONE__ &lt;退出码&gt;</code> 作为完成标记。</li>
           </ul>

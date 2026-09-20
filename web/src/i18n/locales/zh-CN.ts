@@ -2376,6 +2376,7 @@ export default {
       action: '动作',
       user: '用户',
       status: '状态',
+      exitCode: '退出代码',
       started: '开始时间',
       duration: '耗时',
       ops: '操作',

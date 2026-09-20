@@ -54,6 +54,13 @@
         width="120"
         prop="username"
       />
+      <el-table-column :label="t('task.columns.exitCode')" width="100">
+        <template #default="{ row }">
+          <span :class="{ 'tasks-exit--fail': row.exit_code > 0 }">
+            {{ row.exit_code >= 0 ? row.exit_code : '—' }}
+          </span>
+        </template>
+      </el-table-column>
       <el-table-column :label="t('task.columns.started')" width="170">
         <template #default="{ row }">{{ fmtTime(row.started_at) }}</template>
       </el-table-column>
@@ -277,6 +284,12 @@ defineExpose({ load })
 
 .tasks-badge {
   margin-left: 8px;
+}
+
+/* 非 0 退出码标记出来：失败原因往往就写在这个数字里 */
+.tasks-exit--fail {
+  color: var(--el-color-danger);
+  font-weight: 600;
 }
 
 .tasks-pager {

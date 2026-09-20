@@ -58,7 +58,9 @@ export function menuToRoute(menuItem: MenuItem): RouteRecordRaw | null {
       title: menuItem.meta?.title || '',
       icon: menuItem.meta?.icon,
       roles: menuItem.meta?.roles,
-      hidden: menuItem.status === 0,
+      // hidden 有两个来源：后端下发的 meta.hidden（迁移走的入口，如「已安装应用」）
+      // 与 status=0（禁用）。两者都要保留，否则子菜单会把该隐藏的入口照样画出来。
+      hidden: menuItem.meta?.hidden === true || menuItem.status === 0,
     },
     // 明确设置可能的属性
     component,

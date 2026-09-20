@@ -274,63 +274,6 @@
       :description="t('appstore.noPackages')"
     />
 
-    <!-- 运行记录 -->
-    <el-card shadow="never" class="runs-card">
-      <template #header>
-        <div class="runs-header">
-          <span>{{ t('appstore.runsTitle') }}</span>
-          <el-button size="small" text @click="loadRuns">{{ t('appstore.refresh') }}</el-button>
-        </div>
-      </template>
-      <el-table :data="runs" size="small" v-loading="runsLoading">
-        <el-table-column prop="action" :label="t('appstore.colAction')" width="130" />
-        <el-table-column
-          prop="pkg"
-          :label="t('appstore.colTarget')"
-          min-width="180"
-          show-overflow-tooltip
-        />
-        <el-table-column prop="username" :label="t('appstore.colInitiator')" width="110" />
-        <el-table-column :label="t('appstore.colStatus')" width="100">
-          <template #default="{ row }">
-            <el-tag :type="statusType(row.status)" size="small">{{
-              statusText(row.status)
-            }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="exit_code" :label="t('appstore.colExitCode')" width="90" />
-        <el-table-column :label="t('appstore.colStartedAt')" width="170">
-          <template #default="{ row }">{{ fmtTime(row.started_at) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('common.operation')" width="170" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="viewRunLog(row)">{{
-              t('appstore.viewLog')
-            }}</el-button>
-            <el-button
-              v-if="isAdmin && row.status === 'failed'"
-              size="small"
-              text
-              type="danger"
-              :loading="retryId === row.run_id"
-              @click="handleRetryRun(row)"
-            >
-              {{ t('appstore.retry') }}
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-pagination
-        v-model:current-page="runPage"
-        :page-size="20"
-        :total="runTotal"
-        layout="prev, pager, next, total"
-        small
-        style="margin-top: 10px; justify-content: flex-end"
-        @current-change="loadRuns"
-      />
-    </el-card>
-
     <!-- 添加源对话框 -->
     <el-dialog v-model="showAddDialog" :title="t('appstore.addRepoTitle')" width="520px">
       <el-form label-width="80px" @submit.prevent>
@@ -461,8 +404,6 @@ import {
   uninstallPackage,
   upgradePackage,
   getRuns,
-  retryRun,
-  getRunFiles,
   type AppPackage,
   type AppOption,
   type AppChoice,
@@ -1111,10 +1052,9 @@ function openQueue() {
   loadQueueCount()
 }
 
-/** 队列里发生写操作（重跑 / 改脚本后重跑）→ 角标与运行记录一起刷新 */
+/** 队列里发生写操作（重跑 / 改脚本后重跑）→ 刷新角标 */
 function onQueueChanged() {
   loadQueueCount()
-  loadRuns()
 }
 
 // ── 后台任务完成跟踪:终态提示 + 自动刷新列表 ───────────────
@@ -1152,73 +1092,6 @@ onBeforeUnmount(() => {
   runPolls.clear()
 })
 
-// ── 运行记录 ────────────────────────────────────────────────
-
-const runs = ref<RunItem[]>([])
-const runsLoading = ref(false)
-const runPage = ref(1)
-const runTotal = ref(0)
-const retryId = ref('')
-
-async function loadRuns() {
-  runsLoading.value = true
-  try {
-    const resp = await getRuns({ page: runPage.value, page_size: 20 })
-    runs.value = resp.data.items || []
-    runTotal.value = resp.data.total || 0
-  } catch {
-    // ignore
-  } finally {
-    runsLoading.value = false
-  }
-}
-
-function viewRunLog(row: RunItem) {
-  logDrawerRef.value?.openDrawer(row.run_id, `${row.action} ${row.pkg}`)
-}
-
-/** 失败运行的快捷重跑：先探测快照是否存在，再复用其内容以新运行记录执行 */
-async function handleRetryRun(row: RunItem) {
-  if (retryId.value) return
-  try {
-    const files = await getRunFiles(row.run_id)
-    if (!(files.data?.files || []).length) {
-      ElMessage.warning(t('appstore.retryNoFiles'))
-      return
-    }
-    await ElMessageBox.confirm(
-      t('appstore.retryConfirm', { action: row.action }),
-      t('appstore.retryTitle'),
-      { type: 'warning' },
-    )
-  } catch (e: any) {
-    if (e !== 'cancel' && e?.message) ElMessage.warning(e.message)
-    return
-  }
-  retryId.value = row.run_id
-  try {
-    const resp = await retryRun(row.run_id)
-    ElMessage.success(t('appstore.retryStarted'))
-    logDrawerRef.value?.openDrawer(
-      resp.data.run_id,
-      `${row.action} ${row.pkg}${t('appstore.retrySuffix')}`,
-    )
-    setTimeout(loadRuns, 1500)
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error(e.message || t('appstore.retryFailed'))
-  } finally {
-    retryId.value = ''
-  }
-}
-
-function statusType(s: string): 'info' | 'success' | 'danger' | 'warning' {
-  if (s === 'success') return 'success'
-  if (s === 'failed') return 'danger'
-  if (s === 'running') return 'warning'
-  if (s === 'pending') return 'info'
-  return 'info'
-}
-
 function statusText(s: string) {
   const map: Record<string, string> = {
     pending: t('appstore.statusPending'),
@@ -1244,7 +1117,6 @@ const logDrawerRef = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
 onMounted(() => {
   loadRepos()
   loadPackages()
-  loadRuns()
   loadQueueCount()
 })
 </script>
@@ -1466,14 +1338,5 @@ onMounted(() => {
   padding-top: 10px;
 }
 
-.runs-card {
-  margin-top: 4px;
-}
 
-.runs-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-weight: 600;
-}
 </style>
