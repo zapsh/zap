@@ -802,6 +802,10 @@ export default {
     applyNow: '立即升级',
     zapexecUnreachable: 'zapexec 未响应（RPC 不可达）',
     zapexecVersion: '执行器 zapexec v{version}',
+    /** 非管理员：能看版本与升级历史，执行类按钮置灰 */
+    readonlyTip: '当前账号只能查看更新状态与升级日志，检查更新 / 升级需管理员操作',
+    /** 置灰按钮的悬浮提示 */
+    adminOnly: '仅管理员可执行',
 
     autoCard: '自动更新',
     saveConfig: '保存配置',
@@ -2452,6 +2456,8 @@ export default {
       cron: '计划任务',
       crontab: '用户计划任务',
       site: '站点',
+      /** 自定义脚本（scripts/ 下的脚本，手动运行或被计划任务触发） */
+      script: '自定义脚本',
     },
     ops: {
       log: '日志',

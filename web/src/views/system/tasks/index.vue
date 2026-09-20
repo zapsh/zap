@@ -215,6 +215,7 @@ const kindOptions = [
   { value: 'cron', label: t('task.kind.cron') },
   { value: 'crontab', label: t('task.kind.crontab') },
   { value: 'site', label: t('task.kind.site') },
+  { value: 'script', label: t('task.kind.script') },
 ]
 
 const statusOptions = [

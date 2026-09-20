@@ -599,6 +599,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("system.menu", "view")),
     ),
+    // 菜单的「功能开关」清单：与 tree 一样是渲染用的只读数据
+    (
+        "/system/menus/features",
+        Required::User,
+        Some(Perm::action("system.menu", "view")),
+    ),
     (
         "/system/menus/list",
         Required::Admin,
@@ -785,6 +791,11 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Admin,
         Some(Perm::module("system.update")),
     ),
+    // 更新是「管理员执行、其他人可看」：状态与升级日志只读，登录用户就能看；
+    // 检查更新 / 立即升级 / 保存配置仍是 admin 专属（命中上面的 /system/update）。
+    // 不挂权限点（None）：否则 user / reseller 角色还得先被授予 system.update:view。
+    ("/system/update/status", Required::User, None),
+    ("/system/update/log", Required::User, None),
     (
         "/system/migrate",
         Required::Admin,
@@ -2076,6 +2087,12 @@ mod tests {
         assert_eq!(required_for("/appstore/script/run"), Required::Admin);
         assert_eq!(required_for("/appstore/scripts/tree"), Required::Admin);
         assert_eq!(required_for("/dev/api-token/create"), Required::Admin);
+        // 系统更新：状态 / 日志只读（登录用户），执行类仍是 admin
+        assert_eq!(required_for("/system/update/status"), Required::User);
+        assert_eq!(required_for("/system/update/log/abc"), Required::User);
+        assert_eq!(required_for("/system/update/check"), Required::Admin);
+        assert_eq!(required_for("/system/update/apply"), Required::Admin);
+        assert_eq!(required_for("/system/update/config"), Required::Admin);
         // 云存储：配置与桶内对象同属用户级（各自只看自己的目录）
         assert_eq!(required_for("/system/cloud/stores"), Required::User);
         assert_eq!(required_for("/system/cloud/download"), Required::User);

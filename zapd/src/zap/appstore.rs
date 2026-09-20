@@ -21,6 +21,10 @@ pub const DONE_MARKER: &str = crate::zap::task::DONE_MARKER;
 /// AppStore 任务在 `task_queue.kind` 里的大类标记。
 pub const KIND: &str = crate::zap::task::KIND_APPSTORE;
 
+/// 自定义脚本任务的大类标记：脚本只是复用 AppStore 的日志目录与执行通道，
+/// 本身不是「应用商店」，在任务队列里要能一眼看出是脚本。
+pub const KIND_SCRIPT: &str = crate::zap::task::KIND_SCRIPT;
+
 /// 并发互斥组：源码编译型任务（安装 / 升级）**全局同一时刻只允许一个**。
 ///
 /// 编译吃满 CPU 与内存，并行只会互相拖慢、还让日志交叉难以排查；
@@ -267,9 +271,56 @@ pub async fn register_run_with_key(
     log_path: &str,
     job_key: &str,
 ) -> Result<(), ZapError> {
+    register_run_kind(run_id, KIND, action, pkg, username, log_path, job_key).await
+}
+
+/// 登记一条**自定义脚本**的运行记录（kind = `script`）。
+///
+/// 与 [`register_run_with_key`] 的唯一区别就是大类：脚本走 AppStore 的执行通道，
+/// 但任务队列里要显示成「自定义脚本」而不是「应用商店」。
+pub async fn register_script_run_with_key(
+    run_id: &str,
+    action: &str,
+    pkg: &str,
+    username: &str,
+    log_path: &str,
+    job_key: &str,
+) -> Result<(), ZapError> {
+    register_run_kind(
+        run_id,
+        KIND_SCRIPT,
+        action,
+        pkg,
+        username,
+        log_path,
+        job_key,
+    )
+    .await
+}
+
+/// 登记一条与定时任务无关的自定义脚本运行记录（`job_key` 为空）。
+pub async fn register_script_run(
+    run_id: &str,
+    action: &str,
+    pkg: &str,
+    username: &str,
+    log_path: &str,
+) -> Result<(), ZapError> {
+    register_script_run_with_key(run_id, action, pkg, username, log_path, "").await
+}
+
+async fn register_run_kind(
+    run_id: &str,
+    kind: &str,
+    action: &str,
+    pkg: &str,
+    username: &str,
+    log_path: &str,
+    job_key: &str,
+) -> Result<(), ZapError> {
     crate::zap::task::enqueue(crate::zap::task::NewTask {
         task_id: run_id.to_string(),
-        kind: KIND.to_string(),
+        kind: kind.to_string(),
         action: action.to_string(),
         pkg: pkg.to_string(),
         username: username.to_string(),

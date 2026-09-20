@@ -34,6 +34,9 @@ pub const KIND_SYSTEM: &str = "system";
 pub const KIND_CRON: &str = "cron";
 pub const KIND_CRONTAB: &str = "crontab";
 pub const KIND_SITE: &str = "site";
+/// 自定义脚本（`scripts/*.sh`，手动运行或被计划任务触发）：以前登记成 appstore，
+/// 任务队列里一律显示「应用商店」，说不清是谁跑的，所以单独成一类。
+pub const KIND_SCRIPT: &str = "script";
 
 // ── 状态机 ────────────────────────────────────────────────
 /// 排队中：并发组槽位已满，等前一个任务结束。

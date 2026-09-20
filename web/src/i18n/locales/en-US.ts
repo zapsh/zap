@@ -776,6 +776,11 @@ const enUS: Messages = {
     applyNow: 'Upgrade Now',
     zapexecUnreachable: 'zapexec is not responding (RPC unreachable)',
     zapexecVersion: 'Executor zapexec v{version}',
+    /** Non-admin: can view status and upgrade logs; action buttons are disabled */
+    readonlyTip:
+      'This account can only view update status and upgrade logs; checking or applying updates requires an administrator',
+    /** Tooltip on disabled buttons */
+    adminOnly: 'Administrators only',
 
     autoCard: 'Automatic Updates',
     saveConfig: 'Save',
@@ -2467,6 +2472,8 @@ const enUS: Messages = {
       cron: 'Cron',
       crontab: 'User cron',
       site: 'Site',
+      /** Custom scripts under scripts/ (run manually or triggered by a cron job) */
+      script: 'Custom script',
     },
     ops: {
       log: 'Log',

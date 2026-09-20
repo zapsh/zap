@@ -29,8 +29,10 @@ fn require_admin(claims: &Claims) -> Result<(), ZapError> {
 }
 
 /// GET /system/update/status
-pub async fn status_get(claims: ValidatedClaims) -> ZapJsonResult {
-    require_admin(&claims)?;
+///
+/// 只读（门禁：登录用户，见 `access.rs`）：非管理员可以看版本与升级历史，
+/// 但检查更新 / 立即升级 / 改配置仍要 admin。
+pub async fn status_get(_claims: ValidatedClaims) -> ZapJsonResult {
     // 惰性收尾：zapd 若在升级中被重启，遗留的 running 记录在此补全
     updater::finalize_stale_updates().await;
     let cfg = updater::load_config();
@@ -175,12 +177,14 @@ pub struct LogQuery {
 }
 
 /// GET /system/update/log/{run_id}
+///
+/// 只读（门禁：登录用户）：与 status 一致，看升级日志不算「执行更新」。
+/// 仍只认升级记录（`action = zap_update`），拿不到别的任务的日志。
 pub async fn log(
-    claims: ValidatedClaims,
+    _claims: ValidatedClaims,
     Path(run_id): Path<String>,
     Query(q): Query<LogQuery>,
 ) -> ZapJsonResult {
-    require_admin(&claims)?;
     let run = match ast::get_run(&run_id).await {
         Ok(Some(r)) => r,
         _ => return Err(ZapError::New(-1, "升级运行记录不存在".to_string())),

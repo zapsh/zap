@@ -1,5 +1,15 @@
 <template>
   <div class="system-update">
+    <!-- 非管理员：能看版本与升级历史，但执行类操作已禁用 -->
+    <el-alert
+      v-if="!isAdmin"
+      class="mb"
+      type="info"
+      :closable="false"
+      :show-icon="true"
+      :title="t('sysUpdate.readonlyTip')"
+    />
+
     <!-- 当前版本与手动升级 -->
     <el-card shadow="never" class="mb">
       <template #header>
@@ -9,12 +19,34 @@
             {{ t('sysUpdate.upgrading') }}
           </el-button>
           <template v-else>
-            <el-button type="primary" plain size="small" :loading="checking" @click="onCheck">
-              {{ hasChecked ? t('sysUpdate.recheck') : t('sysUpdate.check') }}
-            </el-button>
-            <el-button type="danger" plain size="small" :disabled="!hasChecked" @click="onApply">
-              {{ t('sysUpdate.applyNow') }}
-            </el-button>
+            <!-- 检查 / 升级 = 执行动作，仅管理员；其他人只读 -->
+            <el-tooltip :disabled="isAdmin" :content="t('sysUpdate.adminOnly')" placement="top">
+              <span>
+                <el-button
+                  type="primary"
+                  plain
+                  size="small"
+                  :loading="checking"
+                  :disabled="!isAdmin"
+                  @click="onCheck"
+                >
+                  {{ hasChecked ? t('sysUpdate.recheck') : t('sysUpdate.check') }}
+                </el-button>
+              </span>
+            </el-tooltip>
+            <el-tooltip :disabled="isAdmin" :content="t('sysUpdate.adminOnly')" placement="top">
+              <span>
+                <el-button
+                  type="danger"
+                  plain
+                  size="small"
+                  :disabled="!isAdmin || !hasChecked"
+                  @click="onApply"
+                >
+                  {{ t('sysUpdate.applyNow') }}
+                </el-button>
+              </span>
+            </el-tooltip>
           </template>
         </div>
       </template>
@@ -49,21 +81,32 @@
       <template #header>
         <div class="card-header">
           <span>{{ t('sysUpdate.autoCard') }}</span>
-          <el-button type="primary" size="small" :loading="saving" @click="onSaveConfig">
-            {{ t('sysUpdate.saveConfig') }}
-          </el-button>
+          <el-tooltip :disabled="isAdmin" :content="t('sysUpdate.adminOnly')" placement="top">
+            <span>
+              <el-button
+                type="primary"
+                size="small"
+                :loading="saving"
+                :disabled="!isAdmin"
+                @click="onSaveConfig"
+              >
+                {{ t('sysUpdate.saveConfig') }}
+              </el-button>
+            </span>
+          </el-tooltip>
         </div>
       </template>
 
       <el-form label-width="120px" class="auto-form" @submit.prevent>
         <el-form-item :label="t('sysUpdate.enableAuto')">
-          <el-switch v-model="form.auto" />
+          <el-switch v-model="form.auto" :disabled="!isAdmin" />
           <span class="form-hint">{{ t('sysUpdate.enableAutoHint') }}</span>
         </el-form-item>
         <el-form-item :label="t('sysUpdate.cron')">
           <el-input
             v-model="form.cron"
             class="w-320"
+            :disabled="!isAdmin"
             :placeholder="t('sysUpdate.cronPlaceholder')"
           />
           <span class="form-hint">{{ t('sysUpdate.cronHint') }}</span>
@@ -72,6 +115,7 @@
           <el-input
             v-model="form.channel"
             class="w-480"
+            :disabled="!isAdmin"
             placeholder="https://mirrors.zap.cn/zap/releases"
           />
           <span class="form-hint">{{ t('sysUpdate.channelHint') }}</span>
@@ -157,10 +201,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Warning } from '@/icons'
+import { useUserStore } from '@/stores/user'
 import {
   applyUpdate,
   checkForUpdate,
@@ -174,6 +219,13 @@ import {
 const WEB_VERSION = import.meta.env.VITE_WEB_VERSION || ''
 
 const { t } = useI18n()
+const userStore = useUserStore()
+
+/**
+ * 更新是「管理员执行、其他人可看」：状态与升级日志的后端门禁已放宽到登录用户，
+ * 这里只负责把执行类按钮置灰（真被绕过后端还会再挡一次 admin）。
+ */
+const isAdmin = computed(() => userStore.roles.includes('admin'))
 
 const status = reactive<UpdateStatusData>({
   zapd_version: '',

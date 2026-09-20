@@ -1002,7 +1002,7 @@ pub async fn script_run(
     validate_script_path(&payload.path)?;
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
-    ast::register_run(&run_id, "script", &payload.path, &claims.sub, &log_path).await?;
+    ast::register_script_run(&run_id, "script", &payload.path, &claims.sub, &log_path).await?;
 
     let resp = zapexec::call(Request::AppstoreScriptRun {
         path: payload.path.clone(),

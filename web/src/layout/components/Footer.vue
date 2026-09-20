@@ -52,11 +52,14 @@ const year = new Date().getFullYear()
 const router = useRouter()
 const userStore = useUserStore()
 
-/** 系统更新页已并入 About ZAP（页签 tab=update），仍仅 admin 可见：非管理员不提供跳转 */
-const canGoUpdate = computed(() => userStore.roles.includes('admin'))
+/**
+ * 系统更新页已并入 About ZAP（页签 tab=update）。
+ * 更新是「管理员执行、其他人可看」：/system/update/status 对登录用户只读开放，
+ * 所以任何角色都能点版本号进去看，面板里非管理员的按钮是置灰的。
+ */
+const canGoUpdate = computed(() => userStore.roles.length > 0)
 
 onMounted(async () => {
-  // /system/update/status 仅 admin 可访问：非管理员直接用构建时版本，避免 403 噪音
   if (!canGoUpdate.value) return
   try {
     const res = await getUpdateStatus()

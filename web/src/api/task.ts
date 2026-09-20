@@ -10,8 +10,20 @@ import { wsUrl } from '@/utils/base'
 /** 任务状态：排队中（并发组占位）/ 进行中 / 成功 / 失败 / 已取消 */
 export type TaskStatus = 'pending' | 'running' | 'success' | 'failed' | 'canceled'
 
-/** 任务大类；后端 kind 字段（appstore / docker / backup / system / cron / crontab / site） */
-export type TaskKind = 'appstore' | 'docker' | 'backup' | 'system' | 'cron' | 'crontab' | 'site'
+/**
+ * 任务大类；后端 kind 字段（appstore / docker / backup / system / cron /
+ * crontab / site / script）。`script` = 自定义脚本运行（手动或被计划任务触发），
+ * 以前归在 appstore 下，任务队列里会显示成「应用商店」。
+ */
+export type TaskKind =
+  | 'appstore'
+  | 'docker'
+  | 'backup'
+  | 'system'
+  | 'cron'
+  | 'crontab'
+  | 'site'
+  | 'script'
 
 export interface TaskItem {
   task_id: string

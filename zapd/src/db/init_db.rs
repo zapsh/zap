@@ -27,6 +27,8 @@ pub async fn init_schema() {
     crate::routers::ssh_terminal::init_table().await;
     // 通用任务队列（应用商店安装 / Docker 构建 / 备份 / 升级 / 计划任务都登记在这里）
     init_task_queue_table().await;
+    // 老数据订正：脚本运行以前登记成 appstore（见函数注释）
+    sync_script_task_kind().await;
     // IP 池管理表
     init_ip_pool_table().await;
     // 用户站点管理表
@@ -1138,7 +1140,7 @@ async fn init_task_queue_table() {
     CREATE TABLE task_queue (
         id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
         task_id TEXT NOT NULL UNIQUE,
-        -- kind：任务大类（appstore / docker / backup / system / cron / crontab / site），
+        -- kind：任务大类（appstore / docker / backup / system / cron / crontab / site / script），
         --   管理页按它分组展示；action 是类内的具体动作（install / image_build / ...）
         kind TEXT NOT NULL DEFAULT 'appstore',
         action TEXT NOT NULL DEFAULT '',
@@ -1178,6 +1180,21 @@ async fn init_task_queue_table() {
     CREATE INDEX idx_task_queue_group ON task_queue(group_key, status);
     "#;
     let _ = get_db_pool().await.execute(sql).await;
+}
+
+/// 老数据订正：自定义脚本的运行记录以前复用 AppStore 的登记入口，`kind` 是
+/// `appstore`，任务队列里一律显示「应用商店」，看不出是谁跑的。
+///
+/// 脚本路径一定在 `scripts/` 下（`validate_script_path` 的约束），据此把存量
+/// 记录归位到 `script`。幂等，每次启动都跑一遍也无妨。
+async fn sync_script_task_kind() {
+    if !table_exists("task_queue").await {
+        return;
+    }
+    let _ = get_db_pool()
+        .await
+        .execute("UPDATE task_queue SET kind = 'script' WHERE kind = 'appstore' AND pkg LIKE 'scripts/%'")
+        .await;
 }
 
 // ── ip_pool（IP 池管理）─────────────────────────────────────

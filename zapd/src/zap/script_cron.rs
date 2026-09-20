@@ -523,7 +523,7 @@ pub async fn launch_script_run_with_id(
 ) -> Result<String, ZapError> {
     let log_path = ast::log_path_for(run_id);
     let key = job_key(username, job_id);
-    ast::register_run_with_key(run_id, action, path, username, &log_path, &key).await?;
+    ast::register_script_run_with_key(run_id, action, path, username, &log_path, &key).await?;
     let resp = zapexec::call(Request::AppstoreScriptRun {
         path: path.to_string(),
         run_id: run_id.to_string(),
