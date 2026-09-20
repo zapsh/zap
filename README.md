@@ -215,6 +215,7 @@ git clone https://github.com/zapsh/zap.git && cd zap
 ./rundev.sh --release       # release 模式
 ./rundev.sh --skip-web      # 跳过前端构建
 ./rundev.sh --reset-db      # 重建数据库（admin 初始密码 A123456）
+./rundev.sh --check         # 只做 fmt / clippy 检查（提交前跑，默认构建不带检查）
 ```
 
 > `zapexec` 需要 root 权限，脚本会通过 `sudo` 启动。软件安装根目录默认为 `/usr/local/apps`，可通过 `export ZAP_APPS_DIR=...` 覆盖。

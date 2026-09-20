@@ -4,11 +4,14 @@
 #
 # 用法：
 #   ./rundev.sh                 # 构建前端 + 后端，启动 zapexec(root) 和 zapd
+#                               # （默认不跑 fmt / clippy：clippy 会用自己的 driver 把整个
+#                               #  workspace 重编一遍，改一行代码等几分钟不值得）
 #   ./rundev.sh --release       # 使用 release 构建
 #   ./rundev.sh --skip-web      # 跳过前端构建
 #   ./rundev.sh --skip-build    # 跳过 cargo 构建
 #   ./rundev.sh --skip-install  # 缺 node_modules 时不自动 npm install
-#   ./rundev.sh --skip-check    # 跳过构建前的 fmt / clippy 检查（改一行代码想快点跑起来时用）
+#   ./rundev.sh --check-code    # 构建前先跑 fmt / clippy（提交前用，等价于旧版默认行为）
+#   ./rundev.sh --skip-check    # 已默认跳过检查，保留此参数仅为兼容旧用法
 #   ./rundev.sh --reset-db      # 删除 data/zap.db 重建全新数据库（admin 初始密码 A123456）
 #   ./rundev.sh --check         # 只检查 Rust 格式(fmt)与代码(clippy)，不构建、不启动服务
 #
@@ -29,14 +32,16 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 usage() { awk 'NR>2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
 # ── 参数解析 ────────────────────────────────────────────────
-RELEASE=false; SKIP_WEB=false; SKIP_BUILD=false; SKIP_INSTALL=false; SKIP_CHECK=false; RESET_DB=false; CHECK=false
+# 默认不做 fmt / clippy：日常改一行代码只想快点跑起来，检查交给 --check / --check-code
+RELEASE=false; SKIP_WEB=false; SKIP_BUILD=false; SKIP_INSTALL=false; CHECK_CODE=false; RESET_DB=false; CHECK=false
 for arg in "$@"; do
   case "$arg" in
     --release)      RELEASE=true ;;
     --skip-web)     SKIP_WEB=true ;;
     --skip-build)   SKIP_BUILD=true ;;
     --skip-install) SKIP_INSTALL=true ;;
-    --skip-check)   SKIP_CHECK=true ;;
+    --check-code|--lint) CHECK_CODE=true ;;
+    --skip-check)   : ;;  # 已默认跳过，保留仅为兼容旧用法
     --reset-db|--fresh-db) RESET_DB=true ;;
     --check)        CHECK=true ;;
     -h|--help)      usage; exit 0 ;;
@@ -48,9 +53,9 @@ done
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-# --check 就是只做检查，与"跳过检查"语义相反，同时给出视为用法错误
-if [ "$CHECK" = true ] && [ "$SKIP_CHECK" = true ]; then
-  die "--check 与 --skip-check 互斥（--check 的含义就是只做 fmt / clippy 检查）"
+# --check 是"只做检查"模式：再要求跳过构建（--skip-build）就没有意义了
+if [ "$CHECK" = true ] && [ "$SKIP_BUILD" = true ]; then
+  die "--check 与 --skip-build 互斥（--check 本就不构建，只做 fmt / clippy 检查）"
 fi
 
 # ── --check：只做静态检查（fmt + clippy），不构建、不启动服务 ──
@@ -133,14 +138,14 @@ fi
 if [ "$SKIP_BUILD" = true ]; then
   warn "跳过后端构建"
 else
-  if [ "$SKIP_CHECK" = true ]; then
-    # 只跳过 fmt / clippy，构建照做：代码能编译就能跑，只是少了规范把关
-    warn "跳过 fmt / clippy 检查（--skip-check）"
-  else
+  if [ "$CHECK_CODE" = true ]; then
     info "格式化代码 (cargo fmt --all) ..."
     cargo fmt --all
     info "检查代码 (cargo clippy --all-targets --all-features -- -D warnings) ..."
     cargo clippy --all-targets --all-features -- -D warnings || die "代码检查失败"
+  else
+    # 构建照做：能编译就能跑，只是少了规范把关；提交前跑一次 ./rundev.sh --check 补上
+    warn "跳过 fmt / clippy 检查（要跑加 --check-code）"
   fi
   info "构建后端 (cargo build ${CARGO_FLAGS[*]} --bin zapd --bin zapexec --bin zapctl --bin zapupgrade) ..."
   cargo build "${CARGO_FLAGS[@]}" --bin zapd --bin zapexec --bin zapctl --bin zapupgrade || die "后端构建失败"
