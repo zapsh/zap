@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod acme;
+pub mod admin_bootstrap;
 pub mod appstore;
 pub mod audit;
 pub mod auto_update;

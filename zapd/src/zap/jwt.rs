@@ -65,11 +65,7 @@ pub struct AuthBody {
     token_type: String,
 }
 
-pub fn generate_jwt_token(
-    username: String,
-    id: u64,
-    roles: &str,
-) -> Result<String, Error> {
+pub fn generate_jwt_token(username: String, id: u64, roles: &str) -> Result<String, Error> {
     let expire = config::get_config().read().unwrap().jwt.jwt_expire;
     generate_jwt_token_with_expire(username, id, roles, expire)
 }

@@ -26,7 +26,7 @@ ZAP 的后端以 **Rust** 编写（Axum + Tokio + SQLx），前端采用 **Vue 3
 
 ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免费使用。
 
-> 演示与下载：<https://zap.cn> ｜ 文档建设中
+> 演示与下载：<https://zap.sh> ｜ 文档建设中
 
 ---
 
@@ -140,12 +140,18 @@ ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免�
 
 ```bash
 wget -O install.sh https://mirrors.zap.cn/zap/install.sh && bash install.sh
+
+# 指定初始管理员（用户名同时作为 Linux 账号名，家目录 /home/<name>）
+bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
+# 不指定密码时自动生成 16 位随机密码，安装完成后打印（不会再次显示）
 ```
 
 脚本幂等：检测到 `/usr/local/zap/zapd` 已存在时按**升级**处理（覆盖二进制与脚本资源，保留数据与配置）。
 也支持 `bash install.sh v1.0.12` 指定版本。
 
-安装完成后访问 `https://<服务器IP>:2600`，按引导初始化管理员账号。
+初始管理员可用 `--admin-user` / `--admin-pass` 指定，也可用环境变量 `ZAP_ADMIN_USER` / `ZAP_ADMIN_PASSWORD`（命令行优先）。安装末尾会执行 `zapd --init-admin <用户> --admin-password <密码>` 建库并写入管理员（凭据只经命令行传递，**不落任何文件**），Linux 账号与家目录 `/home/<用户名>`（www/logs/tmp 骨架）由安装脚本预建。已安装过的机器重跑安装脚本不会改动现有管理员密码。
+
+安装完成后访问 `https://<服务器IP>:2600`，用安装结束时输出的账号登录。
 
 后续升级推荐 `zapupgrade upgrade`（自带备份与回滚），用法见下方[系统升级](#系统升级zapupgrade)或 [UPGRADE_zh-CN.md](./UPGRADE_zh-CN.md)。
 
@@ -214,7 +220,8 @@ git clone https://github.com/zapsh/zap.git && cd zap
 ./rundev.sh                 # 构建前端 + 后端并启动（https://127.0.0.1:2600）
 ./rundev.sh --release       # release 模式
 ./rundev.sh --skip-web      # 跳过前端构建
-./rundev.sh --reset-db      # 重建数据库（admin 初始密码 A123456）
+./rundev.sh --reset-db      # 重建数据库（默认 admin / A123456）
+./rundev.sh --admin-user zapops --admin-pass secret  # 指定初始管理员（配合 --reset-db）
 ./rundev.sh --check         # 只做 fmt / clippy 检查（提交前跑，默认构建不带检查）
 ```
 

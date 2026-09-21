@@ -244,9 +244,7 @@ pub async fn login(
             }
         }
 
-        if let Ok(token) =
-            zap::jwt::generate_jwt_token(row.username.clone(), row.id, &row.roles)
-        {
+        if let Ok(token) = zap::jwt::generate_jwt_token(row.username.clone(), row.id, &row.roles) {
             clear_login_attempts(&ip, &username).await;
             // 更新最后登录信息
             let now = chrono::Local::now().timestamp();
@@ -327,8 +325,7 @@ pub async fn login_history(
     claims: ValidatedClaims,
     Query(query): Query<LoginHistoryQuery>,
 ) -> ZapJsonResult {
-    let (rows, total) =
-        login_history::list(claims.id as i64, query.page, query.page_size).await?;
+    let (rows, total) = login_history::list(claims.id as i64, query.page, query.page_size).await?;
     Ok(Json(json!({
         "code": 0,
         "data": rows,

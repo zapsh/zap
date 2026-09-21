@@ -24,6 +24,15 @@ pub mod zapexec;
 struct Cli {
     #[clap(short, long, action)]
     version: bool,
+
+    /// 初始化管理员账号后退出（install.sh 部署完成后调用，不启动面板服务）。
+    /// 库不存在则建库建表；已有管理员则原样不动。
+    #[clap(long, value_name = "USER")]
+    init_admin: Option<String>,
+
+    /// `--init-admin` 的密码；省略时生成随机密码并打印到标准输出
+    #[clap(long, value_name = "PASSWORD", requires = "init_admin")]
+    admin_password: Option<String>,
 }
 
 /// 默认日志级别（可用环境变量 `RUST_LOG` 覆盖）：
@@ -84,6 +93,14 @@ async fn main() {
     // 统一 URL 前缀（server.url_prefix）：留空则不启用
     let url_prefix = config::url_prefix();
 
+    // `zapd --init-admin <用户> [--admin-password <密码>]`：建库 + 写初始管理员后退出，
+    // 不绑端口、不碰证书（install.sh 以 root 在首次启动服务前调用它）
+    if let Some(username) = cli.init_admin.as_deref() {
+        let code =
+            zap::admin_bootstrap::init_admin_cli(username, cli.admin_password.as_deref()).await;
+        std::process::exit(code);
+    }
+
     // Ensure TLS certificates exist (generate self-signed if missing)
     // 面板只提供 HTTPS（HTTP 请求一律 301 跳转），没有证书就无法建立 TLS acceptor，
     // 因此这里直接以明确错误退出，而不是带着坏证书继续跑成崩溃重启循环。
@@ -113,6 +130,9 @@ async fn main() {
 
     // init db
     db::init_db::init_schema().await;
+    // 全新库还没有管理员时补一条（默认 admin / 123456；安装脚本会在此之前用
+    // `zapd --init-admin` 指定实际凭据，那时这里什么也不做）
+    db::init_db::ensure_initial_admin().await;
     // 会话版本号全量入内存：否则老库里已「下线过所有设备」的用户会被当成 0，
     // 签发出立刻失效的 token（见 zap::session）
     zap::session::load_all().await;
@@ -126,17 +146,8 @@ async fn main() {
     // 自动更新配置（{data}/update_config.yaml）：加载，缺失则写默认值
     zap::update_config::init();
 
-    // Security: admin password hint (only relevant when a fresh DB was created)
-    match std::env::var("ZAP_ADMIN_PASSWORD").map(|p| p.trim().to_string()) {
-        Ok(p) if !p.is_empty() => {
-            info!("Admin password initialized from ZAP_ADMIN_PASSWORD on fresh DB.");
-        }
-        _ => {
-            warn!(
-                "Default admin password is '123456'. Please change it immediately after first login."
-            );
-        }
-    }
+    // 管理员的 Linux 账号 / 家目录缺失时自动补齐（后台执行，失败仅告警）
+    tokio::spawn(zap::admin_bootstrap::ensure_admin_home());
 
     // init job scheduler for system monitoring
     zap::job::init_system_jobs().await;

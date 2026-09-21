@@ -10,6 +10,39 @@ ok()   { printf "${GREEN}[✓]${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
 die()  { printf "${RED}[✗]${NC} %s\n" "$*" >&2; exit 1; }
 
+usage() {
+    cat <<'EOF'
+用法: sudo bash install.sh [VERSION] [选项]
+
+  VERSION                要安装的版本号（默认 latest）
+
+初始管理员凭据（仅首次安装、全新数据库时生效）：
+  --admin-user <name>    管理员用户名（默认 admin）
+                         同时作为 Linux 账号名，家目录为 /home/<name>
+  --admin-pass <pass>    管理员密码；不指定则自动生成随机密码并打印
+                         可用字符：字母、数字、. _ -（避免破坏 env 文件解析）
+  环境变量                ZAP_ADMIN_USER / ZAP_ADMIN_PASSWORD（命令行参数优先）
+
+说明：安装末尾会执行 `zapd --init-admin` 建库并写入管理员（凭据只经命令行传递，
+不落任何文件）；已安装过的机器重新执行本脚本不会改动现有管理员密码。
+
+  -h, --help             显示本帮助
+
+示例:
+  sudo bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
+  sudo ZAP_ADMIN_PASSWORD='S3cret-Pass' bash install.sh
+EOF
+}
+
+# 16 位随机密码：优先 base64（可读性好），没有则退回十六进制
+gen_password() {
+    local raw
+    raw=$(head -c 12 /dev/urandom 2>/dev/null | base64 2>/dev/null | tr -d '\n=+/') || raw=""
+    [ -n "$raw" ] || raw=$(od -An -N12 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n') || raw=""
+    [ -n "$raw" ] || raw="zap$(date +%s)"
+    printf '%s' "${raw:0:16}"
+}
+
 # ── 解释器检查（脚本用到 bash 数组等特性，sh/dash 下行为异常）──
 if [ -z "${BASH_VERSION:-}" ]; then
     printf "${RED}[✗]${NC} %s\n" "请使用 bash 执行：sudo bash $0" >&2
@@ -23,8 +56,61 @@ printf "${GREEN}========================================${NC}\n"
 printf "${GREEN}   ZAP 服务器/VPS 管理系统 · 安装程序${NC}\n"
 printf "${GREEN}========================================${NC}\n"
 
-# ── 解析版本与架构 ─────────────────────────────────────────
-VERSION="${1:-latest}"
+# ── 解析参数：版本号（位置参数）+ 初始管理员凭据 ───────────
+VERSION="latest"
+ADMIN_USER=""; ADMIN_PASS=""; PASS_GENERATED=0; ADMIN_UNCHANGED=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --admin-user)
+            ADMIN_USER="${2:-}"
+            [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
+            shift 2 ;;
+        --admin-user=*)
+            ADMIN_USER="${1#*=}"
+            [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
+            shift ;;
+        --admin-pass|--admin-password)
+            ADMIN_PASS="${2:-}"
+            [ -n "$ADMIN_PASS" ] || die "--admin-pass 缺少密码"
+            shift 2 ;;
+        --admin-pass=*|--admin-password=*)
+            ADMIN_PASS="${1#*=}"
+            [ -n "$ADMIN_PASS" ] || die "--admin-pass 缺少密码"
+            shift ;;
+        -h|--help)
+            usage; exit 0 ;;
+        -*)
+            die "未知参数: $1（--help 查看用法）" ;;
+        *)
+            VERSION="$1"; shift ;;
+    esac
+done
+
+# 命令行未指定时回落到环境变量，再回落到默认值
+[ -n "$ADMIN_USER" ] || ADMIN_USER="${ZAP_ADMIN_USER:-admin}"
+[ -n "$ADMIN_PASS" ] || ADMIN_PASS="${ZAP_ADMIN_PASSWORD:-}"
+
+# 用户名即 Linux 账号名（家目录 /home/<name>），必须满足 useradd 约束
+ADMIN_USER=$(printf '%s' "$ADMIN_USER" | tr 'A-Z' 'a-z')
+[ -n "$ADMIN_USER" ] || die "管理员用户名不能为空"
+[ "${#ADMIN_USER}" -le 32 ] || die "管理员用户名过长（≤32 字符）: ${ADMIN_USER}"
+case "$ADMIN_USER" in
+    [a-z_]*) ;;
+    *) die "管理员用户名需以小写字母或 _ 开头: ${ADMIN_USER}" ;;
+esac
+case "$ADMIN_USER" in
+    *[!a-z0-9_-]*) die "管理员用户名只能包含 a-z 0-9 _ -: ${ADMIN_USER}" ;;
+esac
+
+if [ -z "$ADMIN_PASS" ]; then
+    ADMIN_PASS=$(gen_password)
+    PASS_GENERATED=1
+fi
+# 密码会写进 systemd 的 env 文件，含空白 / 引号 / $ 会破坏解析
+case "$ADMIN_PASS" in
+    *[!A-Za-z0-9._-]*) die "管理员密码只能包含字母、数字以及 . _ -（避免破坏 env 文件解析）" ;;
+esac
+[ "${#ADMIN_PASS}" -ge 8 ] || warn "管理员密码不足 8 位，建议登录后修改"
 # ── 平台探测：操作系统 + 服务管理器 ─────────────────────────
 # 服务管理器决定后面怎么装/启服务：
 #   Linux          → systemd（systemctl）
@@ -186,6 +272,54 @@ create_user() {
     ok "用户 ${user} 创建完成"
 }
 
+# ── 初始管理员：Linux 账号 + 家目录骨架 ────────────────────
+# 结构对齐 zapexec 的 user.home_init（家目录 711、www 755、logs 770 归 www、
+# tmp 700），区别只是这里由安装脚本以 root 直接建好，不必等面板首次启动。
+#
+# 非 Linux 平台跳过：BSD 的 useradd / pw 参数差异较大，交给 zapd 启动后经
+# zapexec 补齐（zapd::zap::admin_bootstrap），功能不缺。
+# 用法：create_admin_account <用户名> <家目录>
+create_admin_account() {
+    local user="$1" home="$2"
+    if [ "$OS" != "Linux" ]; then
+        warn "非 Linux 平台，跳过预建 ${user} 账号与家目录（面板首次启动时自动补齐）"
+        return 0
+    fi
+    local gname="$user"
+    # 同名组已被系统占用（如发行版预置的 admin 组）时改用专属组，避免继承额外权限
+    if has_group "$user"; then
+        gname="zap_${user}"
+        if ! has_group "$gname" && command -v groupadd >/dev/null 2>&1; then
+            groupadd "$gname" 2>/dev/null || warn "创建组 ${gname} 失败（继续）"
+        fi
+    fi
+    if id "$user" >/dev/null 2>&1; then
+        ok "Linux 账号 ${user} 已存在"
+    else
+        local shell
+        shell=$(command -v nologin 2>/dev/null || true)
+        [ -n "$shell" ] || shell=/usr/sbin/nologin
+        # -m：连家目录一起建（面板账号需要真实家目录承载 www/logs/tmp）
+        if has_group "$gname"; then
+            useradd -m -d "$home" -s "$shell" -g "$gname" "$user" || die "创建 ${user} 用户失败"
+        else
+            useradd -m -d "$home" -s "$shell" -U "$user" || die "创建 ${user} 用户失败"
+        fi
+        ok "Linux 账号 ${user} 已创建（${home}，nologin）"
+    fi
+    # 家目录骨架（幂等：已存在时只校正归属与权限）
+    mkdir -p "$home/www" "$home/logs" "$home/tmp" || die "创建家目录骨架失败: ${home}"
+    chown -R "${user}:${gname}" "$home/www" 2>/dev/null || true
+    chmod 755 "$home/www"
+    chown -R www:www "$home/logs" 2>/dev/null || true
+    chmod 770 "$home/logs"
+    chown -R "${user}:${gname}" "$home/tmp" 2>/dev/null || true
+    chmod 700 "$home/tmp"
+    chown "${user}:${gname}" "$home" 2>/dev/null || true
+    chmod 711 "$home"
+    ok "家目录已就绪: ${home}（www/logs/tmp）"
+}
+
 # www：站点运行用户（普通用户）；zapadm：面板运维用户（系统用户）
 create_user www 0
 create_user zapadm 1
@@ -344,6 +478,11 @@ done
 [ -d "$ZAP_DIR/data/appstore" ] && chown -R zapadm:zapadm "$ZAP_DIR/data/appstore" 2>/dev/null || true
 ok "配置准备完成"
 
+# ── 初始管理员的 Linux 账号 / 家目录 ────────────────────────
+# 账号与家目录先建好（Linux）；建库 + 写入管理员交给下面的 `zapd --init-admin`，
+# 凭据只经命令行参数传递，不落任何文件（/etc/zap 下也不会留明文密码）。
+create_admin_account "$ADMIN_USER" "/home/${ADMIN_USER}"
+
 # ── 服务安装（systemd / rc.d）────────────────────────────────
 info "安装 ${INIT} 服务..."
 
@@ -383,6 +522,32 @@ install_service() {
 # 顺序有意义：全新机器上 exec.key 由 zapexec 首启生成，zapd 随后才能读到
 # （systemd 侧对应 zapd.service 的 After=zapexec.service）
 install_service zapexec
+
+# 建库 + 写入初始管理员：必须在 zapd 首次启动前做，否则 zapd 自己建库时会用
+# 内置的 admin / 123456。`--init-admin` 只走命令行参数，不写任何凭据文件。
+# 注意：密码会在进程命令行上短暂可见（仅安装瞬间，且安装本身已是 root 操作）；
+# 想避免可改用 zapd 自动生成（不带 --admin-password，密码打印在输出里）。
+init_admin_account() {
+    info "初始化管理员 ${ADMIN_USER} ..."
+    local out
+    if ! out=$(ZAP_CONFIG=/etc/zap/zap.yaml "$ZAP_DIR/zapd" --init-admin "$ADMIN_USER" \
+            --admin-password "$ADMIN_PASS" 2>&1); then
+        warn "初始化管理员失败（可稍后手动执行 zapd --init-admin 重试）：${out}"
+        return 1
+    fi
+    echo "$out"
+    # init-admin 以 root 运行，库文件要交还给 zapadm（zapd 服务以此身份读写）
+    for f in zap.db zap.db-wal zap.db-shm; do
+        [ -e "$ZAP_DIR/data/$f" ] && chown zapadm:zapadm "$ZAP_DIR/data/$f" || true
+    done
+    # 库里已有管理员时 init-admin 不会改其密码，完成页据此调整提示
+    case "$out" in
+        *"未做修改"*) ADMIN_UNCHANGED=1 ;;
+    esac
+    return 0
+}
+init_admin_account || true
+
 install_service zapd
 ok "${INIT} 服务已启用"
 
@@ -406,9 +571,22 @@ echo "  Version:      ${VERSION}"
 echo "  Program Directory:  /usr/local/zap"
 echo "  Configuration Directory:  /etc/zap"
 echo "  Access URL:  https://<Server IP>:2600"
-echo "  Default Username:  admin"
-echo "  Default Password:  123456"
-printf "\n"
+if [ "$ADMIN_UNCHANGED" = "1" ]; then
+    echo "  Admin User:      ${ADMIN_USER}（已存在，密码未改动）"
+    echo "  Home Directory:  /home/${ADMIN_USER}"
+    printf "\n"
+    printf "${YELLOW}  ⚠ 检测到库里已有管理员：本次未改动其密码，请用原密码登录${NC}\n"
+    printf "\n"
+else
+    echo "  Admin User:      ${ADMIN_USER}"
+    echo "  Admin Password:  ${ADMIN_PASS}"
+    echo "  Home Directory:  /home/${ADMIN_USER}"
+    printf "\n"
+    if [ "$PASS_GENERATED" = "1" ]; then
+        printf "${YELLOW}  ⚠ 以上密码为随机生成，请立即保存（不会再次显示）${NC}\n"
+        printf "\n"
+    fi
+    printf "${YELLOW}  ⚠ 首次登录后请立即修改密码！${NC}\n"
+    printf "\n"
+fi
 printf "  后续升级:  zapupgrade upgrade --to latest（回滚: zapupgrade rollback --list）\n"
-printf "\n"
-printf "${YELLOW}  ⚠ 首次登录后请立即修改默认密码！${NC}\n"

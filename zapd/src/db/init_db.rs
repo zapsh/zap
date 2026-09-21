@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use sqlx::Executor;
+use tracing::info;
 
 use super::get_db_pool;
 use super::menu_seed;
@@ -174,31 +175,70 @@ async fn init_system_user_table_schema() {
     "#;
     get_db_pool().await.execute(create_sql).await.unwrap();
 
-    // Insert admin with runtime-generated bcrypt hash (avoids $2y$ prefix issues).
-    // Password: use $ZAP_ADMIN_PASSWORD if set (fresh DBs only), otherwise default "123456".
-    let default_password = std::env::var("ZAP_ADMIN_PASSWORD")
-        .map(|p| p.trim().to_string())
-        .unwrap_or_default();
-    let default_password = if default_password.is_empty() {
-        "123456".to_string()
-    } else {
-        default_password
-    };
-    let hashed = bcrypt::hash(&default_password, bcrypt::DEFAULT_COST)
-        .expect("failed to hash default password");
+    // 注意：初始管理员不由这里插入，交给调用方在建表后调 ensure_initial_admin()
+    // —— 新建表的分支只在库还不存在时才会走到，而「已有库但管理员被删光」同样
+    // 需要补一条，两边统一由 ensure_initial_admin 的幂等判断覆盖。
+}
+
+/// 面板用户名合法性：Linux 账号名与家目录末段都派生自它，因此必须同时满足
+/// `useradd` 的约束——小写字母或 `_` 开头，只含 `[a-z0-9_-]`，长度 ≤ 32。
+pub fn valid_admin_username(u: &str) -> bool {
+    !u.is_empty()
+        && u.len() <= 32
+        && u.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        && u.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+}
+
+/// 初始管理员凭据：默认 `admin` / `123456`。
+///
+/// install.sh 会在 zapd 首次启动前执行 `zapd --init-admin <用户> --admin-password <密码>`
+/// 覆盖它——凭据只经由命令行传递，不落任何文件。
+static INITIAL_ADMIN: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+
+/// 设定初始管理员凭据（`--init-admin` 用）。用户名同时派生 Linux 账号与家目录
+/// `/home/{linux_user}`，规则与面板新建用户一致（`zap_proto::linux_username`）。
+pub fn set_initial_admin(username: &str, password: &str) {
+    let _ = INITIAL_ADMIN.set((username.to_string(), password.to_string()));
+}
+
+/// 库里还没有任何 admin 时插入初始管理员，返回是否真的插入了。
+///
+/// 幂等：已有 admin 一律不动（既不插入第二条，也不改现有账号的密码——重跑安装
+/// 脚本不会把线上密码改回去）。**建表后调用**（`init_schema` 之后）。
+pub async fn ensure_initial_admin() -> bool {
+    let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user WHERE roles LIKE '%admin%'")
+        .fetch_one(get_db_pool().await)
+        .await
+        .unwrap_or(0);
+    if existing > 0 {
+        return false;
+    }
+
+    let (username, password) = INITIAL_ADMIN
+        .get()
+        .cloned()
+        .unwrap_or_else(|| ("admin".to_string(), "123456".to_string()));
+    let linux_user = zap_proto::linux_username(&username);
+    let home_dir = format!("/home/{linux_user}");
+    // bcrypt 在运行时生成（避免 $2y$ 前缀兼容问题）
+    let hashed =
+        bcrypt::hash(&password, bcrypt::DEFAULT_COST).expect("failed to hash admin password");
     let now = chrono::Utc::now().timestamp();
 
     sqlx::query(
         "INSERT INTO user (username, home_dir, linux_user, password, email, nickname, phone, last_login_time, last_login_ip, status, roles, permissions, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'admin', '', ?, ?)",
     )
-    .bind("admin")
-    .bind("/home/admin")
-    .bind("admin")
+    .bind(&username)
+    .bind(&home_dir)
+    .bind(&linux_user)
     .bind(&hashed)
-    .bind("admin@demo.zap.cn")
-    .bind("admin")
-    .bind("18826002600")
+    .bind(format!("{username}@demo.zap.cn"))
+    .bind(&username)
+    .bind("")
     .bind(now)
     .bind("127.0.0.1")
     .bind(now)
@@ -206,6 +246,8 @@ async fn init_system_user_table_schema() {
     .execute(get_db_pool().await)
     .await
     .unwrap();
+    info!("初始管理员已创建：{username}（Linux 账号 {linux_user}，家目录 {home_dir}）");
+    true
 }
 
 // ── packages（套餐）────────────────────────────────────────

@@ -12,7 +12,10 @@
 #   ./rundev.sh --skip-install  # 缺 node_modules 时不自动 npm install
 #   ./rundev.sh --check-code    # 构建前先跑 fmt / clippy（提交前用，等价于旧版默认行为）
 #   ./rundev.sh --skip-check    # 已默认跳过检查，保留此参数仅为兼容旧用法
-#   ./rundev.sh --reset-db      # 删除 data/zap.db 重建全新数据库（admin 初始密码 A123456）
+#   ./rundev.sh --reset-db      # 删除 data/zap.db 重建全新数据库
+#   ./rundev.sh --admin-user zapops --admin-pass secret
+#                               # 指定初始管理员用户名/密码（默认 admin / 123456），
+#                               # 仅在数据库不存在、首次建库时生效
 #   ./rundev.sh --check         # 只检查 Rust 格式(fmt)与代码(clippy)，不构建、不启动服务
 #
 # 注意：zapexec 需要 root 权限，脚本通过 sudo 启动（首次可能提示输入密码）。
@@ -34,20 +37,40 @@ usage() { awk 'NR>2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; }
 # ── 参数解析 ────────────────────────────────────────────────
 # 默认不做 fmt / clippy：日常改一行代码只想快点跑起来，检查交给 --check / --check-code
 RELEASE=false; SKIP_WEB=false; SKIP_BUILD=false; SKIP_INSTALL=false; CHECK_CODE=false; RESET_DB=false; CHECK=false
-for arg in "$@"; do
-  case "$arg" in
-    --release)      RELEASE=true ;;
-    --skip-web)     SKIP_WEB=true ;;
-    --skip-build)   SKIP_BUILD=true ;;
-    --skip-install) SKIP_INSTALL=true ;;
-    --check-code|--lint) CHECK_CODE=true ;;
-    --skip-check)   : ;;  # 已默认跳过，保留仅为兼容旧用法
-    --reset-db|--fresh-db) RESET_DB=true ;;
-    --check)        CHECK=true ;;
+ADMIN_USER=""; ADMIN_PASS=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --release)      RELEASE=true; shift ;;
+    --skip-web)     SKIP_WEB=true; shift ;;
+    --skip-build)   SKIP_BUILD=true; shift ;;
+    --skip-install) SKIP_INSTALL=true; shift ;;
+    --check-code|--lint) CHECK_CODE=true; shift ;;
+    --skip-check)   shift ;;  # 已默认跳过，保留仅为兼容旧用法
+    --reset-db|--fresh-db) RESET_DB=true; shift ;;
+    --check)        CHECK=true; shift ;;
+    --admin-user)   ADMIN_USER="${2:-}"
+                    [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
+                    shift 2 ;;
+    --admin-user=*) ADMIN_USER="${1#*=}"
+                    [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
+                    shift ;;
+    --admin-pass|--admin-password)
+                    ADMIN_PASS="${2:-}"
+                    [ -n "$ADMIN_PASS" ] || die "--admin-pass 缺少密码"
+                    shift 2 ;;
+    --admin-pass=*|--admin-password=*)
+                    ADMIN_PASS="${1#*=}"
+                    [ -n "$ADMIN_PASS" ] || die "--admin-pass 缺少密码"
+                    shift ;;
     -h|--help)      usage; exit 0 ;;
-    *)              die "未知参数: $arg（--help 查看用法）" ;;
+    *)              die "未知参数: $1（--help 查看用法）" ;;
   esac
 done
+
+# 初始管理员凭据：命令行 > 环境变量 > 默认（admin / 123456）。
+# 只在「数据库还不存在」时经 `zapd --init-admin` 写入，已有库不会被改动。
+[ -n "$ADMIN_USER" ] || ADMIN_USER="${ZAP_ADMIN_USER:-admin}"
+[ -n "$ADMIN_PASS" ] || ADMIN_PASS="${ZAP_ADMIN_PASSWORD:-123456}"
 
 # ── 路径 ────────────────────────────────────────────────────
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -236,20 +259,22 @@ sleep 1
 
 # ── 5. 启动 zapd ────────────────────────────────────────────
 info "启动 zapd ..."
-if [ "$RESET_DB" = true ]; then
-  info "注入 ZAP_ADMIN_PASSWORD=A123456（全新数据库 admin 初始密码）"
-  ZAP_ADMIN_PASSWORD="A123456" ZAP_CONFIG="$DEV_CONF" "$BIN_DIR/zapd" &
-else
-  ZAP_CONFIG="$DEV_CONF" "$BIN_DIR/zapd" &
+# 库还不存在时先建库并写入初始管理员（凭据走命令行，不落文件；
+# 库已存在则原样不动，避免每次重启都覆盖改动过的密码）
+if [ ! -f "$ROOT_DIR/data/zap.db" ]; then
+  info "初始化管理员 ${ADMIN_USER} ..."
+  ZAP_CONFIG="$DEV_CONF" "$BIN_DIR/zapd" --init-admin "$ADMIN_USER" \
+    --admin-password "$ADMIN_PASS"
 fi
+ZAP_CONFIG="$DEV_CONF" "$BIN_DIR/zapd" &
 ZAPD_PID=$!
 
 echo ""
 ok "全部服务已启动"
+info "  zapd    : https://127.0.0.1:2600"
+info "  管理员  : ${ADMIN_USER} / ${ADMIN_PASS}（仅全新数据库生效）"
 if [ "$RESET_DB" = true ]; then
-  info "  zapd    : https://127.0.0.1:2600 （默认 admin / A123456，请登录后尽快修改）"
-else
-  info "  zapd    : https://127.0.0.1:2600 （默认 admin / 123456）"
+  info "  家目录  : /home/${ADMIN_USER}（不存在时由 zapexec 自动创建）"
 fi
 info "  zapexec : $EXEC_SOCKET （root 特权守护进程）"
 info "  zapupgrade: $BIN_DIR/zapupgrade （系统升级器，开发环境为手动重启模式）"
