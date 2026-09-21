@@ -694,7 +694,7 @@ remove_path() {
   rm -rf -- "$p"
 }
 
-# 停止并禁用服务(幂等;systemctl / service / chkconfig 都试,均缺失返回 1)
+# 停止并禁用服务(幂等;systemctl / rcctl / service / chkconfig 都试,均缺失返回 1)
 service_stop_disable() {
   local unit="${1:-}" rc=1
   [ -n "$unit" ] || { log_error "service_stop_disable: 需要 unit 名"; return 1; }
@@ -703,7 +703,24 @@ service_stop_disable() {
     systemctl disable "$unit" >/dev/null 2>&1 || true
     rc=0
   fi
-  if command -v service >/dev/null 2>&1; then service "$unit" stop >/dev/null 2>&1 || true; rc=0; fi
+  # OpenBSD：rcctl 认的是 daemon 名，没有 .service 后缀
+  if command -v rcctl >/dev/null 2>&1; then
+    local name="${unit%.service}"
+    rcctl stop "$name" >/dev/null 2>&1 || true
+    rcctl disable "$name" >/dev/null 2>&1 || true
+    rc=0
+  fi
+  # FreeBSD 也有 service(8)，但用法与 SysV 那套不同：启停要带 one 前缀（否则
+  # rc.conf 未开启时直接拒绝），且关闭自启得改 rc.conf 里的 <n>_enable（sysrc）。
+  if [ "$(uname -s)" = "FreeBSD" ]; then
+    local fb_name="${unit%.service}"
+    service "$fb_name" onestop >/dev/null 2>&1 || true
+    sysrc "${fb_name}_enable=NO" >/dev/null 2>&1 || true
+    rc=0
+  elif command -v service >/dev/null 2>&1; then
+    service "$unit" stop >/dev/null 2>&1 || true
+    rc=0
+  fi
   if command -v chkconfig >/dev/null 2>&1; then chkconfig --del "$unit" >/dev/null 2>&1 || true; rc=0; fi
   return "$rc"
 }

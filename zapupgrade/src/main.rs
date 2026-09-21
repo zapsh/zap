@@ -104,25 +104,112 @@ fn log_line(log_path: &str, s: &str) {
     }
 }
 
-fn systemctl(args: &[&str]) -> bool {
-    std::process::Command::new("systemctl")
+/// 服务管理器：Linux 是 systemd，FreeBSD 是 service，OpenBSD / NetBSD 是 rcctl。
+#[cfg(target_os = "linux")]
+const SVC_CTL: &str = "systemctl";
+/// 同 [`SVC_CTL`]，FreeBSD。
+#[cfg(target_os = "freebsd")]
+const SVC_CTL: &str = "service";
+/// 同 [`SVC_CTL`]，OpenBSD / NetBSD（两者都有 rcctl，语义一致）。
+#[cfg(any(target_os = "openbsd", target_os = "netbsd"))]
+const SVC_CTL: &str = "rcctl";
+/// 兜底值：macOS 等不在支持范围内的平台，仅为通过类型检查——运行期
+/// [`supported()`] 恒为 false，不会真的执行它。
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+)))]
+const SVC_CTL: &str = "rcctl";
+
+/// 当前平台的自动服务管理是否受支持。
+/// 只覆盖 Linux(systemd)、FreeBSD(service+sysrc)、OpenBSD/NetBSD(rcctl)；
+/// macOS 用 launchctl，不在范围内。
+fn supported() -> bool {
+    cfg!(any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))
+}
+
+/// 服务名：Linux 用 `<name>.service`，OpenBSD 直接用 daemon 名。
+#[cfg(target_os = "linux")]
+fn service_unit(svc: &str) -> String {
+    format!("{svc}.service")
+}
+
+/// 同 [`service_unit`]，BSD 直接用 daemon 名。
+#[cfg(not(target_os = "linux"))]
+fn service_unit(svc: &str) -> String {
+    svc.to_string()
+}
+
+/// 重启服务的命令参数。
+///
+/// FreeBSD 必须用 `onerestart`：不带 `one` 前缀时，rc.conf 里没有
+/// `n_enable="YES"` 的服务会被 `service` 直接拒绝执行。
+#[cfg(target_os = "freebsd")]
+fn restart_args(unit: &str) -> [&str; 2] {
+    ["onerestart", unit]
+}
+#[cfg(not(target_os = "freebsd"))]
+fn restart_args(unit: &str) -> [&str; 2] {
+    ["restart", unit]
+}
+
+fn svc_cmd(args: &[&str]) -> bool {
+    std::process::Command::new(SVC_CTL)
         .args(args)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
-/// 目标服务是否正由 systemd 加载管理？
-/// 开发/容器环境（rundev.sh 裸进程、docker）没有 systemd unit，返回 false。
+/// 目标服务是否已注册到本机服务管理器？
+/// 开发/容器环境（rundev.sh 裸进程、docker）没有注册服务，返回 false；
+/// 平台本身不支持自动服务管理时同样返回 false，上层据此提示「手动重启」。
 fn unit_managed(unit: &str) -> bool {
-    if !std::path::Path::new("/run/systemd/system").exists() {
+    if !supported() {
         return false;
     }
-    std::process::Command::new("systemctl")
-        .args(["show", unit, "--property=Id", "--no-pager"])
-        .output()
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Id="))
-        .unwrap_or(false)
+    #[cfg(target_os = "linux")]
+    {
+        if !std::path::Path::new("/run/systemd/system").exists() {
+            return false;
+        }
+        std::process::Command::new(SVC_CTL)
+            .args(["show", unit, "--property=Id", "--no-pager"])
+            .output()
+            .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Id="))
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        #[cfg(target_os = "freebsd")]
+        {
+            // FreeBSD：脚本装上了就算注册（第三方在 /usr/local/etc/rc.d/）
+            ["/etc/rc.d", "/usr/local/etc/rc.d"]
+                .iter()
+                .any(|d| std::path::Path::new(d).join(unit).exists())
+        }
+        #[cfg(not(target_os = "freebsd"))]
+        {
+            // rcctl ls all 列出全部已注册 daemon（含未启用的）；一行可能是多个
+            std::process::Command::new(SVC_CTL)
+                .args(["ls", "all"])
+                .output()
+                .map(|o| {
+                    o.status.success()
+                        && String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .any(|l| l.split_whitespace().any(|w| w == unit))
+                })
+                .unwrap_or(false)
+        }
+    }
 }
 
 /// 从 argv 中取出 `--log` 的值（供参数解析失败时兜底写日志）。
@@ -282,18 +369,18 @@ fn run_upgrade(ctx: &RunCtx) -> i32 {
         if !targets.contains(&svc) {
             continue;
         }
-        let unit = format!("{svc}.service");
+        let unit = service_unit(svc);
         if !unit_managed(&unit) {
             log_line(
                 &ctx.log,
                 &format!(
-                    "{unit} 不受 systemd 管理（开发/容器环境），新二进制已替换，请手动重启 {svc} 生效"
+                    "{unit} 未注册为系统服务（开发/容器环境），新二进制已替换，请手动重启 {svc} 生效"
                 ),
             );
             manual.push(svc.to_string());
             continue;
         }
-        if systemctl(&["restart", &unit]) {
+        if svc_cmd(&restart_args(&unit)) {
             log_line(&ctx.log, &format!("{unit} 已重启"));
         } else {
             log_line(&ctx.log, &format!("重启 {unit} 失败，尝试回滚 {svc}"));
@@ -310,8 +397,8 @@ fn run_upgrade(ctx: &RunCtx) -> i32 {
                 log_line(&ctx.log, &format!("已回滚 {svc} 到旧版本"));
             }
         }
-        let unit = format!("{svc}.service");
-        if systemctl(&["restart", &unit]) {
+        let unit = service_unit(svc);
+        if svc_cmd(&restart_args(&unit)) {
             log_line(&ctx.log, &format!("回滚后 {unit} 已重启"));
         } else {
             log_line(&ctx.log, &format!("{unit} 回滚后仍无法启动，请人工介入"));
@@ -631,15 +718,15 @@ fn cmd_rollback(list: bool, to: &Option<String>, dir: &Path, log: &str) -> i32 {
         if !restored.contains(&svc) {
             continue;
         }
-        let unit = format!("{svc}.service");
+        let unit = service_unit(svc);
         if !unit_managed(&unit) {
             log_line(
                 log,
-                &format!("{unit} 不受 systemd 管理，旧二进制已恢复，请手动重启 {svc} 生效"),
+                &format!("{unit} 未注册为系统服务，旧二进制已恢复，请手动重启 {svc} 生效"),
             );
             continue;
         }
-        if systemctl(&["restart", &unit]) {
+        if svc_cmd(&restart_args(&unit)) {
             log_line(log, &format!("{unit} 已重启"));
         } else {
             log_line(log, &format!("重启 {unit} 失败，请人工介入"));

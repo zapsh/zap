@@ -146,10 +146,7 @@ impl Service {
         match self {
             Service::Zapd => vec![svc::unit_name(UNIT_ZAPD)],
             Service::Zapexec => vec![svc::unit_name(UNIT_ZAPEXEC)],
-            Service::All => vec![
-                svc::unit_name(UNIT_ZAPD),
-                svc::unit_name(UNIT_ZAPEXEC),
-            ],
+            Service::All => vec![svc::unit_name(UNIT_ZAPD), svc::unit_name(UNIT_ZAPEXEC)],
         }
     }
 }
@@ -317,4 +314,3 @@ fn run_inherit(program: &str, args: &[&str]) -> Result<(), String> {
         ))
     }
 }
-

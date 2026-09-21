@@ -17,12 +17,12 @@ mod platform;
 mod process;
 mod resource;
 mod service;
-mod svc;
 mod service_conf;
 mod site;
 mod ssh;
 mod ssh_key;
 mod ssh_user_key;
+mod svc;
 mod time;
 mod upgrade;
 mod user;
@@ -754,5 +754,3 @@ pub(crate) fn cloexec_inherited_fds() {
         }
     }
 }
-
-

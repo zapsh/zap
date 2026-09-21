@@ -1,0 +1,35 @@
+#!/bin/ksh
+#
+# zapexec —— ZAP 面板的 root 特权执行守护进程（OpenBSD 版）
+#
+# 对应 systemd 的 scripts/systemd/zapexec.service。OpenBSD 没有 unit 文件，
+# 服务由 /etc/rc.d/<name> 配合 rcctl(8) 管理，unit 里的 Environment= 与
+# RuntimeDirectory= 需要在本脚本里手工补齐。
+#
+# 注意：此脚本尚未在 OpenBSD 上实测（仓库 CI 只覆盖 Linux），若 rc.subr
+# 行为与预期不符，优先检查 rc_bg / rc_pre 两处。
+
+# unit 里的 Environment=ZAP_PATH=/usr/local/zap
+export ZAP_PATH=/usr/local/zap
+
+daemon="/usr/local/zap/zapexec"
+# socket 路径要与 zap-proto 的 DEFAULT_EXEC_SOCKET 一致：非 Linux 平台是
+# /var/run/zap/exec.sock（OpenBSD 没有 /run）
+daemon_flags="--socket /var/run/zap/exec.sock --secret /etc/zap/exec.key --client-user zapadm"
+daemon_timeout=30
+
+. /etc/rc.d/rc.subr
+
+# zapexec 是前台运行的服务（systemd 里是 Type=simple），需要 rc.subr 放到后台
+rc_bg=YES
+# 不支持 reload：配置变更走 rcctl restart
+rc_reload=NO
+
+# unit 里的 RuntimeDirectory=zap 由 systemd 自动建，这里自己来；
+# 幂等，已存在时 install -d 不报错
+rc_pre() {
+	install -d -o root -g wheel -m 0750 /var/run/zap
+	return 0
+}
+
+rc_cmd $1

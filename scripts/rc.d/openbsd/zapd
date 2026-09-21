@@ -1,0 +1,30 @@
+#!/bin/ksh
+#
+# zapd —— ZAP 面板业务主进程（OpenBSD 版）
+#
+# 对应 systemd 的 scripts/systemd/zapd.service（User=zapadm、
+# WorkingDirectory=/usr/local/zap）。OpenBSD 用 rcctl(8) 管理，这两项需要在
+# 本脚本里补齐。
+#
+# 注意：此脚本尚未在 OpenBSD 上实测（仓库 CI 只覆盖 Linux），若启动后进程
+# 立刻退出，优先检查下面的 rc_start 与 daemon_user 组合。
+
+daemon="/usr/local/zap/zapd"
+daemon_user="zapadm"
+daemon_timeout=30
+
+. /etc/rc.d/rc.subr
+
+# 与 zapexec 同为前台服务
+rc_bg=YES
+# 不支持 reload：配置变更走 rcctl restart
+rc_reload=NO
+
+# rc.subr 没有「工作目录」的概念，而 su 会把 cwd 切到 zapadm 的 home；
+# zapd 用相对路径读写 data/ 下的内容，所以覆盖 rc_start 显式 cd。
+# ${rcexec} 由 rc.subr 提供：daemon_user 为 root 时为空，否则是对应的 su 封装。
+rc_start() {
+	${rcexec} "cd /usr/local/zap && ${daemon} ${daemon_flags} &"
+}
+
+rc_cmd $1

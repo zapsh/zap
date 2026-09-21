@@ -49,6 +49,7 @@ pub async fn info() -> Response {
 
 /// `upgrade.run`：校验升级包目录与日志路径位于数据区后，
 /// 用 `systemd-run --no-block` 把 zapupgrade 放入独立 unit 中异步执行并立即返回。
+/// 没有 systemd 时（开发机/容器、OpenBSD 等）退化为直接 spawn 子进程，语义相同。
 pub async fn run(run_id: String, stage_dir: String, log_path: String) -> Response {
     if !valid_token(&run_id) {
         return Response::err(-1, format!("run_id 非法: {run_id}"));
@@ -155,6 +156,14 @@ pub async fn run(run_id: String, stage_dir: String, log_path: String) -> Respons
 /// systemd 是否正在运行（作为 PID 1 且可交互）。
 /// 判定依据：/run/systemd/system 仅由运行中的 systemd 创建；
 /// 开发机裸进程 / Docker 容器一般不存在该目录。
+/// 非 Linux 平台恒为 false —— 那里走直接 spawn 的分支。
 fn systemd_available() -> bool {
-    Path::new("/run/systemd/system").exists()
+    #[cfg(target_os = "linux")]
+    {
+        Path::new("/run/systemd/system").exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }

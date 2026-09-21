@@ -63,7 +63,7 @@ elif command -v service >/dev/null 2>&1;then
     if [ $DB_TYPE = "mysql" ];then
         service mysql stop
     elif [ $DB_TYPE = "mariadb" ];then
-        systemctl stop mariadb.service
+        service mariadb stop
     fi
 fi
 

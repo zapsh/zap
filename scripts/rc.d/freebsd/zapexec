@@ -1,0 +1,44 @@
+#!/bin/sh
+# PROVIDE: zapexec
+# REQUIRE: LOGIN
+# BEFORE: zapd
+# KEYWORD: shutdown
+#
+# zapexec —— ZAP 面板的 root 特权执行守护进程（FreeBSD 版）
+#
+# 对应 scripts/systemd/zapexec.service：以 root 运行（unit 里没有 User=），
+# unit 的 Environment= 与 RuntimeDirectory= 在下面手工补齐。
+#
+# 顺序要求与 systemd 侧一致：zapexec 必须先于 zapd 启动，全新机器上 exec.key
+# 由 zapexec 首启生成（对应 unit 的 After=zapexec.service）。
+#
+# 注意：此脚本尚未在 FreeBSD 上实测（仓库 CI 只覆盖 Linux）。
+
+. /etc/rc.subr
+
+name="zapexec"
+rcvar="zapexec_enable"
+desc="zap privileged exec daemon (root)"
+
+# unit 里的 Environment=ZAP_PATH=/usr/local/zap
+export ZAP_PATH=/usr/local/zap
+
+command="/usr/sbin/daemon"
+procname="/usr/local/zap/zapexec"
+pidfile="/var/run/${name}.pid"
+
+# unit 的 RuntimeDirectory=zap 由 systemd 自动建，这里自己来（幂等）。
+# 非 Linux 平台没有 /run，socket 放在 /var/run —— 与 zap-proto 的
+# DEFAULT_EXEC_SOCKET 保持一致，改一处就得改另一处。
+# 这里不需要 sh -c 包 cd：zapexec 靠 ZAP_PATH 定位，不依赖工作目录。
+zapexec_start() {
+	install -d -o root -g wheel -m 0750 /var/run/zap || return 1
+	/usr/sbin/daemon -f -p "${pidfile}" /usr/local/zap/zapexec \
+		--socket /var/run/zap/exec.sock \
+		--secret /etc/zap/exec.key \
+		--client-user zapadm
+}
+start_cmd="zapexec_start"
+
+load_rc_config "${name}"
+run_rc_command "$1"
