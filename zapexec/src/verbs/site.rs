@@ -919,11 +919,9 @@ pub(super) fn ensure_default_vhost(conf_file: &Path, bin: &Path) {
             return;
         }
     };
-    if let Err(e) = super::webconf::publish_named(
-        "nginx",
-        DEFAULT_VHOST_FILE,
-        &render_default_vhost(false),
-    ) {
+    if let Err(e) =
+        super::webconf::publish_named("nginx", DEFAULT_VHOST_FILE, &render_default_vhost(false))
+    {
         if injected {
             super::webconf::restore_include(conf_file);
         }
@@ -2100,7 +2098,10 @@ mod tests {
         let d = render_default_vhost(false);
         assert!(d.contains("listen 80 default_server"));
         assert!(d.contains("return 444"), "默认站点应直接断开，避免串站");
-        assert!(!d.contains("stub_status"), "未启用状态页时不应注入 location");
+        assert!(
+            !d.contains("stub_status"),
+            "未启用状态页时不应注入 location"
+        );
         // 444 必须落在 location / 内：server 级 return 会在 location 匹配前生效，
         // 那样状态页永远取不到数据（实测返回空响应）
         assert!(

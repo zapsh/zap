@@ -801,6 +801,20 @@ fn run_capture(program: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// git 包装：显式放行仓库属主检查。
+///
+/// 面板以 root 跑，而 `data/appstore/repos/<id>/` 可能是别的账号建的（内置源随发行包落地、
+/// 或用户手动 clone）。git 2.35.2+ 一旦遇到「仓库属主 ≠ 当前 euid」就报
+/// `detected dubious ownership` 并直接失败，且要求手工改全局配置——面板无权也不该
+/// 去改宿主的 `~/.gitconfig`，所以每次调用都自带 `-c safe.directory=*`。
+fn run_git(args: &[&str]) -> Result<String, String> {
+    let mut full: Vec<&str> = Vec::with_capacity(args.len() + 2);
+    full.push("-c");
+    full.push("safe.directory=*");
+    full.extend_from_slice(args);
+    run_capture("git", &full)
+}
+
 /// 包脚本的运行身份模式（`app.yaml` 的 `run_as` / `scope` 推导结果）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunMode {
@@ -1399,10 +1413,7 @@ fn repo_add_inner(name: &str, url: &str) -> Result<String, String> {
     std::fs::create_dir_all(repos_dir()).map_err(|e| e.to_string())?;
     let tmp_clone = repos_dir().join(format!(".tmp-{id}"));
     let _ = std::fs::remove_dir_all(&tmp_clone);
-    run_capture(
-        "git",
-        &["clone", "--depth", "1", url, tmp_clone.to_str().unwrap()],
-    )?;
+    run_git(&["clone", "--depth", "1", url, tmp_clone.to_str().unwrap()])?;
     // 临时目录非空校验，防止克隆出空目录
     if std::fs::read_dir(&tmp_clone)
         .map_err(|e| e.to_string())?
@@ -1413,7 +1424,7 @@ fn repo_add_inner(name: &str, url: &str) -> Result<String, String> {
         return Err("克隆结果为空".into());
     }
     std::fs::rename(&tmp_clone, &dir).map_err(|e| format!("移动到源目录失败: {e}"))?;
-    let commit = run_capture("git", &["-C", dir.to_str().unwrap(), "rev-parse", "HEAD"])?;
+    let commit = run_git(&["-C", dir.to_str().unwrap(), "rev-parse", "HEAD"])?;
     let short = commit.chars().take(7).collect::<String>();
     repos.push(RepoEntry {
         id: id.clone(),
@@ -1479,25 +1490,19 @@ fn repo_update_inner(id: &str) -> Result<String, String> {
         std::fs::create_dir_all(repos_dir()).map_err(|e| e.to_string())?;
         let tmp_clone = repos_dir().join(format!(".tmp-{id}"));
         let _ = std::fs::remove_dir_all(&tmp_clone);
-        run_capture(
-            "git",
-            &[
-                "clone",
-                "--depth",
-                "1",
-                &entry.url,
-                tmp_clone.to_str().unwrap(),
-            ],
-        )?;
+        run_git(&[
+            "clone",
+            "--depth",
+            "1",
+            &entry.url,
+            tmp_clone.to_str().unwrap(),
+        ])?;
         std::fs::rename(&tmp_clone, &dir).map_err(|e| format!("移动到源目录失败: {e}"))?;
     } else {
-        run_capture("git", &["-C", dir.to_str().unwrap(), "fetch", "origin"])?;
-        run_capture(
-            "git",
-            &["-C", dir.to_str().unwrap(), "reset", "--hard", "FETCH_HEAD"],
-        )?;
+        run_git(&["-C", dir.to_str().unwrap(), "fetch", "origin"])?;
+        run_git(&["-C", dir.to_str().unwrap(), "reset", "--hard", "FETCH_HEAD"])?;
     }
-    let commit = run_capture("git", &["-C", dir.to_str().unwrap(), "rev-parse", "HEAD"])?;
+    let commit = run_git(&["-C", dir.to_str().unwrap(), "rev-parse", "HEAD"])?;
     let short = commit.chars().take(7).collect::<String>();
     let mut new_repos = repos;
     if let Some(r) = new_repos.iter_mut().find(|r| r.id == id) {
