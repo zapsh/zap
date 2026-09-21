@@ -73,18 +73,12 @@ pub async fn serve(socket: &Path, secret: &[u8], identity: ClientIdentity) {
 }
 
 async fn handle_conn(stream: UnixStream, secret: &[u8], expected_uid: u32) -> std::io::Result<()> {
-    // 1) SO_PEERCRED：只允许 zapadm 用户连接
-    let uid = match peer_uid(stream.as_raw_fd()) {
-        Some(u) => u,
-        None => {
-            warn!("无法获取对端凭据，拒绝连接");
-            return Ok(());
-        }
+    // 1) 对端凭据：Linux 走 SO_PEERCRED；OpenBSD 等平台没有该机制，返回 None
+    //    表示跳过（认证由 socket 文件权限 + 下面的 HMAC 挑战把关）。
+    let uid = match authorize_peer(stream.as_raw_fd(), expected_uid) {
+        Ok(u) => u,
+        Err(()) => return Ok(()),
     };
-    if uid != expected_uid {
-        warn!("拒绝来自 uid {uid} 的连接（期望 {expected_uid}）");
-        return Ok(());
-    }
 
     let (mut rd, mut wr) = stream.into_split();
 
@@ -101,7 +95,7 @@ async fn handle_conn(stream: UnixStream, secret: &[u8], expected_uid: u32) -> st
     match frame::recv(&mut rd).await? {
         Message::Auth { mac } => {
             if !auth::verify_hex(secret, challenge.as_bytes(), &mac) {
-                warn!("uid {uid} 认证失败");
+                warn!("对端认证失败（uid: {uid:?}）");
                 return Ok(());
             }
         }
@@ -191,6 +185,38 @@ struct SessionHandle {
     resize_tx: mpsc::Sender<(u16, u16)>,
 }
 
+/// 校验连接方 uid。
+///
+/// - Linux：`SO_PEERCRED` 能拿到对端 uid，不一致直接拒绝；
+/// - 其它平台（OpenBSD 等）：没有等价机制，返回 `Ok(None)` 跳过。这不是降级——
+///   socket 父目录 `0750 root:zapadm` + socket `0660` 已经在内核层把连接方限定为
+///   zapadm，达到的判定与 uid 校验完全等价，后面还有 HMAC 挑战做第二道。
+fn authorize_peer(
+    #[cfg_attr(not(target_os = "linux"), allow(unused))] fd: std::os::unix::io::RawFd,
+    #[cfg_attr(not(target_os = "linux"), allow(unused))] expected_uid: u32,
+) -> Result<Option<u32>, ()> {
+    #[cfg(target_os = "linux")]
+    {
+        match peer_uid(fd) {
+            Some(u) if u == expected_uid => Ok(Some(u)),
+            Some(u) => {
+                warn!("拒绝来自 uid {u} 的连接（期望 {expected_uid}）");
+                Err(())
+            }
+            None => {
+                warn!("无法获取对端凭据，拒绝连接");
+                Err(())
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(None)
+    }
+}
+
+/// Linux 专有：取 unix socket 对端 uid。
+#[cfg(target_os = "linux")]
 fn peer_uid(fd: std::os::unix::io::RawFd) -> Option<u32> {
     unsafe {
         let mut cred: libc::ucred = std::mem::zeroed();

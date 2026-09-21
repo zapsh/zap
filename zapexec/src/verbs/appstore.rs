@@ -1052,6 +1052,9 @@ fn spawn_background(
     let cpu_num = std::thread::available_parallelism()
         .map(|n| n.get().to_string())
         .unwrap_or_else(|_| "1".into());
+    // 资源边界（rlimit + 可选的 Linux cgroup）：整次 run 共用一份，
+    // 只有降权的第三方脚本会 enter，官方 root 脚本不受限。
+    let resource = std::sync::Arc::new(super::resource::TaskResource::prepare(run_id));
 
     std::thread::spawn(move || {
         use std::io::Write;
@@ -1116,6 +1119,7 @@ fn spawn_background(
                 cmd.env("ZAP_PY_LIB", zap_path().join("scripts").join("zap"));
             }
             // 新进程组：pid == pgid，便于停止/超时时 kill(-pid)
+            let res = std::sync::Arc::clone(&resource);
             unsafe {
                 cmd.pre_exec(move || {
                     libc::setsid();
@@ -1125,7 +1129,8 @@ fn spawn_background(
                     // 之后禁止借 setuid 提权 + 关 core dump
                     if let Some((uid, gid)) = drop_to {
                         super::drop_privileges(uid, gid)?;
-                        super::harden_child();
+                        // 进入资源笼子：禁再提权 + rlimit + umask + cgroup
+                        res.enter();
                     }
                     Ok(())
                 });
@@ -1152,6 +1157,7 @@ fn spawn_background(
             }
         }
         let _ = std::fs::remove_file(&pid_path);
+        resource.finish();
         // 顺序固定：先把日志写完，再落 .ret 宣布结束。
         // 反过来的话，面板可能在日志还没刷完时就读到 .ret 判定完成，
         // 最后一行标记来不及被 strip，会漏给用户看。

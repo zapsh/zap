@@ -14,6 +14,7 @@ mod network;
 mod nginx;
 mod php;
 mod process;
+mod resource;
 mod service;
 mod service_conf;
 mod site;
@@ -681,7 +682,8 @@ pub(crate) fn linux_account(user: &str) -> Result<LinuxAccount, String> {
 ///    任何进程环境（里面可能有 JWT 密钥、数据库凭据）；
 /// 2. `cwd` 固定为账号家目录，脚本无法借相对路径落到系统目录；
 /// 3. 主/属组在 exec 前降到该账号（nologin 账号），见 `drop_privileges`；
-/// 4. 配合调用方 `pre_exec` 里的 `harden_child`：禁止再提权 + 关 core dump。
+/// 4. 配合调用方 `pre_exec` 里的 `resource::TaskResource::enter`：禁再提权 +
+///    关 core dump + 补齐 rlimit（跨平台，见 `resource` 模块文档）。
 ///
 /// 返回命令 + 账号信息：**这里不降权**。降权必须先清附加组再 setgid/setuid，
 /// 而 `CommandExt::uid/gid` 的降权时机由标准库内部决定，无法保证排在
@@ -751,16 +753,4 @@ pub(crate) fn cloexec_inherited_fds() {
     }
 }
 
-/// 降权子进程的自加固（在 `pre_exec` 内调用，仅对以 Linux 账号运行的脚本生效）：
-/// - `PR_SET_NO_NEW_PRIVS`：禁止借 setuid 程序再次提权；
-/// - `RLIMIT_CORE = 0`：崩溃时不产生 core dump，避免内存里的数据库密码落盘。
-pub(crate) fn harden_child() {
-    unsafe {
-        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-        let rl = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        libc::setrlimit(libc::RLIMIT_CORE, &rl);
-    }
-}
+
