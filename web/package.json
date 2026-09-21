@@ -1,6 +1,6 @@
 {
   "name": "zap-admin-vue3",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A Vue 3 admin template with Element Plus, Pinia, and Vite.",
   "build-date": "",
   "author": "Zap Team <z@zap.cn>",
