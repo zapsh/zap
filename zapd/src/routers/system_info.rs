@@ -51,7 +51,7 @@ pub async fn about(_: ValidatedClaims) -> ZapJsonResult {
             "rustc_channel": build_meta(option_env!("VERGEN_RUSTC_CHANNEL")),
             "target_triple": build_meta(option_env!("VERGEN_CARGO_TARGET_TRIPLE")),
             "profile": profile,
-            "license": "GPL-3.0-or-later",
+            "license": env!("CARGO_PKG_LICENSE"),
             "docs_path": "/docs/manual",
             "api_docs_path": "/dev/api-docs",
         }

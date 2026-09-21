@@ -10,7 +10,7 @@
 [![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen?logo=vue.js)](https://vuejs.org)
 [![Version](https://img.shields.io/badge/version-1.0.3-blue)](https://github.com/zapsh/zap)
 [![Platform](https://img.shields.io/badge/platform-Linux%20amd64%20%7C%20arm64-lightgrey?logo=linux)](https://www.kernel.org)
-[![License](https://img.shields.io/badge/license-GPL--3.0-blue)](./LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 
 </div>
 
@@ -24,7 +24,7 @@
 
 ZAP 的后端以 **Rust** 编写（Axum + Tokio + SQLx），前端采用 **Vue 3 + Element Plus**，并通过现代化文件管理器提供在线浏览、编辑、上传下载、新建、重命名与删除等能力。部署方便，资源占用低。
 
-ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免费使用。
+ZAP 以 **[Apache-2.0](./LICENSE)** 开源许可发布：个人与企业均可免费使用。
 
 > 演示与下载：<https://zap.sh> ｜ 文档建设中
 
@@ -347,13 +347,14 @@ cd web && npm run type-check
 
 - 遵循现有代码风格，新增接口请补充审计日志与权限校验
 - 涉及系统变更的能力请通过 `zapexec` 白名单动词实现，不要在业务进程内直接提权
-- 提交 PR 即表示同意你的贡献以本项目许可证（[GPL-3.0](./LICENSE)）一并授权给社区
+- 提交 PR 即表示同意你的贡献以本项目许可证（[Apache-2.0](./LICENSE)）一并授权给社区
 
 ---
 
 ## 许可证
 
-ZAP 采用 **[GNU General Public License v3.0](./LICENSE)**（GPL-3.0）开源许可。
+ZAP 采用 **[Apache License 2.0](./LICENSE)**（Apache-2.0）开源许可。
 
-- 许可正文：[LICENSE](./LICENSE)（GPL-3.0 全文）
+- 许可正文：[LICENSE](./LICENSE)（Apache-2.0 全文）
+- 官方条款：<https://www.apache.org/licenses/LICENSE-2.0>
 

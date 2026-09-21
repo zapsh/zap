@@ -4,7 +4,7 @@
   "description": "A Vue 3 admin template with Element Plus, Pinia, and Vite.",
   "build-date": "",
   "author": "Zap Team <z@zap.cn>",
-  "license": "GPL-3.0-or-later",
+  "license": "Apache-2.0",
   "keywords": [
     "vue",
     "vue3",
