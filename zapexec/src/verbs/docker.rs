@@ -167,14 +167,99 @@ async fn compose_available() -> bool {
     matches!(out, Ok(o) if o.status.success())
 }
 
-/// GET 环境状态：socket 是否可达、daemon 是否在跑、compose 插件是否可用。
+/// Docker 是否**已安装**——与 daemon 此刻跑不跑无关。
+///
+/// 不能拿 socket 存不存在顶替：daemon 停掉后 `/var/run/docker.sock` 就被移除，
+/// 而 `/run` 是 tmpfs，重启后同样没有。那样「装了但没启动」会被判成没装，
+/// 面板侧栏的容器入口会跟着消失（门禁见 zapd 的 `zap::feature`），
+/// 用户会以为 Docker 没了而重装一遍。
+///
+/// 任一命中即算装过：CLI 二进制 → daemon socket → 服务单元 → 包管理器记录。
+fn installed() -> bool {
+    installed_from(
+        cli_exists(),
+        socket_exists(),
+        unit_exists(),
+        package_installed(),
+    )
+}
+
+/// 四档探测的合并规则。抽出来是为了能单测——真正要防的回归是「拿 socket 当
+/// installed」：daemon 一停 socket 就没了，装了也会被判成没装。
+fn installed_from(cli: bool, socket: bool, unit: bool, pkg: bool) -> bool {
+    cli || socket || unit || pkg
+}
+
+/// daemon socket 是否存在（只有 daemon 正在监听时才会有）。
+fn socket_exists() -> bool {
+    Path::new(&socket_path()).exists()
+}
+
+/// docker CLI 是否已安装：常见安装路径，再用 PATH 兜一次（nix、/opt 自编译等）。
+fn cli_exists() -> bool {
+    const CANDIDATES: &[&str] = &[
+        "/usr/bin/docker",
+        "/usr/local/bin/docker",
+        "/bin/docker",
+        "/usr/sbin/docker",
+        "/usr/local/sbin/docker",
+        "/sbin/docker",
+    ];
+    if CANDIDATES.iter().any(|p| Path::new(p).exists()) {
+        return true;
+    }
+    super::root_cmd("/bin/sh")
+        .args(["-c", "command -v docker 2>/dev/null"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+}
+
+/// 服务单元是否已注册（systemd / rc.d / rcctl，平台差异见 [`super::svc::exists`]）。
+fn unit_exists() -> bool {
+    super::svc::exists("docker")
+}
+
+/// 包管理器里是否还登记着 docker。
+///
+/// 最后一档兜底：二进制被删、装到非标准路径、单元也没注册时仍能认出来。
+/// 只查 deb / rpm 两档，查不到就当没装——容器页面还有 daemon 探测兜底。
+fn package_installed() -> bool {
+    let stdout = |prog: &str, args: &[&str]| -> String {
+        super::root_cmd(prog)
+            .args(args)
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+    // deb：docker-ce（官方源）/ docker.io（发行版源）
+    if stdout(
+        "dpkg-query",
+        &["-W", "-f=${Status}", "docker-ce", "docker.io"],
+    )
+    .lines()
+    .any(|l| l.contains("install ok installed"))
+    {
+        return true;
+    }
+    // rpm：同上，发行版源里的包名常就是 docker
+    stdout("rpm", &["-q", "--qf", "%{NAME}\n", "docker-ce", "docker"])
+        .lines()
+        .any(|l| !l.trim().is_empty() && !l.contains("not installed"))
+}
+
+/// GET 环境状态：是否装过、daemon 是否在跑、compose 插件是否可用。
 ///
 /// 探测失败也是**正常返回**（`installed` / `daemon` = false），前端据此展示引导，
 /// 而不是弹一个看不懂的错误。
 pub async fn status() -> Response {
-    // socket 不存在基本等于「没装 Docker / 没启动」，先给出这个判断，
-    // 再尝试连一次拿到真实原因（权限被拒、daemon 未启动…）。
-    let installed = std::path::Path::new(&socket_path()).exists();
+    // 「装没装」（installed）与「在不在跑」（daemon）必须分开：装了但没启动时
+    // 入口仍要保留，由容器页提示去启动，而不是把入口藏掉。
+    let installed_flag = tokio::task::spawn_blocking(installed)
+        .await
+        .unwrap_or(false);
 
     let version = match docker() {
         Ok(d) => call(CALL_TIMEOUT, "读取 Docker 版本", d.version()).await,
@@ -196,7 +281,7 @@ pub async fn status() -> Response {
         Err(e) => Response::ok(
             "ok",
             Some(json!({
-                "installed": installed,
+                "installed": installed_flag,
                 "daemon": false,
                 "version": "",
                 "api_version": "",
@@ -1654,9 +1739,31 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_port_spec, prepare_bind_dir, valid_build_arg_key, valid_container_name,
-        valid_platform, validate_volume_name,
+        installed_from, parse_port_spec, prepare_bind_dir, valid_build_arg_key,
+        valid_container_name, valid_platform, validate_volume_name,
     };
+
+    /// 装了但 daemon 没启动（socket 不存在）仍必须算「已安装」：
+    /// 否则面板侧栏的容器入口会消失，用户会以为 Docker 没了而重装一遍。
+    #[test]
+    fn installed_even_without_socket() {
+        // CLI 在 / 单元已注册 / 包还登记着，任一命中即可，socket 缺席无所谓
+        assert!(installed_from(true, false, false, false));
+        assert!(installed_from(false, false, true, false));
+        assert!(installed_from(false, false, false, true));
+    }
+
+    /// daemon 正在跑（socket 在）当然算装过——正常路径不能倒退。
+    #[test]
+    fn socket_alone_means_installed() {
+        assert!(installed_from(false, true, false, false));
+    }
+
+    /// 四档全不命中才是「没装」。
+    #[test]
+    fn nothing_means_not_installed() {
+        assert!(!installed_from(false, false, false, false));
+    }
 
     /// 卷名会被拼进宿主机路径，穿越必须挡住（这些用例都在建目录之前就返回，不碰文件系统）
     #[test]

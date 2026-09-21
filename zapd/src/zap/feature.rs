@@ -194,17 +194,21 @@ fn merge_results(
 
 /// Docker 是否可用：复用 zapexec 的 `/docker/status` 探测（一次 IPC call）。
 ///
-/// 取 `installed`（socket 存在 ≈ 装过）即可：daemon 临时没起属于运行态问题，
-/// 由容器页自己提示，不该把入口藏掉——否则用户会以为 Docker 没了而重复安装。
+/// 只看 `installed`（**是否装过**），不看 `daemon`：
+/// 装了但没起 daemon 属于运行态问题，容器页自己会提示去启动，入口不该跟着消失
+/// ——否则用户会以为 Docker 没了而重装一遍。
+///
+/// exec 侧的 `installed` 已与 socket 解耦（CLI 二进制 / 服务单元 / 包记录
+/// 任一命中即算装过），因为 daemon 一停 socket 就没了，拿它当「装没装」必然误判。
+///
+/// 响应里没有 installed 字段视为链路异常（不是「没装」），交给 `merge_results` 兜底。
 async fn probe_docker() -> ProbeResult {
     match tokio::time::timeout(DETECT_TIMEOUT, zapexec::call(Request::DockerStatus)).await {
-        Ok(Ok(resp)) => Some(
-            resp.data
-                .as_ref()
-                .and_then(|d| d.get("installed"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-        ),
+        Ok(Ok(resp)) => resp
+            .data
+            .as_ref()
+            .and_then(|d| d.get("installed"))
+            .and_then(|v| v.as_bool()),
         // exec 没起 / IPC 不通 / 超时：不是「没装」，交给 `merge_results` 兜底
         Ok(Err(_)) | Err(_) => None,
     }
