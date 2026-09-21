@@ -211,7 +211,14 @@ const shortcuts = computed(() => [
   { title: t('dashboardAdmin.sites'), path: '/site/index', icon: 'material-symbols:public', color: '#409eff' },
   { title: t('dashboardAdmin.databases'), path: '/database/index', icon: 'material-symbols:database', color: '#67c23a' },
   { title: t('dashboardAdmin.files'), path: '/files/index', icon: 'material-symbols:folder', color: '#e6a23c' },
-  { title: t('dashboardAdmin.users'), path: '/system/users', icon: 'material-symbols:person', color: '#9254de' },
+  // 用户管理与角色管理已合并为一页（/system/access 页内 nav pill 切换）：
+  // 旧路径 /system/users 已随菜单合并下架，点进去没有任何路由匹配，页面打不开。
+  {
+    title: t('dashboardAdmin.users'),
+    path: '/system/access?tab=users',
+    icon: 'material-symbols:person',
+    color: '#9254de',
+  },
   { title: t('dashboardAdmin.settings'), path: '/system/zap-config', icon: 'material-symbols:settings', color: '#606266' },
   { title: t('dashboardAdmin.serverStatusPage'), path: '/server-status/index', icon: 'material-symbols:monitoring', color: '#f56c6c' },
   { title: t('dashboardAdmin.terminal'), path: '/terminal/index', icon: 'material-symbols:monitor', color: '#13c2c2' },
