@@ -46,7 +46,7 @@ pub struct ExecConfig {
 impl Default for ExecConfig {
     fn default() -> Self {
         Self {
-            socket_path: "/run/zap/exec.sock".to_string(),
+            socket_path: zap_proto::DEFAULT_EXEC_SOCKET.to_string(),
             secret_path: "/etc/zap/exec.key".to_string(),
         }
     }

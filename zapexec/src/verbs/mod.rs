@@ -13,6 +13,7 @@ mod logs;
 mod network;
 mod nginx;
 mod php;
+mod platform;
 mod process;
 mod resource;
 mod service;

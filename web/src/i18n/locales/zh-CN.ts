@@ -701,7 +701,7 @@ export default {
     serverHint:
       '面板仅以 HTTPS 对外提供服务（HTTP 会自动跳转）。修改绑定 IP 或端口后需重启 Zap 服务，请确认新端口未被占用且防火墙已放行。',
     bindIp: '绑定 IP',
-    bindAll: '0.0.0.0（全部网卡）',
+    bindAll: '0.0.0.0（全部）',
     bindLocal: '127.0.0.1（仅本机）',
     bindAllV6: '::（全部 IPv6）',
     bindIpHint: '0.0.0.0 表示监听全部网卡，也可填写服务器上的单个 IP',

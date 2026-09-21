@@ -15,7 +15,11 @@ use server::ClientIdentity;
 #[command(name = "zapexec", about = "ZAP Executor Daemon (run as root)")]
 struct Cli {
     /// zapd <-> zapexec 的 Unix socket 路径
-    #[clap(long, env = "ZAP_EXEC_SOCKET", default_value = "/run/zap/exec.sock")]
+    #[clap(
+        long,
+        env = "ZAP_EXEC_SOCKET",
+        default_value_os_t = PathBuf::from(zap_proto::DEFAULT_EXEC_SOCKET)
+    )]
     socket: PathBuf,
 
     /// HMAC 共享密钥文件（64 hex）

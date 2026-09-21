@@ -19,7 +19,7 @@ fn parse_octal_mode(raw: &str) -> u32 {
 
 #[derive(Args)]
 pub struct ClientArgs {
-    #[clap(long, default_value = "/run/zap/exec.sock")]
+    #[clap(long, default_value_os_t = PathBuf::from(zap_proto::DEFAULT_EXEC_SOCKET))]
     socket: PathBuf,
 
     #[clap(long, default_value = "/etc/zap/exec.key")]

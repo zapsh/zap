@@ -45,22 +45,16 @@ pub(crate) fn linux_user_ok(u: &str) -> bool {
 /// 账号主组不再假设与账号同名：同名组被系统占用时账号会落在 `zap_<user>` 专属组，
 /// 故一律以系统记录为准。账号不存在 / 查询失败时回退同名组。
 pub(crate) fn run_group_of(linux_user: &str) -> String {
-    root_cmd("id")
-        .args(["-gn", linux_user])
-        .output()
+    // /etc/passwd 取 gid → /etc/group 反查组名。不走 `id -gn`：那是外部命令，
+    // 各平台参数支持不一致（见 platform 模块）。
+    super::linux_account(linux_user)
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
+        .and_then(|acc| super::platform::group_name_of_gid(acc.gid))
         .unwrap_or_else(|| linux_user.to_string())
 }
 
 fn group_exists(name: &str) -> bool {
-    root_cmd("getent")
-        .args(["group", name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    super::platform::group_entry(name).is_some()
 }
 
 /// 同名组已被系统占用（如发行版预置的 admin / sudo 组）时使用的专属组名。
@@ -74,18 +68,11 @@ fn dedicated_group_name(linux_user: &str) -> String {
 /// 账号移除后清理其运行组：仅当该组是普通组（gid ≥ 1000）且已无附加成员时才删。
 /// 系统组（gid < 1000，如预置的 admin / sudo）绝不触碰。
 fn remove_run_group(name: &str) {
-    let Ok(o) = root_cmd("getent").args(["group", name]).output() else {
+    let Some(entry) = super::platform::group_entry(name) else {
         return;
     };
-    if !o.status.success() {
-        return;
-    }
-    let line = String::from_utf8_lossy(&o.stdout).trim().to_string();
-    let mut fields = line.split(':');
-    let gid: u32 = fields.nth(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let members = fields.next().unwrap_or("").trim();
-    if gid >= 1000 && members.is_empty() {
-        let _ = root_cmd("groupdel").arg(name).output();
+    if entry.gid >= 1000 && entry.members.is_empty() {
+        super::platform::delete_group(name);
     }
 }
 
@@ -119,7 +106,7 @@ pub async fn home_init(home_dir: &str, owner: &str) -> Response {
 }
 
 fn run_bash(script: &str) -> Result<(), String> {
-    let o = root_cmd("bash")
+    let o = root_cmd(super::platform::SHELL)
         .args(["-c", script])
         .output()
         .map_err(|e| format!("执行命令失败: {e}"))?;
@@ -207,28 +194,21 @@ fn system_init_inner(linux_user: &str, home_dir: &str) -> Result<Response, Strin
             "home_dir 非法（必须为挂载点下的绝对路径，不含 ..）: {home_dir}"
         ));
     }
-    let id = root_cmd("id")
-        .args(["-u", linux_user])
-        .output()
-        .map_err(|e| format!("执行 id 失败: {e}"))?;
-    if id.status.success() {
+    if super::platform::user_exists(linux_user) {
         return Ok(Response::ok(
             format!("Linux 账号 {linux_user} 已存在（跳过创建）"),
             None,
         ));
     }
-    // nologin shell（Debian/Ubuntu 通常在 /usr/sbin/nologin）
-    let shell = root_cmd("bash")
-        .args([
-            "-c",
-            "command -v nologin 2>/dev/null || echo /usr/sbin/nologin",
-        ])
+    // nologin shell：让系统自己找，找不到的兜底路径按平台不同（见 platform）
+    let shell = root_cmd(super::platform::SHELL)
+        .args(["-c", "command -v nologin 2>/dev/null"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "/usr/sbin/nologin".to_string());
+        .unwrap_or_else(|| super::platform::NOLOGIN_FALLBACK.to_string());
     // 账号主组：优先同名组；同名组已被系统占用（如发行版预置的 admin / sudo 组）时
     // 改用专属组 zap_<user>，避免把面板账号并入系统管理组而继承额外权限。
     // 后续家目录属组与 PHP-FPM pool 的 group 都按账号实际主组解析（id -gn）。
@@ -238,28 +218,11 @@ fn system_init_inner(linux_user: &str, home_dir: &str) -> Result<Response, Strin
         linux_user.to_string()
     };
     if !group_exists(&gname) {
-        let g = root_cmd("groupadd")
-            .arg(&gname)
-            .output()
-            .map_err(|e| format!("执行 groupadd 失败: {e}"))?;
-        if !g.status.success() {
-            return Err(format!(
-                "创建运行组失败：{}",
-                cmd_err(&g, "groupadd 返回非零")
-            ));
-        }
+        super::platform::create_group(&gname).map_err(|e| format!("创建运行组失败：{e}"))?;
     }
-    // -M：不自动创建家目录（目录由 user.home_init 建好并赋权）
-    let o = root_cmd("useradd")
-        .args(["-M", "-s", &shell, "-d", home_dir, "-g", &gname, linux_user])
-        .output()
-        .map_err(|e| format!("执行 useradd 失败: {e}"))?;
-    if !o.status.success() {
-        return Err(format!(
-            "创建 Linux 账号失败：{}",
-            cmd_err(&o, "useradd 返回非零")
-        ));
-    }
+    // 家目录不由 useradd 创建：目录由 user.home_init 建好并赋权
+    super::platform::create_user(linux_user, home_dir, &shell, &gname)
+        .map_err(|e| format!("创建 Linux 账号失败：{e}"))?;
     Ok(Response::ok(
         format!("Linux 账号 {linux_user} 已创建（home={home_dir}, group={gname}）"),
         Some(json!({
@@ -290,26 +253,13 @@ fn system_remove_inner(linux_user: &str) -> Result<Response, String> {
     if !linux_user_ok(linux_user) {
         return Err(format!("非法的 Linux 账号名: {linux_user}"));
     }
-    let id = root_cmd("id")
-        .args(["-u", linux_user])
-        .output()
-        .map_err(|e| format!("执行 id 失败: {e}"))?;
-    if !id.status.success() {
+    if !super::platform::user_exists(linux_user) {
         return Ok(Response::ok(
             format!("Linux 账号 {linux_user} 不存在（跳过）"),
             None,
         ));
     }
-    let o = root_cmd("userdel")
-        .arg(linux_user)
-        .output()
-        .map_err(|e| format!("执行 userdel 失败: {e}"))?;
-    if !o.status.success() {
-        return Err(format!(
-            "移除 Linux 账号失败：{}",
-            cmd_err(&o, "userdel 返回非零")
-        ));
-    }
+    super::platform::delete_user(linux_user).map_err(|e| format!("移除 Linux 账号失败：{e}"))?;
     // 账号运行组随之清理（系统预置组 / 仍被引用的组由 remove_run_group 自动跳过）
     remove_run_group(linux_user);
     remove_run_group(&dedicated_group_name(linux_user));
@@ -422,9 +372,9 @@ pub async fn quota_set(linux_user: &str, quota_mb: i64) -> Response {
         .unwrap_or_else(|e| Response::err(-1, e))
 }
 
-/// 执行 bash 并返回 stdout（trim）；失败时用 stderr/stdout 作为错误描述
+/// 执行脚本并返回 stdout（trim）；失败时用 stderr/stdout 作为错误描述
 fn sh_out(script: &str) -> Result<String, String> {
-    let o = root_cmd("bash")
+    let o = root_cmd(super::platform::SHELL)
         .args(["-c", script])
         .output()
         .map_err(|e| format!("执行命令失败: {e}"))?;
