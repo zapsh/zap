@@ -113,6 +113,9 @@ async fn main() {
 
     // init db
     db::init_db::init_schema().await;
+    // 会话版本号全量入内存：否则老库里已「下线过所有设备」的用户会被当成 0，
+    // 签发出立刻失效的 token（见 zap::session）
+    zap::session::load_all().await;
 
     // 日志目录命名自检：历史 {name}-{id} → {id}-{name}（含目录 rename 与 vhost 重同步）
     routers::site::migrate_log_roots().await;

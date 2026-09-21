@@ -251,6 +251,9 @@ fn api_routers() -> Router {
         .route("/user/notices/read", post(notice::notices_read))
         .route("/user/notices/read_all", post(notice::notices_read_all))
         .route("/user/notices/delete", post(notice::notices_delete))
+        // 个人中心：最近登录记录 + 「下线所有设备」（会话版本号 +1）
+        .route("/user/login_history", get(auth::login_history))
+        .route("/user/logout_all", post(auth::logout_all_devices))
         // 团队成员（子账号）：任意登录用户管理自己名下的成员
         .route("/user/team/list", get(user::team_list))
         .route("/user/team/add", post(user::team_add))
@@ -795,7 +798,7 @@ mod tests {
             res.status()
         }
 
-        let user = crate::zap::jwt::generate_jwt_token("tester".to_string(), 9, "user", false)
+        let user = crate::zap::jwt::generate_jwt_token("tester".to_string(), 9, "user")
             .expect("生成测试 token 失败");
 
         // 原先完全无门禁的系统配置端点

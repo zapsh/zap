@@ -29,12 +29,16 @@ pub struct Claims {
     pub iss: String,   // 发布者
     pub exp: u64,      // 过期时间
     pub roles: String, // 用户角色，逗号分隔
-    /// 是否仍在使用默认密码（当前恒为 false：登录与换发 token 均不再计算）。
-    /// 字段保留备用（例如面板提示「仍在使用初始密码」），服务端不再据此拦截任何请求。
-    pub pwd_is_default: bool,
+    /// 会话版本号（对应 `user.token_version`，序列化为 `tv`）。
+    ///
+    /// 小于库中当前值的 token 一律视为已下线，用于「下线所有设备」。
+    /// 带 `default` 是为了兼容**本次改动之前签发**的 token（payload 里没有该字段）：
+    /// 它们反序列化后得到 0，而存量用户的版本号同样从 0 起算，因此不会被误杀。
+    #[serde(default, rename = "tv")]
+    pub token_version: i64,
 }
 
-/// Wrapper around Claims：校验通过即放行（不再因「仍使用默认密码」拦截请求）。
+/// Wrapper around Claims：签名与会话版本号（tokenVersion）校验通过即放行。
 pub struct ValidatedClaims(pub Claims);
 
 impl std::ops::Deref for ValidatedClaims {
@@ -51,6 +55,8 @@ pub enum AuthError {
     MissingCredentials,
     TokenCreation,
     InvalidToken,
+    /// 会话版本号落后于库中当前值：该 token 已被「下线所有设备」作废。
+    TokenRevoked,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,10 +69,9 @@ pub fn generate_jwt_token(
     username: String,
     id: u64,
     roles: &str,
-    pwd_is_default: bool,
 ) -> Result<String, Error> {
     let expire = config::get_config().read().unwrap().jwt.jwt_expire;
-    generate_jwt_token_with_expire(username, id, roles, pwd_is_default, expire)
+    generate_jwt_token_with_expire(username, id, roles, expire)
 }
 
 /// 指定有效期的签发。
@@ -78,7 +83,6 @@ pub fn generate_jwt_token_with_expire(
     username: String,
     id: u64,
     roles: &str,
-    pwd_is_default: bool,
     expire: u64,
 ) -> Result<String, Error> {
     let now_secs = time::SystemTime::now()
@@ -92,7 +96,7 @@ pub fn generate_jwt_token_with_expire(
         id,
         exp: now_secs + expire,
         roles: roles.to_string(),
-        pwd_is_default,
+        token_version: crate::zap::session::version_of(id),
     };
     let secure_key = &config::get_config().read().unwrap().jwt.jwt_secure;
     encode(
@@ -127,20 +131,33 @@ pub fn sha256_hex(input: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// 解析并校验一个 JWT：签名、有效期，外加会话版本号（tokenVersion）。
+///
+/// 与 [`Claims`] extractor 走同一套规则，供不走 extractor 的入口复用——
+/// WebSocket 握手、下载/流式接口用的 `?token=` 等都是自己 decode 的，
+/// 统一调这里才不会漏掉「已下线」的校验。
+pub fn decode_verified(raw_token: &str) -> Option<Claims> {
+    let secure_key = config::get_config().read().ok()?.jwt.jwt_secure.clone();
+    let claims = decode::<Claims>(
+        raw_token,
+        &DecodingKey::from_secret(secure_key.as_bytes()),
+        &Validation::default(),
+    )
+    .ok()?
+    .claims;
+    if crate::zap::session::version_of(claims.id) > claims.token_version {
+        return None;
+    }
+    Some(claims)
+}
+
 /// 解析 Bearer 凭据字符串为 claims（支持 JWT 与静态 API Token，供只读守卫等中间件使用）。
 /// 入参应为已剥离 `Bearer ` 前缀的 token，调用方需在 await 前持有 owned String，避免借用跨 await。
 pub async fn claims_from_token(raw_token: &str) -> Option<Claims> {
     if raw_token.starts_with(API_TOKEN_PREFIX) {
         return resolve_api_token(raw_token).await;
     }
-    let secure_key = &config::get_config().read().unwrap().jwt.jwt_secure;
-    decode::<Claims>(
-        raw_token,
-        &DecodingKey::from_secret(secure_key.as_ref()),
-        &Validation::default(),
-    )
-    .ok()
-    .map(|d| d.claims)
+    decode_verified(raw_token)
 }
 
 // ── Claims extractor (allows default-password users through) ────────────────
@@ -199,7 +216,12 @@ async fn extract_claims(parts: &mut Parts) -> Result<Claims, AuthError> {
         AuthError::InvalidToken
     })?;
 
-    Ok(token_data.claims)
+    let claims = token_data.claims;
+    // 「下线所有设备」后，此前签发的 token 版本号落后，一律作废
+    if crate::zap::session::version_of(claims.id) > claims.token_version {
+        return Err(AuthError::TokenRevoked);
+    }
+    Ok(claims)
 }
 
 impl IntoResponse for AuthError {
@@ -210,6 +232,7 @@ impl IntoResponse for AuthError {
             AuthError::TokenCreation => (StatusCode::INTERNAL_SERVER_ERROR, "Token creation error"),
             AuthError::InvalidToken => (StatusCode::BAD_REQUEST, "Invalid token"),
             AuthError::ExpiredSignature => (StatusCode::UNAUTHORIZED, "Token 已过期，请重新登录"),
+            AuthError::TokenRevoked => (StatusCode::UNAUTHORIZED, "已在其它设备下线，请重新登录"),
         };
         let body = Json(json!({
             "code": -1,
@@ -229,6 +252,9 @@ struct ApiTokenLookup {
     token_status: i64,
     user_status: i64,
     expires_at: i64,
+    /// 该 Token 记录的会话版本号：创建后不变，「下线所有设备」时统一被推高，
+    /// 于是版本号落后的 Token 在下次请求时判为已下线。
+    token_version: i64,
 }
 
 /// 校验静态 API Token：按哈希查表，校验 Token/用户状态与有效期，返回等价 Claims。
@@ -236,7 +262,7 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
     let pool = db::get_db_pool().await;
     let row: Option<ApiTokenLookup> = sqlx::query_as(
         "SELECT t.user_id, u.username, u.roles, t.status AS token_status,
-                u.status AS user_status, t.expires_at
+                u.status AS user_status, t.expires_at, t.token_version
          FROM api_token t JOIN user u ON u.id = t.user_id
          WHERE t.token_hash = ?",
     )
@@ -275,6 +301,8 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
         iss: "Zap".to_string(),
         exp,
         roles: r.roles,
-        pwd_is_default: false,
+        // 用 Token 自己记录的版本号：它与用户当前版本号相同即有效，
+        // 「下线所有设备」把两边一起推高后，未同步的旧 Token 随即失效
+        token_version: r.token_version,
     })
 }

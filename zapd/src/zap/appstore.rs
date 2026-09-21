@@ -556,7 +556,7 @@ mod tests {
             iss: "Zap".to_string(),
             exp: u64::MAX,
             roles: roles.to_string(),
-            pwd_is_default: false,
+            token_version: 0,
         }
     }
 

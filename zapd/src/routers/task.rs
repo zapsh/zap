@@ -17,17 +17,15 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::SinkExt;
-use jsonwebtoken::{DecodingKey, Validation, decode};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::HashMap, net::SocketAddr};
 use tracing::{error, info, warn};
 
 use crate::{
-    config,
     zap::{
         ZapError, ZapJsonResult, audit,
-        jwt::{self, Claims, ValidatedClaims},
+        jwt::{self, ValidatedClaims},
         task,
     },
     zapexec,
@@ -262,15 +260,10 @@ pub async fn ws_log(
     let Some(token) = params.get("token").cloned() else {
         return unauthorized("Missing token");
     };
-    // 克隆密钥后立即释放锁：RwLockReadGuard 非 Send，跨 await 会让 handler future 非 Send
-    let secure_key = config::get_config().read().unwrap().jwt.jwt_secure.clone();
-    let claims = match decode::<Claims>(
-        &token,
-        &DecodingKey::from_secret(secure_key.as_bytes()),
-        &Validation::default(),
-    ) {
-        Ok(data) => data.claims,
-        Err(_) => return unauthorized("Invalid token"),
+    // 走统一校验入口：签名 + 有效期 + 会话版本号（被「下线所有设备」作废的一并拒绝）
+    let claims = match jwt::decode_verified(&token) {
+        Some(c) => c,
+        None => return unauthorized("Invalid token"),
     };
     // 归属校验：实时日志同样按归属用户隔离，不能凭 id 串看他人任务输出。
     // 校验失败也照常升级，再回一条可读的 error 帧：直接回 403 时浏览器只会触发

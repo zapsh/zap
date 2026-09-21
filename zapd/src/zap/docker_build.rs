@@ -272,7 +272,7 @@ mod tests {
             iss: "zap".to_string(),
             exp: 0,
             roles: roles.to_string(),
-            pwd_is_default: false,
+            token_version: 0,
         })
     }
 

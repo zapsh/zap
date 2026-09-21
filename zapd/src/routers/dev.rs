@@ -76,15 +76,18 @@ pub async fn api_token_create(
     // 展示前缀：zap_ + 前 16 位 hex（其余部分不可见，仅用于在列表中辨认）
     let prefix: String = raw.chars().take(jwt::API_TOKEN_PREFIX.len() + 16).collect();
 
+    // token_version 必须与用户当前版本号对齐：否则新 Token 一出生就落后于
+    // 「下线所有设备」推高的版本号，第一次使用就被判为已下线
     let r = sqlx::query(
-        "INSERT INTO api_token (user_id, name, token_hash, prefix, expires_at, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+        "INSERT INTO api_token (user_id, name, token_hash, prefix, expires_at, status, token_version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
     )
     .bind(claims.id as i64)
     .bind(&name)
     .bind(&hash)
     .bind(&prefix)
     .bind(expires_at)
+    .bind(crate::zap::session::version_of(claims.id))
     .bind(now)
     .bind(now)
     .execute(pool)

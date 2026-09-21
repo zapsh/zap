@@ -35,7 +35,6 @@ use axum::response::Response as HttpResponse;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use futures_util::{SinkExt, StreamExt};
-use jsonwebtoken::{DecodingKey, Validation, decode};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -49,7 +48,6 @@ use crate::zap::ZapJsonResult;
 use crate::zap::appstore as ast;
 use crate::zap::audit;
 use crate::zap::docker_build;
-use crate::zap::jwt::Claims;
 use crate::zap::jwt::ValidatedClaims;
 use crate::zap::jwt::is_admin;
 use crate::zap::jwt::is_demo;
@@ -706,15 +704,10 @@ fn ws_guard(params: &HashMap<String, String>) -> Result<(), HttpResponse> {
         return Err(plain_status(StatusCode::UNAUTHORIZED, "Missing token"));
     };
 
-    // 克隆密钥后立即释放锁：RwLockReadGuard 非 Send，跨 await 会让 future 非 Send
-    let secure_key = config::get_config().read().unwrap().jwt.jwt_secure.clone();
-    let claims = match decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secure_key.as_bytes()),
-        &Validation::default(),
-    ) {
-        Ok(d) => d.claims,
-        Err(_) => return Err(plain_status(StatusCode::UNAUTHORIZED, "Invalid token")),
+    // 走统一校验入口：签名 + 有效期 + 会话版本号（被「下线所有设备」作废的一并拒绝）
+    let claims = match crate::zap::jwt::decode_verified(token) {
+        Some(c) => c,
+        None => return Err(plain_status(StatusCode::UNAUTHORIZED, "Invalid token")),
     };
     if is_demo(&claims) {
         return Err(plain_status(StatusCode::FORBIDDEN, "演示账号不支持该操作"));

@@ -2410,6 +2410,21 @@ const enUS: Messages = {
     autosslFailures: 'Only when AutoSSL fails.',
     autosslDisabled: 'Disable AutoSSL event notifications.',
     prefsSaved: 'Preferences saved',
+    tabLogins: 'Login history',
+    loginsDesc:
+      'Last 50 sign-in attempts, including failures. If you see an unfamiliar entry, change your password and sign out all devices right away.',
+    logoutAllBtn: 'Sign out all devices',
+    logoutAllTitle: 'Sign out all devices',
+    logoutAllConfirm:
+      'This invalidates every other signed-in device, including web sessions and static API tokens. This device stays signed in. Continue?',
+    logoutAllDone: 'All other devices have been signed out',
+    loginTime: 'Time',
+    loginStatus: 'Result',
+    loginIp: 'IP address',
+    loginDevice: 'Device / browser',
+    statusSuccess: 'Success',
+    statusFailed: 'Failed',
+    status2faFailed: 'Wrong code',
   },
 
   /** Crontab */

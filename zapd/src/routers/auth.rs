@@ -3,6 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use axum::extract::Query;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::{Extension, Json};
 use once_cell::sync::Lazy;
@@ -12,7 +13,9 @@ use sqlx::query_as;
 use tracing::warn;
 
 use crate::db;
-use crate::zap::{self, ZapError, ZapJsonResult, audit, jwt::ValidatedClaims, totp};
+use crate::zap::{
+    self, ZapError, ZapJsonResult, audit, jwt::ValidatedClaims, login_history, session, totp,
+};
 
 /// 面板会话 Cookie 名。
 ///
@@ -48,7 +51,7 @@ pub fn session_cookie(token: &str) -> HeaderMap {
 
 /// 为页面会话签发长有效期 JWT（仅供 Cookie 使用；面板 access_token 不受影响）。
 fn webapp_session_token(username: String, id: u64, roles: &str) -> Option<String> {
-    zap::jwt::generate_jwt_token_with_expire(username, id, roles, false, WEBAPP_SESSION_SECS).ok()
+    zap::jwt::generate_jwt_token_with_expire(username, id, roles, WEBAPP_SESSION_SECS).ok()
 }
 
 /// 清除会话 Cookie（登出 / 改密后失效）。
@@ -184,12 +187,19 @@ async fn clear_login_attempts(ip: &str, username: &str) {
 #[axum::debug_handler]
 pub async fn login(
     Extension(client_addr): Extension<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<UserLoginData>,
 ) -> Result<(HeaderMap, Json<serde_json::Value>), ZapError> {
     // 第一道防线：内存滑动窗口限流
     check_rate_limit(client_addr.ip())?;
 
     let ip = client_addr.ip().to_string();
+    // 登录记录要留来源设备，原始 UA 原样存，不做解析（前端展示时截断）
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let username = payload.username.trim().to_string();
     if username.is_empty() {
         return Err(ZapError::New(-1, "用户名不能为空".to_string()));
@@ -222,12 +232,20 @@ pub async fn login(
             }
             if !totp::verify(&row.totp_secret, &code) {
                 audit::log(None, Some(&ip), "login_2fa_failed", &row.username, "").await;
+                login_history::record(
+                    row.id as i64,
+                    &row.username,
+                    &ip,
+                    &user_agent,
+                    login_history::STATUS_2FA_FAILED,
+                )
+                .await;
                 return Err(ZapError::New(-1, "两步验证码错误或已失效".to_string()));
             }
         }
 
         if let Ok(token) =
-            zap::jwt::generate_jwt_token(row.username.clone(), row.id, &row.roles, false)
+            zap::jwt::generate_jwt_token(row.username.clone(), row.id, &row.roles)
         {
             clear_login_attempts(&ip, &username).await;
             // 更新最后登录信息
@@ -240,6 +258,14 @@ pub async fn login(
                     .execute(pool)
                     .await;
             audit::log(None, Some(&ip), "login_success", &row.username, "").await;
+            login_history::record(
+                row.id as i64,
+                &row.username,
+                &ip,
+                &user_agent,
+                login_history::STATUS_SUCCESS,
+            )
+            .await;
             // 登录成功站内信（是否发送取决于该用户通知偏好，默认不发送）
             crate::zap::notify::login_success(row.id as i64, &row.username, &ip).await;
             // Cookie 使用更长有效期的 JWT（面板 access_token 仍为 1 小时）
@@ -260,6 +286,8 @@ pub async fn login(
     }
     record_failed_login(&ip, &username).await;
     audit::log(None, Some(&ip), "login_failed", &username, "").await;
+    // 失败尝试记在用户名下（user_id=0：账号未必存在，无法归属）
+    login_history::record(0, &username, &ip, &user_agent, login_history::STATUS_FAILED).await;
     Err(ZapError::New(-1, "用户名或密码错误".to_string()))
 }
 
@@ -269,6 +297,79 @@ pub async fn logout() -> Result<(HeaderMap, Json<serde_json::Value>), ZapError> 
         Json(json!({
             "code": 0,
             "message": "退出成功"
+        })),
+    ))
+}
+
+// ── 登录记录 / 下线所有设备 ───────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct LoginHistoryQuery {
+    #[serde(default = "default_login_page")]
+    pub page: i64,
+    #[serde(default = "default_login_page_size")]
+    pub page_size: i64,
+}
+
+fn default_login_page() -> i64 {
+    1
+}
+
+fn default_login_page_size() -> i64 {
+    10
+}
+
+/// GET /user/login_history?page=1&page_size=10
+///
+/// 当前用户**自己**的登录记录（按时间倒序）。成功与失败都记：用户看到
+/// 「有人试过我的密码」比事后翻审计日志直观得多。
+pub async fn login_history(
+    claims: ValidatedClaims,
+    Query(query): Query<LoginHistoryQuery>,
+) -> ZapJsonResult {
+    let (rows, total) =
+        login_history::list(claims.id as i64, query.page, query.page_size).await?;
+    Ok(Json(json!({
+        "code": 0,
+        "data": rows,
+        "total": total,
+    })))
+}
+
+/// POST /user/logout_all — 下线该用户名下的所有设备。
+///
+/// 会话版本号 +1，此前签发的凭据（面板 token、Web 应用 Cookie、静态 API Token）
+/// 在下次请求时一律被判为已下线。**当前设备不下线**：换发一个带新版本号的
+/// token 与会话 Cookie，否则调用者会被自己的操作踢出去。
+pub async fn logout_all_devices(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+) -> Result<(HeaderMap, Json<serde_json::Value>), ZapError> {
+    let version = session::bump(claims.id as i64).await?;
+
+    // 版本号已递增，这里签发的 token 会自动带上新值（见 jwt::generate_jwt_token）
+    let token = zap::jwt::generate_jwt_token(claims.sub.clone(), claims.id, &claims.roles)
+        .map_err(|_| ZapError::New(-1, "Token 生成失败".to_string()))?;
+    let cookie_token = webapp_session_token(claims.sub.clone(), claims.id, &claims.roles)
+        .unwrap_or_else(|| token.clone());
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "logout_all_devices",
+        &claims.sub,
+        &format!("token_version={version}"),
+    )
+    .await;
+
+    Ok((
+        session_cookie(&cookie_token),
+        Json(json!({
+            "code": 0,
+            "message": "已下线其它所有设备",
+            "access_token": token,
+            "token_type": "Bearer",
+            "expire_in": crate::config::get_config().read().unwrap().jwt.jwt_expire,
         })),
     ))
 }
@@ -332,14 +433,13 @@ pub async fn change_password(
         .execute(pool)
         .await?;
 
-    // Issue a new token with pwd_is_default = false
-    let token = zap::jwt::generate_jwt_token(
-        claims.sub.clone(),
-        claims.id,
-        &claims.roles,
-        false, // no longer default
-    )
-    .map_err(|_| ZapError::New(-1, "Token 生成失败".to_string()))?;
+    // 改密后其它设备一并下线：会话版本号 +1（随后换发的 token 带新版本号，
+    // 因此当前设备不会被自己踢出去）
+    session::bump(claims.id as i64).await?;
+
+    // 改密后换发 token（版本号已在上面推高，新 token 带当前版本号）
+    let token = zap::jwt::generate_jwt_token(claims.sub.clone(), claims.id, &claims.roles)
+        .map_err(|_| ZapError::New(-1, "Token 生成失败".to_string()))?;
 
     audit::log(
         Some(&claims),
@@ -367,7 +467,7 @@ pub async fn reflash_token(
 ) -> Result<(HeaderMap, Json<serde_json::Value>), ZapError> {
     // 页面会话（长有效期）先算好：claims 随后会被 move 进 JWT 生成
     let cookie_token = webapp_session_token(claims.sub.clone(), claims.id, &claims.roles);
-    if let Ok(token) = zap::jwt::generate_jwt_token(claims.sub, claims.id, &claims.roles, false) {
+    if let Ok(token) = zap::jwt::generate_jwt_token(claims.sub, claims.id, &claims.roles) {
         let cookie = cookie_token.unwrap_or_else(|| token.clone());
         let headers = session_cookie(&cookie);
         return Ok((

@@ -1742,7 +1742,7 @@ mod tests {
     }
 
     fn token_with(uid: u64, roles: &str) -> String {
-        jwt::generate_jwt_token("tester".to_string(), uid, roles, false).unwrap()
+        jwt::generate_jwt_token("tester".to_string(), uid, roles).unwrap()
     }
 
     /// 预置权限缓存（测试进程内共享；内容固定，重复写入等价，不会互相干扰）。

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, reactive } from 'vue'
+import { computed, onMounted, ref, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -14,9 +14,13 @@ import {
   totpStatus,
   getMyPrefs,
   saveMyPrefs,
+  getMyLoginHistory,
+  logoutAllDevices as logoutAllDevicesApi,
 } from '@/api/user'
-import type { NoticePrefs } from '@/api/user'
+import type { LoginRecordItem, NoticePrefs } from '@/api/user'
 import { roleLabel } from '@/utils/role'
+import { setToken } from '@/utils/auth'
+import { formatDate } from '@/utils/fmt'
 
 const { t } = useI18n()
 const userStore = useUserStore()
@@ -64,6 +68,7 @@ onMounted(async () => {
   infoForm.phone = userInfo.phone
   await loadTotpStatus()
   await loadPrefs()
+  await loadLogins()
 })
 
 async function saveInfo() {
@@ -247,6 +252,72 @@ async function savePrefs() {
     // 拦截器已弹窗
   } finally {
     prefsSaving.value = false
+  }
+}
+
+// ── 登录记录 / 下线所有设备 ───────────────────────────────
+const LOGIN_PAGE_SIZE = 10
+
+const logins = ref<LoginRecordItem[]>([])
+const loginsTotal = ref(0)
+const loginsPage = ref(1)
+const loginsLoading = ref(false)
+const logoutAllLoading = ref(false)
+
+async function loadLogins() {
+  loginsLoading.value = true
+  try {
+    const res = await getMyLoginHistory({ page: loginsPage.value, page_size: LOGIN_PAGE_SIZE })
+    logins.value = res.data ?? []
+    loginsTotal.value = res.total ?? 0
+  } catch {
+    // 拦截器已弹窗
+  } finally {
+    loginsLoading.value = false
+  }
+}
+
+watch(loginsPage, loadLogins)
+
+/** 状态 → 标签类型：失败用红色，便于一眼挑出可疑记录 */
+function loginStatusType(status: string): 'success' | 'danger' | 'warning' {
+  if (status === 'success') return 'success'
+  if (status === '2fa_failed') return 'warning'
+  return 'danger'
+}
+
+function loginStatusLabel(status: string): string {
+  if (status === 'success') return t('profilePage.statusSuccess')
+  if (status === '2fa_failed') return t('profilePage.status2faFailed')
+  return t('profilePage.statusFailed')
+}
+
+async function logoutAllDevices() {
+  try {
+    await ElMessageBox.confirm(
+      t('profilePage.logoutAllConfirm'),
+      t('profilePage.logoutAllTitle'),
+      {
+        type: 'warning',
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+      },
+    )
+  } catch {
+    return // 用户取消
+  }
+  logoutAllLoading.value = true
+  try {
+    const res = await logoutAllDevicesApi()
+    // 后端换发了带新版本号的 token：不替换的话当前设备会被自己的操作踢下线
+    if (res.data?.access_token) setToken(res.data.access_token)
+    ElMessage.success(res.message || t('profilePage.logoutAllDone'))
+    loginsPage.value = 1
+    await loadLogins()
+  } catch {
+    // 拦截器已弹窗
+  } finally {
+    logoutAllLoading.value = false
   }
 }
 </script>
@@ -451,6 +522,56 @@ async function savePrefs() {
             </div>
           </div>
         </el-tab-pane>
+
+        <!-- 登录记录 -->
+        <el-tab-pane :label="t('profilePage.tabLogins')" name="logins">
+          <div class="logins-panel" v-loading="loginsLoading">
+            <div class="logins-head">
+              <p class="logins-desc">{{ t('profilePage.loginsDesc') }}</p>
+              <el-button type="danger" plain :loading="logoutAllLoading" @click="logoutAllDevices">
+                {{ t('profilePage.logoutAllBtn') }}
+              </el-button>
+            </div>
+
+            <el-table :data="logins" size="small" stripe>
+              <el-table-column
+                prop="created_at"
+                :label="t('profilePage.loginTime')"
+                min-width="170"
+                :formatter="formatDate"
+              />
+              <el-table-column :label="t('profilePage.loginStatus')" width="110">
+                <template #default="{ row }">
+                  <el-tag :type="loginStatusType(row.status)" size="small">
+                    {{ loginStatusLabel(row.status) }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="ip" :label="t('profilePage.loginIp')" min-width="130" />
+              <el-table-column
+                :label="t('profilePage.loginDevice')"
+                min-width="240"
+                show-overflow-tooltip
+              >
+                <template #default="{ row }">{{ row.user_agent || '-' }}</template>
+              </el-table-column>
+              <template #empty>
+                <span style="color: var(--el-text-color-secondary)">{{ t('common.noData') }}</span>
+              </template>
+            </el-table>
+
+            <div v-if="loginsTotal > LOGIN_PAGE_SIZE" class="logins-pager">
+              <el-pagination
+                v-model:current-page="loginsPage"
+                :page-size="LOGIN_PAGE_SIZE"
+                :total="loginsTotal"
+                layout="prev, pager, next"
+                small
+                background
+              />
+            </div>
+          </div>
+        </el-tab-pane>
       </el-tabs>
     </el-card>
   </div>
@@ -533,6 +654,29 @@ async function savePrefs() {
   border-radius: 4px;
   font-size: 13px;
   word-break: break-all;
+}
+
+/* ── 登录记录 ── */
+.logins-panel {
+  max-width: 860px;
+}
+.logins-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.logins-desc {
+  margin: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.logins-pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
 }
 
 /* ── 偏好设置 ── */

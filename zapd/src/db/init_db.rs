@@ -28,6 +28,8 @@ pub async fn init_schema() {
     init_role_permissions_table().await;
     init_audit_table().await;
     init_login_attempts_table().await;
+    // 登录记录（个人中心「最近登录」用）
+    init_login_history_table().await;
     init_hourly_stats_tables().await;
     crate::routers::ssh_terminal::init_table().await;
     // 通用任务队列（应用商店安装 / Docker 构建 / 备份 / 升级 / 计划任务都登记在这里）
@@ -96,7 +98,12 @@ async fn ensure_column(table: &str, column: &str, decl: &str) {
 /// ```ignore
 /// ensure_column("user", "new_col", "TEXT NOT NULL DEFAULT ''").await;
 /// ```
-async fn migrate_add_columns() {}
+async fn migrate_add_columns() {
+    // 会话版本号：老库补列后，存量用户一律从 0 起算（不影响已有 token）
+    ensure_column("user", "token_version", "INTEGER NOT NULL DEFAULT 0").await;
+    // 静态 API Token 的会话版本号：同样从 0 起算，与用户当前版本号对齐
+    ensure_column("api_token", "token_version", "INTEGER NOT NULL DEFAULT 0").await;
+}
 
 /// 菜单能力门禁赋值（**老库升级**用）。
 ///
@@ -150,6 +157,9 @@ async fn init_system_user_table_schema() {
         package_id INTEGER NOT NULL DEFAULT 0,
         totp_secret TEXT NOT NULL DEFAULT '',
         totp_enabled INTEGER NOT NULL DEFAULT 0,
+        -- token_version：会话版本号。「下线所有设备」时 +1，JWT Claims 里带 tv，
+        --   小于库中当前值的 token 一律判为已下线（见 zap::session）。
+        token_version INTEGER NOT NULL DEFAULT 0,
         -- 磁盘用量（字节）与采集时间：定时任务 du 家目录写入（0 = 尚未采集）
         disk_used_bytes INTEGER NOT NULL DEFAULT 0,
         disk_stat_at INTEGER NOT NULL DEFAULT 0,
@@ -533,6 +543,30 @@ async fn init_login_attempts_table() {
     let _ = get_db_pool().await.execute(sql).await;
 }
 
+// ── login history ──────────────────────────────────────────
+
+async fn init_login_history_table() {
+    if table_exists("login_history").await {
+        return;
+    }
+    let sql = r#"
+    CREATE TABLE login_history (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL DEFAULT 0,
+        username VARCHAR(128) NOT NULL DEFAULT '',
+        ip VARCHAR(64) NOT NULL DEFAULT '',
+        -- user_agent：登录来源（浏览器 / 设备），失败记录同样留存便于追溯
+        user_agent TEXT NOT NULL DEFAULT '',
+        -- status：success | failed | 2fa_failed
+        status VARCHAR(32) NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_login_history_user ON login_history(user_id, created_at);
+    CREATE INDEX idx_login_history_created ON login_history(created_at);
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
 // ── hourly aggregated monitoring stats ─────────────────────
 
 async fn init_hourly_stats_tables() {
@@ -805,6 +839,9 @@ async fn init_api_token_table() {
         last_used_at INTEGER NOT NULL DEFAULT 0,
         expires_at INTEGER NOT NULL DEFAULT 0,
         status INTEGER NOT NULL DEFAULT 1,
+        -- token_version：该 Token 记录的会话版本号。「下线所有设备」时统一推高，
+        --   版本号落后的 Token 在下次请求时判为已下线（见 zap::session::bump）
+        token_version INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER,
         updated_at INTEGER
     );

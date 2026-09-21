@@ -367,6 +367,39 @@ export function saveMyPrefs(data: NoticePrefs) {
   return http.post<ApiResponse<NoticePrefs>>('/user/prefs', data)
 }
 
+// ── 登录记录 / 下线所有设备 ────────────────────────────────
+//
+// JWT 是无状态的，服务端不保存会话；「下线所有设备」靠的是每个用户的会话版本号
+// （user.token_version）：版本号 +1 后，此前签发的面板 token、Web 应用 Cookie 与
+// 静态 API Token 在下次请求时一律判为已下线。当前设备不下线——后端会换发一个新 token。
+
+/** 登录记录条目 */
+export interface LoginRecordItem {
+  id: number
+  /** 0 = 未能匹配到账号（用户名不存在 / 密码错误） */
+  user_id: number
+  username: string
+  ip: string
+  /** 原始 User-Agent，可能为空 */
+  user_agent: string
+  /** success | failed | 2fa_failed */
+  status: string
+  created_at: number
+}
+
+/** 当前用户最近的登录记录（含失败尝试，按时间倒序） */
+export function getMyLoginHistory(params?: { page?: number; page_size?: number }) {
+  return http.get<{ code: number; message: string; data: LoginRecordItem[]; total: number }>(
+    '/user/login_history',
+    { params },
+  )
+}
+
+/** 下线该用户名下的所有设备（当前设备换发新 token，保持登录） */
+export function logoutAllDevices() {
+  return http.post<ApiResponse<{ access_token: string }>>('/user/logout_all')
+}
+
 // ── 家目录备份 ────────────────────────────────────────────
 
 export interface HomeBackupData {

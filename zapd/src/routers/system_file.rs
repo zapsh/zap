@@ -839,7 +839,7 @@ mod tests {
             iss: "Zap".to_string(),
             exp: 0,
             roles: String::new(),
-            pwd_is_default: false,
+            token_version: 0,
         }
     }
 

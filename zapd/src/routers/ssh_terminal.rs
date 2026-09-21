@@ -11,7 +11,6 @@ use axum::{
     response::Response,
 };
 use futures_util::{SinkExt, StreamExt};
-use jsonwebtoken::{DecodingKey, Validation, decode};
 use russh::client;
 use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{ChannelMsg, Disconnect};
@@ -23,7 +22,6 @@ use tracing::{error, info, warn};
 
 use zap_proto::Request;
 
-use crate::config;
 use crate::db;
 use crate::zap::audit;
 use crate::zap::crypto;
@@ -508,20 +506,12 @@ pub async fn ws_terminal(
         }
     };
 
-    // 克隆密钥后立即释放锁：RwLockReadGuard 非 Send，跨 await 会导致 handler future 非 Send
-    let secure_key = config::get_config().read().unwrap().jwt.jwt_secure.clone();
-    let claims = match decode::<Claims>(
-        &token,
-        &DecodingKey::from_secret(secure_key.as_bytes()),
-        &Validation::default(),
-    ) {
-        Ok(d) => d.claims,
-        Err(_) => {
-            return axum::response::Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .body(axum::body::Body::from("Invalid token"))
-                .unwrap();
-        }
+    // 走统一校验入口：签名 + 有效期 + 会话版本号（被「下线所有设备」作废的一并拒绝）
+    let Some(claims) = crate::zap::jwt::decode_verified(&token) else {
+        return axum::response::Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(axum::body::Body::from("Invalid token"))
+            .unwrap();
     };
     // 演示账号仅支持浏览，禁止通过终端执行命令
     if crate::zap::jwt::is_demo(&claims) {

@@ -138,7 +138,6 @@ async fn handle(original: &Uri, req: Request) -> Result<Response, (StatusCode, S
         claims.sub.clone(),
         claims.id,
         &claims.roles,
-        false,
         crate::routers::auth::WEBAPP_SESSION_SECS,
     )
     .ok();
