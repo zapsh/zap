@@ -81,11 +81,11 @@ fn has_cmd(name: &str) -> bool {
 }
 
 fn service_active(name: &str) -> bool {
-    cmd_ok("systemctl", &["is-active", "--quiet", name])
+    super::svc::is_active(name)
 }
 
 fn service_enabled(name: &str) -> bool {
-    cmd_ok("systemctl", &["is-enabled", "--quiet", name])
+    super::svc::is_enabled(name)
 }
 
 /// 探测结果：`running` = 该后端确实在过滤流量；`installed` = 只是装了命令，并未生效
@@ -381,7 +381,7 @@ fn diag() -> Value {
         "iptables_rules": iptables_has_rules(),
         "firewalld_running": cmd_out("firewall-cmd", &["--state"]).trim() == "running",
         "ufw_active": cmd_out("ufw", &["status"]).contains("Status: active"),
-        "systemd": cmd_ok("systemctl", &["is-system-running", "--quiet"]),
+        "systemd": super::svc::manager_running(),
     })
 }
 
@@ -718,11 +718,7 @@ fn toggle_service(b: Backend, action: &str) -> Result<(), String> {
             let Some(svc) = b.service() else {
                 return Err(format!("后端 {} 无对应服务可{}", b.name(), action));
             };
-            if cmd_ok("systemctl", &[action, svc]) {
-                Ok(())
-            } else {
-                Err(format!("systemctl {action} {svc} 执行失败"))
-            }
+            super::svc::act(action, svc).map_err(|e| format!("{action} {svc} 执行失败：{e}"))
         }
     }
 }

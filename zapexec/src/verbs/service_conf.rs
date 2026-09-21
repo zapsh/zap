@@ -501,27 +501,6 @@ fn detect_version(d: &ServiceDef, bin: &Path) -> String {
     text.lines().next().unwrap_or("").trim().to_string()
 }
 
-/// systemd 是否存在名为 `name` 的 unit。
-fn systemd_has(name: &str) -> bool {
-    root_cmd("systemctl")
-        .args(["list-unit-files", "--no-legend", &format!("{name}.service")])
-        .output()
-        .map(|o| {
-            let out = String::from_utf8_lossy(&o.stdout);
-            out.lines().any(|l| l.trim().starts_with(name))
-        })
-        .unwrap_or(false)
-}
-
-/// unit 当前是否 active。
-fn systemd_active(name: &str) -> bool {
-    root_cmd("systemctl")
-        .args(["is-active", name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// 主配置探测：候选含一个 `*` 时按 glob 展开（多命中取版本号最大者）；
 /// 否则取第一个存在的文件；全部不存在时回退首个普通候选（允许从 UI 新建）。
 fn probe_main(d: &ServiceDef) -> Option<(PathBuf, PathBuf, bool)> {
@@ -759,7 +738,7 @@ fn php_inst(svc: &str) -> Option<PhpInst> {
 fn active_unit(d: &ServiceDef) -> Option<String> {
     d.unit_candidates
         .iter()
-        .find(|u| systemd_has(u))
+        .find(|u| super::svc::exists(u))
         .map(|u| u.to_string())
 }
 
@@ -769,12 +748,12 @@ fn effective_unit(d: &ServiceDef, svc: &str) -> Option<String> {
     if let Some(inst) = php_inst(svc) {
         // 优先 info.yaml 登记的 svc_name，兜底 php-fpm-<版本>
         if let Some(u) = php_reg_of(svc).and_then(|r| r.unit)
-            && systemd_has(&u)
+            && super::svc::exists(&u)
         {
             return Some(u);
         }
         let u = format!("php-fpm-{}", inst.digits);
-        return systemd_has(&u).then_some(u);
+        return super::svc::exists(&u).then_some(u);
     }
     active_unit(d)
 }
@@ -782,7 +761,7 @@ fn effective_unit(d: &ServiceDef, svc: &str) -> Option<String> {
 /// 服务当前运行态。
 fn service_running(d: &ServiceDef, svc: &str, bin: Option<&Path>) -> bool {
     if let Some(unit) = effective_unit(d, svc) {
-        if systemd_active(&unit) {
+        if super::svc::is_active(&unit) {
             return true;
         }
         // unit 存在但未 active 即未运行（不继续看进程，避免误判）
@@ -1743,32 +1722,18 @@ pub async fn control(svc: &str, action: &str) -> Response {
                 .map(|s| s.to_string())
         });
         if unit.is_none() {
-            return Err(format!("{} 未安装或未检测到 systemd 服务", d.label));
+            return Err(format!("{} 未安装或未检测到对应服务", d.label));
         }
         let unit = unit.unwrap();
-        let method = if systemd_has(&unit) {
-            let o = root_cmd("systemctl")
-                .args([action.as_str(), unit.as_str()])
-                .output()
-                .map_err(|e| format!("执行 systemctl {} {} 失败: {e}", action, unit))?;
-            if !o.status.success() {
-                return Err(format!(
-                    "systemctl {} {} 失败：{}",
-                    action,
-                    unit,
-                    String::from_utf8_lossy(&o.stderr)
-                        .trim()
-                        .chars()
-                        .take(2000)
-                        .collect::<String>()
-                ));
-            }
+        let method = if super::svc::exists(&unit) {
+            super::svc::act(&action, &unit).map_err(|e| format!("{action} {unit} 失败：{e}"))?;
             if action == "restart" {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
+            // method 值沿用历史命名（面板依赖）
             "systemd"
         } else {
-            return Err(format!("未找到 systemd 服务 {}，请确认服务安装方式", unit));
+            return Err(format!("未找到服务 {}，请确认服务安装方式", unit));
         };
         if action == "start" || action == "restart" {
             std::thread::sleep(std::time::Duration::from_millis(300));

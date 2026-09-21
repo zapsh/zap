@@ -10,16 +10,17 @@ mod backup;
 mod config;
 mod cred;
 mod env;
+mod svc;
 mod user;
 
-use std::collections::HashMap;
 use std::process::Command as ProcessCommand;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
 // ── 服务登记表（后续新增服务在此处登记）───────────────────────
-const UNIT_ZAPD: &str = "zapd.service";
-const UNIT_ZAPEXEC: &str = "zapexec.service";
+// 不带 `.service` 后缀：由 [`svc::unit_name`] 按平台补（OpenBSD 没有后缀概念）。
+const UNIT_ZAPD: &str = "zapd";
+const UNIT_ZAPEXEC: &str = "zapexec";
 
 // ── 终端颜色（与 install.sh / rundev.sh 风格一致）─────────────
 pub const GREEN: &str = "\x1b[0;32m";
@@ -141,11 +142,14 @@ enum Service {
 }
 
 impl Service {
-    fn units(self) -> Vec<&'static str> {
+    fn units(self) -> Vec<String> {
         match self {
-            Service::Zapd => vec![UNIT_ZAPD],
-            Service::Zapexec => vec![UNIT_ZAPEXEC],
-            Service::All => vec![UNIT_ZAPD, UNIT_ZAPEXEC],
+            Service::Zapd => vec![svc::unit_name(UNIT_ZAPD)],
+            Service::Zapexec => vec![svc::unit_name(UNIT_ZAPEXEC)],
+            Service::All => vec![
+                svc::unit_name(UNIT_ZAPD),
+                svc::unit_name(UNIT_ZAPEXEC),
+            ],
         }
     }
 }
@@ -209,12 +213,11 @@ fn manage(verb: &str, service: Service) -> Result<(), String> {
     ensure_root()?;
 
     let units = service.units();
-    info(&format!("systemctl {verb} {}", units.join(" ")));
-
-    let mut args: Vec<&str> = vec![verb];
-    args.extend_from_slice(&units);
-    run_captured("systemctl", &args)?;
-
+    info(&format!("{verb} {}", units.join(" ")));
+    // 逐个执行：两个管理器都支持一次传多个服务名，但这样报错能落到具体服务上
+    for unit in &units {
+        svc::act(verb, unit)?;
+    }
     ok(&format!("{} {}", verb, units.join(" ")));
     Ok(())
 }
@@ -228,14 +231,14 @@ fn status(service: Service) -> Result<(), String> {
     println!("{}", "-".repeat(10 + 1 + 24 + 1 + 10 + 1 + 8));
 
     for unit in service.units() {
-        let name = unit.trim_end_matches(".service");
-        let props = systemctl_show(unit)?;
+        let st = svc::state_of(&unit)?;
+        let name = svc::display_name(&unit);
 
-        let load = props.get("LoadState").map(String::as_str).unwrap_or("");
-        let active = props.get("ActiveState").map(String::as_str).unwrap_or("");
-        let sub = props.get("SubState").map(String::as_str).unwrap_or("");
-        let enabled = props.get("UnitFileState").map(String::as_str).unwrap_or("");
-        let pid = props.get("MainPID").map(String::as_str).unwrap_or("");
+        let load = st.load.as_str();
+        let active = st.active.as_str();
+        let sub = st.sub.as_str();
+        let enabled = st.enabled.as_str();
+        let pid = st.pid.as_str();
 
         let (state, color) = if load == "not-found" {
             ("not-installed".to_string(), RED)
@@ -265,6 +268,9 @@ fn status(service: Service) -> Result<(), String> {
 }
 
 /// 查看日志。`-f` 时使用继承 stdio 的方式以支持持续输出。
+///
+/// 注意：`journalctl` 是 systemd 专有。OpenBSD 没有它，日志在 `/var/log/messages`
+/// 里按行滚动——到时候在这里按平台分支（`-f` 对应 `tail -f` 并自行按标识过滤）。
 fn logs(service: Service, follow: bool, lines: u32) -> Result<(), String> {
     let mut args: Vec<String> = Vec::new();
     for unit in service.units() {
@@ -292,21 +298,6 @@ pub fn ensure_root() -> Result<(), String> {
     }
 }
 
-/// 捕获输出执行；失败时返回 stderr 内容作为错误信息。
-fn run_captured(program: &str, args: &[&str]) -> Result<(), String> {
-    let out = ProcessCommand::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| format!("无法执行 {program}: {e}"))?;
-
-    if out.status.success() {
-        print!("{}", String::from_utf8_lossy(&out.stdout));
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
-}
-
 /// 继承 stdio 执行（用于 journalctl -f 等需要流式/交互输出的命令）。
 fn run_inherit(program: &str, args: &[&str]) -> Result<(), String> {
     let status = ProcessCommand::new(program)
@@ -327,45 +318,3 @@ fn run_inherit(program: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// 执行 `systemctl show -p ...`，返回 KEY=VALUE 映射（属性顺序不依赖 -p 顺序）。
-fn systemctl_show(unit: &str) -> Result<HashMap<String, String>, String> {
-    let out = capture(
-        "systemctl",
-        &[
-            "show",
-            "-p",
-            "LoadState",
-            "-p",
-            "ActiveState",
-            "-p",
-            "SubState",
-            "-p",
-            "UnitFileState",
-            "-p",
-            "MainPID",
-            unit,
-        ],
-    )?;
-
-    let mut map = HashMap::new();
-    for line in out.lines() {
-        if let Some((k, v)) = line.split_once('=') {
-            map.insert(k.to_string(), v.to_string());
-        }
-    }
-    Ok(map)
-}
-
-/// 捕获 stdout 执行（仅成功时返回）。
-fn capture(program: &str, args: &[&str]) -> Result<String, String> {
-    let out = ProcessCommand::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| format!("无法执行 {program}: {e}"))?;
-
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
-}

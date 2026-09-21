@@ -75,27 +75,6 @@ fn nginx_version(bin: &Path) -> String {
     }
 }
 
-/// systemd 是否存在名为 `name` 的 unit（通过 list-unit-files 判断）。
-fn systemd_has(name: &str) -> bool {
-    root_cmd("systemctl")
-        .args(["list-unit-files", "--no-legend", &format!("{name}.service")])
-        .output()
-        .map(|o| {
-            let out = String::from_utf8_lossy(&o.stdout);
-            out.lines().any(|l| l.trim().starts_with(name))
-        })
-        .unwrap_or(false)
-}
-
-/// systemd unit 当前是否 active。
-fn systemd_active(name: &str) -> bool {
-    root_cmd("systemctl")
-        .args(["is-active", name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// 读取 master pid（/var/run/nginx.pid）。
 fn read_pid() -> Option<i64> {
     let text = std::fs::read_to_string("/var/run/nginx.pid").ok()?;
@@ -225,8 +204,9 @@ pub async fn status() -> Response {
                 "version": nginx_version(&bin),
                 "running": running,
                 "pid": read_pid(),
-                "systemd": systemd_has("nginx"),
-                "systemd_active": systemd_active("nginx"),
+                // 这两个字段名是历史命名（面板依赖），实际调用已平台无关
+                "systemd": super::svc::exists("nginx"),
+                "systemd_active": super::svc::is_active("nginx"),
                 "default_conf": default_vhost_path().display().to_string(),
                 "default_ip_access": default_ip_access(),
                 "default_page": default_page_path().display().to_string(),
@@ -1085,23 +1065,15 @@ pub async fn control(action: &str) -> Response {
             return Err("Nginx 未安装".to_string());
         };
 
-        // 优先 systemd unit
-        let sysd = systemd_has("nginx");
+        // 优先走服务管理器
+        let sysd = super::svc::exists("nginx");
         let method = if sysd {
-            let o = root_cmd("systemctl")
-                .args([action.as_str(), "nginx"])
-                .output()
-                .map_err(|e| format!("执行 systemctl {action} nginx 失败: {e}"))?;
-            if !o.status.success() {
-                return Err(format!(
-                    "systemctl {action} nginx 失败：{}",
-                    output_err(&o, "未知错误")
-                ));
-            }
+            super::svc::act(&action, "nginx").map_err(|e| format!("nginx {action} 失败：{e}"))?;
             // restart 后稍等稳定
             if action == "restart" {
                 std::thread::sleep(std::time::Duration::from_millis(400));
             }
+            // method 值沿用历史命名（面板依赖）
             "systemd".to_string()
         } else {
             // 二进制信号方式

@@ -17,6 +17,7 @@ mod platform;
 mod process;
 mod resource;
 mod service;
+mod svc;
 mod service_conf;
 mod site;
 mod ssh;

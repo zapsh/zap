@@ -252,7 +252,7 @@ fn parse_spec(spec_json: &str) -> BTreeMap<String, String> {
     m
 }
 
-/// 重载目标 php-fpm master：优先 systemctl reload，退化为向 master 发 USR2。
+/// 重载目标 php-fpm master：优先服务管理器 reload，退化为向 master 发 USR2。
 /// 二者都不可用时不报错（配置已写入并校验通过），由面板层提示手动 reload。
 fn reload_master(ver: &str, root: &Path) -> Result<(), String> {
     let pid_candidates = [
@@ -264,8 +264,11 @@ fn reload_master(ver: &str, root: &Path) -> Result<(), String> {
     ];
     let esc = |s: &str| s.replace('\'', "'\\''");
     let sh = format!(
-        "systemctl reload php-fpm-{v} 2>/dev/null && exit 0; \
+        // 服务名按发行版差异很大（OpenBSD 上是 php82_fpm 之类），找不到就自然
+        // 退化到下面的 USR2 路径
+        "{ctl} reload php-fpm-{v} 2>/dev/null && exit 0; \
          for p in {pids}; do if [ -f \"$p\" ]; then kill -USR2 \"$(cat \"$p\")\" 2>/dev/null && exit 0; fi; done; exit 3",
+        ctl = super::svc::CTL,
         v = esc(ver),
         pids = pid_candidates
             .iter()
@@ -273,7 +276,7 @@ fn reload_master(ver: &str, root: &Path) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(" "),
     );
-    let o = root_cmd("bash")
+    let o = root_cmd(super::platform::SHELL)
         .args(["-c", &sh])
         .output()
         .map_err(|e| format!("重载 php-fpm 失败: {e}"))?;

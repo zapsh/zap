@@ -2454,10 +2454,7 @@ fn probe_instance_state(_app_path: &Path, info: Option<&serde_yaml::Value>) -> S
         None => return "unknown".into(),
     };
     if let Some(svc) = info.get("svc_name").and_then(|v| v.as_str()) {
-        return match root_cmd("systemctl").args(["is-active", svc]).output() {
-            Ok(o) => normalize_state(String::from_utf8_lossy(&o.stdout).trim()),
-            Err(_) => "unknown".into(),
-        };
+        return normalize_state(&super::svc::raw_state(svc));
     }
     if let Some(pf) = info.get("pid_file").and_then(|v| v.as_str()) {
         let pid: i32 = match std::fs::read_to_string(pf)
@@ -2548,20 +2545,10 @@ pub async fn instance_action(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or("未登记 systemd 服务（info.yaml 缺 svc_name），无法通过面板启停")?;
-        let out = root_cmd("systemctl")
-            .args([action.as_str(), svc.as_str()])
-            .output()
-            .map_err(|e| format!("执行 systemctl {action} {svc} 失败: {e}"))?;
-        if !out.status.success() {
-            let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return Err(format!("systemctl {action} {svc} 失败: {msg}"));
-        }
+        super::svc::act(&action, &svc).map_err(|e| format!("{action} {svc} 失败: {e}"))?;
         // 操作后回读状态（restart 稍等稳定）
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let state = match root_cmd("systemctl").args(["is-active", &svc]).output() {
-            Ok(o) => normalize_state(String::from_utf8_lossy(&o.stdout).trim()),
-            Err(_) => "unknown".into(),
-        };
+        let state = normalize_state(&super::svc::raw_state(&svc));
         Ok(Response::ok(
             "ok",
             Some(json!({

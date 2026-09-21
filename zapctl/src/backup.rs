@@ -31,8 +31,9 @@ const KEY_FILE: &str = "secret.key";
 /// 归档内凭据目录名（顶层，对应 /etc/zap/credentials 的整目录拷贝）
 const CRED_DIR_ARCHIVE: &str = "credentials";
 
-const UNIT_ZAPD: &str = "zapd.service";
-const UNIT_ZAPEXEC: &str = "zapexec.service";
+// 不带 `.service` 后缀：由 [`crate::svc::unit_name`] 按平台补
+const UNIT_ZAPD: &str = "zapd";
+const UNIT_ZAPEXEC: &str = "zapexec";
 
 #[derive(Subcommand)]
 pub enum BackupCommand {
@@ -302,33 +303,7 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-// ── systemd 服务协调（还原数据库期间避免进程占用）──────────
-
-fn unit_active(unit: &str) -> bool {
-    ProcessCommand::new("systemctl")
-        .arg("is-active")
-        .arg("--quiet")
-        .arg(unit)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-fn systemctl(verb: &str, unit: &str) -> Result<(), String> {
-    let status = ProcessCommand::new("systemctl")
-        .arg(verb)
-        .arg(unit)
-        .status()
-        .map_err(|e| format!("无法执行 systemctl {verb} {unit}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        let code = status
-            .code()
-            .map_or_else(|| "?".to_string(), |c| c.to_string());
-        Err(format!("systemctl {verb} {unit} 失败（退出码 {code}）"))
-    }
-}
+// ── 服务协调（还原数据库期间避免进程占用）────────────────────
 
 // ── 用户数据导出 ──────────────────────────────────────────────
 
@@ -726,19 +701,20 @@ fn restore_zap(db_path: &str, staging: &Path, output: Option<&str>) -> Result<()
     }
 
     // 2. 停掉占用数据库的服务（仅停当前处于运行状态的）
-    let mut was_active: Vec<&str> = Vec::new();
-    for unit in [UNIT_ZAPD, UNIT_ZAPEXEC] {
-        if unit_active(unit) {
+    let mut was_active: Vec<String> = Vec::new();
+    for base in [UNIT_ZAPD, UNIT_ZAPEXEC] {
+        let unit = crate::svc::unit_name(base);
+        if crate::svc::is_active(&unit) {
             was_active.push(unit);
         }
     }
     if !was_active.is_empty() {
         info(&format!("停止服务：{}", was_active.join(" ")));
-        let mut stopped: Vec<&str> = Vec::new();
+        let mut stopped: Vec<&String> = Vec::new();
         for unit in &was_active {
-            if let Err(e) = systemctl("stop", unit) {
+            if let Err(e) = crate::svc::act("stop", unit) {
                 for s in &stopped {
-                    let _ = systemctl("start", s);
+                    let _ = crate::svc::act("start", s);
                 }
                 return Err(e);
             }
@@ -758,9 +734,10 @@ fn restore_zap(db_path: &str, staging: &Path, output: Option<&str>) -> Result<()
             return Ok(());
         }
         info(&format!("启动服务：{}", was_active.join(" ")));
-        for unit in [UNIT_ZAPEXEC, UNIT_ZAPD] {
+        for base in [UNIT_ZAPEXEC, UNIT_ZAPD] {
+            let unit = crate::svc::unit_name(base);
             if was_active.contains(&unit) {
-                systemctl("start", unit)?;
+                crate::svc::act("start", &unit)?;
             }
         }
         Ok(())

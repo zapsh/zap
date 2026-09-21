@@ -84,17 +84,8 @@ fn ssh_version() -> String {
 
 pub async fn status() -> Response {
     tokio::task::spawn_blocking(|| {
-        let running = root_cmd("systemctl")
-            .args(["is-active", "sshd"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
-            .unwrap_or_else(|_| {
-                root_cmd("systemctl")
-                    .args(["is-active", "ssh"])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
-                    .unwrap_or(false)
-            });
+        // 服务名按平台/发行版不同：OpenBSD 与 RHEL 是 sshd，Debian 新版本是 ssh
+        let running = super::svc::is_active("sshd") || super::svc::is_active("ssh");
 
         let port = std::fs::read_to_string("/etc/ssh/sshd_config")
             .ok()
@@ -193,21 +184,14 @@ pub async fn install(run_id: String) -> Response {
 
 pub async fn restart() -> Response {
     tokio::task::spawn_blocking(|| {
-        let out = root_cmd("systemctl").args(["restart", "sshd"]).output();
-        match out {
-            Ok(o) if o.status.success() => Response::ok("SSH 服务已重启", None),
-            Ok(_) => {
-                let out2 = root_cmd("systemctl").args(["restart", "ssh"]).output();
-                match out2 {
-                    Ok(o2) if o2.status.success() => Response::ok("SSH 服务已重启", None),
-                    Ok(o2) => Response::err(
-                        -1,
-                        format!("SSH 重启失败: {}", String::from_utf8_lossy(&o2.stderr)),
-                    ),
-                    Err(e) => Response::err(-1, format!("命令执行失败: {e}")),
-                }
-            }
-            Err(e) => Response::err(-1, format!("命令执行失败: {e}")),
+        // 服务名按平台/发行版不同：OpenBSD 与 RHEL 是 sshd，Debian 新版本是 ssh
+        let err = match super::svc::act("restart", "sshd") {
+            Ok(()) => return Response::ok("SSH 服务已重启", None),
+            Err(e) => e,
+        };
+        match super::svc::act("restart", "ssh") {
+            Ok(()) => Response::ok("SSH 服务已重启", None),
+            Err(e2) => Response::err(-1, format!("SSH 重启失败: {e2}（sshd: {err}）")),
         }
     })
     .await
