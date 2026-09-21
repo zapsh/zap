@@ -6289,7 +6289,7 @@ dependencies = [
 
 [[package]]
 name = "zap-crypto"
-version = "1.0.11"
+version = "1.0.13"
 dependencies = [
  "aes-gcm 0.10.3",
  "base64 0.22.1",
@@ -6299,7 +6299,7 @@ dependencies = [
 
 [[package]]
 name = "zap-proto"
-version = "1.0.11"
+version = "1.0.13"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.16",
@@ -6313,7 +6313,7 @@ dependencies = [
 
 [[package]]
 name = "zapctl"
-version = "1.0.11"
+version = "1.0.13"
 dependencies = [
  "bcrypt",
  "chrono",
@@ -6330,7 +6330,7 @@ dependencies = [
 
 [[package]]
 name = "zapd"
-version = "1.0.11"
+version = "1.0.13"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -6396,7 +6396,7 @@ dependencies = [
 
 [[package]]
 name = "zapexec"
-version = "1.0.11"
+version = "1.0.13"
 dependencies = [
  "base64 0.22.1",
  "bollard",
@@ -6417,7 +6417,7 @@ dependencies = [
 
 [[package]]
 name = "zapupgrade"
-version = "1.0.11"
+version = "1.0.13"
 dependencies = [
  "clap",
  "flate2",
