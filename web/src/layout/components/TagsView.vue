@@ -127,10 +127,17 @@ function onWheel(e: WheelEvent) {
   e.preventDefault()
 }
 
-function refresh(tab?: RenderedTab) {
+async function refresh(tab?: RenderedTab) {
   if (!tab) return
+  // 常驻存活的页面（文件管理 / 终端）躺在 keep-alive 缓存里，直接跳中转页再回来还是
+  // 老实例，刷新点了等于没点：先把缓存摘掉，等老实例真正卸载后再放回白名单。
+  // 顺序不能乱（见 stores/tags.ts 的 suspendCache）：摘早了白摘，放早了老实例会被重新缓存。
+  const resume = tagsStore.suspendCache(tab.path)
+  await nextTick()
   // 走 /redirect 中转：由它 replace 回原地址，从而重建页面组件
-  router.replace(`/redirect${tab.path}`)
+  await router.replace(`/redirect${tab.path}`)
+  await nextTick()
+  resume()
 }
 
 /** 激活标签滚进视野（标签多到溢出时，切换靠键盘 / 侧栏也不会迷失位置） */

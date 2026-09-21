@@ -486,7 +486,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, onActivated, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Edit, Delete, Link, Monitor, Key, Search, MoreFilled, Close } from '@/icons'
 import { Terminal } from '@xterm/xterm'
@@ -1328,6 +1328,13 @@ onMounted(() => {
   loadSshKeys()
 })
 
+// 本页是常驻存活的（切页不卸载，见 stores/tags.ts）：从缓存里切回来时重新量一次容器尺寸，
+// 期间浏览器窗口可能变过，xterm 还是老的列/行，不重排就会不占满或与 pty 尺寸对不上。
+onActivated(() => {
+  const tab = tabs.value.find((t) => t.id === activeTabId.value)
+  if (tab?.term) nextTick(() => fitTerminal(tab))
+})
+
 onBeforeUnmount(() => {
   // Cleanup all terminals
   for (const tab of tabs.value) {
@@ -1347,6 +1354,13 @@ onBeforeUnmount(() => {
     window.removeEventListener('mouseup', endSidebarResize)
   }
 })
+</script>
+
+<script lang="ts">
+// 组件名要和 keep-alive 白名单对得上（include 按组件 name 匹配，不是路由 name）；
+// 终端是常驻存活的页面：切走不卸载，SSH 会话与滚动内容都留着，onBeforeUnmount 也不触发。
+// 见 stores/tags.ts。
+export default { name: 'Terminal' }
 </script>
 
 <style scoped>

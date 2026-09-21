@@ -14,6 +14,10 @@
  * 3. **只有仪表盘常驻**：只显示图标、不可关闭，任何分类下都在；标签全关光时它就是兜底。
  *    这里刻意不看 `meta.affix`：后端菜单表几乎给所有页面都标了 affix（历史遗留），
  *    真按它来标签会全部关不掉。
+ * 4. **keep-alive 白名单**：`include` 按**组件 name** 匹配（不是路由 name —— 菜单下发的
+ *    name 是 `files-index` 这种），所以常规页面其实命中不了，切页即重建。只有
+ *    `ALIVE_PAGES` 里那几个页面显式声明了组件 name、并一直挂在白名单上：切走再回来
+ *    实例还在（文件管理的当前目录、终端的 SSH 会话都不用重来）。
  *
  * 状态只活在内存里：刷新页面回到「仪表盘 + 当前页」，不做跨会话持久化。
  */
@@ -28,10 +32,28 @@ const DASHBOARD_TITLE = 'menu.dashboard'
 const DASHBOARD_ICON = 'material-symbols:home'
 const DASHBOARD_NAME = 'Dashboard'
 
+/**
+ * 常驻存活的页面：切页、关标签都不销毁实例，切回来状态还在。
+ *
+ * key = 页面路径，value = **组件 name**（keep-alive 的 include 按组件 name 匹配，
+ * 所以对应页面里要显式写 `export default { name: ... }`）。
+ * 这些页面的状态丢了就得重来（重新选目录、重连 SSH），因此不受「标签关掉即丢缓存」
+ * 的约束，一直挂在白名单里，直到登出或刷新浏览器。
+ */
+const ALIVE_PAGES: Record<string, string> = {
+  '/files/index': 'FileManager',
+  '/terminal/index': 'Terminal',
+}
+
 export interface NavTab {
   /** 唯一键，也是跳转目标：不含 query，同一页面带不同 query 视作同一个标签 */
   path: string
-  /** 路由 name：keep-alive 的 include 用它 */
+  /**
+   * 路由 name，同时进 keep-alive 白名单。
+   *
+   * 注意：include 实际按**组件 name** 匹配，菜单下发的 name（`files-index` 这种）
+   * 对不上，所以常规页面切页即重建；真正常驻的见 `ALIVE_PAGES`。
+   */
   name?: string
   /** 标题原文（i18n key 或后端下发的中文），渲染时过 translateTitle */
   title: string
@@ -71,10 +93,38 @@ export const useTagsStore = defineStore('tags', () => {
   /** 当前主分类（`matched[0].path`）；空串表示还没进过任何分类 */
   const group = ref('')
 
-  /** keep-alive 白名单：关闭标签即丢弃对应页面缓存 */
-  const cachedNames = computed(() =>
-    tabs.value.map((t) => t.name).filter((n): n is string => !!n),
-  )
+  /** 刷新页面时临时摘出白名单的组件 name，见 suspendCache */
+  const suspended = ref<string[]>([])
+
+  /**
+   * keep-alive 白名单：常驻存活的页面（ALIVE_PAGES）永远在，加上当前标签，
+   * 再减掉刷新时临时摘掉的那个。
+   */
+  const cachedNames = computed(() => {
+    const names = new Set<string>(Object.values(ALIVE_PAGES))
+    tabs.value.forEach((t) => {
+      if (t.name) names.add(t.name)
+    })
+    suspended.value.forEach((n) => names.delete(n))
+    return [...names]
+  })
+
+  /**
+   * 刷新页面用：把某个页面的缓存实例从白名单里摘掉，返回「放回去」的函数。
+   *
+   * 常驻存活的页面必须走这套：直接跳 `/redirect` 会被 keep-alive 复用缓存实例，
+   * 刷新点了等于没点。调用方顺序（见 TagsView.refresh）：
+   * 摘掉 → 等 KeepAlive 销毁实例 → 跳中转页（老实例这时才真正卸载）→ 放回去
+   * （放早了老实例会被重新缓存，放晚了新实例就不会进缓存）。
+   */
+  function suspendCache(path: string): () => void {
+    const name = ALIVE_PAGES[path] ?? tabs.value.find((t) => t.path === path)?.name
+    if (!name) return () => {}
+    suspended.value = [...suspended.value, name]
+    return () => {
+      suspended.value = suspended.value.filter((n) => n !== name)
+    }
+  }
 
   /**
    * 按当前路由同步标签：换分类先清空；分类内换页就地改写那唯一的标签；
@@ -167,6 +217,7 @@ export const useTagsStore = defineStore('tags', () => {
     group,
     cachedNames,
     sync,
+    suspendCache,
     close,
     closeOthers,
     closeAll,

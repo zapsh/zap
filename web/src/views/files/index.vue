@@ -60,6 +60,12 @@ watch(activeTab, (value) => {
 })
 </script>
 
+<script lang="ts">
+// 组件名要和 keep-alive 白名单对得上（include 按组件 name 匹配，不是路由 name）；
+// 文件管理是常驻存活的页面，切走再回来实例不销毁、当前目录还在。见 stores/tags.ts。
+export default { name: 'FileManager' }
+</script>
+
 <style scoped lang="scss">
 /* 页面整体高度与布局内容区对齐（布局：100vh - 状态栏/头部 - 内边距） */
 .files-page {
