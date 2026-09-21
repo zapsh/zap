@@ -44,34 +44,19 @@ gen_password() {
 }
 
 # ── 解释器检查（脚本用到 bash 数组与 pipefail，sh/dash 下行为异常）──
-# Linux 发行版自带 bash；FreeBSD / OpenBSD 基础系统没有 bash，需要先装。
-# 这里先按常见路径找，找不到就用包管理器装上，再 exec 重入本脚本（避免要求用户先手动装）。
+# Linux 发行版自带 bash：按常见路径找出来，找不到就提示先装，找到后 exec 重入本脚本。
 find_bash() {
     local b
-    for b in /bin/bash /usr/bin/bash /usr/local/bin/bash /usr/pkg/bin/bash; do
+    for b in /bin/bash /usr/bin/bash; do
         [ -x "$b" ] && { printf '%s' "$b"; return 0; }
     done
     command -v bash 2>/dev/null
 }
 
 if [ -z "${BASH_VERSION:-}" ]; then
-    if ! find_bash >/dev/null 2>&1; then
-        case "$(uname -s)" in
-            FreeBSD)
-                info "未找到 bash，正在用 pkg 安装（FreeBSD 基础系统不含 bash）..."
-                # pkg 首次使用会先 bootstrap，ASSUME_ALWAYS_YES 免掉交互确认
-                ASSUME_ALWAYS_YES=YES pkg bootstrap >/dev/null 2>&1 || true
-                ASSUME_ALWAYS_YES=YES pkg install -y bash \
-                    || die "安装 bash 失败，请手动执行：pkg install -y bash" ;;
-            OpenBSD)
-                info "未找到 bash，正在用 pkg_add 安装（OpenBSD 基础系统不含 bash）..."
-                pkg_add -I -x bash \
-                    || die "安装 bash 失败，请手动执行：pkg_add -I bash" ;;
-        esac
-    fi
     BASH_BIN=$(find_bash)
     [ -n "$BASH_BIN" ] && [ -f "$0" ] \
-        || die "未找到 bash：请先安装后重试（FreeBSD: pkg install -y bash / OpenBSD: pkg_add -I bash）"
+        || die "未找到 bash：请先安装后重试"
     exec "$BASH_BIN" "$0" "$@"
 fi
 
@@ -138,32 +123,16 @@ case "$ADMIN_PASS" in
 esac
 [ "${#ADMIN_PASS}" -ge 8 ] || warn "管理员密码不足 8 位，建议登录后修改"
 # ── 平台探测：操作系统 + 服务管理器 ─────────────────────────
-# 服务管理器决定后面怎么装/启服务：
-#   Linux          → systemd（systemctl）
-#   FreeBSD        → rc.d + service(8)，开机自启归 sysrc 管（它没有 rcctl）
-#   OpenBSD        → rc.d + rcctl
-# RCD_DIR 是 rc.d 脚本的落点：FreeBSD 的第三方服务装在 /usr/local/etc/rc.d/，
-# 系统自带的才在 /etc/rc.d/；OpenBSD 一律在 /etc/rc.d/。
+# 只支持 Linux + systemd：安装包、服务单元、防火墙后端都按这一套来。
 OS=$(uname -s)
 case "$OS" in
     Linux)
         command -v systemctl >/dev/null 2>&1 \
-            || die "未检测到 systemctl：Linux 上目前仅支持 systemd 作为服务管理器"
-        INIT=systemd
+            || die "未检测到 systemctl：目前仅支持 systemd 作为服务管理器"
         OS_PKG=linux
         ;;
-    FreeBSD)
-        INIT=rcd
-        OS_PKG=freebsd
-        RCD_DIR=/usr/local/etc/rc.d
-        ;;
-    OpenBSD)
-        INIT=rcd
-        OS_PKG=openbsd
-        RCD_DIR=/etc/rc.d
-        ;;
     *)
-        die "不支持的操作系统: ${OS}（当前支持 Linux、FreeBSD、OpenBSD）"
+        die "不支持的操作系统: ${OS}（当前仅支持 Linux）"
         ;;
 esac
 
@@ -175,30 +144,22 @@ case "$ARCH" in
     s390x)               ;;
     *) die "不支持的架构: $ARCH" ;;
 esac
-info "目标版本: ${VERSION}   系统: ${OS} (${INIT})   架构: ${ARCH}"
+info "目标版本: ${VERSION}   系统: ${OS} (systemd)   架构: ${ARCH}"
 
-# ── bash 可用性提示（BSD 必需，运行时由 zapexec 自行解析路径）──
+# ── bash 可用性提示（运行时由 zapexec 自行解析路径）──
 # 面板运行时按绝对路径调用 bash 拉起 AppStore 包脚本、计划任务与用户脚本，
-# zapexec 会自动探测实际路径（Linux /bin/bash、BSD /usr/local/bin/bash），
-# 这里只在找不到 bash 时提前告警，避免装完才发现装不了软件。
+# zapexec 会自动探测实际路径，这里只在找不到 bash 时提前告警，
+# 避免装完才发现装不了软件。
 if ! find_bash >/dev/null 2>&1; then
-    warn "未找到 bash：AppStore 安装脚本与计划任务将无法执行，请先安装（FreeBSD: pkg install -y bash / OpenBSD: pkg_add -I bash）"
+    warn "未找到 bash：AppStore 安装脚本与计划任务将无法执行，请先安装 bash"
 fi
 
 # ── 下载工具 ────────────────────────────────────────────────
-# OpenBSD 默认没有 wget，自带的是 ftp(1)
 if command -v wget >/dev/null 2>&1; then
     fetch_url()  { wget -q -O - "$1"; }
     fetch_file() { wget -O "$2" "$1"; }
-elif command -v ftp >/dev/null 2>&1; then
-    fetch_url()  { ftp -o - "$1"; }
-    fetch_file() { ftp -o "$2" "$1"; }
-elif command -v fetch >/dev/null 2>&1; then
-    # FreeBSD 的 fetch(1)
-    fetch_url()  { fetch -o - "$1"; }
-    fetch_file() { fetch -o "$2" "$1"; }
 else
-    die "未找到 wget 或 ftp，无法下载安装包"
+    die "未找到 wget，无法下载安装包"
 fi
 
 # ── 解析 latest 版本号 ──────────────────────────────────────
@@ -235,10 +196,9 @@ fi
 #
 # 工具选择：优先 useradd（shadow-utils，Debian / Ubuntu / RHEL / CentOS / Rocky
 # 等发行版均自带，参数一致）；只有 Debian 系才有的 adduser 作为回退。
-# OpenBSD 的 useradd 是 BSD 版，参数不兼容，单独走一个分支。
 # 用法：create_user <用户名> <1=系统用户|0=普通用户>
 
-# 组是否存在：getent 是 glibc 工具，OpenBSD 上没有，退化到读 /etc/group
+# 组是否存在：getent 是 glibc 工具（musl 系发行版没有），退化到读 /etc/group
 has_group() {
     if command -v getent >/dev/null 2>&1; then
         getent group "$1" >/dev/null 2>&1
@@ -258,24 +218,6 @@ create_user() {
     local group_exists=0
     if has_group "$user"; then
         group_exists=1
-    fi
-
-    # FreeBSD：没有 shadow-utils 的 useradd，只有 pw(8)。pw useradd 会自动建
-    # 同名主组，所以不需要 -g；nologin 在 /usr/sbin 下，与 OpenBSD 的 /sbin 不同。
-    if [ "$OS" = "FreeBSD" ]; then
-        pw useradd "$user" -s /usr/sbin/nologin -d /nonexistent \
-            || die "创建 ${user} 用户失败"
-        ok "用户 ${user} 创建完成"
-        return 0
-    fi
-
-    # OpenBSD：useradd 没有 -r / -M，默认也不建家目录；nologin 在 /sbin 下
-    if [ "$OS" = "OpenBSD" ]; then
-        local -a bopts=(-s /sbin/nologin)
-        [ "$group_exists" = "1" ] && bopts+=(-g "$user")
-        useradd "${bopts[@]}" "$user" || die "创建 ${user} 用户失败"
-        ok "用户 ${user} 创建完成"
-        return 0
     fi
 
     if command -v useradd >/dev/null 2>&1; then
@@ -314,17 +256,11 @@ create_user() {
 
 # ── 初始管理员：Linux 账号 + 家目录骨架 ────────────────────
 # 结构对齐 zapexec 的 user.home_init（家目录 711、www 755、logs 770 归 www、
-# tmp 700），区别只是这里由安装脚本以 root 直接建好，不必等面板首次启动。
-#
-# 非 Linux 平台跳过：BSD 的 useradd / pw 参数差异较大，交给 zapd 启动后经
-# zapexec 补齐（zapd::zap::admin_bootstrap），功能不缺。
+# tmp 700），区别只是这里由安装脚本以 root 直接建好，不必等面板首次启动
+# （否则由 zapd 启动后经 zapexec 补齐，见 zapd::zap::admin_bootstrap）。
 # 用法：create_admin_account <用户名> <家目录>
 create_admin_account() {
     local user="$1" home="$2"
-    if [ "$OS" != "Linux" ]; then
-        warn "非 Linux 平台，跳过预建 ${user} 账号与家目录（面板首次启动时自动补齐）"
-        return 0
-    fi
     local gname="$user"
     # 同名组已被系统占用（如发行版预置的 admin 组）时改用专属组，避免继承额外权限
     if has_group "$user"; then
@@ -405,7 +341,7 @@ deploy_appstore() {
         info "初始化 AppStore 官方仓库..."
         if git clone -q --depth 1 "$APPSTORE_REPO_URL" "$DEST/repos/.tmp-zap-appstore" 2>/dev/null; then
             local has_seed
-            # 不用 find -maxdepth（GNU 扩展，OpenBSD 的 find 没有）：只看有没有条目
+            # 只看有没有条目（不用 find，避免依赖 GNU 扩展）
             has_seed=$(ls -A "$BUILTIN" 2>/dev/null | head -1)
             [ -n "$has_seed" ] && mv "$BUILTIN" "$DEST/repos/.seed-zap-appstore" 2>/dev/null || true
             mv "$DEST/repos/.tmp-zap-appstore" "$BUILTIN"
@@ -553,44 +489,21 @@ done
 ok "配置准备完成"
 
 # ── 初始管理员的 Linux 账号 / 家目录 ────────────────────────
-# 账号与家目录先建好（Linux）；建库 + 写入管理员交给下面的 `zapd --init-admin`，
+# 账号与家目录先建好；建库 + 写入管理员交给下面的 `zapd --init-admin`，
 # 凭据只经命令行参数传递，不落任何文件（/etc/zap 下也不会留明文密码）。
 create_admin_account "$ADMIN_USER" "/home/${ADMIN_USER}"
 
-# ── 服务安装（systemd / rc.d）────────────────────────────────
-info "安装 ${INIT} 服务..."
+# ── 服务安装（systemd）───────────────────────────────────────
+info "安装 systemd 服务..."
 
-# 用法：install_service <服务名>
-# 动作语义一致（enable / 启动），差别在单元文件放哪、以及每个平台用什么命令：
-#   systemd → systemctl；FreeBSD → sysrc + service；OpenBSD → rcctl
+# 用法：install_service <服务名>：装单元文件 + enable + 重启
 install_service() {
     local name="$1"
-    case "$INIT" in
-        systemd)
-            cp -Rf "$SRC/scripts/systemd/${name}.service" /etc/systemd/system/ \
-                || die "安装 ${name}.service 失败"
-            systemctl daemon-reload
-            systemctl enable "${name}.service" >/dev/null 2>&1 || warn "服务 ${name} enable 失败"
-            systemctl restart "${name}.service" || warn "${name} 启动失败"
-            ;;
-        rcd)
-            cp -Rf "$SRC/scripts/rc.d/${OS_PKG}/${name}" "${RCD_DIR}/${name}" \
-                || die "安装 rc.d/${name} 失败"
-            chmod 0755 "${RCD_DIR}/${name}"
-            # 开机自启：FreeBSD 要写 rc.conf 里的 <n>_enable，不归 service 管
-            case "$OS" in
-                FreeBSD)
-                    sysrc "${name}_enable=YES" || warn "服务 ${name} enable 失败"
-                    # 必须带 one 前缀：rc.conf 没开启时 service 会直接拒绝执行
-                    service "$name" onestart || warn "${name} 启动失败"
-                    ;;
-                *)
-                    rcctl enable "$name" || warn "服务 ${name} enable 失败"
-                    rcctl restart "$name" || warn "${name} 启动失败"
-                    ;;
-            esac
-            ;;
-    esac
+    cp -Rf "$SRC/scripts/systemd/${name}.service" /etc/systemd/system/ \
+        || die "安装 ${name}.service 失败"
+    systemctl daemon-reload
+    systemctl enable "${name}.service" >/dev/null 2>&1 || warn "服务 ${name} enable 失败"
+    systemctl restart "${name}.service" || warn "${name} 启动失败"
 }
 
 # 顺序有意义：全新机器上 exec.key 由 zapexec 首启生成，zapd 随后才能读到
@@ -623,19 +536,11 @@ init_admin_account() {
 init_admin_account || true
 
 install_service zapd
-ok "${INIT} 服务已启用"
+ok "systemd 服务已启用"
 
 # ── Cleanup ────────────────────────────────────────────
 rm -f "$ZAP_FILENAME"
-case "$INIT" in
-    systemd) systemctl status zapd.service --no-pager || true ;;
-    rcd)
-        case "$OS" in
-            FreeBSD) service zapd onestatus || true ;;
-            *)       rcctl check zapd || true ;;
-        esac
-        ;;
-esac
+systemctl status zapd.service --no-pager || true
 # ── 完成总结 ────────────────────────────────────────────────
 printf "\n"
 printf "${GREEN}========================================${NC}\n"

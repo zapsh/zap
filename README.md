@@ -2,7 +2,7 @@
 
 # ZAP
 
-**现代化 Linux/BSD 服务器 / VPS 控制面板**
+**现代化 Linux 服务器 / VPS 控制面板**
 
 轻量级 · 高性能 · 特权分离 · 单文件部署
 
@@ -22,7 +22,7 @@
 
 它将网站、域名、SSL 证书、Nginx、PHP-FPM、MySQL、Docker、文件和服务器运维能力集中到一个简洁的管理面板中，帮助个人开发者、团队与服务商更高效地部署和维护网站。无论是创建 Nginx 虚拟主机、切换 PHP 版本、管理数据库与 Docker 服务，还是通过浏览器在线编辑网站文件，ZAP 都提供统一、直观的操作体验。
 
-ZAP 的后端以 **Rust** 编写（Axum + Tokio + SQLx），前端采用 **Vue 3 + Element Plus**，并通过现代化文件管理器提供在线浏览、编辑、上传下载、新建、重命名与删除等能力。编译时使用 `rust-embed` 将前端产物嵌入单一二进制，最终以 **一个可执行文件** 交付，部署轻量，资源占用低。
+ZAP 的后端以 **Rust** 编写（Axum + Tokio + SQLx），前端采用 **Vue 3 + Element Plus**，并通过现代化文件管理器提供在线浏览、编辑、上传下载、新建、重命名与删除等能力。部署方便，资源占用低。
 
 ZAP 以 **[GPL-3.0](./LICENSE)** 开源许可发布：个人与企业均可免费使用。
 
@@ -149,10 +149,8 @@ bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
 脚本幂等：检测到 `/usr/local/zap/zapd` 已存在时按**升级**处理（覆盖二进制与脚本资源，保留数据与配置）。
 也支持 `bash install.sh v1.0.12` 指定版本。
 
-> **FreeBSD / OpenBSD**：基础系统不含 bash。用 `sh install.sh` 执行时脚本会自动用
-> `pkg install -y bash` / `pkg_add -I bash` 装上再继续，也可以先手动装好再 `bash install.sh`。
-> 面板侧不写死路径：通用脚本片段走平台解释器（BSD 上是 `/bin/sh`），
-> AppStore 包脚本与计划任务需要的 bash 由 zapexec 按平台解析（BSD 上是 `/usr/local/bin/bash`）。
+> **bash**：脚本用到 bash 特性，`sh install.sh` 执行时会自动切到 bash 重入；
+> 通用脚本片段走 `bash`，AppStore 包脚本与计划任务用的绝对路径由 zapexec 自行解析。
 
 初始管理员可用 `--admin-user` / `--admin-pass` 指定，也可用环境变量 `ZAP_ADMIN_USER` / `ZAP_ADMIN_PASSWORD`（命令行优先）。安装末尾会执行 `zapd --init-admin <用户> --admin-password <密码>` 建库并写入管理员（凭据只经命令行传递，**不落任何文件**），Linux 账号与家目录 `/home/<用户名>`（www/logs/tmp 骨架）由安装脚本预建。已安装过的机器重跑安装脚本不会改动现有管理员密码。
 

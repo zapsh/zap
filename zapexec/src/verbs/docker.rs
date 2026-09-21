@@ -216,7 +216,7 @@ fn cli_exists() -> bool {
         .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
 }
 
-/// 服务单元是否已注册（systemd / rc.d / rcctl，平台差异见 [`super::svc::exists`]）。
+/// 服务单元是否已注册（systemd，平台差异见 [`super::svc::exists`]）。
 fn unit_exists() -> bool {
     super::svc::exists("docker")
 }

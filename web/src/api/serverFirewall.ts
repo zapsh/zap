@@ -1,7 +1,7 @@
 import { http } from '@/utils/request'
 import type { ApiResponse } from '@/types/api_response'
 
-/** 防火墙后端：Linux 为 firewalld / ufw / nftables / iptables，后续 FreeBSD 为 pf / ipfw */
+/** 防火墙后端：Linux 上的 firewalld / ufw / nftables / iptables */
 export type FirewallBackend =
   | 'firewalld'
   | 'ufw'

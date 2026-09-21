@@ -159,7 +159,7 @@ pub async fn run(
             .arg(
                 // runuser 优先（不依赖 PAM 会话），回退 su；两者都不登录，
                 // 仅切换执行身份，保留调用方设置的工作目录与环境。
-                // bash 路径按平台解析：BSD 上是 /usr/local/bin/bash。
+                // bash 走绝对路径（由 bash_bin 解析），不依赖 PATH。
                 format!(
                     "if command -v runuser >/dev/null 2>&1; then \
                        exec runuser -u \"$ZAP_RUN_USER\" -- {bash} -c \"$ZAP_RUN_CMD\"; \

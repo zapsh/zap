@@ -265,7 +265,7 @@ fn reload_master(ver: &str, root: &Path) -> Result<(), String> {
     ];
     let esc = |s: &str| s.replace('\'', "'\\''");
     let sh = format!(
-        // 服务名按发行版差异很大（OpenBSD 上是 php82_fpm 之类），找不到就自然
+        // 服务名按发行版差异很大（Alpine 上是 php-fpm83 之类），找不到就自然
         // 退化到下面的 USR2 路径
         "{ctl} reload php-fpm-{v} 2>/dev/null && exit 0; \
          for p in {pids}; do if [ -f \"$p\" ]; then kill -USR2 \"$(cat \"$p\")\" 2>/dev/null && exit 0; fi; done; exit 3",

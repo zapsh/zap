@@ -18,7 +18,7 @@ use std::process::Command as ProcessCommand;
 use clap::{Parser, Subcommand, ValueEnum};
 
 // ── 服务登记表（后续新增服务在此处登记）───────────────────────
-// 不带 `.service` 后缀：由 [`svc::unit_name`] 按平台补（OpenBSD 没有后缀概念）。
+// 不带 `.service` 后缀：由 [`svc::unit_name`] 统一补上。
 const UNIT_ZAPD: &str = "zapd";
 const UNIT_ZAPEXEC: &str = "zapexec";
 
@@ -266,8 +266,7 @@ fn status(service: Service) -> Result<(), String> {
 
 /// 查看日志。`-f` 时使用继承 stdio 的方式以支持持续输出。
 ///
-/// 注意：`journalctl` 是 systemd 专有。OpenBSD 没有它，日志在 `/var/log/messages`
-/// 里按行滚动——到时候在这里按平台分支（`-f` 对应 `tail -f` 并自行按标识过滤）。
+/// 注意：日志走 `journalctl`，即依赖 systemd（zap 只支持 Linux）。
 fn logs(service: Service, follow: bool, lines: u32) -> Result<(), String> {
     let mut args: Vec<String> = Vec::new();
     for unit in service.units() {

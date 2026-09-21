@@ -525,17 +525,11 @@ pub async fn dispatch_stream(
     }
 }
 
-/// bash 解释器绝对路径：Linux 发行版自带 `/bin/bash`；
-/// FreeBSD / OpenBSD 基础系统不含 bash，装包后落在 `/usr/local/bin/bash`，
-/// 所以不能写死 `/bin/bash`（AppStore 包脚本、计划任务、用户脚本都用它拉起）。
+/// bash 解释器绝对路径：多数发行版自带 `/bin/bash`，少数在 `/usr/bin/bash`
+/// （AppStore 包脚本、计划任务、用户脚本都用它拉起，故统一走绝对路径）。
 /// 找不到时回退 PATH 查找（`root_cmd` 的安全 PATH 已含 /usr/local/bin）。
 pub(crate) fn bash_bin() -> String {
-    for p in [
-        "/bin/bash",
-        "/usr/bin/bash",
-        "/usr/local/bin/bash",
-        "/usr/pkg/bin/bash",
-    ] {
+    for p in ["/bin/bash", "/usr/bin/bash"] {
         if Path::new(p).is_file() {
             return p.to_string();
         }
@@ -777,7 +771,7 @@ pub(crate) fn cloexec_inherited_fds() {
 mod tests {
     use super::bash_bin;
 
-    /// Linux 的 bash 在 /bin/bash，BSD 装包后在 /usr/local/bin/bash：
+    /// 多数发行版的 bash 在 /bin/bash，少数在 /usr/bin/bash：
     /// 无论命中哪条候选，都必须解析到 bash 本身。
     #[test]
     fn bash_bin_points_to_bash() {

@@ -49,7 +49,7 @@ pub async fn info() -> Response {
 
 /// `upgrade.run`：校验升级包目录与日志路径位于数据区后，
 /// 用 `systemd-run --no-block` 把 zapupgrade 放入独立 unit 中异步执行并立即返回。
-/// 没有 systemd 时（开发机/容器、OpenBSD 等）退化为直接 spawn 子进程，语义相同。
+/// 没有 systemd 时（开发机/容器）退化为直接 spawn 子进程，语义相同。
 pub async fn run(run_id: String, stage_dir: String, log_path: String) -> Response {
     if !valid_token(&run_id) {
         return Response::err(-1, format!("run_id 非法: {run_id}"));

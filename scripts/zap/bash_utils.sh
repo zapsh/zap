@@ -244,17 +244,15 @@ is_os_ge() {
 }
 is_deb_family() { is_os ubuntu debian raspbian linuxmint pop neon kali deepin; }
 is_rpm_family() { is_os centos rhel rocky alma almalinux ol oracle amazon fedora opensuse sles suse; }
-# 系统包管理器:apt / dnf / yum / apk / zypper / pkg(FreeBSD) / pkg_add(OpenBSD)
-# 未识别返回 1。BSD 两家额外用 uname -s 限定:多数 Linux 发行版上也有叫 pkg 的
-# 零散命令(如 pkgsrc 的包装脚本),只按命令名认会误判。
+# 系统包管理器:apt / dnf / yum / apk / zypper,未识别返回 1。
+# 只认 Linux 发行版的那几家;部分 Linux 上也有叫 pkg 的零散命令(如 pkgsrc 的
+# 包装脚本),只按命令名认会误判。
 pkg_manager() {
   if command -v apt-get >/dev/null 2>&1; then echo apt
   elif command -v dnf >/dev/null 2>&1; then echo dnf
   elif command -v yum >/dev/null 2>&1; then echo yum
   elif command -v apk >/dev/null 2>&1; then echo apk
   elif command -v zypper >/dev/null 2>&1; then echo zypper
-  elif [ "${OS_MACHINE:-}" = "FreeBSD" ] && command -v pkg >/dev/null 2>&1; then echo pkg
-  elif [ "${OS_MACHINE:-}" = "OpenBSD" ] && command -v pkg_add >/dev/null 2>&1; then echo pkg_add
   else return 1
   fi
 }
@@ -352,8 +350,7 @@ download_extract() {
 }
 
 # ── 编译 ──────────────────────────────────────────────────────────────────
-# GNU make 可执行文件名：BSD 上 base 自带的是 BSD make（既不认 GNU Makefile 语法，
-# OpenBSD 那份连 -j 都不支持），必须优先用包管理器装的 gmake。
+# GNU make 可执行文件名：发行版自带的 make 未必是 GNU make，优先用包管理器装的 gmake。
 # 判定看 `make --version` 的自报家门而不是管道 grep -q —— GNU make 输出多行时
 # grep -q 命中即退会让 make 收到 SIGPIPE，pipefail 下反把「是 GNU make」判成不是。
 # 优先级：ZAP_MAKE 覆盖 > gmake > make；都遇不上 GNU make 时回退第一个能用的那个。
@@ -367,12 +364,12 @@ make_bin() {
     case "$ver" in *"GNU Make"*) printf '%s\n' "$m"; return 0 ;; esac
   done
   [ -n "$first" ] || { log_error "系统缺少 make / gmake，无法编译"; return 1; }
-  log_warn "未找到 GNU make，回退 ${first}：BSD make 不认 GNU Makefile，建议先装 gmake"
+  log_warn "未找到 GNU make，回退 ${first}：非 GNU make 不认 GNU Makefile，建议先装 gmake"
   printf '%s\n' "$first"
 }
 
 # 并行编译 + 安装，失败自动退回串行；可传并行数，缺省 CPU_NUM -> cpu_count
-# make 一律走 make_bin：BSD 上直接敲 make 会撞上 base 那份 BSD make。
+# make 一律走 make_bin：直接敲 make 可能撞上非 GNU 的那份。
 MakeInstall() {
   local jobs="${1:-}" mb
   [ -n "$jobs" ] || jobs="${CPU_NUM:-}"
@@ -558,19 +555,6 @@ RH_DEPS="${ZAP_RH_DEPS:-wget curl git make gcc gcc-c++ autoconf automake libtool
 RH_DNF_EXTRA="${ZAP_RH_DNF_EXTRA:-libzip-devel oniguruma-devel libicu-devel libffi-devel libxslt-devel gd-devel libsodium-devel}"
 ALPINE_DEPS="${ZAP_ALPINE_DEPS:-build-base autoconf automake libtool bison re2c pkgconf curl wget git openssl-dev libxml2-dev zlib-dev ncurses-dev bzip2-dev libpng-dev libjpeg-turbo-dev}"
 
-# BSD 两家各一份：包管理器与命名规则都和 Linux 发行版没有交集：
-#   FreeBSD → pkg(8)：包名即 ports 名，头文件随主包一起装（无 -dev / -devel 之分）
-#   OpenBSD → pkg_add(1)：同一软件多版本并存时（autoconf / automake）须用 %<版本>
-#             消歧义，否则 pkg_add 以 "Ambiguous" 直接失败
-# 三处刻意省略：
-#   * 编译器 —— BSD 基本系统自带 clang，够编译 nginx / PHP，另装 gcc 易与 base 打架；
-#   * CA 证书 —— OpenBSD 证书由 base 维护（/etc/ssl/cert.pem），没有对应包；
-#   * libpq —— FreeBSD 上是 postgresql16-client 这类带版本号的包名，随版本漂移，
-#     需要的应用请自行按当前 ports 版本安装。
-# 两份列表都必须含 gmake：base 自带的是 BSD make，不认 GNU Makefile。
-FREEBSD_DEPS="${ZAP_FREEBSD_DEPS:-ca_root_nss wget curl git gmake autoconf automake libtool bison re2c pkgconf libxml2 openssl sqlite3 pcre2 bzip2 libzip oniguruma icu libffi libxslt freetype2 gd libsodium readline png jpeg-turbo webp}"
-OPENBSD_DEPS="${ZAP_OPENBSD_DEPS:-wget curl git gmake autoconf%2.71 automake%1.16 libtool bison re2c pkgconf libxml sqlite3 pcre2 bzip2 libzip oniguruma icu4c libffi libxslt freetype gd libsodium readline png jpeg libwebp}"
-
 # ── 运行时库 / 系统包(发行版与版本间包名不同) ──────────────────────
 #   libaio    : libaio1(Ubuntu 22.04-/Debian 12-) / libaio1t64(Ubuntu 24.04+/Debian 13+)
 #   libncurses: libncurses5(旧) / libncurses6(新) / ncurses-compat-libs(RHEL)
@@ -681,27 +665,13 @@ link_lib_compat() {
 
 # 按包管理器装单个包:成功输出打到 stdout(供调用方入日志),失败返回 1。
 # 之所以逐个 case 分派而不是统一拼 "<pm> install -y <包>":各家的静默开关不同,
-# OpenBSD 的 pkg_add 连 install 子命令都没有,那样拼出来的命令根本不成立。
+# 拼出来的命令未必成立。
 _pkg_install_one() {
-  local pm="${1:-}" p="${2:-}" out
+  local pm="${1:-}" p="${2:-}"
   [ -n "$pm" ] && [ -n "$p" ] || return 1
   case "$pm" in
     apt)
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$p" 2>&1
-      ;;
-    pkg)
-      # ASSUME_ALWAYS_YES=yes:pkg 首次运行会自举(bootstrap),否则卡在确认提示上
-      ASSUME_ALWAYS_YES=yes pkg install -y "$p" 2>&1
-      ;;
-    pkg_add)
-      out="$(pkg_add -I "$p" 2>&1)" || {
-        printf '%s\n' "$out"
-        # pkg_add 装已装过的包返回非零并输出 "already installed",这里按成功处理:
-        # 否则重跑脚本时依赖永远装不"完",拿不到 system_deps.lock
-        case "$out" in *"already installed"*) return 0 ;; esac
-        return 1
-      }
-      printf '%s\n' "$out"
       ;;
     apk) apk add --no-cache "$p" 2>&1 ;;
     *) "$pm" install -y "$p" 2>&1 ;;
@@ -710,7 +680,7 @@ _pkg_install_one() {
 
 # 依次尝试候选包名,装上任意一个即成功;全失败返回 1(不中断脚本,由调用方决定后果)
 # 用法: pkg_install_any apt libaio1t64 libaio1 ; pkg_install_any dnf libaio
-#       ; pkg_install_any pkg png ; pkg_install_any pkg_add png
+#       ; pkg_install_any apk png
 pkg_install_any() {
   local pm="$1" p out
   shift
@@ -755,7 +725,7 @@ remove_path() {
   rm -rf -- "$p"
 }
 
-# 停止并禁用服务(幂等;systemctl / rcctl / service / chkconfig 都试,均缺失返回 1)
+# 停止并禁用服务(幂等;systemctl / service / chkconfig 都试,均缺失返回 1)
 service_stop_disable() {
   local unit="${1:-}" rc=1
   [ -n "$unit" ] || { log_error "service_stop_disable: 需要 unit 名"; return 1; }
@@ -764,21 +734,7 @@ service_stop_disable() {
     systemctl disable "$unit" >/dev/null 2>&1 || true
     rc=0
   fi
-  # OpenBSD：rcctl 认的是 daemon 名，没有 .service 后缀
-  if command -v rcctl >/dev/null 2>&1; then
-    local name="${unit%.service}"
-    rcctl stop "$name" >/dev/null 2>&1 || true
-    rcctl disable "$name" >/dev/null 2>&1 || true
-    rc=0
-  fi
-  # FreeBSD 也有 service(8)，但用法与 SysV 那套不同：启停要带 one 前缀（否则
-  # rc.conf 未开启时直接拒绝），且关闭自启得改 rc.conf 里的 <n>_enable（sysrc）。
-  if [ "$(uname -s)" = "FreeBSD" ]; then
-    local fb_name="${unit%.service}"
-    service "$fb_name" onestop >/dev/null 2>&1 || true
-    sysrc "${fb_name}_enable=NO" >/dev/null 2>&1 || true
-    rc=0
-  elif command -v service >/dev/null 2>&1; then
+  if command -v service >/dev/null 2>&1; then
     service "$unit" stop >/dev/null 2>&1 || true
     rc=0
   fi
@@ -799,35 +755,7 @@ db_data_initialized() {
 # 因为依赖缺失会在 configure/make 阶段暴露,不应因个别包名差异中止整个安装
 install_system_deps() {
   local p pm deps="" rc=0
-  # BSD 先判：OpenBSD 没有 /etc/os-release，os_detect 会把 OS_NAME 退化成 "linux"，
-  # 只能靠内核名（uname -s）区分；FreeBSD 虽有 os-release，但 ID 写法各家不一。
-  if [ "${OS_MACHINE:-}" = "FreeBSD" ]; then
-    deps="${FREEBSD_DEPS}"
-    log_info "pkg 安装编译依赖 ..."
-    # ASSUME_ALWAYS_YES=yes：pkg 首次运行会自举（bootstrap），否则卡在确认提示上
-    # shellcheck disable=SC2086
-    if ! ASSUME_ALWAYS_YES=yes pkg install -y ${deps} >/dev/null 2>&1; then
-      log_warn "批量安装失败，逐项补装（个别包缺失忽略） ..."
-      # shellcheck disable=SC2086
-      for p in ${deps}; do
-        _pkg_install_one pkg "$p" >/dev/null 2>&1 \
-          || { log_warn "  跳过（安装失败）： ${p}"; rc=1; }
-      done
-    fi
-  elif [ "${OS_MACHINE:-}" = "OpenBSD" ]; then
-    deps="${OPENBSD_DEPS}"
-    log_info "pkg_add 安装编译依赖 ..."
-    # -I：非交互（缺依赖自动补，不逐个询问）；不加会在 flavor 选择处卡住
-    # shellcheck disable=SC2086
-    if ! pkg_add -I ${deps} >/dev/null 2>&1; then
-      log_warn "批量安装失败，逐项补装（个别包缺失忽略） ..."
-      # shellcheck disable=SC2086
-      for p in ${deps}; do
-        _pkg_install_one pkg_add "$p" >/dev/null 2>&1 \
-          || { log_warn "  跳过（安装失败）： ${p}"; rc=1; }
-      done
-    fi
-  elif is_os ubuntu debian; then
+  if is_os ubuntu debian; then
     log_info "apt 安装编译依赖 ..."
     apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update 失败(继续尝试安装)"
     deps="${UBUNTU_DEPS}"

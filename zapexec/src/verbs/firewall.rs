@@ -10,9 +10,6 @@
 //! iptables   iptables -I/-D INPUT（按行号）
 //! ```
 //!
-//! 后续 FreeBSD 只需在 `Backend` 增加 `Pf` / `Ipfw` 并在各操作里加分支，
-//! 路由层（zapd）与前端无需改动。
-//!
 //! 后端选择：正在运行的优先；都没运行时按 firewalld > ufw > nftables > iptables
 //! 取已安装的那个，避免把规则写到没启用的后端上。
 
@@ -29,9 +26,6 @@ pub(super) enum Backend {
     Ufw,
     Nftables,
     Iptables,
-    /// 后续扩展：FreeBSD pf / ipfw
-    Pf,
-    Ipfw,
     Unsupported,
 }
 
@@ -42,8 +36,6 @@ impl Backend {
             Backend::Ufw => "ufw",
             Backend::Nftables => "nftables",
             Backend::Iptables => "iptables",
-            Backend::Pf => "pf",
-            Backend::Ipfw => "ipfw",
             Backend::Unsupported => "none",
         }
     }
@@ -117,16 +109,6 @@ fn detect_kind() -> (Backend, &'static str) {
     }
     if has_cmd("nft") {
         return (Backend::Nftables, "installed");
-    }
-    // 3) 未来：FreeBSD
-    if cfg!(target_os = "freebsd") {
-        return if has_cmd("pfctl") {
-            (Backend::Pf, "installed")
-        } else if has_cmd("ipfw") {
-            (Backend::Ipfw, "installed")
-        } else {
-            (Backend::Unsupported, "none")
-        };
     }
     (Backend::Unsupported, "none")
 }
@@ -423,8 +405,6 @@ fn backend_active(b: Backend) -> bool {
         Backend::Nftables => nftables_in_control(),
         // iptables 没有守护进程：存在真实规则才算生效（命令可用 ≠ 在过滤流量）
         Backend::Iptables => iptables_has_rules(),
-        Backend::Pf => cmd_ok("pfctl", &["-sr"]),
-        Backend::Ipfw => cmd_ok("ipfw", &["list"]),
         Backend::Unsupported => false,
     }
 }
@@ -436,7 +416,6 @@ fn backend_enabled(b: Backend) -> bool {
         Backend::Ufw => service_enabled("ufw") || ufw_conf_enabled(),
         Backend::Nftables => service_enabled("nftables"),
         Backend::Iptables => service_enabled("iptables") || service_enabled("netfilter-persistent"),
-        Backend::Pf | Backend::Ipfw => true, // FreeBSD 通过 rc.conf 管理
         Backend::Unsupported => false,
     }
 }

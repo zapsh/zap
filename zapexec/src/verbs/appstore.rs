@@ -831,8 +831,7 @@ enum RunAs {
     User(String),
 }
 
-/// 包脚本解释器：`.py` 走 `python3 -I -B`，其余走 bash（路径按平台解析，
-/// FreeBSD / OpenBSD 上 bash 在 /usr/local/bin/bash）。
+/// 包脚本解释器：`.py` 走 `python3 -I -B`，其余走 bash（路径由 `bash_bin` 解析）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Interpreter {
     Bash,

@@ -1,8 +1,8 @@
 //! 服务器配置 → 防火墙设置（仅 admin）。
 //!
 //! 面板侧只做「入参校验 + 转发 zapexec 白名单动词」，具体命令由 zapexec 按后端
-//! （firewalld / ufw / nftables / iptables，后续 FreeBSD pf / ipfw）翻译，
-//! 这里不感知具体系统，便于后续扩展其它 OS。
+//! （firewalld / ufw / nftables / iptables）翻译，这里不感知具体后端，
+//! 便于后续扩展新的防火墙实现。
 //!
 //! 端点：
 //! - GET  /system/config/firewall             状态 + 规则列表

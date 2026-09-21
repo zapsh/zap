@@ -84,7 +84,7 @@ fn ssh_version() -> String {
 
 pub async fn status() -> Response {
     tokio::task::spawn_blocking(|| {
-        // 服务名按平台/发行版不同：OpenBSD 与 RHEL 是 sshd，Debian 新版本是 ssh
+        // 服务名按发行版不同：RHEL 是 sshd，Debian 新版本是 ssh
         let running = super::svc::is_active("sshd") || super::svc::is_active("ssh");
 
         let port = std::fs::read_to_string("/etc/ssh/sshd_config")
@@ -184,7 +184,7 @@ pub async fn install(run_id: String) -> Response {
 
 pub async fn restart() -> Response {
     tokio::task::spawn_blocking(|| {
-        // 服务名按平台/发行版不同：OpenBSD 与 RHEL 是 sshd，Debian 新版本是 ssh
+        // 服务名按发行版不同：RHEL 是 sshd，Debian 新版本是 ssh
         let err = match super::svc::act("restart", "sshd") {
             Ok(()) => return Response::ok("SSH 服务已重启", None),
             Err(e) => e,

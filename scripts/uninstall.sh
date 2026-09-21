@@ -12,15 +12,12 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 # ── 权限检查 ────────────────────────────────────────────────
 [ "$(id -u)" -eq 0 ] || die "请以 root 身份运行：sudo bash $0"
 
-# ── 平台探测：卸载要停/删哪种服务 ────────────────────────────
-# 与 install.sh 保持一致：Linux 走 systemd，FreeBSD / OpenBSD 走 rc.d。
-# RCD_DIR 必须与 install.sh 的落点一致，否则删不干净。
+# ── 平台探测 ────────────────────────────────────────────────
+# 与 install.sh 保持一致：只支持 Linux + systemd。
 OS=$(uname -s)
 case "$OS" in
-    Linux)          INIT=systemd ;;
-    FreeBSD)        INIT=rcd; RCD_DIR=/usr/local/etc/rc.d ;;
-    OpenBSD)        INIT=rcd; RCD_DIR=/etc/rc.d ;;
-    *) die "不支持的操作系统: ${OS}" ;;
+    Linux) ;;
+    *) die "不支持的操作系统: ${OS}（当前仅支持 Linux）" ;;
 esac
 
 # ── 参数解析 ────────────────────────────────────────────────
@@ -36,7 +33,7 @@ echo ""
 
 # ── 列出将删除的内容 ────────────────────────────────────────
 echo "将删除以下内容："
-echo "  · ${INIT} 服务 : zapd / zapexec"
+echo "  · systemd 服务 : zapd / zapexec"
 echo "  · 命令链接     : /usr/local/bin/{zapd,zapctl,zapexec}"
 echo "  · 程序目录     : /usr/local/zap（二进制与脚本）"
 echo "  · 配置目录     : /etc/zap（配置、证书、密钥）"
@@ -57,36 +54,13 @@ echo ""
 
 # ── 停止服务 ────────────────────────────────────────────────
 info "停止服务..."
-case "$INIT" in
-    systemd)
-        systemctl stop zapd.service zapexec.service 2>/dev/null || true
-        systemctl disable zapd.service zapexec.service 2>/dev/null || true
-        systemctl daemon-reload
-        ;;
-    rcd)
-        # FreeBSD 没有 rcctl：停止用 service（one 前缀，避免 rc.conf 检查），
-        # 关闭自启是把 rc.conf 里的 <n>_enable 置为 NO
-        case "$OS" in
-            FreeBSD)
-                for n in zapd zapexec; do
-                    service "$n" onestop 2>/dev/null || true
-                    sysrc "${n}_enable=NO" 2>/dev/null || true
-                done
-                ;;
-            *)
-                rcctl stop zapd zapexec 2>/dev/null || true
-                rcctl disable zapd zapexec 2>/dev/null || true
-                ;;
-        esac
-        ;;
-esac
+systemctl stop zapd.service zapexec.service 2>/dev/null || true
+systemctl disable zapd.service zapexec.service 2>/dev/null || true
+systemctl daemon-reload
 
 # ── 删除服务单元与命令链接 ──────────────────────────────────
 info "删除服务单元与命令链接..."
-case "$INIT" in
-    systemd) rm -f /etc/systemd/system/zapd.service /etc/systemd/system/zapexec.service ;;
-    rcd)     rm -f "${RCD_DIR}/zapd" "${RCD_DIR}/zapexec" ;;
-esac
+rm -f /etc/systemd/system/zapd.service /etc/systemd/system/zapexec.service
 rm -f /usr/local/bin/zapd /usr/local/bin/zapctl /usr/local/bin/zapexec
 
 # ── 删除配置目录 ────────────────────────────────────────────
@@ -100,8 +74,8 @@ if [ "$PURGE" = "1" ]; then
 else
     info "删除程序目录（保留 data）..."
     if [ -d /usr/local/zap/data ]; then
-        # 不用 find -mindepth/-maxdepth（GNU 扩展，OpenBSD 的 find 没有）。
-        # 安装目录下只有本脚本部署的条目，没有点开头的文件，glob 足够。
+        # 安装目录下只有本脚本部署的条目，没有点开头的文件，glob 足够
+        # （不用 find，避免依赖 GNU 扩展）。
         for entry in /usr/local/zap/*; do
             [ -e "$entry" ] || continue
             [ "${entry##*/}" = "data" ] && continue

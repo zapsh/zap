@@ -1,50 +1,33 @@
 //! 平台差异层：把 OS 之间不一致的系统管理命令收敛到一处。
 //!
-//! 目标平台横跨 Debian/RHEL/Alpine 系 Linux 与 OpenBSD，命令名、参数语义、
-//! 甚至「有没有这个命令」都不一样。动词层只调用这里的**语义化**接口，
-//! 不再直接拼命令——否则移植时要在几十个动词里挨个翻。
+//! 目标平台是 Debian/RHEL/Alpine 系 Linux：即便在同一个内核上，命令名、参数语义、
+//! 甚至「有没有这个命令」在各发行版之间仍有差别。动词层只调用这里的**语义化**
+//! 接口，不再直接拼命令——否则移植时要在几十个动词里挨个翻。
 //!
-//! | 能力           | Linux                    | OpenBSD                          |
-//! |----------------|--------------------------|----------------------------------|
-//! | 脚本解释器     | `bash`                   | `/bin/sh`（系统默认没有 bash）    |
-//! | 查询组         | 解析 `/etc/group`        | 同（不用 `getent`，那是 glibc 专有）|
-//! | 建组 / 删组    | `groupadd` / `groupdel`  | 同名命令，参数一致                |
-//! | 建账号         | `useradd -M -s -d -g`    | `useradd -s -d -g`（无 `-M`）     |
-//! | 删账号         | `userdel`                | 同名命令                          |
-//! | nologin 兜底   | `/usr/sbin/nologin`      | `/sbin/nologin`                   |
+//! | 能力           | Linux                    |
+//! |----------------|--------------------------|
+//! | 脚本解释器     | `bash`                   |
+//! | 查询组         | 解析 `/etc/group`（不用 `getent`，那是 glibc 专有）|
+//! | 建组 / 删组    | `groupadd` / `groupdel`  |
+//! | 建账号         | `useradd -M -s -d -g`    |
+//! | 删账号         | `userdel`                |
+//! | nologin 兜底   | `/usr/sbin/nologin`      |
 //!
 //! 刻意用「解析 `/etc/passwd` / `/etc/group`」替代 `getent` / `id`：前者是 POSIX
-//! 文件、任何平台都在，后者是 glibc 工具集，OpenBSD 没有。代价是看不到 LDAP/NSS
-//! 后端——面板管理的账号恒为本地账号，不受影响。
+//! 文件、任何平台都在，后者属 glibc 工具集（musl 系发行版没有）。代价是看不到
+//! LDAP/NSS 后端——面板管理的账号恒为本地账号，不受影响。
 
 use super::root_cmd;
 
 /// 执行脚本片段的解释器。
 ///
-/// OpenBSD / FreeBSD 默认不装 bash（系统 shell 分别是 ksh / sh，装包后 bash 才出现在
-/// `/usr/local/bin/bash`），所以非 Linux 一律用 `/bin/sh`。这意味着
-/// **传进来的脚本必须保持 POSIX 兼容**，不能依赖 `[[ ]]`、`pipefail`、
-/// `mapfile` 这类 bashism。
+/// Linux 发行版都自带 `bash`，直接用命令名（由 `root_cmd` 的安全 PATH 解析）。
 ///
-/// 确实需要 bash 的场景（AppStore 包脚本、计划任务的 kind=script）走
-/// [`super::bash_bin`]，它会按平台解析出实际路径。
-#[cfg(target_os = "linux")]
+/// 确实需要绝对路径的场景（AppStore 包脚本、计划任务的 kind=script）走
+/// [`super::bash_bin`]，它会解析出实际路径。
 pub(crate) const SHELL: &str = "bash";
 
-/// 同 [`SHELL`]，非 Linux 平台。
-#[cfg(not(target_os = "linux"))]
-pub(crate) const SHELL: &str = "/bin/sh";
-
 /// `nologin` 的兜底路径（`command -v nologin` 找不到时用）。
-#[cfg(target_os = "linux")]
-pub(crate) const NOLOGIN_FALLBACK: &str = "/usr/sbin/nologin";
-
-/// 同 [`NOLOGIN_FALLBACK`]，OpenBSD —— 它的 nologin 在 /sbin 下。
-#[cfg(target_os = "openbsd")]
-pub(crate) const NOLOGIN_FALLBACK: &str = "/sbin/nologin";
-
-/// 同 [`NOLOGIN_FALLBACK`]，其余平台（FreeBSD、macOS 等）沿用 /usr/sbin。
-#[cfg(not(any(target_os = "linux", target_os = "openbsd")))]
 pub(crate) const NOLOGIN_FALLBACK: &str = "/usr/sbin/nologin";
 
 /// `/etc/group` 中的一条记录。
@@ -129,12 +112,8 @@ pub(crate) fn create_user(
     login_shell: &str,
     group: &str,
 ) -> Result<(), String> {
-    // Linux 的 `-M` 表示不自动建家目录；OpenBSD 的 useradd 没有这个选项
-    // （默认也不建），所以只在该平台上省略。
-    #[cfg(target_os = "linux")]
+    // `-M`：不自动建家目录（家目录由 `user.home_init` 建好并赋权）
     let args: Vec<&str> = vec!["-M", "-s", login_shell, "-d", home, "-g", group, user];
-    #[cfg(not(target_os = "linux"))]
-    let args: Vec<&str> = vec!["-s", login_shell, "-d", home, "-g", group, user];
     run_checked("useradd", &args)
 }
 
@@ -166,8 +145,7 @@ fn run_checked(program: &str, args: &[&str]) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// gid 0 在任何平台上都存在（Linux 是 `root`，OpenBSD 是 `wheel`），
-    /// 所以只做「反查 → 正查」的往返校验，不写死组名。
+    /// gid 0 恒为 `root`，但只做「反查 → 正查」的往返校验，不写死组名。
     #[test]
     fn group_lookup_roundtrip() {
         let name = group_name_of_gid(0).expect("gid 0 的组应当存在");

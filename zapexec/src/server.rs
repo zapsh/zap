@@ -73,7 +73,7 @@ pub async fn serve(socket: &Path, secret: &[u8], identity: ClientIdentity) {
 }
 
 async fn handle_conn(stream: UnixStream, secret: &[u8], expected_uid: u32) -> std::io::Result<()> {
-    // 1) 对端凭据：Linux 走 SO_PEERCRED；OpenBSD 等平台没有该机制，返回 None
+    // 1) 对端凭据：Linux 走 SO_PEERCRED；非 Linux 平台没有该机制，返回 None
     //    表示跳过（认证由 socket 文件权限 + 下面的 HMAC 挑战把关）。
     let uid = match authorize_peer(stream.as_raw_fd(), expected_uid) {
         Ok(u) => u,
@@ -188,7 +188,7 @@ struct SessionHandle {
 /// 校验连接方 uid。
 ///
 /// - Linux：`SO_PEERCRED` 能拿到对端 uid，不一致直接拒绝；
-/// - 其它平台（OpenBSD 等）：没有等价机制，返回 `Ok(None)` 跳过。这不是降级——
+/// - 非 Linux 平台：没有等价机制，返回 `Ok(None)` 跳过。这不是降级——
 ///   socket 父目录 `0750 root:zapadm` + socket `0660` 已经在内核层把连接方限定为
 ///   zapadm，达到的判定与 uid 校验完全等价，后面还有 HMAC 挑战做第二道。
 fn authorize_peer(

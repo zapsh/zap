@@ -5,17 +5,15 @@
 //! 这一层是跨平台差异最大的地方，能力按平台自适应，且**一律尽力而为**——
 //! 拿不到某一档不算失败，任务成败只由退出码决定（见 `run-<id>.ret`）。
 //!
-//! | 档位             | Linux | OpenBSD | 说明                                    |
-//! |------------------|-------|---------|-----------------------------------------|
-//! | rlimit           | ✅    | ✅      | POSIX，真正的基线，本文件主体            |
-//! | cgroup v2 slice  | 可选  | —       | 需部署 `zap-task.slice`，没部署就自动跳过 |
-//! | login.conf class | —     | TODO    | OpenBSD 等价档，待 OpenBSD 立项时补齐    |
+//! | 档位             | Linux | 说明                                    |
+//! |------------------|-------|-----------------------------------------|
+//! | rlimit           | ✅    | POSIX，真正的基线，本文件主体            |
+//! | cgroup v2 slice  | 可选  | 需部署 `zap-task.slice`，没部署就自动跳过 |
 //!
 //! 刻意避开的两种做法：
 //!
 //! - **不用 `RLIMIT_AS` 限内存**：Python 解释器会大块 mmap（模块加载 + 线程栈
-//!   预留），虚拟地址空间用量与真实内存不成比例，设小了必然误伤；而且 OpenBSD
-//!   根本没有 `RLIMIT_AS`（只有 `RLIMIT_DATA`）。
+//!   预留），虚拟地址空间用量与真实内存不成比例，设小了必然误伤。
 //! - **`memory.max` 默认不开**：超限是 OOM kill，表现为「任务莫名失败、日志里
 //!   毫无异常」。在能按包声明内存之前，误伤风险大于收益。
 
@@ -28,7 +26,7 @@ use tracing::{debug, warn};
 ///
 /// 是否启用**完全由部署决定**：只有 `install.sh` 部署了 `zap-task.slice` 并且
 /// 内核是 unified hierarchy（v2）时这个目录才存在。没部署的机器（以及所有
-/// 非 systemd 发行版、容器、OpenBSD）自动跳过，代码里不需要额外开关，也绝不会
+/// 非 systemd 发行版、容器）自动跳过，代码里不需要额外开关，也绝不会
 /// 去根 cgroup 下乱建目录污染宿主机。
 const CGROUP_SLICE: &str = "/sys/fs/cgroup/zap-task.slice";
 
@@ -103,12 +101,12 @@ impl TaskResource {
     }
 }
 
-/// 应用 rlimit 边界（跨平台通用的那一档，Linux / OpenBSD 都支持）。
+/// 应用 rlimit 边界（POSIX 通用档）。
 ///
 /// 在 `pre_exec` 内调用，只用 `setrlimit`，不做分配。
 fn apply_rlimits() {
-    // 用宏而不是函数：`setrlimit` 第一个参数在 Linux 上是 `__rlimit_resource_t`、
-    // 在 BSD 上是 `c_int`，写死类型会在某个平台上编译不过，交给宏推导最稳。
+    // 用宏而不是函数：`setrlimit` 第一个参数的类型在不同实现上未必一致
+    //（Linux 是 `__rlimit_resource_t`），写死类型会编译不过，交给宏推导最稳。
     macro_rules! limit {
         ($res:expr, $val:expr) => {{
             let rl = libc::rlimit {
@@ -130,9 +128,8 @@ fn apply_rlimits() {
 
 /// 禁止子进程借 setuid 程序再提权。
 ///
-/// Linux 的 `PR_SET_NO_NEW_PRIVS` 是 prctl，OpenBSD 没有 prctl（那里对应的手段是
-/// `pledge()`，等 OpenBSD 立项时按需补）。缺这一层不致命：脚本本来就已经降到
-/// 无登录能力的站点账号，且附加组已清空。
+/// 走 Linux 的 `PR_SET_NO_NEW_PRIVS`（prctl）；非 Linux 平台没有等价机制，退化成
+/// 空实现。缺这一层不致命：脚本本来就已经降到无登录能力的站点账号，且附加组已清空。
 #[cfg(target_os = "linux")]
 fn no_new_privs() {
     unsafe {

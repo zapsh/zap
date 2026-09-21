@@ -399,7 +399,7 @@ source "${ZAP_PATH}/scripts/zap/bash_utils.sh"</pre>
               <tr><td><code>ensure_user &lt;user&gt; [group...]</code></td><td>确保运行用户存在；组不存在先建再把用户加进去（用户已存在时也会补齐附加组）。用法：<code>ensure_user mysql mysql</code>、<code>ensure_user www www zap</code></td></tr>
               <tr><td><code>ensure_usergroup &lt;user&gt; &lt;group&gt; [...]</code></td><td>只把<strong>已存在</strong>的用户加入组：用户不存在直接报错，避免拼错用户名被静默创建。用法：<code>ensure_usergroup "${U}" docker</code></td></tr>
               <tr><td><code>prepare_install_env [user] [group...]</code></td><td>前置汇总：运行用户 + 关键目录（<code>PKG_PATH</code> / <code>BUILD_PATH</code>）+ 首次系统编译依赖。缺省 <code>www www</code>，组缺省与用户同名。依赖<strong>装全了才写锁</strong>（<code>system_deps.lock</code>），没装全不写锁 → 下次运行重试；<code>ZAP_FORCE_DEPS=1</code> 可强制重装。用法：<code>prepare_install_env www</code>、<code>prepare_install_env mysql</code></td></tr>
-              <tr><td><code>install_system_deps</code></td><td>按发行版批量装编译依赖（<code>UBUNTU_DEPS</code> / <code>RH_DEPS</code> / <code>ALPINE_DEPS</code> / <code>FREEBSD_DEPS</code> / <code>OPENBSD_DEPS</code>，均可用 <code>ZAP_</code> 前缀同名环境变量整体覆盖）；BSD 靠 <code>uname -s</code> 判定（不依赖 /etc/os-release）；批量失败自动逐项补装，返回 0 = 全部就绪。一般不直接调用，走 <code>prepare_install_env</code></td></tr>
+              <tr><td><code>install_system_deps</code></td><td>按发行版批量装编译依赖（<code>UBUNTU_DEPS</code> / <code>RH_DEPS</code> / <code>ALPINE_DEPS</code>，均可用 <code>ZAP_</code> 前缀同名环境变量整体覆盖）；批量失败自动逐项补装，返回 0 = 全部就绪。一般不直接调用，走 <code>prepare_install_env</code></td></tr>
             </tbody>
           </table>
 
@@ -414,7 +414,7 @@ source "${ZAP_PATH}/scripts/zap/bash_utils.sh"</pre>
               <tr><td><code>os_version_ge &lt;ver&gt;</code> / <code>os_version_lt &lt;ver&gt;</code></td><td>与当前系统版本比较：<code>os_version_ge 24.04</code></td></tr>
               <tr><td><code>is_os_ge &lt;id&gt; &lt;ver&gt;</code></td><td>发行版 + 版本下限<strong>同时</strong>成立：<code>is_os_ge ubuntu 24.04</code>（沿用 <code>is_os</code> 的 ID_LIKE 语义；只认 ID 请用 <code>is_os_strict</code> + <code>os_version_ge</code>）</td></tr>
               <tr><td><code>is_deb_family</code> / <code>is_rpm_family</code></td><td>deb 系（ubuntu / debian / mint / …）/ rpm 系（rhel / rocky / alma / fedora / …）</td></tr>
-              <tr><td><code>pkg_manager</code></td><td>输出 <code>apt</code> / <code>dnf</code> / <code>yum</code> / <code>apk</code> / <code>zypper</code> / <code>pkg</code>（FreeBSD）/ <code>pkg_add</code>（OpenBSD），未识别返回 1；BSD 两家按 <code>uname -s</code> 判定而非只看命令名（部分 Linux 上也有叫 <code>pkg</code> 的零散命令）。用法：<code>PKG_MGR="$(pkg_manager || true)"</code></td></tr>
+              <tr><td><code>pkg_manager</code></td><td>输出 <code>apt</code> / <code>dnf</code> / <code>yum</code> / <code>apk</code> / <code>zypper</code>，未识别返回 1（只认 Linux 发行版的包管理器；部分 Linux 上也有叫 <code>pkg</code> 的零散命令，故不看命令名直接判定）。用法：<code>PKG_MGR="$(pkg_manager || true)"</code></td></tr>
               <tr><td><code>normalize_arch [arch]</code></td><td>架构归一化：<code>x86_64 → amd64</code>、<code>aarch64 → arm64</code>（缺省取 <code>uname -m</code>）</td></tr>
               <tr><td><code>cpu_count</code></td><td>可用核数（受注入的 <code>CPU_NUM</code> 上限约束，探测失败回退 1）</td></tr>
             </tbody>
@@ -427,7 +427,7 @@ source "${ZAP_PATH}/scripts/zap/bash_utils.sh"</pre>
               <tr><td><code>have_lib &lt;soname|glob&gt;</code></td><td>系统里是否已有该库：先查 ldconfig 缓存，缓存未收录时再按默认目录复核文件。按 soname <strong>精确</strong>匹配：<code>have_lib libaio.so.1</code> 不认 <code>libaio.so.1t64</code>；也可给通配 <code>have_lib 'libncurses.so.*'</code></td></tr>
               <tr><td><code>lib_path &lt;soname|glob&gt;</code></td><td>取库的实际路径（缓存优先，再按默认目录找），未找到返回 1。用法：<code>src="$(lib_path libaio.so.1t64)"</code></td></tr>
               <tr><td><code>link_lib_compat &lt;需要的 soname&gt; &lt;现有 soname&gt;</code></td><td>发行版改了库文件名、官方二进制仍按旧 soname 加载时补同名软链 + 刷新缓存（幂等，已存在直接返回 0）。用法：<code>link_lib_compat libaio.so.1 libaio.so.1t64</code></td></tr>
-              <tr><td><code>pkg_install_any &lt;pm&gt; &lt;候选包名...&gt;</code></td><td>依次尝试候选包名，装上任意一个即成功；全失败返回 1 并把包管理器的错误写进日志（不中断脚本，后果由调用方决定）。apt 走 <code>DEBIAN_FRONTEND=noninteractive</code> + <code>--no-install-recommends</code>；FreeBSD 走 <code>ASSUME_ALWAYS_YES=yes pkg install -y</code>（pkg 首次运行会自举，否则卡在确认提示）；OpenBSD 走 <code>pkg_add -I</code>（没有 <code>install</code> 子命令，且对已装包返回的「already installed」按成功处理，否则重跑永远拿不到依赖锁）；apk 走 <code>apk add</code>。用法：<code>pkg_install_any apt libaio1t64 libaio1</code>、<code>pkg_install_any pkg png</code></td></tr>
+              <tr><td><code>pkg_install_any &lt;pm&gt; &lt;候选包名...&gt;</code></td><td>依次尝试候选包名，装上任意一个即成功；全失败返回 1 并把包管理器的错误写进日志（不中断脚本，后果由调用方决定）。apt 走 <code>DEBIAN_FRONTEND=noninteractive</code> + <code>--no-install-recommends</code>；apk 走 <code>apk add</code>。用法：<code>pkg_install_any apt libaio1t64 libaio1</code>、<code>pkg_install_any apk png</code></td></tr>
               <tr><td><code>ldconfig_bin</code> / <code>lib_search_dirs</code></td><td>内部辅助（一般不必直接调用）：定位 <code>ldconfig</code>（它在 <code>/sbin</code>，守护进程 PATH 里常没有）/ 列出动态链接器默认搜索目录</td></tr>
             </tbody>
           </table>
@@ -441,7 +441,7 @@ source "${ZAP_PATH}/scripts/zap/bash_utils.sh"</pre>
               <tr><td><code>http_fetch &lt;url&gt; &lt;dest&gt;</code></td><td><code>download_file</code> 的旧名，行为一致</td></tr>
               <tr><td><code>extract_archive &lt;归档&gt; [目标目录]</code></td><td>按扩展名解压（<code>.tar.gz</code> / <code>.tgz</code> / <code>.tar.xz</code> / <code>.tar.bz2</code> / <code>.tar</code> / <code>.zip</code>），目标目录缺省为当前目录</td></tr>
               <tr><td><code>download_extract &lt;url&gt; &lt;本地归档名&gt; &lt;目标目录&gt;</code></td><td>下载 + 解压一步到位，任一步失败返回 1</td></tr>
-              <tr><td><code>MakeInstall [并行数]</code></td><td>先由 <code>make_bin</code> 挑出 GNU make（BSD 的 base 自带 BSD make，不认 GNU Makefile，须用它装的 <code>gmake</code>；可用 <code>ZAP_MAKE</code> 覆盖，值不自报 GNU Make 的会被跳过），再 <code>-jN</code> 并安装，失败自动退回串行；并行数缺省 <code>CPU_NUM</code> → <code>cpu_count</code>。用法：<code>./configure --prefix="${APP_PATH}" &amp;&amp; MakeInstall</code></td></tr>
+              <tr><td><code>MakeInstall [并行数]</code></td><td>先由 <code>make_bin</code> 挑出 GNU make（系统自带的未必是 GNU make，不认 GNU Makefile 时须用 <code>gmake</code>；可用 <code>ZAP_MAKE</code> 覆盖，值不自报 GNU Make 的会被跳过），再 <code>-jN</code> 并安装，失败自动退回串行；并行数缺省 <code>CPU_NUM</code> → <code>cpu_count</code>。用法：<code>./configure --prefix="${APP_PATH}" &amp;&amp; MakeInstall</code></td></tr>
             </tbody>
           </table>
 

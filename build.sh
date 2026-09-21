@@ -12,8 +12,7 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 CUR_DIR=$(pwd)
 
 # ── 架构与 Rust target 映射 ─────────────────────────────────
-# 只支持「本机构建」：三个 BSD 都是 tier-3 target，没有预编译 std，交叉编译得
-# 自己 build-std——CI 里不现实，BSD 的包要在对应的 BSD 机器上跑本脚本产出。
+# 只支持 Linux 本机构建：打包产物按 OS / 架构命名。
 OS_NAME=$(uname -s | tr '[:upper:]' '[:lower:]')
 MACHINE=$(uname -m)
 case "$MACHINE" in
@@ -28,40 +27,20 @@ case "$OS_NAME" in
             aarch64|arm64) TARGET="aarch64-unknown-linux-gnu" ;;
         esac
         ;;
-    openbsd)
-        case "$MACHINE" in
-            x86_64)        TARGET="x86_64-unknown-openbsd" ;;
-            aarch64|arm64) TARGET="aarch64-unknown-openbsd" ;;
-        esac
-        ;;
-    freebsd)
-        case "$MACHINE" in
-            x86_64)        TARGET="x86_64-unknown-freebsd" ;;
-            aarch64|arm64) TARGET="aarch64-unknown-freebsd" ;;
-        esac
-        ;;
-    *) die "不支持的操作系统: ${OS_NAME}（当前支持 linux / freebsd / openbsd 的本机构建）" ;;
+    *) die "不支持的操作系统: ${OS_NAME}（当前仅支持 linux 本机构建）" ;;
 esac
 info "OS: ${OS_NAME}   架构: ${ARCH} (${TARGET})"
 
 # ── 依赖检查 ────────────────────────────────────────────────
 command -v cargo >/dev/null 2>&1 || die "未找到 cargo，请先安装 Rust"
-# OpenBSD 自带 ftp，wget 要额外装包
-if ! command -v wget >/dev/null 2>&1 && ! command -v ftp >/dev/null 2>&1; then
-    die "未找到 wget 或 ftp，请先安装其中一个"
-fi
+command -v wget >/dev/null 2>&1 || die "未找到 wget，请先安装"
 
 if ! command -v zapfile >/dev/null 2>&1; then
-    if [ "$OS_NAME" = "linux" ]; then
-        info "未找到 zapfile，正在安装..."
-        wget -qO- https://mirrors.zap.cn/zapfile/zapfile-linux-amd64 -O /usr/bin/zapfile \
-            || die "zapfile 下载失败"
-        chmod +x /usr/bin/zapfile
-        ok "zapfile 安装完成"
-    else
-        # 只有 linux-amd64 的预编译包；其它平台上跳过上传，安装包照样打得出来
-        warn "未找到 zapfile，且 ${OS_NAME} 无预编译包：跳过上传步骤"
-    fi
+    info "未找到 zapfile，正在安装..."
+    wget -qO- https://mirrors.zap.cn/zapfile/zapfile-linux-amd64 -O /usr/bin/zapfile \
+        || die "zapfile 下载失败"
+    chmod +x /usr/bin/zapfile
+    ok "zapfile 安装完成"
 fi
 
 # ── 上传凭据 ────────────────────────────────────────────────

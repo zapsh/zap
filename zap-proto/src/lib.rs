@@ -13,15 +13,9 @@ pub mod types;
 
 /// zapexec 监听的 Unix socket 默认路径。
 ///
-/// Linux 用 `/run`（systemd `RuntimeDirectory` 的标准位置，unit 里也是这个路径）；
-/// OpenBSD 没有 `/run`，一律用 `/var/run`。两个 crate（zapexec、zapd）共用这一个
-/// 常量，避免各写一份默认值后漂移。
-#[cfg(target_os = "linux")]
+/// 用 `/run`（systemd `RuntimeDirectory` 的标准位置，unit 里也是这个路径）。
+/// 两个 crate（zapexec、zapd）共用这一个常量，避免各写一份默认值后漂移。
 pub const DEFAULT_EXEC_SOCKET: &str = "/run/zap/exec.sock";
-
-/// 同 [`DEFAULT_EXEC_SOCKET`]，非 Linux 平台（OpenBSD 等没有 `/run`）。
-#[cfg(not(target_os = "linux"))]
-pub const DEFAULT_EXEC_SOCKET: &str = "/var/run/zap/exec.sock";
 
 pub use types::{
     AcmeChallengeEntry, DockerBuildArg, HeaderSpec, LocationSpec, Message, Request, Response,

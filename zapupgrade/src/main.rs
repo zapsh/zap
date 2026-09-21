@@ -104,52 +104,21 @@ fn log_line(log_path: &str, s: &str) {
     }
 }
 
-/// 服务管理器：Linux 是 systemd，FreeBSD 是 service，OpenBSD 是 rcctl。
-#[cfg(target_os = "linux")]
+/// 服务管理器：Linux 是 systemd。
 const SVC_CTL: &str = "systemctl";
-/// 同 [`SVC_CTL`]，FreeBSD。
-#[cfg(target_os = "freebsd")]
-const SVC_CTL: &str = "service";
-/// 同 [`SVC_CTL`]，OpenBSD（它有 rcctl）。
-#[cfg(target_os = "openbsd")]
-const SVC_CTL: &str = "rcctl";
-/// 兜底值：macOS 等不在支持范围内的平台，仅为通过类型检查——运行期
-/// [`supported()`] 恒为 false，不会真的执行它。
-#[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd")))]
-const SVC_CTL: &str = "rcctl";
 
-/// 当前平台的自动服务管理是否受支持。
-/// 只覆盖 Linux(systemd)、FreeBSD(service+sysrc)、OpenBSD(rcctl)；
+/// 当前平台的自动服务管理是否受支持（Linux + systemd）。
 /// macOS 用 launchctl，不在范围内。
 fn supported() -> bool {
-    cfg!(any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "openbsd"
-    ))
+    cfg!(target_os = "linux")
 }
 
-/// 服务名：Linux 用 `<name>.service`，OpenBSD 直接用 daemon 名。
-#[cfg(target_os = "linux")]
+/// 服务名：`<name>.service`。
 fn service_unit(svc: &str) -> String {
     format!("{svc}.service")
 }
 
-/// 同 [`service_unit`]，BSD 直接用 daemon 名。
-#[cfg(not(target_os = "linux"))]
-fn service_unit(svc: &str) -> String {
-    svc.to_string()
-}
-
 /// 重启服务的命令参数。
-///
-/// FreeBSD 必须用 `onerestart`：不带 `one` 前缀时，rc.conf 里没有
-/// `n_enable="YES"` 的服务会被 `service` 直接拒绝执行。
-#[cfg(target_os = "freebsd")]
-fn restart_args(unit: &str) -> [&str; 2] {
-    ["onerestart", unit]
-}
-#[cfg(not(target_os = "freebsd"))]
 fn restart_args(unit: &str) -> [&str; 2] {
     ["restart", unit]
 }
@@ -169,41 +138,15 @@ fn unit_managed(unit: &str) -> bool {
     if !supported() {
         return false;
     }
-    #[cfg(target_os = "linux")]
-    {
-        if !std::path::Path::new("/run/systemd/system").exists() {
-            return false;
-        }
-        std::process::Command::new(SVC_CTL)
-            .args(["show", unit, "--property=Id", "--no-pager"])
-            .output()
-            .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Id="))
-            .unwrap_or(false)
+    // 没有 /run/systemd/system 就不是 systemd 在管（容器里常见）
+    if !std::path::Path::new("/run/systemd/system").exists() {
+        return false;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        #[cfg(target_os = "freebsd")]
-        {
-            // FreeBSD：脚本装上了就算注册（第三方在 /usr/local/etc/rc.d/）
-            ["/etc/rc.d", "/usr/local/etc/rc.d"]
-                .iter()
-                .any(|d| std::path::Path::new(d).join(unit).exists())
-        }
-        #[cfg(not(target_os = "freebsd"))]
-        {
-            // rcctl ls all 列出全部已注册 daemon（含未启用的）；一行可能是多个
-            std::process::Command::new(SVC_CTL)
-                .args(["ls", "all"])
-                .output()
-                .map(|o| {
-                    o.status.success()
-                        && String::from_utf8_lossy(&o.stdout)
-                            .lines()
-                            .any(|l| l.split_whitespace().any(|w| w == unit))
-                })
-                .unwrap_or(false)
-        }
-    }
+    std::process::Command::new(SVC_CTL)
+        .args(["show", unit, "--property=Id", "--no-pager"])
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Id="))
+        .unwrap_or(false)
 }
 
 /// 从 argv 中取出 `--log` 的值（供参数解析失败时兜底写日志）。
