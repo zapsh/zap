@@ -164,6 +164,9 @@ cp -Rf "$CUR_DIR/CHANGELOG_zh-CN.md"   "$DIST_DATA/www/html/" 2>/dev/null || tru
 cp -Rf "$CUR_DIR/USER_MANUAL_zh-CN.md" "$DIST_DATA/www/html/" 2>/dev/null || true
 cp -Rf "$CUR_DIR/FAQ_zh-CN.md"         "$DIST_DATA/www/html/" 2>/dev/null || true
 cp -Rf "$CUR_DIR/UPGRADE_zh-CN.md"     "$DIST_DATA/www/html/" 2>/dev/null || true
+# 剔除 Windows 资源管理器在挂载盘/NTFS 上留下的 ADS 残留（形如 `FOO.md:Zone.Identifier`），
+# 否则它们会跟着发行包一起装到线上（无意义文件，还容易让文档目录看着一堆脏东西）
+find "$DIST_DATA/www/html" -type f -name '*:Zone.Identifier' -delete 2>/dev/null || true
 
 ok "资源复制完成"
 

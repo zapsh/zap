@@ -385,6 +385,38 @@ deploy_appstore() {
     chmod -R 755 "$DEST" 2>/dev/null || true
 }
 
+# ── www 资源部署（文档 md / 站点骨架 / IP 默认页 / 维护页）────
+# 发行包的 data/www 由 build.sh 准备好，内容分两类：
+#   html/*.md  「文档」菜单数据源（CHANGELOG / USER_MANUAL / FAQ / UPGRADE 及 *_zh-CN 变体）。
+#              文档随版本走，每次都覆盖成当前版本——否则面板「文档」页直接 404
+#              （docs.rs 只读 {ZAP_PATH}/data/www/html/，找不到就报“文档不存在”）。
+#   skel/      新站点默认首页模板     ┐ 运维可直接改，只在缺失时铺一份，不覆盖
+#   _zap/      IP 默认页 / 维护页     ┘（缺失时 zapexec 有内置兜底，不影响建站）
+deploy_www() {
+    if [ ! -d "$SRC/data/www" ]; then
+        warn "安装包未包含 data/www（查找目录: ${SRC}），面板「文档」菜单将不可用"
+        return 0
+    fi
+    local DEST="$ZAP_DIR/data/www"
+    mkdir -p "$DEST/html"
+
+    local f n=0
+    for f in "$SRC"/data/www/html/*.md; do
+        [ -f "$f" ] || continue
+        cp -f "$f" "$DEST/html/" 2>/dev/null && n=$((n + 1))
+    done
+    chmod 0644 "$DEST"/html/*.md 2>/dev/null || true
+    if [ "$n" -gt 0 ]; then
+        ok "文档已部署（${n} 个 md → ${DEST}/html）"
+    else
+        warn "安装包未包含文档 md（${SRC}/data/www/html），面板「文档」菜单将不可用"
+    fi
+
+    [ -d "$DEST/skel" ] || cp -Rf "$SRC/data/www/skel" "$DEST/" 2>/dev/null || true
+    [ -d "$DEST/_zap" ] || cp -Rf "$SRC/data/www/_zap" "$DEST/" 2>/dev/null || true
+    chmod 0755 "$DEST" "$DEST/html" 2>/dev/null || true
+}
+
 # ── 部署程序 ────────────────────────────────────────────────
 TARGET="/usr/local"
 ZAP_DIR="$TARGET/zap"
@@ -415,6 +447,8 @@ else
 fi
 # 部署 AppStore（升级不覆盖 git/.git 与 custom/）
 deploy_appstore
+# 部署 www（文档 md 随版本覆盖；skel / _zap 缺失才铺）
+deploy_www
 ok "程序部署完成"
 
 # ── 配置与凭据目录（/etc/zap）───────────────────────────────

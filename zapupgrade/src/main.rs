@@ -353,6 +353,10 @@ fn run_upgrade(ctx: &RunCtx) -> i32 {
         log_line(&ctx.log, &format!("已替换 {b}"));
     }
 
+    // 4.5) 同步发行包内的文档 md：面板「文档」菜单只读 {dir}/data/www/html/*.md，
+    //      升级若只换二进制，旧机器会一直缺文档（新装的站才会由 install.sh 铺）。
+    sync_docs(&stage, &dir, &ctx.log);
+
     // 5) 重启受影响的进程：zapexec 先、zapd 后（zapd 最后保证面板进程即最新版本）。
     //    仅对 systemd 托管的服务执行自动 restart（生产环境）；
     //    开发/容器环境（rundev.sh 裸进程、docker）二进制已替换成功，
@@ -415,6 +419,50 @@ fn run_upgrade(ctx: &RunCtx) -> i32 {
             &format!("升级未完全成功（失败服务: {}）", failed.join(", ")),
         );
         1
+    }
+}
+
+/// 把发行包里的文档 md 同步到 `{dir}/data/www/html/`。
+///
+/// 面板「文档」菜单（`zapd/src/routers/docs.rs`）只读这一目录，文件不在就 404。
+/// 早期版本只有 install.sh 铺文档，升级路径只换二进制，因此老机器升上来仍然缺；
+/// 这里在换完二进制后补齐。tar 顶层可能是 `zap/`（发行包布局）也可能已规整到
+/// stage 根，两个位置都试。
+fn sync_docs(stage: &Path, dir: &Path, log: &str) {
+    let src = [stage.join("data/www/html"), stage.join("zap/data/www/html")]
+        .into_iter()
+        .find(|p| p.is_dir());
+    let Some(src) = src else {
+        log_line(log, "升级包内未包含文档 md，跳过文档同步");
+        return;
+    };
+    let dst = dir.join("data/www/html");
+    if let Err(e) = fs::create_dir_all(&dst) {
+        log_line(log, &format!("创建文档目录失败({e})，跳过文档同步"));
+        return;
+    }
+    let mut copied = 0usize;
+    if let Ok(entries) = fs::read_dir(&src) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if !path.is_file() {
+                continue;
+            }
+            // 只认 .md：顺带避开 Windows ADS 残留之类的杂项文件
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".md") {
+                continue;
+            }
+            match fs::copy(&path, dst.join(name)) {
+                Ok(_) => copied += 1,
+                Err(e) => log_line(log, &format!("同步文档 {name} 失败: {e}")),
+            }
+        }
+    }
+    if copied > 0 {
+        log_line(log, &format!("已同步 {copied} 份文档 md 到 {}", dst.display()));
     }
 }
 
