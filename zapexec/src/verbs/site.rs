@@ -1270,7 +1270,7 @@ fn fix_tree_owner(root: &Path, owner: &str, is_log: bool) -> Result<(), String> 
         super::user::run_group_of(owner)
     };
     let script = tree_fix_script(root, owner, &group, is_log);
-    let o = root_cmd("bash")
+    let o = root_cmd(super::platform::SHELL)
         .args(["-c", &script])
         .output()
         .map_err(|e| format!("收敛站点树属主/权限失败: {e}"))?;
@@ -1823,7 +1823,7 @@ fn data_path_allowed(real: &Path) -> bool {
 }
 
 pub(super) fn nginx_test(bin: &Path) -> Result<(), String> {
-    let o = root_cmd("bash")
+    let o = root_cmd(super::platform::SHELL)
         .args(["-c"])
         .arg(format!(
             "'{}' -t 2>&1",
@@ -1839,7 +1839,7 @@ pub(super) fn nginx_test(bin: &Path) -> Result<(), String> {
 }
 
 pub(super) fn reload_nginx(bin: &Path) -> Result<(), String> {
-    let o = root_cmd("bash")
+    let o = root_cmd(super::platform::SHELL)
         .args(["-c"])
         .arg(format!(
             "'{}' -s reload 2>&1",

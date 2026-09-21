@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ZAP 服务器/VPS 管理系统 卸载脚本
 set -euo pipefail
 

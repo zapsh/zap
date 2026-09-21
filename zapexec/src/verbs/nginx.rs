@@ -1126,7 +1126,7 @@ pub async fn control(action: &str) -> Response {
                 }
                 "stop" => {
                     if site::nginx_running() {
-                        let o = root_cmd("bash")
+                        let o = root_cmd(super::platform::SHELL)
                             .args(["-c"])
                             .arg(format!("'{}' -s quit 2>&1", quote_bin(&bin)))
                             .output()
@@ -1142,14 +1142,14 @@ pub async fn control(action: &str) -> Response {
                 }
                 "start" | "restart" => {
                     if action == "restart" && site::nginx_running() {
-                        let _ = root_cmd("bash")
+                        let _ = root_cmd(super::platform::SHELL)
                             .args(["-c"])
                             .arg(format!("'{}' -s quit 2>&1", quote_bin(&bin)))
                             .output();
                         settle_running(false, 10);
                     }
                     if !site::nginx_running() {
-                        let o = root_cmd("bash")
+                        let o = root_cmd(super::platform::SHELL)
                             .args(["-c"])
                             .arg(format!("'{}' 2>&1", quote_bin(&bin)))
                             .output()

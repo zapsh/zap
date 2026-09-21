@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ZAP 服务器/VPS 管理系统 一键安装脚本
 set -euo pipefail
 
@@ -43,10 +43,36 @@ gen_password() {
     printf '%s' "${raw:0:16}"
 }
 
-# ── 解释器检查（脚本用到 bash 数组等特性，sh/dash 下行为异常）──
+# ── 解释器检查（脚本用到 bash 数组与 pipefail，sh/dash 下行为异常）──
+# Linux 发行版自带 bash；FreeBSD / OpenBSD 基础系统没有 bash，需要先装。
+# 这里先按常见路径找，找不到就用包管理器装上，再 exec 重入本脚本（避免要求用户先手动装）。
+find_bash() {
+    local b
+    for b in /bin/bash /usr/bin/bash /usr/local/bin/bash /usr/pkg/bin/bash; do
+        [ -x "$b" ] && { printf '%s' "$b"; return 0; }
+    done
+    command -v bash 2>/dev/null
+}
+
 if [ -z "${BASH_VERSION:-}" ]; then
-    printf "${RED}[✗]${NC} %s\n" "请使用 bash 执行：sudo bash $0" >&2
-    exit 1
+    if ! find_bash >/dev/null 2>&1; then
+        case "$(uname -s)" in
+            FreeBSD)
+                info "未找到 bash，正在用 pkg 安装（FreeBSD 基础系统不含 bash）..."
+                # pkg 首次使用会先 bootstrap，ASSUME_ALWAYS_YES 免掉交互确认
+                ASSUME_ALWAYS_YES=YES pkg bootstrap >/dev/null 2>&1 || true
+                ASSUME_ALWAYS_YES=YES pkg install -y bash \
+                    || die "安装 bash 失败，请手动执行：pkg install -y bash" ;;
+            OpenBSD)
+                info "未找到 bash，正在用 pkg_add 安装（OpenBSD 基础系统不含 bash）..."
+                pkg_add -I -x bash \
+                    || die "安装 bash 失败，请手动执行：pkg_add -I bash" ;;
+        esac
+    fi
+    BASH_BIN=$(find_bash)
+    [ -n "$BASH_BIN" ] && [ -f "$0" ] \
+        || die "未找到 bash：请先安装后重试（FreeBSD: pkg install -y bash / OpenBSD: pkg_add -I bash）"
+    exec "$BASH_BIN" "$0" "$@"
 fi
 
 # ── 权限检查 ────────────────────────────────────────────────
@@ -150,6 +176,14 @@ case "$ARCH" in
     *) die "不支持的架构: $ARCH" ;;
 esac
 info "目标版本: ${VERSION}   系统: ${OS} (${INIT})   架构: ${ARCH}"
+
+# ── bash 可用性提示（BSD 必需，运行时由 zapexec 自行解析路径）──
+# 面板运行时按绝对路径调用 bash 拉起 AppStore 包脚本、计划任务与用户脚本，
+# zapexec 会自动探测实际路径（Linux /bin/bash、BSD /usr/local/bin/bash），
+# 这里只在找不到 bash 时提前告警，避免装完才发现装不了软件。
+if ! find_bash >/dev/null 2>&1; then
+    warn "未找到 bash：AppStore 安装脚本与计划任务将无法执行，请先安装（FreeBSD: pkg install -y bash / OpenBSD: pkg_add -I bash）"
+fi
 
 # ── 下载工具 ────────────────────────────────────────────────
 # OpenBSD 默认没有 wget，自带的是 ftp(1)

@@ -525,6 +525,24 @@ pub async fn dispatch_stream(
     }
 }
 
+/// bash 解释器绝对路径：Linux 发行版自带 `/bin/bash`；
+/// FreeBSD / OpenBSD 基础系统不含 bash，装包后落在 `/usr/local/bin/bash`，
+/// 所以不能写死 `/bin/bash`（AppStore 包脚本、计划任务、用户脚本都用它拉起）。
+/// 找不到时回退 PATH 查找（`root_cmd` 的安全 PATH 已含 /usr/local/bin）。
+pub(crate) fn bash_bin() -> String {
+    for p in [
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/usr/local/bin/bash",
+        "/usr/pkg/bin/bash",
+    ] {
+        if Path::new(p).is_file() {
+            return p.to_string();
+        }
+    }
+    "bash".to_string()
+}
+
 /// 构造一个清空环境、仅带安全 PATH 的 root 子进程命令。
 pub(crate) fn root_cmd(program: &str) -> std::process::Command {
     let mut c = std::process::Command::new(program);
@@ -752,5 +770,24 @@ pub(crate) fn cloexec_inherited_fds() {
         for fd in 3..max {
             libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bash_bin;
+
+    /// Linux 的 bash 在 /bin/bash，BSD 装包后在 /usr/local/bin/bash：
+    /// 无论命中哪条候选，都必须解析到 bash 本身。
+    #[test]
+    fn bash_bin_points_to_bash() {
+        let b = bash_bin();
+        assert!(b.ends_with("bash"), "解析出的解释器不是 bash: {b}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bash_bin_is_bin_bash_on_linux() {
+        assert_eq!(bash_bin(), "/bin/bash");
     }
 }

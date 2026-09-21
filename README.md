@@ -149,6 +149,11 @@ bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
 脚本幂等：检测到 `/usr/local/zap/zapd` 已存在时按**升级**处理（覆盖二进制与脚本资源，保留数据与配置）。
 也支持 `bash install.sh v1.0.12` 指定版本。
 
+> **FreeBSD / OpenBSD**：基础系统不含 bash。用 `sh install.sh` 执行时脚本会自动用
+> `pkg install -y bash` / `pkg_add -I bash` 装上再继续，也可以先手动装好再 `bash install.sh`。
+> 面板侧不写死路径：通用脚本片段走平台解释器（BSD 上是 `/bin/sh`），
+> AppStore 包脚本与计划任务需要的 bash 由 zapexec 按平台解析（BSD 上是 `/usr/local/bin/bash`）。
+
 初始管理员可用 `--admin-user` / `--admin-pass` 指定，也可用环境变量 `ZAP_ADMIN_USER` / `ZAP_ADMIN_PASSWORD`（命令行优先）。安装末尾会执行 `zapd --init-admin <用户> --admin-password <密码>` 建库并写入管理员（凭据只经命令行传递，**不落任何文件**），Linux 账号与家目录 `/home/<用户名>`（www/logs/tmp 骨架）由安装脚本预建。已安装过的机器重跑安装脚本不会改动现有管理员密码。
 
 安装完成后访问 `https://<服务器IP>:2600`，用安装结束时输出的账号登录。

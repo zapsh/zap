@@ -107,7 +107,7 @@ fn reopen_nginx() -> bool {
     }
     let bin = site::nginx_bin(&conf);
     let quoted = bin.to_string_lossy().replace('\'', "'\\''");
-    let ok = root_cmd("bash")
+    let ok = root_cmd(super::platform::SHELL)
         .args(["-c"])
         .arg(format!("'{quoted}' -s reopen 2>&1"))
         .output()

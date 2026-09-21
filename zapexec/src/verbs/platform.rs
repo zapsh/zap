@@ -21,9 +21,13 @@ use super::root_cmd;
 
 /// 执行脚本片段的解释器。
 ///
-/// OpenBSD 默认不装 bash（系统 shell 是 ksh），所以用 `/bin/sh`。这意味着
+/// OpenBSD / FreeBSD 默认不装 bash（系统 shell 分别是 ksh / sh，装包后 bash 才出现在
+/// `/usr/local/bin/bash`），所以非 Linux 一律用 `/bin/sh`。这意味着
 /// **传进来的脚本必须保持 POSIX 兼容**，不能依赖 `[[ ]]`、`pipefail`、
 /// `mapfile` 这类 bashism。
+///
+/// 确实需要 bash 的场景（AppStore 包脚本、计划任务的 kind=script）走
+/// [`super::bash_bin`]，它会按平台解析出实际路径。
 #[cfg(target_os = "linux")]
 pub(crate) const SHELL: &str = "bash";
 

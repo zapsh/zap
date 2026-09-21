@@ -325,7 +325,7 @@ pub async fn pool_sync(
         let pool_file = pool_dir.join(format!("{linux_user}.conf"));
         std::fs::write(&pool_file, &content).map_err(|e| format!("写入 pool 配置失败: {e}"))?;
         // 校验：失败即回滚，绝不带着坏配置 reload
-        let test = root_cmd("bash")
+        let test = root_cmd(super::platform::SHELL)
             .args(["-c"])
             .arg(format!(
                 "'{}' -t -y '{}' 2>&1",

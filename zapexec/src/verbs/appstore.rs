@@ -19,7 +19,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::root_cmd;
+use super::{bash_bin, root_cmd};
 use std::os::unix::process::CommandExt;
 use zap_proto::Response;
 
@@ -831,7 +831,8 @@ enum RunAs {
     User(String),
 }
 
-/// 包脚本解释器：`.py` 走 `python3 -I -B`，其余走 `/bin/bash`。
+/// 包脚本解释器：`.py` 走 `python3 -I -B`，其余走 bash（路径按平台解析，
+/// FreeBSD / OpenBSD 上 bash 在 /usr/local/bin/bash）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Interpreter {
     Bash,
@@ -842,7 +843,7 @@ impl Interpreter {
     /// 解释器程序（尽量用绝对路径，不依赖 PATH 解析）。
     fn program(self) -> String {
         match self {
-            Interpreter::Bash => "/bin/bash".to_string(),
+            Interpreter::Bash => bash_bin(),
             Interpreter::Python3 => python3_bin(),
         }
     }

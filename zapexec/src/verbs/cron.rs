@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use zap_proto::Response;
 
-use super::root_cmd;
+use super::{bash_bin, root_cmd};
 
 fn zap_path() -> PathBuf {
     std::env::var("ZAP_PATH")
@@ -120,7 +120,7 @@ pub async fn run(
             if !script.is_file() {
                 return Err(format!("脚本不存在: {cmd}"));
             }
-            format!("/bin/bash -- {}", sh_quote(cmd))
+            format!("{} -- {}", bash_bin(), sh_quote(cmd))
         } else {
             cmd.to_string()
         };
@@ -153,15 +153,19 @@ pub async fn run(
             dir.is_dir().then(|| dir.to_path_buf())
         };
 
-        let mut c = root_cmd("/bin/bash");
+        let bash = bash_bin();
+        let mut c = root_cmd(&bash);
         c.arg("-c")
             .arg(
                 // runuser 优先（不依赖 PAM 会话），回退 su；两者都不登录，
                 // 仅切换执行身份，保留调用方设置的工作目录与环境。
-                "if command -v runuser >/dev/null 2>&1; then \
-                   exec runuser -u \"$ZAP_RUN_USER\" -- /bin/bash -c \"$ZAP_RUN_CMD\"; \
-                 fi; \
-                 exec su -s /bin/bash -c \"$ZAP_RUN_CMD\" \"$ZAP_RUN_USER\"",
+                // bash 路径按平台解析：BSD 上是 /usr/local/bin/bash。
+                format!(
+                    "if command -v runuser >/dev/null 2>&1; then \
+                       exec runuser -u \"$ZAP_RUN_USER\" -- {bash} -c \"$ZAP_RUN_CMD\"; \
+                     fi; \
+                     exec su -s {bash} -c \"$ZAP_RUN_CMD\" \"$ZAP_RUN_USER\""
+                ),
             )
             .env("ZAP_RUN_USER", &linux_user)
             .env("ZAP_RUN_CMD", &run_cmd)

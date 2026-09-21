@@ -433,7 +433,7 @@ fn quote_shell(s: &str) -> String {
 
 /// `command -v name` 找到可执行文件。
 fn which(name: &str) -> Option<PathBuf> {
-    let o = root_cmd("bash")
+    let o = root_cmd(super::platform::SHELL)
         .args(["-c"])
         .arg(format!("command -v {} 2>/dev/null", quote_shell(name)))
         .output()
