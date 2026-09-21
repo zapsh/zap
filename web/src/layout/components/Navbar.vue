@@ -1,12 +1,14 @@
 <template>
   <div class="navbar">
-    <hamburger
-      :is-active="sidebar.opened"
-      class="hamburger-container"
-      @toggleClick="toggleSideBar"
-    />
+    <!-- 折叠 / 展开侧栏（品牌区在侧栏顶部，这里不再重复放 logo） -->
+    <div class="nav-toggle" @click="toggleSideBar">
+      <el-icon class="nav-toggle__icon" :class="{ 'is-active': sidebar.opened }">
+        <Fold />
+      </el-icon>
+    </div>
 
-    <breadcrumb class="breadcrumb-container" />
+    <!-- 标签导航：一级 / 二级标签，切换主分类整组替换（见 stores/tags.ts） -->
+    <TagsView />
 
     <div class="right-menu">
       <!-- 语言切换：选项用语言自称，英文界面下也能找到「简体中文」 -->
@@ -144,14 +146,14 @@ import { useAppStore } from '@/stores/app'
 import { useUserStore } from '@/stores/user'
 import { getNotices, getUnreadCount, readAllNotices, readNotice } from '@/api/notice'
 import type { NoticeMessage } from '@/api/notice'
-import Breadcrumb from '@/components/Breadcrumb/index.vue'
-import Hamburger from '@/components/Hamburger/index.vue'
+import TagsView from './TagsView.vue'
 import { setThemeMode, themeMode, type ThemeMode } from '@/composables/useTheme'
 import { useLocale } from '@/composables/useLocale'
 import {
   ArrowDown,
   Bell,
   Check,
+  Fold,
   Monitor,
   Moon,
   Sunny,
@@ -190,6 +192,10 @@ const appStore = useAppStore()
 const userStore = useUserStore()
 
 const sidebar = computed(() => appStore.sidebar)
+
+function toggleSideBar() {
+  appStore.toggleSidebar()
+}
 
 // ── 站内信铃铛 ───────────────────────────────────────────────
 const noticePopover = ref()
@@ -279,10 +285,6 @@ onBeforeUnmount(() => {
   if (unreadTimer) window.clearInterval(unreadTimer)
 })
 
-function toggleSideBar() {
-  appStore.toggleSidebar()
-}
-
 function handleProfile() {
   router.push('/profile')
 }
@@ -303,125 +305,114 @@ async function handleLogout() {
 </script>
 
 <style lang="scss" scoped>
+/* 顶栏恒为深色：与侧栏 #001529 连成一体（浅色 / 深色主题一致），
+   形态是「折叠钮 + 标签区 + 右侧图标」；品牌 logo 只留在侧栏顶部，不再重复一份。 */
 .navbar {
   height: 50px;
-  overflow: hidden;
-  position: relative;
-  background: var(--el-bg-color);
-  box-shadow: var(--el-box-shadow-light);
   display: flex;
   align-items: center;
+  background: #001529;
+  color: #c8d4e2;
+  overflow: hidden;
+}
 
-  .hamburger-container {
-    flex-shrink: 0; /* 汉堡按钮不参与压缩 */
-    line-height: 46px;
-    height: 100%;
-    padding: 0 15px;
-    cursor: pointer;
-    transition: background 0.3s;
+.nav-toggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: background 0.2s;
 
-    &:hover {
-      background: var(--el-fill-color-light);
-    }
+  &:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
   }
+}
 
-  /* 关键：flex 子项默认 `min-width: auto`，面包屑变长时会把顶栏顶宽。
-     加 `flex: 1` + `min-width: 0` 让它可收缩并被父级 overflow 裁掉。 */
-  .breadcrumb-container {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    margin-left: 16px;
+.nav-toggle__icon {
+  font-size: 20px;
+  transition: transform 0.3s;
 
-    :deep(.app-breadcrumb.el-breadcrumb) {
-      max-width: 100%;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
+  &.is-active {
+    transform: rotate(180deg);
   }
+}
 
-  .right-menu {
-    flex-shrink: 0; /* 右侧图标区不参与压缩 */
-    margin-left: auto;
-    padding-right: 16px;
+/* 标签区占满中间，右侧图标组固定宽度不被压缩 */
+.right-menu {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-right: 16px;
+
+  .notice-trigger,
+  .theme-trigger {
     display: flex;
     align-items: center;
-    gap: 18px;
+    padding: 6px;
+    border-radius: 4px;
+    line-height: 1;
+    cursor: pointer;
+    color: inherit;
+    transition:
+      background 0.2s,
+      color 0.2s;
 
-    .notice-trigger {
-      cursor: pointer;
-      padding: 6px;
-      border-radius: 4px;
-      color: var(--el-text-color-primary);
-      line-height: 1;
-
-      &:hover {
-        background: var(--el-fill-color-light);
-        color: var(--el-color-primary);
-      }
-    }
-
-    .theme-trigger {
-      cursor: pointer;
-      padding: 6px;
-      border-radius: 4px;
-      color: var(--el-text-color-primary);
-      line-height: 1;
-
-      &:hover {
-        background: var(--el-fill-color-light);
-        color: var(--el-color-primary);
-      }
-    }
-
-    .avatar-container {
-      cursor: pointer;
-
-      .avatar-wrapper {
-        display: flex;
-        align-items: center;
-        padding: 5px;
-
-        .user-avatar {
-          width: 30px;
-          height: 30px;
-          border-radius: 50%;
-          margin-right: 8px;
-        }
-
-        .user-name {
-          font-size: 14px;
-          color: var(--el-text-color-primary);
-          margin-right: 4px;
-        }
-
-        .el-icon-caret-bottom {
-          font-size: 12px;
-          color: var(--el-text-color-secondary);
-        }
-
-        &:hover {
-          background: var(--el-fill-color-light);
-        }
-      }
+    &:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
     }
   }
 
-  /* 窄屏收敛：优先保证图标可点，逐级让出空间，避免顶栏被撑开 */
-  @media (max-width: 991px) {
-    .right-menu .avatar-container .user-name {
-      display: none; /* 只留头像 + 箭头 */
-    }
+  .avatar-container {
+    cursor: pointer;
   }
 
-  @media (max-width: 767px) {
-    .hamburger-container {
+  .avatar-wrapper {
+    display: flex;
+    align-items: center;
+    padding: 5px;
+    border-radius: 4px;
+    transition: background 0.2s;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .user-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      margin-right: 8px;
+    }
+
+    .user-name {
+      font-size: 14px;
+      color: #c8d4e2;
+      margin-right: 4px;
+    }
+
+    .el-icon-caret-bottom {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.55);
+    }
+  }
+}
+
+/* 窄屏收敛：优先保证图标可点，逐级让出空间，避免顶栏被撑开 */
+@media (max-width: 991px) {
+  .right-menu .avatar-container .user-name {
+    display: none; /* 只留头像 + 箭头 */
+  }
+}
+
+@media (max-width: 767px) {
+  .navbar {
+    .nav-toggle {
       padding: 0 10px;
-    }
-
-    .breadcrumb-container {
-      display: none; /* 手机屏空间紧张，面包屑让位给操作图标 */
     }
 
     .right-menu {

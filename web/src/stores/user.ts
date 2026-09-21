@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { login, getUserInfo, logout as logoutApi } from '@/api/user'
+import { useTagsStore } from '@/stores/tags'
 import { setToken, removeToken, setTokenExpire } from '@/utils/auth'
 import { ElMessage } from 'element-plus'
 import { t } from '@/i18n'
@@ -105,6 +106,8 @@ export const useUserStore = defineStore(
           import('@/stores/permission'),
         ])
         usePermissionStore().setRoutes([])
+        // 标签栏也清空：否则换账号后会残留上一个账号的页面路径
+        useTagsStore().reset()
         resetRouter()
       } catch {
         // 清理失败不影响登出本身

@@ -18,14 +18,9 @@
 
     <!-- 主要内容区 -->
     <div class="main-container" :class="{ 'hide-sidebar': !sidebar.opened || sidebar.hide }">
-      <!-- 顶部导航栏 -->
+      <!-- 顶部导航栏（含标签导航，见 components/Navbar.vue / TagsView.vue） -->
       <div class="navbar-container">
         <Navbar />
-      </div>
-
-      <!-- 标签导航栏 -->
-      <div class="tags-view-container" v-if="showTagsView">
-        <TagsView />
       </div>
 
       <!-- 主要内容区 -->
@@ -44,16 +39,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import { computed, watch, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { useTagsStore } from '@/stores/tags'
 import Navbar from './components/Navbar.vue'
 import Sidebar from './components/Sidebar.vue'
-import TagsView from './components/TagsView.vue'
 import Footer from './components/Footer.vue'
 
 const route = useRoute()
 const appStore = useAppStore()
+const tagsStore = useTagsStore()
 
 // 从store获取状态
 const sidebar = computed(() => ({
@@ -61,21 +57,16 @@ const sidebar = computed(() => ({
   hide: false,
 }))
 const device = computed(() => appStore.device)
-const showTagsView = ref(true)
 
-// 缓存的路由视图
-const cachedViews = ref<string[]>([])
+// 缓存的路由视图 = 当前打开的标签（关掉标签即丢弃缓存）
+const cachedViews = computed(() => tagsStore.cachedNames)
 
-// 监听路由变化，更新缓存的视图
+// 每次导航同步标签栏：换主分类时整组替换，见 stores/tags.ts
+// （immediate：首屏直达深层地址时也要把当前页补成标签）
 watch(
-  () => route.name,
-  (name) => {
-    if (name && typeof name === 'string') {
-      if (!cachedViews.value.includes(name)) {
-        cachedViews.value.push(name)
-      }
-    }
-  },
+  () => route.path,
+  () => tagsStore.sync(route),
+  { immediate: true },
 )
 
 // 监听设备类型变化
@@ -156,22 +147,12 @@ html.dark .sidebar-container {
   height: 50px;
   overflow: hidden;
   position: relative;
-  background: var(--el-bg-color);
-  box-shadow: var(--el-box-shadow-light);
-}
-
-.tags-view-container {
-  height: 34px;
-  width: 100%;
-  background: var(--el-bg-color);
-  border-bottom: 1px solid var(--el-border-color-light);
-  box-shadow:
-    0 1px 3px 0 rgba(0, 0, 0, 0.12),
-    0 0 3px 0 rgba(0, 0, 0, 0.04);
+  /* 顶栏恒为深色（品牌 + 标签），与侧栏 #001529 连成一体 */
+  background: #001529;
 }
 
 .app-main {
-  min-height: calc(100vh - 84px);
+  min-height: calc(100vh - 50px);
   padding: 10px;
   position: relative;
   overflow: hidden;
