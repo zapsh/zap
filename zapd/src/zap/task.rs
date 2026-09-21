@@ -821,8 +821,29 @@ pub fn watch_log(task_id: String, log_path: String, timeout_secs: u64) {
     });
 }
 
-/// 从日志末尾探测完成标记，返回退出码。
+/// 退出码文件：`run-<id>.log` 对应 `run-<id>.ret`，由 zapexec 独占写入。
+///
+/// 日志里的 `__ZAP_DONE__` 只是**展示协议**：脚本往 stdout 打一行同样内容就能
+/// 伪造成功，而降权不等于可信（尤其第三方包 / 用户自定义脚本）。因此退出码另存
+/// 一份到 `.ret` —— logs/ 目录归 root，降权脚本写不进去，`.ret` 才是权威来源。
+pub fn ret_path(log_path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(log_path);
+    match p.extension().and_then(|e| e.to_str()) {
+        Some("log") => p.with_extension("ret"),
+        _ => std::path::PathBuf::from(format!("{log_path}.ret")),
+    }
+}
+
+/// 探测任务是否结束，返回退出码。
+///
+/// 优先读 `.ret`；没有 `.ret` 的老任务（或 docker 构建这类不走 zapexec 的任务）
+/// 仍回退到日志标记，保证升级过程中不丢状态。
 pub async fn read_done_marker(log_path: &str) -> Option<i64> {
+    if let Ok(s) = tokio::fs::read_to_string(ret_path(log_path)).await
+        && let Ok(code) = s.trim().parse::<i64>()
+    {
+        return Some(code);
+    }
     let content = tokio::fs::read_to_string(log_path).await.ok()?;
     let tail = content.rsplit(DONE_MARKER).next()?.trim();
     let code: i64 = tail.split_whitespace().next()?.parse().ok()?;
@@ -863,10 +884,18 @@ pub fn strip_done_marker(content: &str) -> String {
 /// 任务快照目录（如应用商店的 `runs/<task_id>/`）由各业务自行清理：
 /// 内核不知道快照放在哪，也不该替业务决定。
 pub fn remove_log(task: &Task) {
-    if !task.log_path.is_empty()
-        && let Err(e) = std::fs::remove_file(&task.log_path)
-    {
+    if task.log_path.is_empty() {
+        return;
+    }
+    if let Err(e) = std::fs::remove_file(&task.log_path) {
         warn!("删除任务日志失败 {}: {e}", task.log_path);
+    }
+    // 退出码文件随日志一起清，否则残留的 .ret 会让同 id 的新任务一启动就被判完成
+    let ret = ret_path(&task.log_path);
+    if ret.exists()
+        && let Err(e) = std::fs::remove_file(&ret)
+    {
+        warn!("删除任务退出码文件失败 {}: {e}", ret.display());
     }
 }
 
@@ -887,6 +916,31 @@ mod tests {
     fn done_marker_is_stripped() {
         assert_eq!(strip_done_marker("hello\n__ZAP_DONE__ 0\n"), "hello");
         assert_eq!(strip_done_marker("hello"), "hello");
+    }
+
+    #[test]
+    fn ret_file_path_is_derived_from_log() {
+        assert_eq!(
+            ret_path("/var/log/zap/logs/run-abc.log"),
+            std::path::PathBuf::from("/var/log/zap/logs/run-abc.ret")
+        );
+        // 扩展名不是 .log 时不猜，直接追加后缀
+        assert_eq!(
+            ret_path("/tmp/run-abc"),
+            std::path::PathBuf::from("/tmp/run-abc.ret")
+        );
+    }
+
+    #[tokio::test]
+    async fn done_marker_prefers_ret_file() {
+        // 脚本往日志里伪造一行 __ZAP_DONE__ 0 不该被采信：.ret 才是权威来源
+        let dir = std::env::temp_dir().join(format!("zap-task-ret-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let log = dir.join("run-x.log");
+        std::fs::write(&log, "fake\n__ZAP_DONE__ 0\n").unwrap();
+        std::fs::write(ret_path(log.to_str().unwrap()), "-1").unwrap();
+        assert_eq!(read_done_marker(log.to_str().unwrap()).await, Some(-1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1019,9 +1019,17 @@ impl Drop for QueueToken {
     }
 }
 
+/// 单个脚本步骤的执行上限。
+///
+/// 脚本任务共用一个串行闸门，一个卡住的进程（等交互输入、下载挂死）会把后面
+/// 所有任务一起堵死，所以这里必须有硬上限：超时后先 SIGTERM 整个进程组，
+/// 宽限 5 秒不死再 SIGKILL。需要更久的包（源码编译）日后可按包声明覆盖。
+const DEFAULT_STEP_TIMEOUT_SECS: u64 = 6 * 3600;
+
 /// 后台运行一个或多个脚本（同一 run_id、同一日志追加写）。
 /// 每个脚本以 `setsid` 启动独立进程组，pid 写入 run-{id}.pid 供停止使用。
-/// 全部成功退出码为 0；任一脚本失败则中断后续步骤。结束后追加 `__ZAP_DONE__ <code>`。
+/// 全部成功退出码为 0；任一脚本失败则中断后续步骤。结束时把退出码写进
+/// run-{id}.ret（权威来源），日志末尾仍追加 `__ZAP_DONE__ <code>` 供人阅读。
 /// 任务受全局队列闸门约束：同一时间仅执行一个脚本任务，其余等待。
 fn spawn_background(
     run_id: &str,
@@ -1031,6 +1039,10 @@ fn spawn_background(
     std::fs::create_dir_all(logs_dir()).map_err(|e| e.to_string())?;
     let log_path = logs_dir().join(format!("run-{run_id}.log"));
     let pid_path = logs_dir().join(format!("run-{run_id}.pid"));
+    // 退出码文件：日志里的 __ZAP_DONE__ 可被脚本伪造，.ret 由 zapexec 独占写，
+    // 位于 root 拥有的 logs/ 下，降权脚本写不进去 —— 面板只认它。
+    let code_path = logs_dir().join(format!("run-{run_id}.ret"));
+    let _ = std::fs::remove_file(&code_path);
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1054,10 +1066,14 @@ fn spawn_background(
         let mut final_code = 0;
         for step in steps {
             // 建站类包（run_as: user）走降权通道，其余沿用 root
+            let mut drop_to: Option<(u32, u32)> = None;
             let mut cmd = match &step.run_as {
                 RunAs::Root => root_cmd(&step.interpreter.program()),
                 RunAs::User(u) => match super::user_cmd(&step.interpreter.program(), u) {
-                    Ok(c) => c,
+                    Ok((c, acc)) => {
+                        drop_to = Some((acc.uid, acc.gid));
+                        c
+                    }
                     Err(e) => {
                         let _ = writeln!(log, "start script failed: {e}");
                         final_code = -1;
@@ -1068,6 +1084,8 @@ fn spawn_background(
             // 解释器参数必须排在脚本路径之前：python3 -I -B install.py
             cmd.args(step.interpreter.flags())
                 .arg(&step.script)
+                // 不给 stdin：脚本不该读到 zapexec 的 stdin / 继承来的终端
+                .stdin(std::process::Stdio::null())
                 .env("ZAP_PATH", zap_path())
                 .env("ZAPCTL", zapctl_bin())
                 .env("APPS_DIR", super::install_root())
@@ -1097,13 +1115,16 @@ fn spawn_background(
             if step.interpreter == Interpreter::Python3 {
                 cmd.env("ZAP_PY_LIB", zap_path().join("scripts").join("zap"));
             }
-            let hardened = matches!(step.run_as, RunAs::User(_));
-            // 新进程组：pid == pgid，便于停止时 kill(-pid)
+            // 新进程组：pid == pgid，便于停止/超时时 kill(-pid)
             unsafe {
                 cmd.pre_exec(move || {
                     libc::setsid();
-                    // 降权脚本再加固：禁止借 setuid 提权 + 关 core dump
-                    if hardened {
+                    // exec 前只保留 stdio：其余继承 fd 一律 CLOEXEC
+                    super::cloexec_inherited_fds();
+                    // 降权脚本再加固：先清附加组再降权（顺序敏感），
+                    // 之后禁止借 setuid 提权 + 关 core dump
+                    if let Some((uid, gid)) = drop_to {
+                        super::drop_privileges(uid, gid)?;
                         super::harden_child();
                     }
                     Ok(())
@@ -1113,7 +1134,11 @@ fn spawn_background(
                 Ok(mut child) => {
                     let pid = child.id();
                     let _ = std::fs::write(&pid_path, pid.to_string());
-                    let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+                    let code = wait_with_timeout(
+                        &mut child,
+                        std::time::Duration::from_secs(DEFAULT_STEP_TIMEOUT_SECS),
+                        &mut log,
+                    );
                     if code != 0 {
                         final_code = code;
                         break;
@@ -1127,11 +1152,64 @@ fn spawn_background(
             }
         }
         let _ = std::fs::remove_file(&pid_path);
+        // 顺序固定：先把日志写完，再落 .ret 宣布结束。
+        // 反过来的话，面板可能在日志还没刷完时就读到 .ret 判定完成，
+        // 最后一行标记来不及被 strip，会漏给用户看。
         let _ = writeln!(log, "\n__ZAP_DONE__ {final_code}");
+        let _ = std::fs::write(&code_path, final_code.to_string());
         on_done(final_code);
     });
 
     Ok(ret_path)
+}
+
+/// 等待脚本进程，带硬超时。
+///
+/// 超时后向进程组发 SIGTERM（`setsid` 保证 pid == pgid），最多宽限 5 秒，
+/// 仍不死则 SIGKILL —— 不能再让一个卡住的脚本占住全局串行闸门。
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+    log: &mut std::fs::File,
+) -> i32 {
+    use std::io::Write;
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.code().unwrap_or(-1),
+            Ok(None) => {
+                if std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    continue;
+                }
+                let pid = child.id() as i32;
+                let _ = writeln!(
+                    log,
+                    "\n── 执行超过 {} 秒，终止进程组 {pid} ──",
+                    timeout.as_secs()
+                );
+                unsafe {
+                    libc::kill(-pid, libc::SIGTERM);
+                }
+                for _ in 0..5 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    if let Ok(Some(st)) = child.try_wait() {
+                        return st.code().unwrap_or(-1);
+                    }
+                }
+                let _ = writeln!(log, "── 进程组 {pid} 未响应，强制 SIGKILL ──");
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+                return child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+            }
+            Err(e) => {
+                let _ = writeln!(log, "等待子进程失败: {e}");
+                return -1;
+            }
+        }
+    }
 }
 
 fn base_env() -> Vec<(String, String)> {
@@ -1266,17 +1344,20 @@ fn spawn_repo_task(
                     .open("/dev/null")
                     .unwrap()
             });
+        let code_path = log_path.with_extension("ret");
         let _ = writeln!(log, "=== {title} ===");
-        match op() {
+        let code = match op() {
             Ok(detail) => {
                 let _ = writeln!(log, "成功: {detail}");
-                let _ = writeln!(log, "\n__ZAP_DONE__ 0");
+                0
             }
             Err(e) => {
                 let _ = writeln!(log, "失败: {e}");
-                let _ = writeln!(log, "\n__ZAP_DONE__ -1");
+                -1
             }
-        }
+        };
+        let _ = std::fs::write(&code_path, code.to_string());
+        let _ = writeln!(log, "\n__ZAP_DONE__ {code}");
     });
     Response::ok(
         "任务已启动",
@@ -2739,5 +2820,60 @@ mod tests {
         assert_eq!(back.source, "official");
         assert_eq!(back.repo_id.as_deref(), Some("zap-appstore"));
         assert!(back.upgraded_from.is_none());
+    }
+
+    /// 起一个 `setsid` 子进程，返回 (child, 输出文件路径)。
+    fn spawn_isolated(script: &str, out: &Path) -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        let f = std::fs::File::create(out).unwrap();
+        let mut c = std::process::Command::new("/bin/sh");
+        c.arg("-c").arg(script);
+        c.stdout(std::process::Stdio::from(f));
+        unsafe {
+            c.pre_exec(|| {
+                libc::setsid();
+                super::super::cloexec_inherited_fds();
+                Ok(())
+            });
+        }
+        c.spawn().unwrap()
+    }
+
+    #[test]
+    fn inherited_fds_are_not_visible_to_script() {
+        // 测试进程本身握着一堆 fd（cargo test 会开不少），脚本不该看见任何一个
+        let out = std::env::temp_dir().join(format!("zap-fd-{:?}", std::thread::current().id()));
+        let mut child = spawn_isolated("ls /proc/self/fd", &out);
+        child.wait().unwrap();
+        let listed = std::fs::read_to_string(&out).unwrap();
+        let max_fd = listed
+            .split_whitespace()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
+        // ls 自身会开一个目录 fd（3），再多就是泄漏
+        assert!(max_fd <= 3, "子进程看到了继承的 fd: {listed}");
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn wait_timeout_kills_the_process_group() {
+        let out = std::env::temp_dir().join(format!("zap-to-{:?}", std::thread::current().id()));
+        let mut child = spawn_isolated("sleep 30", &out);
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open("/dev/null")
+            .unwrap();
+        let started = std::time::Instant::now();
+        let code = wait_with_timeout(&mut child, std::time::Duration::from_secs(1), &mut log);
+        let elapsed = started.elapsed();
+        assert!(code != 0, "超时被杀应有非 0 退出码，实际: {code}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "耗时 {elapsed:?}"
+        );
+        // 进程确实被收掉：已被 wait 回收，不该还留在 /proc 里
+        assert!(!std::path::Path::new(&format!("/proc/{}", child.id())).exists());
+        let _ = std::fs::remove_file(&out);
     }
 }

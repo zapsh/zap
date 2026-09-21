@@ -680,11 +680,16 @@ pub(crate) fn linux_account(user: &str) -> Result<LinuxAccount, String> {
 /// 1. 环境全清，只给最小集合 —— **PATH 不含 sbin**，避免继承 zapd/zapexec 的
 ///    任何进程环境（里面可能有 JWT 密钥、数据库凭据）；
 /// 2. `cwd` 固定为账号家目录，脚本无法借相对路径落到系统目录；
-/// 3. 主/属组设为该账号（`CommandExt::uid/gid`），该账号是 nologin 账号；
+/// 3. 主/属组在 exec 前降到该账号（nologin 账号），见 `drop_privileges`；
 /// 4. 配合调用方 `pre_exec` 里的 `harden_child`：禁止再提权 + 关 core dump。
-pub(crate) fn user_cmd(program: &str, user: &str) -> Result<std::process::Command, String> {
-    use std::os::unix::process::CommandExt;
-
+///
+/// 返回命令 + 账号信息：**这里不降权**。降权必须先清附加组再 setgid/setuid，
+/// 而 `CommandExt::uid/gid` 的降权时机由标准库内部决定，无法保证排在
+/// `pre_exec` 之前；为了让顺序可控，整段降权放到调用方的 `pre_exec` 里做。
+pub(crate) fn user_cmd(
+    program: &str,
+    user: &str,
+) -> Result<(std::process::Command, LinuxAccount), String> {
     let acc = linux_account(user)?;
     let mut c = std::process::Command::new(program);
     c.env_clear();
@@ -698,9 +703,52 @@ pub(crate) fn user_cmd(program: &str, user: &str) -> Result<std::process::Comman
         c.env("TMPDIR", &tmp);
     }
     c.current_dir(&acc.home);
-    c.uid(acc.uid);
-    c.gid(acc.gid);
-    Ok(c)
+    Ok((c, acc))
+}
+
+/// 在 exec 前把子进程降到指定账号（在 `pre_exec` 内调用）。
+///
+/// 顺序**必须**是 清附加组 → setgid → setuid：`setgroups` 需要特权，uid 一旦
+/// 降下去就没有第二次机会，而子进程默认会继承 zapexec 的附加组，等于多出一份
+/// 本不该有的文件访问权。这也是不用 `CommandExt::uid/gid` 的原因——它和
+/// `pre_exec` 的先后顺序不受调用方控制。
+/// 任一步失败都返回 Err，让 `spawn` 直接失败：宁可任务起不来，也不能让脚本
+/// 悄悄以 zapexec 自己的身份跑（那比降权失败更危险）。
+pub(crate) fn drop_privileges(uid: u32, gid: u32) -> std::io::Result<()> {
+    unsafe {
+        if libc::setgroups(0, std::ptr::null()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::setgid(gid) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::setuid(uid) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// 给 0/1/2 之外继承来的 fd 打上 CLOEXEC（在 `pre_exec` 内、exec 之前调用）。
+///
+/// 标准库只重定向 stdio，其余 fd 一律继承：zapexec 是长驻进程，手上可能握着
+/// socket / 日志文件 / 状态文件的 fd，脚本不该看见它们。
+///
+/// 只打标记而不直接 close —— Rust 用一条管道把 exec 失败的 errno 传回父进程，
+/// 提前 close 会让「脚本不存在」这类错误退化成一个没有原因的退出码。
+/// 只用 syscall，符合 `pre_exec` 的 async-signal-safe 约束。
+pub(crate) fn cloexec_inherited_fds() {
+    unsafe {
+        let mut rl: libc::rlimit = std::mem::zeroed();
+        let max = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) == 0 && rl.rlim_cur > 0 {
+            (rl.rlim_cur as libc::c_int).min(4096)
+        } else {
+            256
+        };
+        for fd in 3..max {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
 }
 
 /// 降权子进程的自加固（在 `pre_exec` 内调用，仅对以 Linux 账号运行的脚本生效）：
