@@ -108,7 +108,10 @@ export interface NginxStubMetrics {
 
 export interface NginxStubStatus {
   enabled?: boolean
+  /** 状态页所在端口（默认站点的 HTTP 端口，通常 80） */
   port?: number | null
+  /** 状态页路径，如 /nginx_status */
+  path?: string
   running?: boolean
   metrics?: NginxStubMetrics | null
   worker_processes?: string

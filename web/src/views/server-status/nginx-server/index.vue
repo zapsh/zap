@@ -33,96 +33,101 @@
             <el-icon><Timer /></el-icon>
             {{ t('statusNginx.updatedAt', { time: lastUpdated }) }}
           </span>
-          <el-button size="small" :loading="loading" circle @click="load">
+          <el-button size="small" :loading="refreshing" circle @click="refresh">
             <el-icon><Refresh /></el-icon>
           </el-button>
         </div>
       </div>
 
-      <!-- 基础信息卡 -->
+      <!-- 基础信息（左） + 服务控制（右） -->
       <el-row :gutter="16" class="mt-3">
-        <el-col :xs="24" :sm="12" :lg="6">
-          <el-card shadow="never" class="info-card">
-            <div class="info-label">
-              <el-icon><Odometer /></el-icon>{{ t('statusNginx.runState') }}
-            </div>
-            <div class="info-value">
-              <el-tag :type="running ? 'success' : 'danger'">
-                {{ running ? t('statusNginx.stateRunning') : t('statusNginx.stateStopped') }}
-              </el-tag>
+        <el-col :xs="24" :lg="16">
+          <el-card shadow="never" class="h-full">
+            <template #header>
+              <div class="card-header">
+                <span>{{ t('statusNginx.basicTitle') }}</span>
+              </div>
+            </template>
+            <div class="info-grid">
+              <div class="info-item">
+                <div class="info-label">
+                  <el-icon><Odometer /></el-icon>{{ t('statusNginx.runState') }}
+                </div>
+                <div class="info-value">
+                  <el-tag :type="running ? 'success' : 'danger'">
+                    {{ running ? t('statusNginx.stateRunning') : t('statusNginx.stateStopped') }}
+                  </el-tag>
+                </div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">
+                  <el-icon><InfoFilled /></el-icon>{{ t('statusNginx.version') }}
+                </div>
+                <div class="info-value mono">{{ versionText }}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">
+                  <el-icon><Document /></el-icon>{{ t('statusNginx.mainConf') }}
+                </div>
+                <div class="info-value mono sm">{{ status.conf_file || '-' }}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">
+                  <el-icon><Cpu /></el-icon>{{ t('statusNginx.binary') }}
+                </div>
+                <div class="info-value mono sm">{{ status.bin || '-' }}</div>
+              </div>
             </div>
           </el-card>
         </el-col>
-        <el-col :xs="24" :sm="12" :lg="6">
-          <el-card shadow="never" class="info-card">
-            <div class="info-label">
-              <el-icon><InfoFilled /></el-icon>{{ t('statusNginx.version') }}
+
+        <!-- 服务控制 -->
+        <el-col :xs="24" :lg="8">
+          <el-card shadow="never" class="h-full">
+            <template #header>
+              <div class="card-header">
+                <span>{{ t('statusNginx.ctrlTitle') }}</span>
+              </div>
+            </template>
+            <div class="ctrl-row">
+              <el-button
+                type="primary"
+                :disabled="!!(!running || acting)"
+                :loading="acting === 'reload'"
+                @click="control('reload')"
+              >
+                {{ t('statusNginx.reload') }}
+              </el-button>
+              <el-button
+                type="warning"
+                :disabled="!!(!running || acting)"
+                :loading="acting === 'restart'"
+                @click="control('restart')"
+              >
+                {{ t('statusNginx.restart') }}
+              </el-button>
+              <el-button
+                type="success"
+                :disabled="!!(running || acting)"
+                :loading="acting === 'start'"
+                @click="control('start')"
+              >
+                {{ t('statusNginx.start') }}
+              </el-button>
+              <el-button
+                type="danger"
+                plain
+                :disabled="!!(!running || acting)"
+                :loading="acting === 'stop'"
+                @click="control('stop')"
+              >
+                {{ t('statusNginx.stop') }}
+              </el-button>
             </div>
-            <div class="info-value mono">{{ versionText }}</div>
-          </el-card>
-        </el-col>
-        <el-col :xs="24" :sm="12" :lg="6">
-          <el-card shadow="never" class="info-card">
-            <div class="info-label">
-              <el-icon><Document /></el-icon>{{ t('statusNginx.mainConf') }}
-            </div>
-            <div class="info-value mono sm">{{ status.conf_file || '-' }}</div>
-          </el-card>
-        </el-col>
-        <el-col :xs="24" :sm="12" :lg="6">
-          <el-card shadow="never" class="info-card">
-            <div class="info-label">
-              <el-icon><Cpu /></el-icon>{{ t('statusNginx.binary') }}
-            </div>
-            <div class="info-value mono sm">{{ status.bin || '-' }}</div>
+            <div class="ctrl-tip">{{ t('statusNginx.ctrlTip') }}</div>
           </el-card>
         </el-col>
       </el-row>
-
-      <!-- 服务控制 -->
-      <el-card shadow="never" class="mt-3">
-        <template #header>
-          <div class="card-header">
-            <span>{{ t('statusNginx.ctrlTitle') }}</span>
-          </div>
-        </template>
-        <div class="ctrl-row">
-          <el-button
-            type="primary"
-            :disabled="!!(!running || acting)"
-            :loading="acting === 'reload'"
-            @click="control('reload')"
-          >
-            {{ t('statusNginx.reload') }}
-          </el-button>
-          <el-button
-            type="warning"
-            :disabled="!!(!running || acting)"
-            :loading="acting === 'restart'"
-            @click="control('restart')"
-          >
-            {{ t('statusNginx.restart') }}
-          </el-button>
-          <el-button
-            type="success"
-            :disabled="!!(running || acting)"
-            :loading="acting === 'start'"
-            @click="control('start')"
-          >
-            {{ t('statusNginx.start') }}
-          </el-button>
-          <el-button
-            type="danger"
-            plain
-            :disabled="!!(!running || acting)"
-            :loading="acting === 'stop'"
-            @click="control('stop')"
-          >
-            {{ t('statusNginx.stop') }}
-          </el-button>
-          <span class="ctrl-tip">{{ t('statusNginx.ctrlTip') }}</span>
-        </div>
-      </el-card>
 
       <!-- 性能监控（stub_status） -->
       <el-card shadow="never" class="mt-3">
@@ -138,6 +143,13 @@
           <div>
             <div class="stub-title">{{ t('statusNginx.stubTitle') }}</div>
             <div class="stub-desc">{{ t('statusNginx.stubDesc') }}</div>
+            <div v-if="stub.port" class="stub-endpoint">
+              {{
+                t('statusNginx.stubEndpoint', {
+                  url: `127.0.0.1:${stub.port}${stub.path ?? '/nginx_status'}`,
+                })
+              }}
+            </div>
           </div>
           <el-switch v-model="stubEnabled" :loading="savingStub" @change="toggleStub" />
         </div>
@@ -311,12 +323,17 @@ const EMPTY_METRICS: NginxStubMetrics = {
 
 const { t } = useI18n()
 const router = useRouter()
+/** 只有首屏与手动刷新才遮罩：定时轮询静默更新，避免整页每 5 秒抖一下 */
 const loading = ref(false)
+const refreshing = ref(false)
 const acting = ref('')
 const savingStub = ref(false)
 const status = ref<NginxStatus>({ installed: false })
 const stub = ref<NginxStubStatus>({ enabled: false })
+/** 上一次采集成功的指标：本次没采到但 nginx 还在跑时沿用，避免内容整块塌陷 */
+const lastMetrics = ref<NginxStubMetrics | null>(null)
 const lastUpdated = ref('—')
+let inited = false
 
 let timer: ReturnType<typeof setInterval> | undefined
 let destroyed = false
@@ -335,8 +352,10 @@ const stubEnabled = computed<boolean>({
     stub.value.enabled = v
   },
 })
-const metrics = computed<NginxStubMetrics>(() => stub.value.metrics ?? EMPTY_METRICS)
-const hasMetrics = computed(() => !!stub.value.metrics)
+const metrics = computed<NginxStubMetrics>(
+  () => stub.value.metrics ?? lastMetrics.value ?? EMPTY_METRICS,
+)
+const hasMetrics = computed(() => !!(stub.value.metrics ?? lastMetrics.value))
 const processes = computed(
   () => stub.value.processes ?? { master: 0, workers: 0, cache: 0, total: 0 },
 )
@@ -423,18 +442,35 @@ function formatTime(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+/** 静默刷新：定时轮询走这里，不触发遮罩 */
 async function load() {
-  loading.value = true
   const [sr, st] = await Promise.all([
     getNginxStatus().catch(() => null),
     getNginxStubStatus().catch(() => null),
   ])
   if (!destroyed) {
     if (sr && sr.code === 0) status.value = sr.data
-    if (st && st.code === 0) stub.value = st.data
+    if (st && st.code === 0) {
+      stub.value = st.data
+      if (st.data.metrics) lastMetrics.value = st.data.metrics
+      // nginx 明确已停 / 状态页已关才丢掉旧数据；运行中偶发采集失败时保留上一次，避免页面塌陷
+      else if (!status.value.running || !st.data.enabled) lastMetrics.value = null
+    }
     lastUpdated.value = formatTime(new Date())
   }
-  loading.value = false
+}
+
+/** 手动刷新：带遮罩，走完整加载态 */
+async function refresh() {
+  if (!inited) loading.value = true
+  refreshing.value = true
+  try {
+    await load()
+  } finally {
+    inited = true
+    loading.value = false
+    refreshing.value = false
+  }
 }
 
 const controlLabels = computed<Record<string, string>>(() => ({
@@ -486,7 +522,7 @@ function goAppstore() {
 }
 
 onMounted(async () => {
-  await load()
+  await refresh()
   if (destroyed) return
   timer = setInterval(load, 5000)
 })
@@ -557,9 +593,17 @@ onUnmounted(() => {
   color: var(--el-text-color-secondary);
 }
 
-/* 基础信息卡 */
-.info-card {
+/* 基础信息卡（四项合并进一张卡） */
+.h-full {
   height: 100%;
+}
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px 24px;
+}
+.info-item {
+  min-width: 0;
 }
 .info-label {
   display: flex;
@@ -597,9 +641,10 @@ onUnmounted(() => {
   gap: 10px;
 }
 .ctrl-tip {
+  margin-top: 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
-  margin-left: 8px;
+  line-height: 1.7;
 }
 
 /* stub_status */
@@ -620,6 +665,12 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   line-height: 1.7;
+}
+.stub-endpoint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
 }
 
 .metric-grid {
@@ -644,6 +695,8 @@ onUnmounted(() => {
   font-size: 24px;
   font-weight: 700;
   color: var(--el-color-primary);
+  /* 等宽数字：轮询刷新时数字跳动不会带着宽度一起抖 */
+  font-variant-numeric: tabular-nums;
 }
 .metric-tip {
   font-size: 12px;
@@ -668,6 +721,7 @@ onUnmounted(() => {
   font-size: 20px;
   font-weight: 700;
   color: var(--el-color-primary);
+  font-variant-numeric: tabular-nums;
 }
 .mini-total {
   font-size: 12px;

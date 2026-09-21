@@ -1703,6 +1703,7 @@ export default {
     systemdUnit: 'systemd: nginx.service',
     binDaemon: '二进制守护进程',
     updatedAt: '上次更新 {time}',
+    basicTitle: '基础信息',
     runState: '运行状态',
     stateRunning: '运行中',
     stateStopped: '未运行',
@@ -1719,7 +1720,8 @@ export default {
     perfSub: '基于 Nginx 官方 stub_status 状态页 · 数据仅本机采集',
     stubTitle: '启用 Nginx 状态页（stub_status）',
     stubDesc:
-      '提供请求统计、活动连接、进程分布等运行数据。状态页仅监听本机 127.0.0.1，不对公网暴露。',
+      '提供请求统计、活动连接、进程分布等运行数据。状态页挂在面板默认站点的 /nginx_status 路径上，仅允许 127.0.0.1 访问，不对公网暴露，也不再单独占用端口。',
+    stubEndpoint: '采集地址：{url}',
     metricMaxRps: '每秒最大请求次数',
     metricMaxRpsTip: 'worker_processes × worker_connections',
     metricMaxConn: '最大并发连接数',

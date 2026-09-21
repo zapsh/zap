@@ -1698,6 +1698,7 @@ const enUS: Messages = {
     systemdUnit: 'systemd: nginx.service',
     binDaemon: 'Binary daemon',
     updatedAt: 'Updated {time}',
+    basicTitle: 'Basic Info',
     runState: 'Run State',
     stateRunning: 'Running',
     stateStopped: 'Stopped',
@@ -1715,7 +1716,8 @@ const enUS: Messages = {
     perfSub: 'Based on the official Nginx stub_status page · Data collected locally only',
     stubTitle: 'Enable the Nginx status page (stub_status)',
     stubDesc:
-      'Provides request statistics, active connections, process distribution and other runtime data. The status page listens only on local 127.0.0.1 and is not exposed publicly.',
+      'Provides request statistics, active connections, process distribution and other runtime data. The status page is mounted at /nginx_status on the panel default site, reachable from 127.0.0.1 only — no extra port is opened.',
+    stubEndpoint: 'Endpoint: {url}',
     metricMaxRps: 'Max requests per second',
     metricMaxRpsTip: 'worker_processes × worker_connections',
     metricMaxConn: 'Max concurrent connections',
