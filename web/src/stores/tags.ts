@@ -3,10 +3,14 @@
  *
  * 三条规则，对应参考的那套顶部导航：
  *
- * 1. **只记一级 / 二级**：一级菜单落到的是「分类入口」标签（显示一级标题），二级页是
- *    「一级 › 二级」标签。页内 nav pill、`?tab=` 这类同页切换不产生新标签（path 没变）。
- * 2. **按主分类隔离**：切换一级菜单时，把上一分类的标签整组关掉，只留常驻的仪表盘。
- *    否则逛一圈回来，标签栏会攒下几十个互不相干的页面。
+ * 1. **只记一级 / 二级**：二级页的标签一律是「一级 › 二级」；两级标题同名时只写一次
+ *    （「站点」「终端」这类），免得出现「站点 › 站点」。分类的默认落点往往就是某个具体
+ *    子页（服务器状态的落点就是 Server Monitor），只写一级会让同一分类下的标签长得
+ *    一模一样、认不出点的是哪个，所以落点页同样带二级标题。
+ *    页内 nav pill、`?tab=` 这类同页切换不产生新标签（path 没变）。
+ * 2. **按主分类隔离，且分类内只留一个**：切换一级菜单时，把上一分类的标签整组关掉，
+ *    只留常驻的仪表盘；同一分类内再点别的二级菜单不新增标签，而是就地改写这唯一的标签
+ *    —— 一级标题不动，只换二级标题 / 图标 / path。标签栏因此最多是「仪表盘 + 当前页」。
  * 3. **只有仪表盘常驻**：只显示图标、不可关闭，任何分类下都在；标签全关光时它就是兜底。
  *    这里刻意不看 `meta.affix`：后端菜单表几乎给所有页面都标了 affix（历史遗留），
  *    真按它来标签会全部关不掉。
@@ -15,7 +19,7 @@
  */
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { RouteLocationNormalizedLoaded, RouteRecordNormalized } from 'vue-router'
+import type { RouteLocationNormalizedLoaded } from 'vue-router'
 
 /** 常驻标签：仪表盘 */
 export const DASHBOARD_PATH = '/dashboard'
@@ -52,16 +56,14 @@ function dashboardTab(): NavTab {
 }
 
 /**
- * 主分类的默认落点（一级菜单的 redirect）。
+ * 标签标题：一级（父）标题 + 二级（自身）标题。
  *
- * 拿不到、或它指向别的分类（如 `/docs` 把旧链接重定向到 `/system/about`）时返回空串，
- * 此时调用方按「当前页就是入口标签」处理，不再凭空造一个标签。
+ * 同级同名时只留一份（`站点 › 站点` 这种纯噪声），自身标题缺失时退回一级标题。
  */
-function entryPathOf(first: RouteRecordNormalized | undefined, group: string): string {
-  const target = first?.redirect
-  if (typeof target !== 'string' || !target) return ''
-  if (group === '/' || target === group || target.startsWith(`${group}/`)) return target
-  return ''
+function tabTitles(groupTitle: string, ownTitle: string): { title: string; parentTitle?: string } {
+  if (!ownTitle) return { title: groupTitle }
+  if (!groupTitle || groupTitle === ownTitle) return { title: ownTitle }
+  return { title: ownTitle, parentTitle: groupTitle }
 }
 
 export const useTagsStore = defineStore('tags', () => {
@@ -75,7 +77,8 @@ export const useTagsStore = defineStore('tags', () => {
   )
 
   /**
-   * 按当前路由同步标签：换分类先清空，再追加（已存在则为激活切换，不改动）。
+   * 按当前路由同步标签：换分类先清空；分类内换页就地改写那唯一的标签；
+   * 其它情况（首次进分类、回仪表盘）才追加，已存在则只是激活切换。
    *
    * 由布局层在每次导航后调用，是标签栏唯一的入口。
    */
@@ -96,18 +99,28 @@ export const useTagsStore = defineStore('tags', () => {
     if (tabs.value.some((t) => t.path === path)) return
 
     const isDashboard = path === DASHBOARD_PATH
-    const ownTitle = (route.meta.title as string) || ''
-    const groupTitle = (first?.meta?.title as string) || ''
-    // 命中分类默认落点的页 = 分类入口标签，显示一级标题；其余二级页显示自身标题
-    const entryPath = entryPathOf(first, currentGroup)
-    const isEntry = isDashboard || (!!entryPath && path === entryPath)
+    const titles = tabTitles((first?.meta?.title as string) || '', (route.meta.title as string) || '')
+    const name = typeof route.name === 'string' ? route.name : undefined
+    const icon = isDashboard ? DASHBOARD_ICON : (route.meta.icon as string | undefined)
+
+    // 分类内只留一个标签：再点别的二级菜单时不新增，直接把现有标签改成新页面，
+    // 一级标题（parentTitle）保持不变，只变二级标题、图标和 path。
+    const current = tabs.value.find((t) => t.closable && t.group === currentGroup)
+    if (!isDashboard && current) {
+      current.path = path
+      current.name = name
+      current.title = titles.title
+      current.parentTitle = titles.parentTitle
+      current.icon = icon
+      return
+    }
 
     tabs.value.push({
       path,
-      name: typeof route.name === 'string' ? route.name : undefined,
-      title: isDashboard ? DASHBOARD_TITLE : isEntry ? groupTitle || ownTitle : ownTitle,
-      parentTitle: !isEntry && groupTitle ? groupTitle : undefined,
-      icon: isDashboard ? DASHBOARD_ICON : (route.meta.icon as string | undefined),
+      name,
+      title: isDashboard ? DASHBOARD_TITLE : titles.title,
+      parentTitle: isDashboard ? undefined : titles.parentTitle,
+      icon,
       group: currentGroup,
       closable: !isDashboard,
     })
