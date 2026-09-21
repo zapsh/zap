@@ -1,23 +1,28 @@
 /**
  * 顶部导航标签（Nav Bar 的标签页）。
  *
- * 三条规则，对应参考的那套顶部导航：
+ * 几条规则，对应参考的那套顶部导航：
  *
  * 1. **只记一级 / 二级**：二级页的标签一律是「一级 › 二级」；两级标题同名时只写一次
  *    （「站点」「终端」这类），免得出现「站点 › 站点」。分类的默认落点往往就是某个具体
  *    子页（服务器状态的落点就是 Server Monitor），只写一级会让同一分类下的标签长得
  *    一模一样、认不出点的是哪个，所以落点页同样带二级标题。
  *    页内 nav pill、`?tab=` 这类同页切换不产生新标签（path 没变）。
- * 2. **按主分类隔离，且分类内只留一个**：切换一级菜单时，把上一分类的标签整组关掉，
- *    只留常驻的仪表盘；同一分类内再点别的二级菜单不新增标签，而是就地改写这唯一的标签
- *    —— 一级标题不动，只换二级标题 / 图标 / path。标签栏因此最多是「仪表盘 + 当前页」。
- * 3. **只有仪表盘常驻**：只显示图标、不可关闭，任何分类下都在；标签全关光时它就是兜底。
+ * 2. **每个分类只留一个「当前页」标签**：切换一级菜单时，把上一分类的「当前页」标签关掉；
+ *    同一分类内再点别的二级菜单不新增标签，而是就地改写这唯一的标签 —— 一级标题不动，
+ *    只换二级标题 / 图标 / path。所以普通页面在标签栏里始终只有一个。
+ * 3. **保持存活的页面标签不关**：`ALIVE_PAGES`（终端 / 文件管理）里的页面各占一个独立标签，
+ *    不会被上一条的就地改写吃掉，也不随切分类清除，一直留在标签栏（见 `NavTab.alive`），
+ *    直到用户点 X 关闭 —— 关闭时才把它的缓存从 keep-alive 白名单里摘掉。
+ *    于是标签栏通常是「仪表盘 + 存活的页面 + 当前页」。
+ * 4. **只有仪表盘常驻**：只显示图标、不可关闭，任何分类下都在；标签全关光时它就是兜底。
  *    这里刻意不看 `meta.affix`：后端菜单表几乎给所有页面都标了 affix（历史遗留），
  *    真按它来标签会全部关不掉。
- * 4. **keep-alive 白名单**：`include` 按**组件 name** 匹配（不是路由 name —— 菜单下发的
+ * 5. **keep-alive 白名单**：`include` 按**组件 name** 匹配（不是路由 name —— 菜单下发的
  *    name 是 `files-index` 这种），所以常规页面其实命中不了，切页即重建。只有
- *    `ALIVE_PAGES` 里那几个页面显式声明了组件 name、并一直挂在白名单上：切走再回来
- *    实例还在（文件管理的当前目录、终端的 SSH 会话都不用重来）。
+ *    `ALIVE_PAGES` 里那几个页面显式声明了组件 name：只要它的标签还开着就挂在白名单上，
+ *    切走再回来实例还在（文件管理的当前目录、终端的 SSH 会话都不用重来）；标签被关掉，
+ *    白名单里也就没了，下次进来重新开始。
  *
  * 状态只活在内存里：刷新页面回到「仪表盘 + 当前页」，不做跨会话持久化。
  */
@@ -33,12 +38,12 @@ const DASHBOARD_ICON = 'material-symbols:home'
 const DASHBOARD_NAME = 'Dashboard'
 
 /**
- * 常驻存活的页面：切页、关标签都不销毁实例，切回来状态还在。
+ * 保持存活的页面：打开后标签常驻，切页、切分类都不销毁实例，切回来状态还在。
  *
  * key = 页面路径，value = **组件 name**（keep-alive 的 include 按组件 name 匹配，
  * 所以对应页面里要显式写 `export default { name: ... }`）。
- * 这些页面的状态丢了就得重来（重新选目录、重连 SSH），因此不受「标签关掉即丢缓存」
- * 的约束，一直挂在白名单里，直到登出或刷新浏览器。
+ * 这些页面的状态丢了就得重来（重新选目录、重连 SSH），所以它们各占一个不会被就地改写的标签，
+ * keep-alive 白名单也只在它的标签还开着时挂上，用户点 X 关掉标签即释放缓存。
  */
 const ALIVE_PAGES: Record<string, string> = {
   '/files/index': 'FileManager',
@@ -60,10 +65,17 @@ export interface NavTab {
   /** 二级标签的父级标题，渲染成「一级 › 二级」 */
   parentTitle?: string
   icon?: string
-  /** 所属主分类（`matched[0].path`），切换分类时整组替换 */
+  /** 所属主分类（`matched[0].path`），建标签时记下；存活页面标签跨分类保留 */
   group: string
   /** 是否可关闭：仅常驻标签为 false */
   closable: boolean
+  /**
+   * 是否为「保持存活」页面的标签（终端 / 文件管理）。
+   *
+   * 这类标签不会被自动关掉（切分类、切别的二级页都留着），只有用户点 X 才关闭；
+   * 关掉的同时它的 keep-alive 缓存也随之释放。
+   */
+  alive?: boolean
 }
 
 function dashboardTab(): NavTab {
@@ -97,13 +109,20 @@ export const useTagsStore = defineStore('tags', () => {
   const suspended = ref<string[]>([])
 
   /**
-   * keep-alive 白名单：常驻存活的页面（ALIVE_PAGES）永远在，加上当前标签，
+   * keep-alive 白名单：当前打开着的标签，加上存活页面标签对应的组件 name，
    * 再减掉刷新时临时摘掉的那个。
+   *
+   * 存活页面的缓存跟它的标签绑在一起：标签开着，白名单里就在；点 X 关掉标签，
+   * 白名单里也就没了，缓存随之释放。
    */
   const cachedNames = computed(() => {
-    const names = new Set<string>(Object.values(ALIVE_PAGES))
+    const names = new Set<string>()
     tabs.value.forEach((t) => {
       if (t.name) names.add(t.name)
+      // 存活页面：路由 name（菜单下发的 `files-index` 这种）和组件 name 对不上，
+      // 所以显式补上组件 name，keep-alive 才认得出。
+      const alive = ALIVE_PAGES[t.path]
+      if (alive) names.add(alive)
     })
     suspended.value.forEach((n) => names.delete(n))
     return [...names]
@@ -127,10 +146,13 @@ export const useTagsStore = defineStore('tags', () => {
   }
 
   /**
-   * 按当前路由同步标签：换分类先清空；分类内换页就地改写那唯一的标签；
-   * 其它情况（首次进分类、回仪表盘）才追加，已存在则只是激活切换。
+   * 按当前路由同步标签。
    *
-   * 由布局层在每次导航后调用，是标签栏唯一的入口。
+   * - 换主分类：关掉上一分类的「当前页」标签，但保留仪表盘与存活页面的标签；
+   * - 存活页面（终端 / 文件管理）：各占一个标签，不参与就地改写，只由用户 X 关闭；
+   * - 普通页面：始终复用同一个「当前页」标签，就地改写路径 / 标题 / 图标。
+   *
+   * 已存在的标签只是激活切换，不改动。由布局层在每次导航后调用，是标签栏唯一的入口。
    */
   function sync(route: RouteLocationNormalizedLoaded) {
     const path = route.path
@@ -141,21 +163,39 @@ export const useTagsStore = defineStore('tags', () => {
     const currentGroup = first?.path || path
 
     if (currentGroup !== group.value) {
-      // 换主分类：上一分类的标签整组关掉，只留常驻标签
-      tabs.value = tabs.value.filter((t) => !t.closable)
+      // 换主分类：上一分类的「当前页」标签关掉，但仪表盘和存活页面的标签都留着
+      tabs.value = tabs.value.filter((t) => !t.closable || t.alive)
       group.value = currentGroup
     }
 
+    // 已经开着这个标签了：只是激活切换，不改动
     if (tabs.value.some((t) => t.path === path)) return
 
     const isDashboard = path === DASHBOARD_PATH
+    const isAlive = !isDashboard && !!ALIVE_PAGES[path]
     const titles = tabTitles((first?.meta?.title as string) || '', (route.meta.title as string) || '')
     const name = typeof route.name === 'string' ? route.name : undefined
     const icon = isDashboard ? DASHBOARD_ICON : (route.meta.icon as string | undefined)
 
-    // 分类内只留一个标签：再点别的二级菜单时不新增，直接把现有标签改成新页面，
+    // 存活页面：独立标签，不参与就地改写，一直留在标签栏直到用户点 X 关闭
+    if (isAlive) {
+      tabs.value.push({
+        path,
+        name,
+        title: titles.title,
+        parentTitle: titles.parentTitle,
+        icon,
+        group: currentGroup,
+        closable: true,
+        alive: true,
+      })
+      sortTabs()
+      return
+    }
+
+    // 普通页面：只留一个「当前页」标签，再点别的二级菜单时就地改写它，
     // 一级标题（parentTitle）保持不变，只变二级标题、图标和 path。
-    const current = tabs.value.find((t) => t.closable && t.group === currentGroup)
+    const current = tabs.value.find((t) => t.closable && !t.alive)
     if (!isDashboard && current) {
       current.path = path
       current.name = name
@@ -173,9 +213,14 @@ export const useTagsStore = defineStore('tags', () => {
       icon,
       group: currentGroup,
       closable: !isDashboard,
+      alive: false,
     })
 
-    // 常驻标签永远排在最前（仪表盘在最左）
+    sortTabs()
+  }
+
+  /** 常驻标签永远排在最前（仪表盘在最左） */
+  function sortTabs() {
     tabs.value.sort((a, b) => Number(a.closable) - Number(b.closable))
   }
 

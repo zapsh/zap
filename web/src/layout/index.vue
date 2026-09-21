@@ -58,10 +58,11 @@ const sidebar = computed(() => ({
 }))
 const device = computed(() => appStore.device)
 
-// 缓存的路由视图 = 当前打开的标签（关掉标签即丢弃缓存）
+// 缓存的路由视图 = 当前打开的标签（关掉标签即丢弃缓存；终端 / 文件管理的标签一直开着，
+// 所以切走再回来实例还在，见 stores/tags.ts）
 const cachedViews = computed(() => tagsStore.cachedNames)
 
-// 每次导航同步标签栏：换主分类时整组替换，见 stores/tags.ts
+// 每次导航同步标签栏：换主分类时只关「当前页」标签，存活页面标签保留，见 stores/tags.ts
 // （immediate：首屏直达深层地址时也要把当前页补成标签）
 watch(
   () => route.path,
