@@ -36,7 +36,7 @@
             >
               {{ t('database.fastMode') }}
             </el-checkbox>
-            <el-button type="primary" :icon="Plus" @click="scrollToCreate">{{
+            <el-button type="primary" :icon="Plus" @click="openCreate">{{
               t('database.newDb')
             }}</el-button>
           </div>
@@ -76,17 +76,18 @@
       </el-table>
     </el-card>
 
-    <!-- 新建数据库 -->
-    <el-card ref="createCardRef" shadow="never" class="block">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">{{ t('database.newDb') }}</span>
-          <span class="card-hint">
-            {{ t('database.createHint1') }}
-            <template v-if="prefix">{{ t('database.createHint2', { prefix }) }}</template>
-          </span>
-        </div>
-      </template>
+    <!-- 新建数据库：弹窗表单（列表页「新建数据库」按钮触发，见 openCreate） -->
+    <el-dialog
+      v-model="createVisible"
+      :title="t('database.newDb')"
+      width="620px"
+      :close-on-click-modal="false"
+      @closed="resetCreate"
+    >
+      <div class="dialog-tip">
+        {{ t('database.createHint1') }}
+        <template v-if="prefix">{{ t('database.createHint2', { prefix }) }}</template>
+      </div>
 
       <el-form
         ref="createFormRef"
@@ -154,15 +155,15 @@
             <el-input v-model="createForm.host" placeholder="localhost" style="max-width: 220px" />
           </el-form-item>
         </template>
-
-        <el-form-item>
-          <el-button type="primary" :icon="Plus" :loading="creating" @click="handleCreate">
-            {{ t('database.createDb') }}
-          </el-button>
-          <el-button @click="resetCreate">{{ t('common.reset') }}</el-button>
-        </el-form-item>
       </el-form>
-    </el-card>
+
+      <template #footer>
+        <el-button @click="createVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :icon="Plus" :loading="creating" @click="handleCreate">
+          {{ t('database.createDb') }}
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 服务器信息 -->
     <el-card shadow="never" class="block">
@@ -374,7 +375,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
@@ -399,7 +400,8 @@ const loadingUsers = ref(false)
 
 const remoteVisible = ref(false)
 const usersVisible = ref(false)
-const createCardRef = ref<{ $el?: HTMLElement } | null>(null)
+/** 新建数据库弹窗 */
+const createVisible = ref(false)
 
 const totalSize = computed(() => dbList.value.reduce((sum, d) => sum + (d.size || 0), 0))
 const formatSize = (bytes: number) => {
@@ -476,9 +478,11 @@ function openRemote() {
   loadRemote()
 }
 
-function scrollToCreate() {
-  createCardRef.value?.$el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  createFormRef.value?.scrollToField('name')
+/** 打开「新建数据库」弹窗：清掉上一次的输入与校验残留 */
+function openCreate() {
+  resetCreate()
+  createVisible.value = true
+  nextTick(() => createFormRef.value?.clearValidate())
 }
 
 // ── 新建数据库 ──────────────────────────────────────────────
@@ -520,6 +524,7 @@ function resetCreate() {
   createForm.password = ''
   createForm.host = 'localhost'
   advanced.value = false
+  createFormRef.value?.clearValidate()
 }
 
 /** 创建结果（含一次性明文密码） */
@@ -545,6 +550,8 @@ async function handleCreate() {
     cred.user = res.user || ''
     cred.host = res.host || 'localhost'
     cred.password = res.password || ''
+    // 先收创建弹窗再弹凭据：否则两个弹窗会叠在一起
+    createVisible.value = false
     credVisible.value = true
     ElMessage.success(t('database.created', { name: res.name }))
     resetCreate()
@@ -737,8 +744,11 @@ async function handleDropUser(row: DbUser) {
   font-size: 15px;
   font-weight: 600;
 }
-.card-hint {
+/* 弹窗顶部的说明行（同 element 的次级文字色） */
+.dialog-tip {
+  margin-bottom: 14px;
   font-size: 12px;
+  line-height: 1.6;
   color: var(--el-text-color-secondary);
 }
 .header-right {
