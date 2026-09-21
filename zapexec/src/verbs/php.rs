@@ -124,13 +124,13 @@ fn ensure_fpm_include(conf_path: &Path) -> Result<(), String> {
 }
 
 /// 默认 pool 规格（spec 为空 / 缺字段时的兜底值）。
+///
+/// 与面板默认（`fpm_pool_defaults`）保持一致：`ondemand` 按需拉起。站点以独立系统用户
+/// 跑独立 pool，大部分 pool 常年无访问，不该为每个 PHP 版本常驻空闲 worker。
 fn default_spec() -> BTreeMap<String, String> {
     [
-        ("pm", "dynamic"),
+        ("pm", "ondemand"),
         ("max_children", "10"),
-        ("start_servers", "3"),
-        ("min_spare_servers", "2"),
-        ("max_spare_servers", "5"),
         ("max_requests", "1000"),
         ("request_terminate_timeout", "300"),
         ("memory_limit", "256M"),
@@ -158,9 +158,10 @@ fn render_pool_conf(
             .cloned()
             .unwrap_or_else(|| d.to_string())
     };
-    let mut pm = get("pm", "dynamic");
+    // 缺省与非法值都回落到按需模式（与面板默认规格一致）
+    let mut pm = get("pm", "ondemand");
     if !["dynamic", "static", "ondemand"].contains(&pm.as_str()) {
-        pm = "dynamic".to_string();
+        pm = "ondemand".to_string();
     }
     let mut out = String::new();
     // 注意：php-fpm 使用 ini 解析器，注释只能用 ';'（'#' 会被当成配置项而报错）
@@ -426,8 +427,10 @@ mod tests {
         assert!(s.contains("listen.owner = zap"));
         assert!(s.contains("listen.group = www"));
         assert!(s.contains("listen.mode = 0660"));
-        assert!(s.contains("pm = dynamic"));
+        assert!(s.contains("pm = ondemand"));
         assert!(s.contains("pm.max_children = 10"));
+        // 按需模式不写 dynamic 专属的空闲进程项
+        assert!(!s.contains("pm.start_servers"));
         assert!(s.contains("open_basedir] = /home/zap:/tmp"));
         assert!(s.contains("session.save_path] = /home/zap/tmp"));
     }
@@ -460,7 +463,7 @@ mod tests {
         let mut spec = default_spec();
         spec.insert("pm".into(), "bogus".into());
         let s = render_pool_conf("zap", "zap", "/home/zap", "8.2", &spec);
-        assert!(s.contains("pm = dynamic"));
+        assert!(s.contains("pm = ondemand"));
     }
 
     #[test]

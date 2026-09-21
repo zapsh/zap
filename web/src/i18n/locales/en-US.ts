@@ -591,29 +591,12 @@ const enUS: Messages = {
     deleteConfirm: 'Delete package "{name}"?',
   },
 
-  basicCfg: {
-    title: 'Basic Settings',
-    subtitle: 'System network, mail delivery and contact information',
-    tabBasic: 'Basic',
+  // Zap settings → Notification settings (Mail moved here from the retired Basic Settings page)
+  notifyCfg: {
+    title: 'Notifications',
+    subtitle: 'Channels and parameters used to send notifications',
+    pillHint: 'Delivery parameters for Mail and future channels',
     tabMail: 'Mail',
-    tabContact: 'Contact Info',
-
-    basicHint:
-      'Default network parameters used when creating a site (candidates come from system detection). Choose "Default" to leave it unspecified — sites then listen on all addresses.',
-    useDefault: 'Default (unspecified)',
-    ipv4: 'Default IPv4 Address',
-    ipv4Placeholder: 'Pick or type an IPv4 (empty = unspecified)',
-    ipv4Hint: 'When set, new / re-synced sites bind this shared address (listen IP:80 / IP:443).',
-    ipv6: 'Default IPv6 Address',
-    ipv6Placeholder: 'Pick or type an IPv6 (empty = unspecified)',
-    ipv6Hint: 'When set, sites bind listen [IPv6]:80 / [IPv6]:443.',
-    iface: 'Network Device (Ethernet)',
-    ifacePlaceholder: 'Pick or type an interface (empty = unspecified)',
-    ifaceHint: 'Informational only — the actual listen address follows IPv4 / IPv6.',
-    saveBasic: 'Save Basic Settings',
-    saveAndSyncAll: 'Save and apply to all sites',
-    syncAllHint:
-      'New sites use it right away; existing sites bind the new address after a vhost re-sync.',
 
     mailHint:
       'SMTP parameters used to send mail (system notifications, etc.). Leave the password empty to keep the current one.',
@@ -632,33 +615,15 @@ const enUS: Messages = {
     saved: 'saved',
     saveMail: 'Save Mail Settings',
 
-    contactHint: 'Provider / support contact details displayed by the panel.',
-    contactName: 'Name',
-    contactNamePlaceholder: 'e.g. Acme Cloud Support',
-    email: 'Email',
-    emailPlaceholder: 'Contact email',
-    qq: 'QQ ID',
-    qqPlaceholder: 'QQ number',
-    wechat: 'WeChat',
-    wechatPlaceholder: 'WeChat ID',
-    phone: 'Phone',
-    phonePlaceholder: 'Contact phone',
-    remark: 'Remark',
-    remarkPlaceholder: 'Other notes, e.g. support hours or ticket portal',
-    saveContact: 'Save Contact Info',
-
-    invalidIpv4: 'Invalid IPv4 address',
-    invalidIpv6: 'Invalid IPv6 address',
     invalidPort: 'Port must be a number between 1 and 65535',
-    basicSaved: 'Basic settings saved',
     mailSaved: 'Mail settings saved',
-    contactSaved: 'Contact info saved',
   },
 
   zapCfg: {
     title: 'Zap Settings',
     subtitle:
       'Panel port, bind address, HTTPS certificate and URL prefix (restart the Zap service after saving)',
+    pillHint: 'Panel port / bind address / HTTPS certificate / URL prefix',
     restart: 'Restart Zap Service',
     tabServer: 'Server',
     tabSsl: 'SSL Certificate',
@@ -1369,7 +1334,7 @@ const enUS: Messages = {
       uploadMax: 'Upload Size Limit',
     },
     fpmHelp: {
-      pm: 'pm: "dynamic" scales workers up and down (recommended); "static" keeps a fixed pool; "ondemand" spawns on request and recycles while idle. When a template uses static/ondemand, the dynamic-only fields below (spare servers, recycling) can be deleted.',
+      pm: 'pm: "ondemand" spawns a worker on request and recycles it while idle (panel default - each site runs its own pool and most pools are never hit, so no resident workers are needed); "dynamic" scales idle workers up and down, for sites with steady traffic; "static" keeps a fixed pool. When a template uses static/ondemand, the dynamic-only fields below (spare servers) can be deleted.',
       maxChildren:
         'pm.max_children: upper limit of worker processes, determines concurrency. Suggested ≈ available memory (MB) ÷ ~50-100MB per process. Too low causes 502/timeouts; too high causes OOM.',
       startServers:

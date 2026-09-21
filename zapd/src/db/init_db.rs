@@ -371,13 +371,12 @@ async fn init_roles_table() {
 
 // ── menus ──────────────────────────────────────────────────
 
-/// 幂等补齐「后续版本新增」的菜单入口（**老库升级**用）。
+/// 幂等收敛「后续版本变更」的菜单入口（**老库升级**用；新增 / 停用都在这里）。
 ///
-/// **开发阶段为空**：初始菜单已全部写在 [`menu_seed::MENU_SEEDS`] 里，且写的是
-/// 最终形态（父级 / 隐藏 / 停用 / feature 都在种子里），新库建表即完整。
-///
-/// 等有存量库要升级时再往这里加，注意**按 name 定位、不要写 id**：新库 id 是
-/// 自增的，写死的数字会打到完全无关的菜单上。模板：
+/// 初始菜单已全部写在 [`menu_seed::MENU_SEEDS`] 里，且写的是最终形态（父级 /
+/// 隐藏 / 停用 / feature 都在种子里），新库建表即完整，所以这里只处理存量库。
+/// 注意**按 name 定位、不要写 id**：新库 id 是自增的，写死的数字会打到完全无关的
+/// 菜单上。模板：
 ///
 /// ```ignore
 /// // 补菜单（父用 name 查，避免写 id）
@@ -392,7 +391,19 @@ async fn init_roles_table() {
 ///              WHERE rm.menu_id = (SELECT id FROM menus WHERE name='ssl-certs')")
 ///     .execute(pool).await;
 /// ```
-async fn sync_added_menus() {}
+async fn sync_added_menus() {
+    let pool = get_db_pool().await;
+
+    // 「基础设置」下线：Mail 已并入 Zap 设置（页内「通知设置」pill），
+    // 建站默认网络 / 联系信息不再有界面入口。老库里的这条菜单停用即可
+    // （行保留，避免既有授权记录悬空）。
+    let _ = sqlx::query(
+        "UPDATE menus SET status = 0, updated_at = strftime('%s','now') \
+         WHERE name = 'basic-config' AND status <> 0",
+    )
+    .execute(pool)
+    .await;
+}
 
 /// 建表 + 播种菜单（仅新建库）。
 ///

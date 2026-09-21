@@ -41,7 +41,7 @@ const fpmNum = reactive({
 })
 /** fpm pool 默认规格 —— 字符串字段 */
 const fpmStr = reactive({
-  pm: 'dynamic',
+  pm: 'ondemand',
   memory_limit: '256M',
   post_max_size: '128M',
   upload_max_filesize: '128M',

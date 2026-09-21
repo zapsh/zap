@@ -625,29 +625,12 @@ export default {
     deleteConfirm: '确定删除套餐「{name}」？',
   },
 
-  /** 系统管理 · 基础设置 */
-  basicCfg: {
-    title: '基础设置',
-    subtitle: '系统网络、邮件发送与联系信息配置',
-    tabBasic: '基础设置',
+  /** 系统管理 · Zap 设置 → 通知设置（原「基础设置」的 Mail 迁到这里） */
+  notifyCfg: {
+    title: '通知设置',
+    subtitle: '系统对外发送通知所使用的渠道与参数',
+    pillHint: 'Mail 等通知渠道的发送参数',
     tabMail: 'Mail',
-    tabContact: '联系信息',
-
-    basicHint:
-      '创建站点时使用的默认网络参数（候选地址来自系统探测）。选择「默认」= 不指定，站点沿用通配监听。',
-    useDefault: '默认（不指定）',
-    ipv4: '默认 IPv4 地址',
-    ipv4Placeholder: '选择或输入 IPv4（留空=不指定）',
-    ipv4Hint: '指定后，新建/重新同步的站点将绑定该共享地址（listen IP:80 / IP:443）。',
-    ipv6: '默认 IPv6 地址',
-    ipv6Placeholder: '选择或输入 IPv6（留空=不指定）',
-    ipv6Hint: '指定后，站点将绑定 listen [IPv6]:80 / [IPv6]:443。',
-    iface: '网络设备 (Ethernet Device)',
-    ifacePlaceholder: '选择或输入网卡名（留空=不指定）',
-    ifaceHint: '仅作标记，实际监听地址以 IPv4 / IPv6 为准。',
-    saveBasic: '保存基础设置',
-    saveAndSyncAll: '保存并应用到全部站点',
-    syncAllHint: '新站点立即生效；存量站点需重新同步 vhost 才会绑定新地址。',
 
     mailHint: '配置发送邮件所需的 SMTP 参数（供系统通知等场景使用）。密码留空表示不修改原密码。',
     smtpHost: 'SMTP 服务器',
@@ -665,33 +648,15 @@ export default {
     saved: '已保存',
     saveMail: '保存 Mail 设置',
 
-    contactHint: '面板对外展示的服务商 / 客服联系方式。',
-    contactName: '名称',
-    contactNamePlaceholder: '如 XX 云客服中心',
-    email: 'Email',
-    emailPlaceholder: '联系邮箱',
-    qq: 'QQ ID',
-    qqPlaceholder: 'QQ 号',
-    wechat: '微信',
-    wechatPlaceholder: '微信号',
-    phone: '电话',
-    phonePlaceholder: '联系电话',
-    remark: '备注',
-    remarkPlaceholder: '其它联系说明，如服务时间 / 工单入口等',
-    saveContact: '保存联系信息',
-
-    invalidIpv4: 'IPv4 地址格式不正确',
-    invalidIpv6: 'IPv6 地址格式不正确',
     invalidPort: '端口必须是 1 - 65535 之间的数字',
-    basicSaved: '基础设置已保存',
     mailSaved: 'Mail 设置已保存',
-    contactSaved: '联系信息已保存',
   },
 
   /** 系统管理 · Zap 设置 */
   zapCfg: {
     title: 'Zap 设置',
     subtitle: '面板端口、绑定 IP、HTTPS 证书与访问前缀（保存后需重启 Zap 服务生效）',
+    pillHint: '面板端口 / 绑定 IP / HTTPS 证书 / 访问前缀',
     restart: '重启 Zap 服务',
     tabServer: '服务设置',
     tabSsl: 'SSL 证书',
@@ -1380,7 +1345,7 @@ export default {
       uploadMax: '上传大小上限',
     },
     fpmHelp: {
-      pm: 'pm：dynamic 动态增减进程（推荐）；static 固定常驻；ondemand 有请求才拉起、空闲即回收。模板选 static/ondemand 时下方的空闲进程、回收等 dynamic 专属项可删除。',
+      pm: 'pm：ondemand 按需拉起、空闲即回收（面板默认 —— 站点各自独立 pool，多数常年无人访问，不必常驻 worker）；dynamic 动态增减进程，适合访问量稳定的站点；static 固定常驻。模板选 static/ondemand 时下方的空闲进程等 dynamic 专属项可删除。',
       maxChildren:
         'pm.max_children：worker 进程数量上限，决定并发能力。建议 ≈ 可用内存(MB) ÷ 单进程约 50~100MB。设太小易 502/超时，太大易 OOM。',
       startServers:

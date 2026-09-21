@@ -446,7 +446,8 @@ fn api_routers() -> Router {
             "/system/migrate/home",
             post(system_migrate::migrate_home_mv),
         )
-        // 基础设置（系统设置 → 基础设置，admin only）
+        // 基础配置（admin only）：面板只消费 mail 一段，见
+        // 「Zap 设置 → 通知设置」；基础 / 联系信息两段已下线但存储照旧
         .route(
             "/system/config/basic",
             get(system_basic::basic_get).post(system_basic::basic_save),

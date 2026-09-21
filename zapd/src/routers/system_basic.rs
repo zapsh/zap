@@ -1,10 +1,14 @@
-//! 面板基础设置（系统设置 → 基础设置，仅 admin）。
+//! 面板基础配置（仅 admin）。
+//!
+//! 「系统设置 → 基础设置」这个页面已下线：Mail 迁到「Zap 设置 → 通知设置」，
+//! 建站默认网络与联系信息不再提供界面入口 —— 但存储格式与端点保持不变，
+//! 已存配置照旧生效（站点 vhost 同步仍会读这里的默认 IPv4 / IPv6）。
 //!
 //! 三个 Tab 的配置统一存储于 `{data}/server_env.yaml` 的 conf 区，键名带 `basic_` 前缀，
 //! 与运行环境的默认配置（webserver / php_default 等）互不干扰。
 //!
 //! 端点：
-//! - GET  /system/config/basic   读取基础 / Mail / 联系信息
+//! - GET  /system/config/basic   读取基础 / Mail / 联系信息（当前面板只消费 mail 一段）
 //! - POST /system/config/basic   保存（支持按 Tab 部分提交，未传字段保持不变；
 //!   Mail 密码留空表示不改动原密码）
 //!
@@ -135,7 +139,7 @@ fn network_options() -> (Vec<Value>, Vec<String>, Vec<String>, String, String) {
 /// GET /system/config/basic
 pub async fn basic_get(claims: ValidatedClaims) -> ZapJsonResult {
     if !is_admin(&claims) {
-        return Err(ZapError::New(-1, "仅管理员可查看基础设置".to_string()));
+        return Err(ZapError::New(-1, "仅管理员可查看通知设置".to_string()));
     }
     let conf = load_conf();
     let (mail_password_set, mail_password_hint) = mail_password_view(&conf);
@@ -223,7 +227,7 @@ pub async fn basic_save(
     Json(payload): Json<BasicSavePayload>,
 ) -> ZapJsonResult {
     if !is_admin(&claims) {
-        return Err(ZapError::New(-1, "仅管理员可修改基础设置".to_string()));
+        return Err(ZapError::New(-1, "仅管理员可修改通知设置".to_string()));
     }
 
     let mut upserts: Vec<(String, String)> = Vec::new();

@@ -7,6 +7,9 @@
 //!
 //! 行为约定：
 //! - **启动时加载**：文件缺失则创建；快照过期（[`STARTUP_STALE_SECS`]）会在启动阶段重新探测；
+//! - **默认值自动补全**：探测落地（或带快照启动）后，`conf` 里还没设过的项按探测结果直接写上
+//!   （webserver / php_default / database / user_home_root）。只补「缺或空」，管理员手工设过的
+//!   一律不覆盖（见 [`backfill_conf_from_payload`]）；
 //! - **变更即时落盘**：保存配置 / 刷新快照后立即原子写回（`tmp` + `rename`）；
 //! - **外部改动自动感知**：每次读取前比对 mtime，`zapctl env` 或手工编辑后无需重启 zapd。
 
@@ -195,6 +198,95 @@ fn write_to(path: &Path, file: &EnvFile) -> u128 {
     mtime_of(path)
 }
 
+/// 自动补全时写下的 remark（与「面板默认配置」区分开，便于排查）。
+const AUTO_REMARK: &str = "自动探测补全";
+/// 新建用户的家目录默认挂载点。
+const DEFAULT_USER_HOME_ROOT: &str = "/home";
+
+/// 取 JSON 里的标量并转成文本；数字也吃（YAML 里的版本号可能被读成数字）。
+fn as_text(v: &Value) -> Option<String> {
+    let s = match v {
+        Value::String(s) => s.trim().to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => return None,
+    };
+    (!s.is_empty()).then_some(s)
+}
+
+/// 按路径逐层取值，如 `&["webserver", "flavor"]`。
+fn field(payload: &Value, path: &[&str]) -> Option<String> {
+    let mut cur = payload;
+    for k in path {
+        cur = cur.get(*k)?;
+    }
+    as_text(cur)
+}
+
+/// 探测到的 Web 服务器 flavor；未部署时为 `none`，视同没探测到。
+fn detected_webserver(payload: &Value) -> Option<String> {
+    field(payload, &["webserver", "flavor"]).filter(|f| f != "none")
+}
+
+/// 探测到的系统默认 PHP 版本（如 `8.3`）。
+fn detected_php_default(payload: &Value) -> Option<String> {
+    field(payload, &["php", "default"])
+}
+
+/// 探测到的首选数据库实例名（如 `mysql`）：优先正在运行的，其次列表第一个。
+fn detected_database(payload: &Value) -> Option<String> {
+    let arr = payload.get("databases")?.as_array()?;
+    let all: Vec<(String, bool)> = arr
+        .iter()
+        .filter_map(|d| {
+            Some((
+                field(d, &["name"])?,
+                d.get("running").and_then(Value::as_bool) == Some(true),
+            ))
+        })
+        .collect();
+    all.iter()
+        .find(|(_, running)| *running)
+        .or_else(|| all.first())
+        .map(|(name, _)| name.clone())
+}
+
+/// 按探测快照把「还没设过」的 conf 默认值补上，返回是否补写了东西。
+///
+/// 只对**键不存在或值为空**的项下手：管理员手工设过的（remark 为 `面板默认配置`）一律不覆盖。
+/// 探测不到的项保持原状，继续走各处的内置兜底（如 `fpm_pool_defaults`）。
+fn backfill_conf_from_payload(file: &mut EnvFile) -> bool {
+    let Some(payload) = file.auto.payload.clone() else {
+        return false;
+    };
+    let candidates: Vec<(&str, Option<String>)> = vec![
+        ("webserver", detected_webserver(&payload)),
+        ("php_default", detected_php_default(&payload)),
+        ("database", detected_database(&payload)),
+        ("user_home_root", Some(DEFAULT_USER_HOME_ROOT.to_string())),
+    ];
+
+    let mut filled: Vec<&str> = Vec::new();
+    for (key, val) in candidates {
+        let Some(v) = val else { continue };
+        let exists = file
+            .conf
+            .get(key)
+            .map(|e| !e.value.trim().is_empty())
+            .unwrap_or(false);
+        if exists {
+            continue;
+        }
+        file.conf
+            .insert(key.to_string(), ConfEntry::new(&v, AUTO_REMARK));
+        filled.push(key);
+    }
+    if !filled.is_empty() {
+        info!("已按运行结果补全默认配置: {}", filled.join(", "));
+    }
+    !filled.is_empty()
+}
+
 /// 文件被外部改写（zapctl / 手工编辑）后重新载入。
 fn refresh_locked(st: &mut State) {
     if !st.loaded {
@@ -221,11 +313,17 @@ fn persist_locked(st: &mut State) {
 // ── 生命周期 ────────────────────────────────────────────────
 
 /// 启动时加载；文件不存在则创建空文件。
+///
+/// 已有快照但 conf 默认值还是空的（历史数据 / 手工编辑过），顺手按快照补一次。
 pub fn init() {
     let mut st = lock();
     let exists = path().exists();
     refresh_locked(&mut st);
-    if !exists {
+    let filled = backfill_conf_from_payload(&mut st.file);
+    if filled {
+        persist_locked(&mut st);
+        info!("已按探测快照补全默认配置: {}", path().display());
+    } else if !exists {
         persist_locked(&mut st);
         info!("已初始化运行环境状态文件: {}", path().display());
     }
@@ -329,12 +427,14 @@ pub fn save_snapshot(payload: &Value) -> i64 {
     let mut st = lock();
     refresh_locked(&mut st);
     let ts = now();
-    // st.file.conf.entry("php_default".to_string()).or_insert_with(|| ConfEntry::new("8.3", "面板默认配置"));
     st.file.auto = AutoSection {
         detected_at: ts,
         payload: Some(payload.clone()),
         error: String::new(),
     };
+    // 探测落地后把还没设过的默认值一并写上：跑完首次探测就有可用的默认 Web/PHP/数据库，
+    // 不用管理员先进来手工挑一遍。手工设过的键不受影响。
+    backfill_conf_from_payload(&mut st.file);
     persist_locked(&mut st);
     ts
 }
@@ -415,6 +515,70 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// 探测落地后没设过的 conf 默认值会被补上；管理员手工设过的不覆盖。
+    #[test]
+    fn backfill_defaults_from_payload() {
+        let mut file = EnvFile::default();
+        file.conf.insert(
+            "php_default".to_string(),
+            ConfEntry::new("8.3", "面板默认配置"),
+        );
+        file.auto.payload = Some(json!({
+            "webserver": {"flavor": "nginx", "running": true},
+            "php": {"default": "7.4"},
+            "databases": [
+                {"name": "redis", "running": false},
+                {"name": "mysql", "running": true},
+            ],
+        }));
+
+        assert!(backfill_conf_from_payload(&mut file));
+        assert_eq!(
+            file.conf.get("webserver").map(|e| e.value.as_str()),
+            Some("nginx")
+        );
+        // 手工设过的不覆盖
+        assert_eq!(
+            file.conf.get("php_default").map(|e| e.value.as_str()),
+            Some("8.3")
+        );
+        // 数据库优先取正在运行的实例
+        assert_eq!(
+            file.conf.get("database").map(|e| e.value.as_str()),
+            Some("mysql")
+        );
+        assert_eq!(
+            file.conf.get("user_home_root").map(|e| e.value.as_str()),
+            Some("/home")
+        );
+        assert_eq!(
+            file.conf.get("webserver").map(|e| e.remark.as_str()),
+            Some(AUTO_REMARK)
+        );
+
+        // 幂等：再跑一次不再改写
+        assert!(!backfill_conf_from_payload(&mut file));
+    }
+
+    /// 空字符串视同「没设置」；无快照时什么都不做。
+    #[test]
+    fn backfill_handles_empty_value_and_no_payload() {
+        let mut empty = EnvFile::default();
+        empty
+            .conf
+            .insert("webserver".to_string(), ConfEntry::new("", "面板默认配置"));
+        empty.auto.payload = Some(json!({"webserver": {"flavor": "openresty"}}));
+        assert!(backfill_conf_from_payload(&mut empty));
+        assert_eq!(
+            empty.conf.get("webserver").map(|e| e.value.as_str()),
+            Some("openresty")
+        );
+
+        let mut none = EnvFile::default();
+        assert!(!backfill_conf_from_payload(&mut none));
+        assert!(none.conf.is_empty());
     }
 
     /// 损坏文件不应导致 panic，退化为空配置。

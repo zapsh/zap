@@ -189,18 +189,9 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
         .icon("material-symbols:settings")
         .redirect("/system/access")
         .affix(),
-    MenuSeed::new(
-        "basic-config",
-        "基础设置",
-        "menu",
-        "basic-config",
-        "system/config/basic",
-        R_ADMIN,
-        1,
-    )
-    .parent("system")
-    .icon("material-symbols:tune")
-    .affix(),
+    // 基础设置（旧 `basic-config`）已下线：Mail 并入 Zap 设置的「通知设置」页签，
+    // 建站默认网络与联系信息不再提供界面入口（键值仍留在 server_env.yaml）。
+    // 存量库里的这条菜单由 `init_db::sync_added_menus()` 停用。
     MenuSeed::new(
         "zap-config",
         "Zap 设置",
@@ -208,7 +199,7 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
         "zap-config",
         "system/config/zap",
         R_ADMIN,
-        2,
+        1,
     )
     .parent("system")
     .icon("material-symbols:settings-applications")

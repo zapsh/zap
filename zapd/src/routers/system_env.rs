@@ -49,13 +49,17 @@ fn load_conf() -> HashMap<String, String> {
 }
 
 /// 面板默认 PHP-FPM pool 规格（JSON 对象；用户未自定义时的兜底）。
+///
+/// 默认走 `ondemand`（按需拉起）：面板站点一律「独立系统用户 + 独立 pool」，
+/// 绝大多数 pool 常年没人访问（只有 phpMyAdmin 这类偶尔用一下），而 dynamic 会给每个
+/// PHP 版本常驻若干空闲 worker。按需模式下空闲即回收、有请求才拉起，省下的是常驻内存。
+/// 真正的热点站点由管理员单独改用 dynamic/static 的规格模板。
 pub fn default_fpm_spec() -> serde_json::Map<String, Value> {
     [
-        ("pm", "dynamic"),
+        ("pm", "ondemand"),
         ("max_children", "10"),
-        ("start_servers", "3"),
-        ("min_spare_servers", "2"),
-        ("max_spare_servers", "5"),
+        // start_servers / min_spare_servers / max_spare_servers 是 dynamic 专属，
+        // 按需模式下写了也不生效，故不进默认规格（缺的话由 zapexec 侧兜底）。
         ("max_requests", "1000"),
         ("request_terminate_timeout", "300"),
         ("memory_limit", "256M"),
