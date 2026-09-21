@@ -186,7 +186,13 @@ if [ -f "$ZAP_FILENAME" ]; then
     info "使用已存在的安装包 ${ZAP_FILENAME}"
 else
     info "下载 ${ZAP_FILENAME} ..."
-    fetch_file "${DOWNLOAD_ZAP_URL}/${ZAP_FILENAME}" || die "下载失败，请检查网络或版本号"
+    # fetch_file 需要两个参数：URL + 落盘路径
+    # 先写 .part 再改名：中途失败不会留下半截包，被下次运行当成完整包解压
+    rm -f "${ZAP_FILENAME}.part"
+    fetch_file "${DOWNLOAD_ZAP_URL}/${ZAP_FILENAME}" "${ZAP_FILENAME}.part" \
+        || die "下载失败，请检查网络或版本号"
+    [ -s "${ZAP_FILENAME}.part" ] || die "下载内容为空: ${DOWNLOAD_ZAP_URL}/${ZAP_FILENAME}"
+    mv -f "${ZAP_FILENAME}.part" "${ZAP_FILENAME}"
 fi
 
 # ── 创建运行用户 ───────────────────────────────────────────
