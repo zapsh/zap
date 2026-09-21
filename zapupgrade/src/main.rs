@@ -104,34 +104,28 @@ fn log_line(log_path: &str, s: &str) {
     }
 }
 
-/// 服务管理器：Linux 是 systemd，FreeBSD 是 service，OpenBSD / NetBSD 是 rcctl。
+/// 服务管理器：Linux 是 systemd，FreeBSD 是 service，OpenBSD 是 rcctl。
 #[cfg(target_os = "linux")]
 const SVC_CTL: &str = "systemctl";
 /// 同 [`SVC_CTL`]，FreeBSD。
 #[cfg(target_os = "freebsd")]
 const SVC_CTL: &str = "service";
-/// 同 [`SVC_CTL`]，OpenBSD / NetBSD（两者都有 rcctl，语义一致）。
-#[cfg(any(target_os = "openbsd", target_os = "netbsd"))]
+/// 同 [`SVC_CTL`]，OpenBSD（它有 rcctl）。
+#[cfg(target_os = "openbsd")]
 const SVC_CTL: &str = "rcctl";
 /// 兜底值：macOS 等不在支持范围内的平台，仅为通过类型检查——运行期
 /// [`supported()`] 恒为 false，不会真的执行它。
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd"
-)))]
+#[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd")))]
 const SVC_CTL: &str = "rcctl";
 
 /// 当前平台的自动服务管理是否受支持。
-/// 只覆盖 Linux(systemd)、FreeBSD(service+sysrc)、OpenBSD/NetBSD(rcctl)；
+/// 只覆盖 Linux(systemd)、FreeBSD(service+sysrc)、OpenBSD(rcctl)；
 /// macOS 用 launchctl，不在范围内。
 fn supported() -> bool {
     cfg!(any(
         target_os = "linux",
         target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
+        target_os = "openbsd"
     ))
 }
 

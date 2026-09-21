@@ -1,10 +1,10 @@
-//! 服务管理后端：把 systemd、FreeBSD 的 service+sysrc、OpenBSD/NetBSD 的 rcctl
+//! 服务管理后端：把 systemd、FreeBSD 的 service+sysrc、OpenBSD 的 rcctl
 //! 三者差异收敛在这里。
 //!
 //! 动作动词在各平台上一致（`start` / `stop` / `restart` / `reload` / `enable` /
 //! `disable`），差异集中在查询类与控制器的就绪判断：
 //!
-//! | 语义           | systemd                       | FreeBSD                          | OpenBSD/NetBSD             |
+//! | 语义           | systemd                       | FreeBSD                          | OpenBSD                    |
 //! |----------------|-------------------------------|----------------------------------|----------------------------|
 //! | 服务是否存在   | `list-unit-files <n>.service` | rc.d 脚本文件是否存在            | `ls all` 里能查到该 daemon |
 //! | 是否运行中     | `is-active [-q] <n>`          | `service <n> onestatus`          | `check <n>`                |
@@ -30,19 +30,14 @@ pub(crate) const CTL: &str = "systemctl";
 #[cfg(target_os = "freebsd")]
 pub(crate) const CTL: &str = "service";
 
-/// 同 [`CTL`]，OpenBSD / NetBSD —— 这两个系统都有 rcctl 且语义一致。
-#[cfg(any(target_os = "openbsd", target_os = "netbsd"))]
+/// 同 [`CTL`]，OpenBSD —— 它有 rcctl。
+#[cfg(target_os = "openbsd")]
 pub(crate) const CTL: &str = "rcctl";
 
 /// 兜底值：macOS 等不在支持范围内的平台，仅为通过类型检查。运行期
 /// [`supported()`] 恒为 false，所有服务操作都会在调用前返回「不支持」，
 /// 不会真的去执行这个不存在的命令。
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd"
-)))]
+#[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd")))]
 pub(crate) const CTL: &str = "rcctl";
 
 /// 开机自启开关命令。
@@ -56,20 +51,19 @@ pub(crate) const ENABLE_CTL: &str = CTL;
 
 /// 当前平台的自动服务管理是否受支持。
 ///
-/// 只覆盖 Linux(systemd)、FreeBSD(service+sysrc)、OpenBSD/NetBSD(rcctl)。
+/// 只覆盖 Linux(systemd)、FreeBSD(service+sysrc)、OpenBSD(rcctl)。
 /// macOS 用 launchctl、DragonFly 又是另一套，都不在范围内——在那些平台上本函数
 /// 返回 false，上层应降级为「需手动操作」而不是报命令找不到。
 pub(crate) const fn supported() -> bool {
     cfg!(any(
         target_os = "linux",
         target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
+        target_os = "openbsd"
     ))
 }
 
 /// rc.d 脚本目录。FreeBSD 的第三方服务装在 `/usr/local/etc/rc.d/`（系统自带的
-/// 才在 `/etc/rc.d/`），OpenBSD/NetBSD 一律在 `/etc/rc.d/`。
+/// 才在 `/etc/rc.d/`），OpenBSD 一律在 `/etc/rc.d/`。
 #[cfg(target_os = "freebsd")]
 fn rcd_dirs() -> Vec<&'static str> {
     vec!["/etc/rc.d", "/usr/local/etc/rc.d"]
@@ -365,7 +359,7 @@ pub(crate) fn list() -> Result<Vec<Row>, String> {
         }
         #[cfg(not(target_os = "freebsd"))]
         {
-            // OpenBSD/NetBSD：rcctl 一次给出三类集合，省掉逐个查询
+            // OpenBSD：rcctl 一次给出三类集合，省掉逐个查询
             let started = ls_set("started");
             let enabled = ls_set("on");
             Ok(ls_set("all")

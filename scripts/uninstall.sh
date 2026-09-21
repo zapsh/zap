@@ -13,13 +13,13 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "请以 root 身份运行：sudo bash $0"
 
 # ── 平台探测：卸载要停/删哪种服务 ────────────────────────────
-# 与 install.sh 保持一致：Linux 走 systemd，三个 BSD 走 rc.d。
+# 与 install.sh 保持一致：Linux 走 systemd，FreeBSD / OpenBSD 走 rc.d。
 # RCD_DIR 必须与 install.sh 的落点一致，否则删不干净。
 OS=$(uname -s)
 case "$OS" in
     Linux)          INIT=systemd ;;
     FreeBSD)        INIT=rcd; RCD_DIR=/usr/local/etc/rc.d ;;
-    OpenBSD|NetBSD) INIT=rcd; RCD_DIR=/etc/rc.d ;;
+    OpenBSD)        INIT=rcd; RCD_DIR=/etc/rc.d ;;
     *) die "不支持的操作系统: ${OS}" ;;
 esac
 

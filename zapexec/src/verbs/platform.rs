@@ -35,12 +35,12 @@ pub(crate) const SHELL: &str = "/bin/sh";
 #[cfg(target_os = "linux")]
 pub(crate) const NOLOGIN_FALLBACK: &str = "/usr/sbin/nologin";
 
-/// 同 [`NOLOGIN_FALLBACK`]，OpenBSD / NetBSD —— 它们的 nologin 在 /sbin 下。
-#[cfg(any(target_os = "openbsd", target_os = "netbsd"))]
+/// 同 [`NOLOGIN_FALLBACK`]，OpenBSD —— 它的 nologin 在 /sbin 下。
+#[cfg(target_os = "openbsd")]
 pub(crate) const NOLOGIN_FALLBACK: &str = "/sbin/nologin";
 
 /// 同 [`NOLOGIN_FALLBACK`]，其余平台（FreeBSD、macOS 等）沿用 /usr/sbin。
-#[cfg(not(any(target_os = "linux", target_os = "openbsd", target_os = "netbsd")))]
+#[cfg(not(any(target_os = "linux", target_os = "openbsd")))]
 pub(crate) const NOLOGIN_FALLBACK: &str = "/usr/sbin/nologin";
 
 /// `/etc/group` 中的一条记录。

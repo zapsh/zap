@@ -40,13 +40,7 @@ case "$OS_NAME" in
             aarch64|arm64) TARGET="aarch64-unknown-freebsd" ;;
         esac
         ;;
-    netbsd)
-        case "$MACHINE" in
-            x86_64)        TARGET="x86_64-unknown-netbsd" ;;
-            aarch64|arm64) TARGET="aarch64-unknown-netbsd" ;;
-        esac
-        ;;
-    *) die "不支持的操作系统: ${OS_NAME}（当前支持 linux / freebsd / openbsd / netbsd 的本机构建）" ;;
+    *) die "不支持的操作系统: ${OS_NAME}（当前支持 linux / freebsd / openbsd 的本机构建）" ;;
 esac
 info "OS: ${OS_NAME}   架构: ${ARCH} (${TARGET})"
 

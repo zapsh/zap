@@ -10,7 +10,7 @@
 //! |----------------|---------------------|--------------------------|--------------------|
 //! | Linux          | systemctl start     | systemctl enable         | is-active          |
 //! | FreeBSD        | service X onestart  | sysrc X_enable=YES       | service X onestatus|
-//! | OpenBSD/NetBSD | rcctl start         | rcctl enable             | rcctl check        |
+//! | OpenBSD        | rcctl start         | rcctl enable             | rcctl check        |
 //!
 //! FreeBSD 有两处与其他平台不同的地方，修改时容易踩：
 //! 1. 开关和运行控制不是一个程序（`service` 只管启停，开机自启要写 rc.conf，用 `sysrc`）；
@@ -27,18 +27,13 @@ const CTL: &str = "systemctl";
 #[cfg(target_os = "freebsd")]
 const CTL: &str = "service";
 
-/// 同 `CTL`，OpenBSD / NetBSD —— 两者都有 rcctl 且语义一致。
-#[cfg(any(target_os = "openbsd", target_os = "netbsd"))]
+/// 同 `CTL`，OpenBSD —— 它有 rcctl。
+#[cfg(target_os = "openbsd")]
 const CTL: &str = "rcctl";
 
 /// 兜底值：macOS 等不在支持范围内的平台，仅为通过类型检查。运行期 [`supported()`]
 /// 恒为 false，命令不会真的被执行。
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd"
-)))]
+#[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd")))]
 const CTL: &str = "rcctl";
 
 /// 开机自启开关命令。
@@ -52,15 +47,14 @@ const ENABLE_CTL: &str = CTL;
 
 /// 当前平台的自动服务管理是否受支持。
 ///
-/// 只覆盖 Linux(systemd)、FreeBSD(service+sysrc)、OpenBSD/NetBSD(rcctl)。
+/// 只覆盖 Linux(systemd)、FreeBSD(service+sysrc)、OpenBSD(rcctl)。
 /// macOS 用 launchctl、DragonFly 又是另一套，都不在范围内——在那些平台上本函数
 /// 返回 false，上层应降级为「需手动操作」。
 pub fn supported() -> bool {
     cfg!(any(
         target_os = "linux",
         target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
+        target_os = "openbsd"
     ))
 }
 
@@ -216,7 +210,7 @@ pub fn state_of(unit: &str) -> Result<State, String> {
 /// rc.d 脚本是否已部署。
 ///
 /// FreeBSD 的第三方服务脚本在 `/usr/local/etc/rc.d/`（系统自带的才在 `/etc/rc.d`），
-/// OpenBSD/NetBSD 一律在 `/etc/rc.d/`。
+/// OpenBSD 一律在 `/etc/rc.d/`。
 #[cfg(not(target_os = "linux"))]
 fn script_exists(unit: &str) -> bool {
     let mut dirs = vec!["/etc/rc.d"];
@@ -278,6 +272,9 @@ fn run_cmd(cmd: &str, args: &[&str]) -> Result<std::process::Output, String> {
         .map_err(|e| format!("无法执行 {cmd} {}: {e}", args.join(" ")))
 }
 
+/// 仅 Linux 的 `systemctl show` 解析用到（BSD 侧走另一套查询），限死平台以免
+/// 在其它目标上产生 dead_code 警告。
+#[cfg(target_os = "linux")]
 fn capture(args: &[&str]) -> Result<String, String> {
     let o = run(args)?;
     if o.status.success() {

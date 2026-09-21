@@ -29,9 +29,9 @@ VERSION="${1:-latest}"
 # 服务管理器决定后面怎么装/启服务：
 #   Linux          → systemd（systemctl）
 #   FreeBSD        → rc.d + service(8)，开机自启归 sysrc 管（它没有 rcctl）
-#   OpenBSD/NetBSD → rc.d + rcctl
+#   OpenBSD        → rc.d + rcctl
 # RCD_DIR 是 rc.d 脚本的落点：FreeBSD 的第三方服务装在 /usr/local/etc/rc.d/，
-# 系统自带的才在 /etc/rc.d/；OpenBSD/NetBSD 一律在 /etc/rc.d/。
+# 系统自带的才在 /etc/rc.d/；OpenBSD 一律在 /etc/rc.d/。
 OS=$(uname -s)
 case "$OS" in
     Linux)
@@ -50,13 +50,8 @@ case "$OS" in
         OS_PKG=openbsd
         RCD_DIR=/etc/rc.d
         ;;
-    NetBSD)
-        INIT=rcd
-        OS_PKG=netbsd
-        RCD_DIR=/etc/rc.d
-        ;;
     *)
-        die "不支持的操作系统: ${OS}（当前支持 Linux、FreeBSD、OpenBSD、NetBSD）"
+        die "不支持的操作系统: ${OS}（当前支持 Linux、FreeBSD、OpenBSD）"
         ;;
 esac
 
@@ -354,7 +349,7 @@ info "安装 ${INIT} 服务..."
 
 # 用法：install_service <服务名>
 # 动作语义一致（enable / 启动），差别在单元文件放哪、以及每个平台用什么命令：
-#   systemd → systemctl；FreeBSD → sysrc + service；OpenBSD/NetBSD → rcctl
+#   systemd → systemctl；FreeBSD → sysrc + service；OpenBSD → rcctl
 install_service() {
     local name="$1"
     case "$INIT" in
