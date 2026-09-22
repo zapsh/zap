@@ -98,6 +98,8 @@ import IconPlayArrow from '~icons/material-symbols/play-arrow'
 import IconElectricBoltOutline from '~icons/material-symbols/electric-bolt-outline' 
 import IconShieldWatchOutline from '~icons/material-symbols/shield-watch-outline'
 import IconRocketLaunch from '~icons/material-symbols/rocket-launch'
+import IconNetworkNode from '~icons/material-symbols/network-node'
+import IconDashboard from '~icons/material-symbols/dashboard'
 
 /** 路由 / 数据库菜单里图标名的集合前缀 */
 export const ICON_PREFIX = 'material-symbols:'
@@ -128,6 +130,7 @@ export const ICON_MAP: Record<string, Component> = {
   content_cut: IconContentCut,
   'create-new-folder': IconCreateNewFolder,
   'dark-mode': IconDarkMode,
+  dashboard: IconDashboard,
   database: IconDatabase,
   delete: IconDelete,
   'deployed-code': IconDeployedCode,
@@ -156,6 +159,7 @@ export const ICON_MAP: Record<string, Component> = {
   monitor: IconMonitor,
   'monitor-heart': IconMonitorHeart,
   monitoring: IconMonitoring,
+  'network-node': IconNetworkNode,
   'more-vert': IconMoreVert,
   'note-add': IconNoteAdd,
   notifications: IconNotifications,
