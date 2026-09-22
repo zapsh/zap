@@ -50,30 +50,9 @@ if [[ "$BUILD_PRO" -eq 1 ]]; then
     # 模块源码不在本仓库，没 clone 就直接失败：开着开关编出「假 Pro 版」更危险
     [ -f "$CUR_DIR/zappro/src/mod.rs" ] \
         || die "要构建商业版但未找到 $CUR_DIR/zappro（先 clone 商业模块仓库）"
-    # Pro 页面必须同步进 web/src/views/pro，否则菜单点进去是空白页。
-    # 构建时自动同步一次，保证打进去的是模块仓库里的最新页面（幂等，覆盖旧副本）。
-    if [ -d "$CUR_DIR/zappro/web/views" ]; then
-        info "同步 Pro 页面 → web/src/views/pro ..."
-        bash "$CUR_DIR/zappro/pro.sh" setup || die "同步 Pro 页面失败（zappro/pro.sh setup）"
-        ok "Pro 页面已同步"
-    elif [ -d "$CUR_DIR/web/src/views/pro" ]; then
-        warn "zappro/web/views 不存在，沿用已同步的 web/src/views/pro（可能不是最新）"
-    else
-        die "未找到 Pro 页面：$CUR_DIR/zappro/web/views 与 $CUR_DIR/web/src/views/pro 都不存在（模块仓库是否完整 clone？）"
-    fi
     info "商业版 Zap Pro：--features zapd/commercial"
 fi
-# 只发社区版时先把同步过来的 Pro 页面清掉：前端构建会把 web/src/views/pro
-# 一起打进去，留着就是「社区版里躺着商业版页面」。发商业版时才需要它们。
-if [[ "$BUILD_COMMUNITY" -eq 1 && "$BUILD_PRO" -eq 0 && -d "$CUR_DIR/web/src/views/pro" ]]; then
-    info "清理 web/src/views/pro（社区版不含商业版页面）..."
-    if [ -f "$CUR_DIR/zappro/pro.sh" ]; then
-        bash "$CUR_DIR/zappro/pro.sh" clean || die "清理 Pro 页面失败（zappro/pro.sh clean）"
-    else
-        rm -rf "$CUR_DIR/web/src/views/pro" || die "清理 Pro 页面失败"
-    fi
-    ok "已移除 web/src/views/pro（下次发商业版前跑 zappro/pro.sh setup 同步回来）"
-fi
+# Pro 页面的「有无」在各自的构建阶段处理（见 prepare_web），这里只做模块源码的提前校验。
 
 # ── 架构与 Rust target 映射 ─────────────────────────────────
 # 只支持 Linux 本机构建：打包产物按 OS / 架构命名。
@@ -117,18 +96,59 @@ VERSION=$(awk -F'"' '/^\[workspace\.package\]/{f=1} f&&/^version/{print $2; exit
 info "版本: ${VERSION}"
 
 # ── 前端产物（zapd 通过 rust-embed 内嵌 ../web/dist）────────────
-# 必须在 cargo build **之前**构建：否则二进制内嵌的是上一次的前端产物，
+# 两个版本内嵌的不是同一份前端：vite 用 import.meta.glob('../views/**/*.vue')
+# 扫描整个 views 目录，web/src/views/pro 存在时 Pro 页面会一起进包。
+# 所以每份构建都要「先摆好 Pro 页面的有无 → 再构建前端 → 再 cargo build」，
+# 否则 --with-pro 会把 Pro 页面带进社区版二进制（路由不显示，代码已在里面）。
+# 同理必须在 cargo build **之前**构建：否则二进制内嵌的是上一次的前端产物，
 # 页脚 / 系统更新页展示的 Web 版本就会落后于本次发布版本。
 WEB_DIR="$CUR_DIR/web"
 if [ -f "$WEB_DIR/package.json" ] && command -v npm >/dev/null 2>&1; then
+    WEB_BUILD=1
+else
+    WEB_BUILD=0
+    warn "跳过前端构建（缺少 web/package.json 或 npm）：二进制将内嵌现有 web/dist，页面展示的 Web 版本可能落后于本次发布"
+fi
+
+# 用法：prepare_web <community|pro>
+# 按版本决定 web/src/views/pro 的存在与否（必须在构建前端之前调用）。
+prepare_web() {
+    local edition="$1"
+    if [[ "$edition" == "pro" ]]; then
+        # 商业版：同步一次，保证打进去的是模块仓库里的最新页面（幂等，覆盖旧副本）
+        if [ -d "$CUR_DIR/zappro/web/views" ]; then
+            info "同步 Pro 页面 → web/src/views/pro ..."
+            bash "$CUR_DIR/zappro/pro.sh" setup || die "同步 Pro 页面失败（zappro/pro.sh setup）"
+            ok "Pro 页面已同步"
+        elif [ -d "$CUR_DIR/web/src/views/pro" ]; then
+            warn "zappro/web/views 不存在，沿用已同步的 web/src/views/pro（可能不是最新）"
+        else
+            die "未找到 Pro 页面：$CUR_DIR/zappro/web/views 与 $CUR_DIR/web/src/views/pro 都不存在（模块仓库是否完整 clone？）"
+        fi
+    elif [ -d "$CUR_DIR/web/src/views/pro" ]; then
+        # 社区版：清掉，别让 Pro 页面混进社区版前端
+        info "清理 web/src/views/pro（社区版不含商业版页面）..."
+        if [ -f "$CUR_DIR/zappro/pro.sh" ]; then
+            bash "$CUR_DIR/zappro/pro.sh" clean || die "清理 Pro 页面失败（zappro/pro.sh clean）"
+        else
+            rm -rf "$CUR_DIR/web/src/views/pro" || die "清理 Pro 页面失败"
+        fi
+        ok "已移除 web/src/views/pro（发商业版时会重新同步）"
+    fi
+}
+
+# 用法：build_web
+build_web() {
+    if [[ "$WEB_BUILD" -ne 1 ]]; then
+        warn "跳过前端构建：沿用现有 web/dist"
+        return 0
+    fi
     info "构建前端产物（web/dist）..."
     # 版本唯一来源：上面从根 Cargo.toml 解析出的 $VERSION，显式传给前端构建
     # （web/vite.config.ts 读取 ZAP_VERSION 注入；缺失时回退自行解析 Cargo.toml）
     (cd "$WEB_DIR" && ZAP_VERSION="$VERSION" npm run build:prod) || die "前端构建失败"
     ok "前端产物构建完成（v${VERSION}）"
-else
-    warn "跳过前端构建（缺少 web/package.json 或 npm）：二进制将内嵌现有 web/dist，页面展示的 Web 版本可能落后于本次发布"
-fi
+}
 
 # ── 打包目录 ────────────────────────────────────────────────
 DIST_DIR="$CUR_DIR/dist"
@@ -247,10 +267,14 @@ ok "资源复制完成（两份包共用同一套 scripts / data）"
 # 注意：后面一律用绝对路径，不要再 `cd dist` —— cargo 必须落在仓库根的 target/。
 # ── 构建 + 打包（顺序有意义：编完一份就打包一份，别让后一次 build 覆盖前一次的二进制）──
 if [[ "$BUILD_COMMUNITY" -eq 1 ]]; then
+    prepare_web community
+    build_web
     build_variant community
     package_variant community ""
 fi
 if [[ "$BUILD_PRO" -eq 1 ]]; then
+    prepare_web pro
+    build_web
     build_variant pro
     package_variant pro "-pro"
 fi
