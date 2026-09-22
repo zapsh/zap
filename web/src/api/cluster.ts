@@ -165,6 +165,107 @@ export function revokeEnrollCode(id: number) {
   return http.delete('/pro/cluster/codes', { params: { id } })
 }
 
+// ── 主控反向批量装机（v1.1，§11）───────────────────────
+// 主控持 SSH 凭据远程跑 install.sh + join：只装主控，剩下的机器由它推过去。
+
+export interface DeployHostReq {
+  host: string
+  port?: number
+  /** 传给 --join-name 的节点名，留空用目标机主机名 */
+  name?: string
+}
+
+/** 一次批量装机任务（不含任何凭据明文：密码/口令都不回传） */
+export interface DeployTask {
+  id: number
+  join_url: string
+  insecure: number
+  pro: number
+  version: string
+  install_url: string
+  enroll_code_id: number
+  auth_user: string
+  auth_type: string
+  ssh_key_name: string
+  push_key: number
+  owner_id: number
+  host_key_policy: string
+  concurrency: number
+  timeout_sec: number
+  /** running | done | stopped */
+  state: string
+  total: number
+  ok_count: number
+  fail_count: number
+  created_at: number
+}
+
+/** 单台机器的装机结果 */
+export interface DeployHost {
+  id: number
+  task_id: number
+  host: string
+  port: number
+  name: string
+  /** pending | running | ok | failed | skipped */
+  state: string
+  message: string
+  /** 远程输出尾部（排障用） */
+  output: string
+  /** TOFU 记下的主机密钥指纹 */
+  host_key_fp: string
+  started_at: number
+  finished_at: number
+  created_at: number
+  /** 失败时才带：可复制的人工执行命令（口令不在响应里） */
+  command?: string
+}
+
+export interface DeployPayload {
+  hosts: DeployHostReq[]
+  auth: {
+    username: string
+    authType: 'password' | 'key'
+    password?: string
+    sshKeyName?: string
+  }
+  joinUrl?: string
+  insecure?: boolean
+  /** 自动生成一枚本次专用注册口令（装完自动通过） */
+  autoCode?: boolean
+  /** autoCode = false 时用它；留空则不带口令（装完进待审批） */
+  code?: string
+  version?: string
+  pro?: boolean
+  installUrl?: string
+  /** 顺带把主控公钥写进目标机 authorized_keys（以后免密） */
+  pushKey?: boolean
+  concurrency?: number
+  timeoutSec?: number
+  /** tofu（默认）| any */
+  hostKeyPolicy?: string
+}
+
+export function createDeploy(data: DeployPayload) {
+  return http.post('/pro/cluster/deploy', data)
+}
+
+export function getDeploy(id: number) {
+  return http.get('/pro/cluster/deploy', { params: { id } })
+}
+
+export function listDeploys() {
+  return http.get('/pro/cluster/deploy/list')
+}
+
+export function retryDeploy(data: { id: number; ids?: number[] }) {
+  return http.post('/pro/cluster/deploy/retry', data)
+}
+
+export function deleteDeploy(id: number) {
+  return http.delete('/pro/cluster/deploy', { params: { id } })
+}
+
 // ── 用量与本机接入 ──────────────────────────────────────
 export function getClusterUsage() {
   return http.get('/pro/cluster/usage')
