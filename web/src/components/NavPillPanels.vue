@@ -28,7 +28,7 @@
 import { computed, nextTick, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-interface PillTab {
+export interface PillTab {
   /** 面板标识，同时作为地址栏 ?tab= 的值 */
   key: string
   label: string

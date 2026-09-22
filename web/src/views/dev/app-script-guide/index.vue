@@ -327,7 +327,7 @@ log_info("开始安装")
 archive = download(os.environ["PKG_URL"], os.path.join(os.environ["BUILD_PATH"], "app.tar.gz"))</pre>
           <ul>
             <li><code>-B</code>：不生成 <code>__pycache__</code>，家目录不留可执行字节码。</li>
-            <li><code>zapweb</code> 提供与 <code>bash_utils.sh</code> 等价的能力：<code>download(url, dest, sha256=...)</code>（给了摘要就强制校验）、<code>extract</code> / <code>deploy</code>（含路径围栏 <code>assert_under</code>）、<code>render</code>（<code>{{NAME}}</code> 占位替换，不做 shell 展开）、<code>write_info</code>（拒绝写入含 PASS/SECRET/TOKEN 的字段）、<code>mask()</code>（密码打码后再进日志）。</li>
+            <li><code>zapweb</code> 提供与 <code>bash_utils.sh</code> 等价的能力：<code>download(url, dest, sha256=...)</code>（给了摘要就强制校验）、<code>extract</code> / <code>deploy</code>（含路径围栏 <code>assert_under</code>）、<code>render</code>（<code v-pre>{{NAME}}</code> 占位替换，不做 shell 展开）、<code>write_info</code>（拒绝写入含 PASS/SECRET/TOKEN 的字段）、<code>mask()</code>（密码打码后再进日志）。</li>
             <li>需要第三方库时请在脚本内显式安装到用户目录（<code>pip install --user</code>），并在 <code>app.yaml</code> 的 <code>dependencies</code> 里声明 <code>python3</code> 版本要求。</li>
           </ul>
           <!-- 十三、建站与建库编排 -->
