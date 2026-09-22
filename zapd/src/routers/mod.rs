@@ -700,10 +700,27 @@ fn api_routers() -> Router {
         // 文档（CHANGELOG / 用户手册 / FAQ / 升级指南）—— 登录即可读
         .route("/docs/list", get(docs::docs_list))
         .route("/docs/{name}", get(docs::docs_get))
+        // Zap Pro（商业模块）：接口挂 /api/pro/**，与内置模块共用同一套鉴权 /
+        // 演示只读守卫 / 超时 / 压缩（它们在下面的 layer 里统一加）。
+        .nest("/pro", pro_api_routers())
         // 统一角色门禁（最后添加的 layer 最外层、最先执行）：
         // 路径 → 所需角色见 `access::RULES`，未登记的接口默认要求 admin。
         .layer(middleware::from_fn(demo_readonly_guard))
         .layer(middleware::from_fn(access::guard))
+}
+
+/// Zap Pro（商业模块）的接口挂载点。
+///
+/// 未启用 `commercial` 时返回空 Router：不注册任何路径，行为与现在完全一致。
+fn pro_api_routers() -> Router {
+    #[cfg(feature = "commercial")]
+    {
+        crate::pro::routers::router()
+    }
+    #[cfg(not(feature = "commercial"))]
+    {
+        Router::new()
+    }
 }
 
 #[cfg(test)]

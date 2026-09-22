@@ -75,10 +75,10 @@ pub struct Perm {
 }
 
 impl Perm {
-    const fn module(ns: &'static str) -> Self {
+    pub(crate) const fn module(ns: &'static str) -> Self {
         Self { ns, action: None }
     }
-    const fn action(ns: &'static str, action: &'static str) -> Self {
+    pub(crate) const fn action(ns: &'static str, action: &'static str) -> Self {
         Self {
             ns,
             action: Some(action),
@@ -993,6 +993,8 @@ const NS_LABELS: &[(&str, &str)] = &[
     ("appstore.script", "自定义脚本"),
     ("dev", "开发者接口"),
     ("webapp.phpmyadmin", "phpMyAdmin"),
+    // Zap Pro（商业模块）：未启用时目录里不会出现这一项（规则来自 pro_rules）
+    ("pro", "Zap Pro"),
 ];
 
 /// 动作的中文名（角色权限配置页展示）。
@@ -1070,10 +1072,27 @@ fn prefix_hit(path: &str, prefix: &str) -> bool {
     }
 }
 
+/// 商业模块（Zap Pro）登记的规则；未启用 `commercial` 时为空。
+pub(crate) fn pro_rules() -> &'static [(&'static str, Required, Option<Perm>)] {
+    #[cfg(feature = "commercial")]
+    {
+        crate::pro::RULES
+    }
+    #[cfg(not(feature = "commercial"))]
+    {
+        &[]
+    }
+}
+
+/// 全部规则：内置矩阵 + 商业模块追加的部分。
+fn all_rules() -> impl Iterator<Item = &'static (&'static str, Required, Option<Perm>)> {
+    RULES.iter().chain(pro_rules())
+}
+
 /// 查询路径的命中项：最长前缀命中；未命中 → `(Admin, None)`（默认拒绝）。
 fn lookup(path: &str) -> (Required, Option<Perm>) {
     let mut best: Option<(usize, Required, Option<Perm>)> = None;
-    for (prefix, req, perm) in RULES {
+    for (prefix, req, perm) in all_rules() {
         if !prefix_hit(path, prefix) {
             continue;
         }
@@ -1124,7 +1143,7 @@ pub struct PermAction {
 /// 动作集合 = 规则里显式声明的动作 ∪ （若存在按方法派生的规则，则加 view / edit）。
 pub fn permission_catalog() -> Vec<PermGroup> {
     let mut out: Vec<PermGroup> = Vec::new();
-    for (_, _, perm_opt) in RULES {
+    for (_, _, perm_opt) in all_rules() {
         let Some(perm) = perm_opt else { continue };
         let ns: &'static str = perm.ns;
         let group = match out.iter_mut().find(|g| g.ns == ns) {
@@ -1194,7 +1213,7 @@ pub fn default_permissions_for(role_key: &str) -> Vec<String> {
     let is_reseller = role_key == "reseller";
 
     let mut set: HashSet<String> = HashSet::new();
-    for (_, req, perm_opt) in RULES {
+    for (_, req, perm_opt) in all_rules() {
         let Some(perm) = perm_opt else { continue };
         let reachable =
             is_admin || *req == Required::User || (is_reseller && *req == Required::Reseller);

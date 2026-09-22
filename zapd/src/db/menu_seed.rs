@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 // 角色组合常量：给菜单标注可见范围用（`menus.roles` + `role_menus` 同源）
 const R_ALL: &str = "admin,user,reseller,demo";
-const R_ADMIN: &str = "admin";
+pub(crate) const R_ADMIN: &str = "admin";
 const R_ADMIN_USER: &str = "admin,user";
 const R_ADMIN_RESELLER: &str = "admin,reseller";
 const R_ADMIN_USER_RESELLER: &str = "admin,user,reseller";
@@ -61,7 +61,7 @@ pub struct MenuSeed {
 }
 
 impl MenuSeed {
-    const fn new(
+    pub(crate) const fn new(
         name: &'static str,
         title: &'static str,
         kind: &'static str,
@@ -88,34 +88,53 @@ impl MenuSeed {
         }
     }
 
-    const fn parent(mut self, name: &'static str) -> Self {
+    pub(crate) const fn parent(mut self, name: &'static str) -> Self {
         self.parent = Some(name);
         self
     }
-    const fn redirect(mut self, redirect: &'static str) -> Self {
+    pub(crate) const fn redirect(mut self, redirect: &'static str) -> Self {
         self.redirect = redirect;
         self
     }
-    const fn icon(mut self, icon: &'static str) -> Self {
+    pub(crate) const fn icon(mut self, icon: &'static str) -> Self {
         self.icon = icon;
         self
     }
-    const fn hidden(mut self) -> Self {
+    pub(crate) const fn hidden(mut self) -> Self {
         self.hidden = true;
         self
     }
-    const fn affix(mut self) -> Self {
+    pub(crate) const fn affix(mut self) -> Self {
         self.affix = true;
         self
     }
-    const fn feature(mut self, feature: &'static str) -> Self {
+    pub(crate) const fn feature(mut self, feature: &'static str) -> Self {
         self.feature = feature;
         self
     }
-    const fn disabled(mut self) -> Self {
+    pub(crate) const fn disabled(mut self) -> Self {
         self.status = 0;
         self
     }
+}
+
+/// 商业模块（Zap Pro）追加的菜单种子。
+///
+/// 未启用 `commercial` 时返回空表 —— 播种循环只写一处，不用到处 `#[cfg]`。
+pub(crate) fn pro_seeds() -> &'static [MenuSeed] {
+    #[cfg(feature = "commercial")]
+    {
+        crate::pro::menu::SEEDS
+    }
+    #[cfg(not(feature = "commercial"))]
+    {
+        &[]
+    }
+}
+
+/// 全部种子：内置清单 + 商业模块追加的部分。
+fn all_seeds() -> impl Iterator<Item = &'static MenuSeed> {
+    MENU_SEEDS.iter().chain(pro_seeds())
 }
 
 /// 菜单清单：声明顺序 = 插入顺序 = id 自增顺序；父菜单必须先声明。
@@ -838,7 +857,7 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
 /// 父菜单必须在子菜单之前声明，否则子项的 `parent_id` 落不成（记 0 并告警）。
 pub async fn seed_menus(pool: &SqlitePool) -> HashMap<String, i64> {
     let mut ids: HashMap<String, i64> = HashMap::new();
-    for seed in MENU_SEEDS {
+    for seed in all_seeds() {
         let parent_id = match seed.parent {
             Some(p) => match ids.get(p) {
                 Some(id) => *id,
@@ -902,7 +921,7 @@ pub async fn seed_role_menus(pool: &SqlitePool, menu_ids: &HashMap<String, i64>)
         menu_ids
     };
 
-    for seed in MENU_SEEDS {
+    for seed in all_seeds() {
         let Some(menu_id) = ids.get(seed.name) else {
             continue;
         };
@@ -987,15 +1006,15 @@ mod tests {
         }
 
         let ids = seed_menus(&pool).await;
-        assert_eq!(ids.len(), MENU_SEEDS.len(), "每条种子都应写入并拿到 id");
+        assert_eq!(ids.len(), all_seeds().count(), "每条种子都应写入并拿到 id");
         // id 自增：不重复且连续可查（不校验具体值，避免写死）
         let mut id_list: Vec<i64> = ids.values().copied().collect();
         id_list.sort_unstable();
         id_list.dedup();
-        assert_eq!(id_list.len(), MENU_SEEDS.len(), "id 必须互不相同");
+        assert_eq!(id_list.len(), all_seeds().count(), "id 必须互不相同");
 
         // 父子关联
-        for seed in MENU_SEEDS {
+        for seed in all_seeds() {
             if let Some(parent) = seed.parent {
                 let (parent_id,): (i64,) =
                     sqlx::query_as("SELECT parent_id FROM menus WHERE name = ?")
@@ -1022,8 +1041,7 @@ mod tests {
         }
         let admin = grants(&pool, "admin").await;
         // 管理员拿到除「客户管理」（reseller 专属）以外的全部入口
-        let expected: Vec<String> = MENU_SEEDS
-            .iter()
+        let expected: Vec<String> = all_seeds()
             .map(|s| s.name.to_string())
             .filter(|n| n != &"reseller-users" && n != &"reseller-users-index")
             .collect();

@@ -20,6 +20,17 @@ mod routers;
 pub mod zap;
 pub mod zapexec;
 
+/// Zap Pro（商业模块）。
+///
+/// 源码不在本仓库：clone 到仓库根目录的 `zappro/` 后，用 `#[path]` 以 zapd 的
+/// 一个模块身份编译进来 —— 模块内可以像内置业务模块一样 `use crate::db::…`，
+/// 不需要任何额外的 trait / 门面抽象。
+///
+/// 未 clone 时目录不存在，只要不开 `commercial`，这段声明不会参与编译。
+#[cfg(feature = "commercial")]
+#[path = "../../zappro/src/mod.rs"]
+mod pro;
+
 #[derive(clap::Parser)]
 struct Cli {
     #[clap(short, long, action)]
@@ -130,6 +141,9 @@ async fn main() {
 
     // init db
     db::init_db::init_schema().await;
+    // Zap Pro：读取授权文件、定下「是否生效」（必须在路由组装之前定论）
+    #[cfg(feature = "commercial")]
+    pro::init().await;
     // 全新库还没有管理员时补一条（默认 admin / 123456；安装脚本会在此之前用
     // `zapd --init-admin` 指定实际凭据，那时这里什么也不做）
     db::init_db::ensure_initial_admin().await;

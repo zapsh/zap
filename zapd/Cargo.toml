@@ -122,3 +122,13 @@ anyhow = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[features]
+# 商业模块（Zap Pro）。
+#
+# 模块源码不在本仓库：clone 到仓库根目录的 `zappro/` 后以 `zapd` 的一个模块身份
+# 编译进来（见 `main.rs` 里的 `#[path]` 声明）。不 clone 时该目录不存在，
+# 只要不开这个 feature，构建与开源版完全一致。
+#
+# 构建：cargo build --features zapd/commercial
+commercial = []

@@ -403,6 +403,13 @@ async fn sync_added_menus() {
     )
     .execute(pool)
     .await;
+
+    // Zap Pro（商业模块）：老库补齐菜单入口。
+    // 新库不用管 —— 种子里已经带上（`menu_seed::pro_seeds`）。
+    #[cfg(feature = "commercial")]
+    for sql in crate::pro::menu::sync_sql() {
+        let _ = sqlx::query(sql).execute(pool).await;
+    }
 }
 
 /// 建表 + 播种菜单（仅新建库）。

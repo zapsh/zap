@@ -25,3 +25,7 @@ data/update_config.yaml
 # Python 脚本运行/编译产物
 __pycache__/
 *.pyc
+
+# Zap Pro
+/zappro/
+/web/src/views/pro/
