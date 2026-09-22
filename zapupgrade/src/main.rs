@@ -405,7 +405,10 @@ fn sync_docs(stage: &Path, dir: &Path, log: &str) {
         }
     }
     if copied > 0 {
-        log_line(log, &format!("已同步 {copied} 份文档 md 到 {}", dst.display()));
+        log_line(
+            log,
+            &format!("已同步 {copied} 份文档 md 到 {}", dst.display()),
+        );
     }
 }
 

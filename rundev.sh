@@ -7,6 +7,9 @@
 #                               # （默认不跑 fmt / clippy：clippy 会用自己的 driver 把整个
 #                               #  workspace 重编一遍，改一行代码等几分钟不值得）
 #   ./rundev.sh --release       # 使用 release 构建
+#   ./rundev.sh --with-pro      # 启用商业模块 Zap Pro（cargo --features zapd/commercial）；
+#                               # 需要 zappro/ 已 clone 到仓库根目录（见 zappro/README.md），
+#                               # 构建前自动跑 zappro/pro.sh setup 同步页面
 #   ./rundev.sh --skip-web      # 跳过前端构建
 #   ./rundev.sh --skip-build    # 跳过 cargo 构建
 #   ./rundev.sh --skip-install  # 缺 node_modules 时不自动 npm install
@@ -24,7 +27,7 @@
 # 需要自定义时，先 export ZAP_APPS_DIR=/你的/安装/目录 再运行本脚本即可。
 set -euo pipefail
 
-# ── 终端颜色 ────────────────────────────────────────────────
+# ── terminal colors ────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 info() { echo -e "${BLUE}[*]${NC} $*"; }
 ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
@@ -34,18 +37,20 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 # 帮助文本取自文件头注释块（# 开头，直到第一行非注释为止）
 usage() { awk 'NR>2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
-# ── 参数解析 ────────────────────────────────────────────────
+# ── arguments parsing ────────────────────────────────────────────────
 # 默认不做 fmt / clippy：日常改一行代码只想快点跑起来，检查交给 --check / --check-code
 RELEASE=false; SKIP_WEB=false; SKIP_BUILD=false; SKIP_INSTALL=false; CHECK_CODE=false; RESET_DB=false; CHECK=false
+WITH_PRO=false
 ADMIN_USER=""; ADMIN_PASS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --release)      RELEASE=true; shift ;;
+    --with-pro)     WITH_PRO=true; shift ;;
     --skip-web)     SKIP_WEB=true; shift ;;
     --skip-build)   SKIP_BUILD=true; shift ;;
     --skip-install) SKIP_INSTALL=true; shift ;;
     --check-code|--lint) CHECK_CODE=true; shift ;;
-    --skip-check)   shift ;;  # 已默认跳过，保留仅为兼容旧用法
+    --skip-check)   shift ;;
     --reset-db|--fresh-db) RESET_DB=true; shift ;;
     --check)        CHECK=true; shift ;;
     --admin-user)   ADMIN_USER="${2:-}"
@@ -67,14 +72,33 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# 初始管理员凭据：命令行 > 环境变量 > 默认（admin / 123456）。
-# 只在「数据库还不存在」时经 `zapd --init-admin` 写入，已有库不会被改动。
+# initial admin user/password only take effect when database is first created.
 [ -n "$ADMIN_USER" ] || ADMIN_USER="${ZAP_ADMIN_USER:-admin}"
 [ -n "$ADMIN_PASS" ] || ADMIN_PASS="${ZAP_ADMIN_PASSWORD:-123456}"
 
-# ── 路径 ────────────────────────────────────────────────────
+# project root dir
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
+
+# --with-pro 是手动开关（同 build.sh）：不带就是开源构建，产物与现在完全一致
+if [ "$WITH_PRO" = true ]; then
+  # 模块源码不在本仓库，没 clone 就直接失败：开着开关编出「假 Pro 版」更危险
+  [ -f "$ROOT_DIR/zappro/src/mod.rs" ] \
+    || die "指定 --with-pro 但未找到 $ROOT_DIR/zappro（先 clone 商业模块仓库）"
+  # Pro 页面不在本仓库（在 zappro/web/views）：每次都同步一次，页面改了不用记着手动跑
+  # setup 是 rm -rf + 全量拷贝，幂等，几毫秒的事
+  info "同步 Pro 页面 (zappro/pro.sh setup) ..."
+  bash "$ROOT_DIR/zappro/pro.sh" setup || die "同步 Pro 页面失败"
+  info "启用商业模块 Zap Pro（--features zapd/commercial）"
+fi
+
+# clippy 用 --all-features 会把 zapd 的 commercial 也打开 —— 开源检出（没有 zappro/）
+# 会直接编不过。模块在就用全 feature，不在就按默认 feature 检查。
+if [ -f "$ROOT_DIR/zappro/src/mod.rs" ]; then
+  CLIPPY_FEATURES=(--all-features)
+else
+  CLIPPY_FEATURES=()
+fi
 
 # --check 是"只做检查"模式：再要求跳过构建（--skip-build）就没有意义了
 if [ "$CHECK" = true ] && [ "$SKIP_BUILD" = true ]; then
@@ -91,7 +115,7 @@ if [ "$CHECK" = true ]; then
   fi
   ok "格式检查通过"
   info "检查代码 (cargo clippy --all-targets --all-features -- -D warnings) ..."
-  cargo clippy --all-targets --all-features -- -D warnings || die "代码检查未通过（详见上方 clippy 输出）"
+  cargo clippy --all-targets "${CLIPPY_FEATURES[@]}" -- -D warnings || die "代码检查未通过（详见上方 clippy 输出）"
   ok "代码检查通过，一切正常"
   exit 0
 fi
@@ -124,6 +148,11 @@ if [ "$RELEASE" = true ]; then
 else
   BIN_DIR="$ROOT_DIR/target/debug"
   CARGO_FLAGS=()
+fi
+
+# 商业模块：只有 zapd 吃这个 feature，其余二进制照旧
+if [ "$WITH_PRO" = true ]; then
+  CARGO_FLAGS+=(--features zapd/commercial)
 fi
 
 # ── 依赖检查 ────────────────────────────────────────────────
@@ -165,7 +194,7 @@ else
     info "格式化代码 (cargo fmt --all) ..."
     cargo fmt --all
     info "检查代码 (cargo clippy --all-targets --all-features -- -D warnings) ..."
-    cargo clippy --all-targets --all-features -- -D warnings || die "代码检查失败"
+    cargo clippy --all-targets "${CLIPPY_FEATURES[@]}" -- -D warnings || die "代码检查失败"
   else
     # 构建照做：能编译就能跑，只是少了规范把关；提交前跑一次 ./rundev.sh --check 补上
     warn "跳过 fmt / clippy 检查（要跑加 --check-code）"

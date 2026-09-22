@@ -1,15 +1,13 @@
 /target
 /demo
 /dist
-# Generated on first run — do not commit
 /conf
 
-# Runtime / dev artifacts — do not commit
+# Runtime
 /data/run/
 data/zap.db
 web/a.html
-data/tmp/*
-#data/appstore/repos/
+
 data/appstore/logs/*
 data/appstore/tmp/*
 data/appstore/runs/*
@@ -17,12 +15,13 @@ data/appstore/cache/*
 data/appstore/custom/*
 data/apps/*/
 data/sites/*
-data/ssl/
+data/pro/*
+data/ssl/*
+data/tmp/*
 data/backups/
 data/users/
 data/server_env.yaml
 data/update_config.yaml
-# Python 脚本运行/编译产物
 __pycache__/
 *.pyc
 

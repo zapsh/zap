@@ -6342,6 +6342,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "ed25519-dalek",
  "flate2",
  "futures-util",
  "getrandom 0.2.16",

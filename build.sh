@@ -11,6 +11,37 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
 CUR_DIR=$(pwd)
 
+# ── 参数 ────────────────────────────────────────────────────
+# --with-pro 是手动开关：不带就是开源构建，产物与现在完全一致。
+usage() {
+    cat <<'EOF'
+用法：build.sh [选项]
+
+  --with-pro   启用商业模块 Zap Pro（cargo --features zapd/commercial）
+               要求：仓库根目录下已有 zappro/（独立私有仓库，见 zappro/README.md）
+               产物包名加 -pro 后缀（升级通道只认无后缀的开源包名，不会串）
+  -h, --help   显示本帮助
+EOF
+}
+WITH_PRO=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --with-pro) WITH_PRO=1; shift ;;
+        -h|--help)  usage; exit 0 ;;
+        *)          echo -e "${RED}[✗]${NC} 未知参数: $1" >&2; usage >&2; exit 1 ;;
+    esac
+done
+
+if [[ "$WITH_PRO" -eq 1 ]]; then
+    # 模块源码不在本仓库，没 clone 就直接失败：开着开关编出「假 Pro 版」更危险
+    [ -f "$CUR_DIR/zappro/src/mod.rs" ] \
+        || die "指定 --with-pro 但未找到 $CUR_DIR/zappro（先 clone 商业模块仓库）"
+    # Pro 页面必须已同步进 web/src/views/pro，否则菜单点进去是空白页
+    [ -d "$CUR_DIR/web/src/views/pro" ] \
+        || warn "未找到 web/src/views/pro：先跑 zappro/pro.sh setup 同步页面，否则菜单指向空白页"
+    info "启用商业模块 Zap Pro（--features zapd/commercial）"
+fi
+
 # ── 架构与 Rust target 映射 ─────────────────────────────────
 # 只支持 Linux 本机构建：打包产物按 OS / 架构命名。
 OS_NAME=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -67,8 +98,14 @@ else
 fi
 
 # ── 构建 ────────────────────────────────────────────────────
+CARGO_FLAGS=()
+PRO_SUFFIX=""
+if [[ "$WITH_PRO" -eq 1 ]]; then
+    CARGO_FLAGS+=(--features zapd/commercial)
+    PRO_SUFFIX="-pro"
+fi
 info "构建 release 二进制（${TARGET}）..."
-cargo build --release --target "$TARGET" || die "构建失败"
+cargo build --release --target "$TARGET" "${CARGO_FLAGS[@]}" || die "构建失败"
 
 # ── 打包 ────────────────────────────────────────────────────
 DIST_DIR="$CUR_DIR/dist"
@@ -150,7 +187,8 @@ find "$DIST_DATA/www/html" -type f -name '*:Zone.Identifier' -delete 2>/dev/null
 ok "资源复制完成"
 
 cd "$DIST_DIR" || die "无法进入 dist 目录"
-ZAP_FILE_NAME="zap-v${VERSION}-${OS_NAME}-${ARCH}.tar.gz"
+# Pro 版加 -pro 后缀：升级通道只认无后缀的开源包名，两条线互不干扰
+ZAP_FILE_NAME="zap-v${VERSION}${PRO_SUFFIX}-${OS_NAME}-${ARCH}.tar.gz"
 info "打包 ${ZAP_FILE_NAME} ..."
 tar -czf "$ZAP_FILE_NAME" * || die "打包失败"
 ok "打包完成"

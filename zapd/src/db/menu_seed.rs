@@ -1043,7 +1043,7 @@ mod tests {
         // 管理员拿到除「客户管理」（reseller 专属）以外的全部入口
         let expected: Vec<String> = all_seeds()
             .map(|s| s.name.to_string())
-            .filter(|n| n != &"reseller-users" && n != &"reseller-users-index")
+            .filter(|n| n != "reseller-users" && n != "reseller-users-index")
             .collect();
         assert_eq!(
             admin.iter().collect::<std::collections::BTreeSet<_>>(),

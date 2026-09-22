@@ -20,7 +20,6 @@ futures-util = "0.3"
 tokio = { version = "1.0", features = ["full"] }
 tower-http = { version = "0.6.1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
-# 云存储：统一对象存储访问层（S3 / 阿里云 OSS / 腾讯云 COS / S3 兼容协议）
 opendal = { version = "0.59", default-features = false, features = [
     "services-s3",
     "services-oss",
@@ -50,20 +49,13 @@ hex = "0.4"
 rust-embed = "8.7.2"
 mime_guess = "2.0.5"
 rcgen = "0.13"
-# ACME 客户端（Let's Encrypt）：异步 API，HTTP 客户端走 hyper-rustls（rustls + ring）。
-#
-# 注意两点，否则 OpenSSL / aws-lc-rs 会被重新拖进依赖树：
-#   - 必须 default-features = false：默认 feature 是 aws-lc-rs（需要 cmake / C 编译器）；
-#   - `rcgen` feature 让 instant-acme 自己按需生成 CSR 与私钥 PEM（内部 rcgen 0.14，
-#     与面板自签名用的 rcgen 0.13 互不干扰）。
+# without OpenSSL
 instant-acme = { version = "0.8", default-features = false, features = [
     "hyper-rustls",
     "ring",
     "rcgen",
 ] }
-# DNS 服务商 API 探针 / Google DNS-over-HTTPS 传播检测用。
-# 同理必须 default-features = false：默认 `default-tls` 会引入 native-tls → OpenSSL。
-# `query` / `form` 在 reqwest 里是可选 feature，DNS 服务商 API 要用 GET 查询串与表单 POST。
+# without OpenSSL
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
     "query",
@@ -97,19 +89,14 @@ x509-parser = "0.18.1"
 ureq = "2.12"
 tar = "0.4"
 flate2 = "1.0"
-# 国际化域名（中文域名）转 punycode，用于站点域名归一化与判重
+# punycode
 idna = "1.1"
-# 「文档」菜单的 Markdown 渲染（GET /api/docs/:name）
-# 默认 features 已开启 html —— 它负责把 Parser 事件转成 HTML 字符串
-# （依赖 pulldown-cmark-escape），缺它 `pulldown_cmark::html::push_html` 编译失败。
+# markdown
 pulldown-cmark = "0.12"
 
-# 构建期注入版本元信息（build date / git / rustc），见 build.rs
-# features 说明：
-#   build  → VERGEN_BUILD_DATE / VERGEN_BUILD_TIMESTAMP
-#   cargo  → VERGEN_CARGO_TARGET_TRIPLE / VERGEN_CARGO_PROFILE ...
-#   git+gitcl → VERGEN_GIT_*（gitcl 走本机 git 命令，无需 libgit2）
-#   rustc  → VERGEN_RUSTC_SEMVER / VERGEN_RUSTC_CHANNEL ...
+ed25519-dalek = { version = "3", optional = true }
+
+
 [build-dependencies]
 vergen = { version = "8", default-features = false, features = [
     "build",
@@ -124,11 +111,4 @@ anyhow = "1"
 tower = { version = "0.5", features = ["util"] }
 
 [features]
-# 商业模块（Zap Pro）。
-#
-# 模块源码不在本仓库：clone 到仓库根目录的 `zappro/` 后以 `zapd` 的一个模块身份
-# 编译进来（见 `main.rs` 里的 `#[path]` 声明）。不 clone 时该目录不存在，
-# 只要不开这个 feature，构建与开源版完全一致。
-#
-# 构建：cargo build --features zapd/commercial
-commercial = []
+commercial = ["dep:ed25519-dalek"]
