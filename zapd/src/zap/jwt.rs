@@ -36,6 +36,12 @@ pub struct Claims {
     /// 它们反序列化后得到 0，而存量用户的版本号同样从 0 起算，因此不会被误杀。
     #[serde(default, rename = "tv")]
     pub token_version: i64,
+    /// 凭据作用域（`api_token.scope`）：`''` 普通用户 Token，`'cluster'` 集群节点机器凭据。
+    ///
+    /// 带 `default` 是为了兼容本次改动之前签发的 JWT（payload 里没有该字段）。
+    /// `cluster` 凭据由 `access::guard` 收口，只能访问 `/pro/cluster/agent/**`。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scope: String,
 }
 
 /// Wrapper around Claims：签名与会话版本号（tokenVersion）校验通过即放行。
@@ -93,6 +99,7 @@ pub fn generate_jwt_token_with_expire(
         exp: now_secs + expire,
         roles: roles.to_string(),
         token_version: crate::zap::session::version_of(id),
+        scope: String::new(),
     };
     let secure_key = &config::get_config().read().unwrap().jwt.jwt_secure;
     encode(
@@ -251,6 +258,8 @@ struct ApiTokenLookup {
     /// 该 Token 记录的会话版本号：创建后不变，「下线所有设备」时统一被推高，
     /// 于是版本号落后的 Token 在下次请求时判为已下线。
     token_version: i64,
+    /// 作用域：`''` 普通用户 Token；`'cluster'` 集群节点机器凭据（只能访问集群上报接口）。
+    scope: String,
 }
 
 /// 校验静态 API Token：按哈希查表，校验 Token/用户状态与有效期，返回等价 Claims。
@@ -258,7 +267,7 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
     let pool = db::get_db_pool().await;
     let row: Option<ApiTokenLookup> = sqlx::query_as(
         "SELECT t.user_id, u.username, u.roles, t.status AS token_status,
-                u.status AS user_status, t.expires_at, t.token_version
+                u.status AS user_status, t.expires_at, t.token_version, t.scope
          FROM api_token t JOIN user u ON u.id = t.user_id
          WHERE t.token_hash = ?",
     )
@@ -267,6 +276,9 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
     .await
     .ok()?;
     let r = row?;
+
+    // 注：静态 Token 不参与会话版本号比对 —— 版本号只在「下线所有设备」时
+    // 由 `session::bump` 直接推高到库里的行上（集群节点凭据 scope='cluster' 已被排除）。
 
     let now = time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -300,5 +312,6 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
         // 用 Token 自己记录的版本号：它与用户当前版本号相同即有效，
         // 「下线所有设备」把两边一起推高后，未同步的旧 Token 随即失效
         token_version: r.token_version,
+        scope: r.scope,
     })
 }

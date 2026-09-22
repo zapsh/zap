@@ -995,6 +995,8 @@ const NS_LABELS: &[(&str, &str)] = &[
     ("webapp.phpmyadmin", "phpMyAdmin"),
     // Zap Pro（商业模块）：未启用时目录里不会出现这一项（规则来自 pro_rules）
     ("pro", "Zap Pro"),
+    ("pro.cluster", "集群管理"),
+    ("pro.cluster.agent", "集群节点上报"),
 ];
 
 /// 动作的中文名（角色权限配置页展示）。
@@ -1595,15 +1597,17 @@ fn token_from_request(req: &Request) -> Option<String> {
     })
 }
 
+/// 机器凭据的作用域值（`api_token.scope`）：集群节点凭据（Zap Pro 纳管）。
+pub const CLUSTER_SCOPE: &str = "cluster";
+
+/// 机器凭据唯一可访问的路径前缀（`/api` 之后的形式，见 [`normalize`]）。
+pub const CLUSTER_AGENT_PREFIX: &str = "/pro/cluster/agent";
+
 /// 统一角色门禁中间件（挂在 `api_routers()` 上，覆盖所有 `/api/*` 接口）。
 #[allow(clippy::result_large_err)] // axum 中间件约定 Result<Response, Response>
 pub async fn guard(req: Request, next: Next) -> Result<Response, Response> {
     let path = normalize(req.uri().path());
     let method = req.method().clone();
-    let required = required_for(&path);
-    if required == Required::Public {
-        return Ok(next.run(req).await);
-    }
 
     // 先取 owned token 再异步解析，避免借用 req 跨 await
     let bearer = token_from_request(&req);
@@ -1612,6 +1616,25 @@ pub async fn guard(req: Request, next: Next) -> Result<Response, Response> {
         Some(token) => jwt::claims_from_token(token).await,
         None => None,
     };
+
+    // 机器凭据（scope=cluster）收口：只能访问集群上报接口。
+    // 必须先于角色门禁判定 —— agent 组在 RULES 里是 Public，靠角色下限拦不住，
+    // 一把节点凭据碰站点/用户/文件/终端都会在这里被挡掉。
+    if let Some(c) = &claims
+        && c.scope == CLUSTER_SCOPE
+    {
+        if !prefix_hit(&path, CLUSTER_AGENT_PREFIX) {
+            warn!("cluster scope denied: user={} path={}", c.sub, path);
+            return Err(deny(StatusCode::FORBIDDEN, "机器凭据只能访问集群上报接口"));
+        }
+        // 节点凭据不挂面板角色，通过收口后不再走角色/权限点校验
+        return Ok(next.run(req).await);
+    }
+
+    let required = required_for(&path);
+    if required == Required::Public {
+        return Ok(next.run(req).await);
+    }
 
     let Some(claims) = claims else {
         return Err(deny(

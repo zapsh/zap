@@ -44,6 +44,37 @@ struct Cli {
     /// `--init-admin` 的密码；省略时生成随机密码并打印到标准输出
     #[clap(long, value_name = "PASSWORD", requires = "init_admin")]
     admin_password: Option<String>,
+
+    /// Zap Pro：接入主控（主控基址，**含前缀**，如 https://ctrl.example.com:2600/zap）。
+    /// 成功后凭据加密存本地，由后台循环持续上报。
+    #[cfg(feature = "commercial")]
+    #[clap(long, value_name = "URL")]
+    join_url: Option<String>,
+
+    /// `--join-url` 附带的注册口令（有且有效 → 主控当场通过，无需管理员审批）
+    #[cfg(feature = "commercial")]
+    #[clap(long, value_name = "CODE", requires = "join_url")]
+    join_token: Option<String>,
+
+    /// 在主控列表里显示的节点名（默认用主机名）
+    #[cfg(feature = "commercial")]
+    #[clap(long, value_name = "NAME", requires = "join_url")]
+    join_name: Option<String>,
+
+    /// 主控是自签证书时跳过证书校验（默认拒绝）
+    #[cfg(feature = "commercial")]
+    #[clap(long, action, requires = "join_url")]
+    join_insecure: bool,
+
+    /// Zap Pro：打印本机接入主控的状态后退出
+    #[cfg(feature = "commercial")]
+    #[clap(long, action)]
+    join_status: bool,
+
+    /// Zap Pro：断开与主控的接入（清本地凭据，不影响主控记录）
+    #[cfg(feature = "commercial")]
+    #[clap(long, action)]
+    unjoin: bool,
 }
 
 /// 默认日志级别（可用环境变量 `RUST_LOG` 覆盖）：
@@ -144,6 +175,14 @@ async fn main() {
     // Zap Pro：读取授权文件、定下「是否生效」（必须在路由组装之前定论）
     #[cfg(feature = "commercial")]
     pro::init().await;
+
+    // Zap Pro 集群的一次性命令：不绑端口、不启服务，做完就退出。
+    // 放在 init_schema + pro::init 之后 —— 它们要读写 `cluster_self` 表。
+    #[cfg(feature = "commercial")]
+    if let Some(code) = pro::cluster::cli::run_cli(&cli).await {
+        std::process::exit(code)
+    }
+
     // 全新库还没有管理员时补一条（默认 admin / 123456；安装脚本会在此之前用
     // `zapd --init-admin` 指定实际凭据，那时这里什么也不做）
     db::init_db::ensure_initial_admin().await;

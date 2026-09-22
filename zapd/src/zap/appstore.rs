@@ -557,6 +557,7 @@ mod tests {
             exp: u64::MAX,
             roles: roles.to_string(),
             token_version: 0,
+            scope: String::new(),
         }
     }
 

@@ -426,6 +426,10 @@ pub async fn zap_save(
         return Err(ZapError::New(-1, "没有需要保存的内容".to_string()));
     }
 
+    // 前置：改前缀会让已纳管节点失联（Zap Pro §6.4），先记下旧值
+    #[cfg(feature = "commercial")]
+    let old_prefix = crate::config::url_prefix();
+
     let mut details: Vec<String> = Vec::new();
 
     if let Some(s) = &payload.server {
@@ -459,10 +463,22 @@ pub async fn zap_save(
     )
     .await;
 
-    Ok(Json(json!({
-        "code": 0,
-        "message": "已保存到 zap.yaml，重启 Zap 服务后生效"
-    })))
+    // 商业版会往 message 后面追加「N 台节点会失联」的提示（见下方 cfg 块）
+    #[allow(unused_mut)]
+    let mut message = "已保存到 zap.yaml，重启 Zap 服务后生效".to_string();
+    // Zap Pro：前缀真变了且有纳管节点 → 把「N 台会失联 + 该执行什么」带回给管理员
+    #[cfg(feature = "commercial")]
+    if let Some(s) = &payload.server
+        && s.url_prefix.is_some()
+    {
+        let new_prefix = crate::config::url_prefix();
+        if new_prefix != old_prefix {
+            message
+                .push_str(&crate::pro::cluster::on_prefix_changed(&old_prefix, &new_prefix).await);
+        }
+    }
+
+    Ok(Json(json!({ "code": 0, "message": message })))
 }
 
 // ── POST /system/config/zap/ssl/self-sign ───────────────────

@@ -23,14 +23,23 @@ usage() {
                          可用字符：字母、数字、. _ -（避免破坏 env 文件解析）
   环境变量                ZAP_ADMIN_USER / ZAP_ADMIN_PASSWORD（命令行参数优先）
 
+Zap Pro 集群接入（可选，需要含商业模块的构建）：
+  --join-url <url>       主控面板**完整基址**（含 url_prefix），如 https://ctrl.example.com:2600/zap
+  --join-token <code>    主控生成的注册口令（有 → 主控当场通过；不填 → 进主控的待审批队列）
+                         建议用环境变量 ZAP_JOIN_TOKEN 传（避免明文留在 ps / history）
+  --join-name <name>     在主控列表里显示的节点名（默认用主机名）
+  --join-insecure        主控是自签证书时跳过校验
+
 说明：安装末尾会执行 `zapd --init-admin` 建库并写入管理员（凭据只经命令行传递，
 不落任何文件）；已安装过的机器重新执行本脚本不会改动现有管理员密码。
+已接入主控的机器重跑本脚本**不会覆盖**现有凭据，除非显式再传 --join-token。
 
   -h, --help             显示本帮助
 
 示例:
   sudo bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
   sudo ZAP_ADMIN_PASSWORD='S3cret-Pass' bash install.sh
+  sudo ZAP_JOIN_TOKEN='zec_…' bash install.sh latest --join-url https://ctrl.example.com:2600/zap --join-insecure
 EOF
 }
 
@@ -70,8 +79,35 @@ printf "${GREEN}========================================${NC}\n"
 # ── 解析参数：版本号（位置参数）+ 初始管理员凭据 ───────────
 VERSION="latest"
 ADMIN_USER=""; ADMIN_PASS=""; PASS_GENERATED=0; ADMIN_UNCHANGED=0
+JOIN_URL=""; JOIN_TOKEN=""; JOIN_NAME=""; JOIN_INSECURE=0
 while [ $# -gt 0 ]; do
     case "$1" in
+        --join-url)
+            JOIN_URL="${2:-}"
+            [ -n "$JOIN_URL" ] || die "--join-url 缺少主控地址"
+            shift 2 ;;
+        --join-url=*)
+            JOIN_URL="${1#*=}"
+            [ -n "$JOIN_URL" ] || die "--join-url 缺少主控地址"
+            shift ;;
+        --join-token)
+            JOIN_TOKEN="${2:-}"
+            [ -n "$JOIN_TOKEN" ] || die "--join-token 缺少注册口令"
+            shift 2 ;;
+        --join-token=*)
+            JOIN_TOKEN="${1#*=}"
+            [ -n "$JOIN_TOKEN" ] || die "--join-token 缺少注册口令"
+            shift ;;
+        --join-name)
+            JOIN_NAME="${2:-}"
+            [ -n "$JOIN_NAME" ] || die "--join-name 缺少节点名"
+            shift 2 ;;
+        --join-name=*)
+            JOIN_NAME="${1#*=}"
+            [ -n "$JOIN_NAME" ] || die "--join-name 缺少节点名"
+            shift ;;
+        --join-insecure)
+            JOIN_INSECURE=1; shift ;;
         --admin-user)
             ADMIN_USER="${2:-}"
             [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
@@ -100,6 +136,8 @@ done
 # 命令行未指定时回落到环境变量，再回落到默认值
 [ -n "$ADMIN_USER" ] || ADMIN_USER="${ZAP_ADMIN_USER:-admin}"
 [ -n "$ADMIN_PASS" ] || ADMIN_PASS="${ZAP_ADMIN_PASSWORD:-}"
+# 注册口令优先走环境变量：命令行参数会短暂出现在 ps / shell history 里
+[ -n "$JOIN_TOKEN" ] || JOIN_TOKEN="${ZAP_JOIN_TOKEN:-}"
 
 # 用户名即 Linux 账号名（家目录 /home/<name>），必须满足 useradd 约束
 ADMIN_USER=$(printf '%s' "$ADMIN_USER" | tr 'A-Z' 'a-z')
@@ -537,6 +575,32 @@ init_admin_account || true
 
 install_service zapd
 ok "systemd 服务已启用"
+
+# ── Zap Pro：接入主控（可选）───────────────────────────────
+# 单机一条命令：zapd --join 会注册、等审批（最多 1 分钟）、把凭据加密存进本地库。
+# 没带 --join-url 就整段跳过；失败只告警 —— 装面板不该被「接入主控」拖成失败。
+join_controller() {
+    [ -n "$JOIN_URL" ] || return 0
+    info "接入主控 ${JOIN_URL} ..."
+    local args=(--join-url "$JOIN_URL")
+    [ -n "$JOIN_TOKEN" ] && args+=(--join-token "$JOIN_TOKEN")
+    [ -n "$JOIN_NAME" ] && args+=(--join-name "$JOIN_NAME")
+    [ "$JOIN_INSECURE" = "1" ] && args+=(--join-insecure)
+
+    local out
+    if ! out=$(ZAP_CONFIG=/etc/zap/zap.yaml "$ZAP_DIR/zapd" "${args[@]}" 2>&1); then
+        warn "接入主控失败（可稍后手动执行 zapd --join --url ${JOIN_URL} 重试）：${out}"
+        return 1
+    fi
+    echo "$out"
+    # 同上：以 root 写库后把文件还回 zapadm
+    for f in zap.db zap.db-wal zap.db-shm; do
+        [ -e "$ZAP_DIR/data/$f" ] && chown zapadm:zapadm "$ZAP_DIR/data/$f" || true
+    done
+    ok "已接入主控（可用 zapd --join-status 查看状态）"
+    return 0
+}
+join_controller || true
 
 # ── Cleanup ────────────────────────────────────────────
 rm -f "$ZAP_FILENAME"

@@ -840,6 +840,7 @@ mod tests {
             exp: 0,
             roles: String::new(),
             token_version: 0,
+            scope: String::new(),
         }
     }
 

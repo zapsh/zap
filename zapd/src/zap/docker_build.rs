@@ -273,6 +273,7 @@ mod tests {
             exp: 0,
             roles: roles.to_string(),
             token_version: 0,
+            scope: String::new(),
         })
     }
 

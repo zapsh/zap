@@ -69,8 +69,10 @@ pub async fn bump(user_id: i64) -> Result<i64, sqlx::Error> {
         .bind(user_id)
         .fetch_one(pool)
         .await?;
-    // 静态 API Token 一并对齐到新版本号：否则「下线所有设备」会漏掉这条后门
-    sqlx::query("UPDATE api_token SET token_version = ? WHERE user_id = ?")
+    // 静态 API Token 一并对齐到新版本号：否则「下线所有设备」会漏掉这条后门。
+    // 集群节点凭据（scope='cluster'）除外：它不是人的设备，管理员「下线所有设备」
+    // 不该把整舰队的机器踢下线（节点凭据另有吊销通道：停用 / 轮换 / 删除节点）。
+    sqlx::query("UPDATE api_token SET token_version = ? WHERE user_id = ? AND scope <> 'cluster'")
         .bind(version)
         .bind(user_id)
         .execute(pool)

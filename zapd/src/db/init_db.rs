@@ -898,6 +898,9 @@ async fn init_api_token_table() {
         -- token_version：该 Token 记录的会话版本号。「下线所有设备」时统一推高，
         --   版本号落后的 Token 在下次请求时判为已下线（见 zap::session::bump）
         token_version INTEGER NOT NULL DEFAULT 0,
+        -- scope：'' 普通用户 Token / 'cluster' 集群节点机器凭据（Zap Pro）。
+        --   'cluster' 凭据由 access::guard 收口：只能访问 /pro/cluster/agent/**
+        scope TEXT NOT NULL DEFAULT '',
         created_at INTEGER,
         updated_at INTEGER
     );
