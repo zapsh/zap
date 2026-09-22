@@ -284,3 +284,157 @@ export function rejoinCluster(data: { url: string; token?: string; insecure?: bo
 export function unjoinCluster() {
   return http.delete('/pro/cluster/self')
 }
+
+// ── v2：聚合大屏 / 快照历史 / 告警规则 / Webhook ─────────
+// 快照历史与告警事件存在**独立时序库**，接口形状由后端拼好，前端不需要关心。
+
+export interface ClusterTopItem {
+  id: number
+  name: string
+  value: number
+  metric: string
+}
+
+export interface ClusterOverview {
+  counts: {
+    total: number
+    approved: number
+    online: number
+    offline: number
+    pending: number
+    disabled: number
+  }
+  /** 机队均值：只统计在线节点，离线节点的旧值不算进来 */
+  fleet: {
+    cpuAvg: number
+    memAvg: number
+    diskAvg: number
+    loadAvg: number
+    sites: number
+    sampled: number
+  }
+  top: { cpu: ClusterTopItem[]; mem: ClusterTopItem[]; disk: ClusterTopItem[] }
+  /** 未恢复告警数 */
+  firing: number
+  recent: AlertEvent[]
+  storage: { rawDays: number; rollup5Days: number; rollup1hDays: number }
+}
+
+export interface AlertEvent {
+  id: number
+  rule_id: number
+  rule_name: string
+  node_key: string
+  node_name: string
+  metric: string
+  value: number
+  threshold: number
+  /** 触发时刻；resolved_at = 0 表示还在告警中 */
+  fired_at: number
+  resolved_at: number
+}
+
+export interface HistoryPoint {
+  ts: number
+  avg: number
+  max: number
+}
+
+export interface AlertRule {
+  id: number
+  name: string
+  /** cpu | mem | disk | load1 | offline */
+  metric: string
+  /** gt | lt */
+  op: string
+  threshold: number
+  durationSec: number
+  /** 作用节点 id；空 = 全部已接入节点 */
+  scope: number[]
+  webhookIds: number[]
+  enabled: boolean
+  silenceUntil: number
+  silenced: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ClusterWebhook {
+  id: number
+  name: string
+  url: string
+  /** 只回显后 4 位，够确认是哪个、不够拿去伪造请求 */
+  secretTail: string
+  hasSecret: boolean
+  enabled: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface NotifyLog {
+  id: number
+  kind: string
+  target: string
+  ok: number
+  detail: string
+  created_at: number
+}
+
+export function getClusterOverview() {
+  return http.get('/pro/cluster/overview')
+}
+
+/** 单节点历史曲线。hours > 6 自动读聚合点（后端降采样到 ~360 个点） */
+export function getNodeHistory(params: { id: number; metric?: string; hours?: number }) {
+  return http.get('/pro/cluster/nodes/history', { params })
+}
+
+export function getAlerts(params?: { limit?: number; openOnly?: boolean }) {
+  return http.get('/pro/cluster/alerts', {
+    params: { limit: params?.limit ?? 50, openOnly: params?.openOnly ? 1 : 0 }
+  })
+}
+
+/** 投递日志：排查「为什么没收到通知」 */
+export function getNotifyLogs(limit = 50) {
+  return http.get('/pro/cluster/notify-logs', { params: { limit } })
+}
+
+export function getAlertRules() {
+  return http.get('/pro/cluster/rules')
+}
+
+export function saveAlertRule(data: Partial<AlertRule> & { name: string; metric: string }) {
+  return data.id ? http.put('/pro/cluster/rules', data) : http.post('/pro/cluster/rules', data)
+}
+
+export function setAlertRuleState(data: { id: number; enabled?: boolean; silenceMin?: number }) {
+  return http.post('/pro/cluster/rules/state', data)
+}
+
+export function deleteAlertRule(id: number) {
+  return http.delete('/pro/cluster/rules', { params: { id } })
+}
+
+export function getWebhooks() {
+  return http.get('/pro/cluster/webhooks')
+}
+
+export function saveWebhook(data: {
+  id?: number
+  name: string
+  url: string
+  secret?: string
+  enabled?: boolean
+}) {
+  return data.id ? http.put('/pro/cluster/webhooks', data) : http.post('/pro/cluster/webhooks', data)
+}
+
+export function deleteWebhook(id: number) {
+  return http.delete('/pro/cluster/webhooks', { params: { id } })
+}
+
+/** 发一条测试载荷，验证地址/签名对不对 */
+export function testWebhook(id: number) {
+  return http.post('/pro/cluster/webhooks/test', { id })
+}

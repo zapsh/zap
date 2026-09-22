@@ -56,12 +56,20 @@ impl Default for ExecConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DbConfig {
     pub path: String,
+    /// 集群时序库（快照历史 / 聚合 / 告警事件 / 投递日志），独立于主库。
+    ///
+    /// 留空 = 主库同目录下的 `cluster.db`。之所以不写死默认值：主库路径常常是
+    /// 绝对路径（`/usr/local/zap/data/zap.db`），写死相对路径会随进程 CWD 漂移，
+    /// 让两个库跑到不同目录去。
+    #[serde(default)]
+    pub cluster_path: String,
 }
 
 impl Default for DbConfig {
     fn default() -> Self {
         Self {
             path: "data/zap.db".to_string(),
+            cluster_path: String::new(),
         }
     }
 }

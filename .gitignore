@@ -18,6 +18,7 @@ data/sites/*
 data/pro/*
 data/ssl/*
 data/tmp/*
+data/cluster.*
 data/backups/
 data/users/
 data/server_env.yaml
