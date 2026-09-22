@@ -28,6 +28,9 @@ const BINS: [&str; 4] = ["zapd", "zapexec", "zapctl", "zapupgrade"];
 /// 与 zapd `zap::appstore::DONE_MARKER` 保持一致的日志结束标记。
 const DONE_MARKER: &str = "__ZAP_DONE__";
 
+/// 发行线标记文件：install.sh 写入，本工具升级成功后回写（见 persist_edition）。
+const EDITION_FILE: &str = "/etc/zap/edition";
+
 /// 默认更新渠道（与 zapd `zap::update_config::DEFAULT_CHANNEL` 保持一致）。
 const DEFAULT_CHANNEL: &str = "https://mirrors.zap.cn/zap/releases";
 
@@ -75,6 +78,9 @@ enum Command {
         /// 升级到商业版 Zap Pro（包名带 -pro）；缺省时按 /etc/zap/edition 判断
         #[arg(long, action)]
         pro: bool,
+        /// 回退到社区版（包名无后缀）；与 --pro 互斥，缺省时按 /etc/zap/edition 判断
+        #[arg(long, action, conflicts_with = "pro")]
+        community: bool,
     },
     /// 回滚到历史备份（升级时自动备份到 data/upgrade/backup/）
     Rollback {
@@ -145,10 +151,19 @@ fn unit_managed(unit: &str) -> bool {
     if !std::path::Path::new("/run/systemd/system").exists() {
         return false;
     }
+    // 判据用 LoadState 而不是 Id：单元不存在时 `systemctl show` 照样返回 0，
+    // 而且某些版本会把请求的名字原样回显成 `Id=<unit>`（看着像已注册）。
+    // 判错就会走到 restart → 必失败 → 回滚，表现是「升级成功、二进制又变回旧的」。
+    // 单元不存在时 LoadState=not-found，其余（loaded 等）才算注册过。
     std::process::Command::new(SVC_CTL)
-        .args(["show", unit, "--property=Id", "--no-pager"])
+        .args(["show", unit, "--property=LoadState", "--no-pager"])
         .output()
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Id="))
+        .map(|o| {
+            o.status.success()
+                && String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|l| l.trim() == "LoadState=loaded")
+        })
         .unwrap_or(false)
 }
 
@@ -210,8 +225,9 @@ fn main() {
                 channel,
                 force,
                 pro,
+                community,
             }),
-        ) => cmd_upgrade(to, channel, *force, *pro, &dir, &log),
+        ) => cmd_upgrade(to, channel, *force, *pro, *community, &dir, &log),
         (None, Some(Command::Rollback { list, to })) => cmd_rollback(*list, to, &dir, &log),
         (None, None) => {
             eprintln!(
@@ -552,14 +568,46 @@ fn normalize_stage(stage: &Path) {
 /// 包名里的「发行线」后缀：商业版是 `-pro`，社区版没有。
 ///
 /// 商业版与社区版同版本号、不同包名，装哪条就得一直升哪条 ——
-/// 优先级：`--pro` > `/etc/zap/edition`（install.sh 写入）> 社区版。
-fn edition_suffix(pro: bool) -> &'static str {
-    if pro {
-        return "-pro";
-    }
-    match fs::read_to_string("/etc/zap/edition") {
-        Ok(s) if s.trim() == "pro" => "-pro",
+/// 优先级：`--pro` / `--community` > `/etc/zap/edition`（install.sh 写入、
+/// 本工具升级成功后回写）> 社区版。
+fn edition_suffix(pro: bool, community: bool) -> &'static str {
+    match edition_id(pro, community) {
+        "pro" => "-pro",
         _ => "",
+    }
+}
+
+/// 这次（以及以后缺省时）要跟的发行线 id，与 install.sh 的 EDITION_ID 一致。
+fn edition_id(pro: bool, community: bool) -> &'static str {
+    if pro {
+        return "pro";
+    }
+    if community {
+        return "community";
+    }
+    match fs::read_to_string(EDITION_FILE) {
+        Ok(s) if s.trim() == "pro" => "pro",
+        _ => "community",
+    }
+}
+
+/// 把本次的发行线回写到 `/etc/zap/edition`。
+///
+/// 不写的话：装社区版时用 `--pro` 升级成功，下一次不带参数的升级（面板或命令行）
+/// 又会按文件里的 `community` 把社区版包拉回来，等于白升。
+/// 写失败不致命（非 root / 目录不存在）：记一条 warn，本次仍然生效。
+fn persist_edition(id: &str, log: &str) {
+    match fs::write(EDITION_FILE, format!("{id}\n")) {
+        Ok(_) => {
+            let _ = fs::set_permissions(EDITION_FILE, fs::Permissions::from_mode(0o644));
+            log_line(log, &format!("发行线已记录: {EDITION_FILE} = {id}"));
+        }
+        Err(e) => log_line(
+            log,
+            &format!(
+                "写入 {EDITION_FILE} 失败（{e}）：本次已生效，但后续不带 --pro 的升级会回到社区版"
+            ),
+        ),
     }
 }
 
@@ -569,13 +617,17 @@ fn download_and_stage(
     version: &str,
     dir: &Path,
     pro: bool,
+    community: bool,
+    log: &str,
 ) -> Result<PathBuf, String> {
     let channel = channel.trim_end_matches('/');
     let arch = target_arch()?;
     let base = format!(
         "{channel}/zap-v{version}{}-linux-{arch}.tar.gz",
-        edition_suffix(pro)
+        edition_suffix(pro, community)
     );
+    // 包名打进日志：升级完发现版本线不对（比如 --pro 没生效）时，一眼能看出拉的是哪个包
+    log_line(log, &format!("下载发行包: {base}"));
 
     let data = http_get_bytes(&base)?;
     // 校验：发行侧上传同名 .sha256（build.sh），远端缺失/为空时跳过强校验
@@ -605,16 +657,23 @@ fn download_and_stage(
 }
 
 /// `zapupgrade upgrade --to <版本>`：下载 → 校验 → 走与面板同一套替换流程。
-fn cmd_upgrade(to: &str, channel: &str, force: bool, pro: bool, dir: &Path, log: &str) -> i32 {
+fn cmd_upgrade(
+    to: &str,
+    channel: &str,
+    force: bool,
+    pro: bool,
+    community: bool,
+    dir: &Path,
+    log: &str,
+) -> i32 {
     log_line(log, "==== ZAP 系统升级开始（命令行）====");
     log_line(
         log,
         &format!(
             "发行版: {}",
-            if edition_suffix(pro).is_empty() {
-                "社区版"
-            } else {
-                "Zap Pro"
+            match edition_id(pro, community) {
+                "pro" => "Zap Pro",
+                _ => "社区版",
             }
         ),
     );
@@ -649,7 +708,7 @@ fn cmd_upgrade(to: &str, channel: &str, force: bool, pro: bool, dir: &Path, log:
     }
     log_line(log, &format!("目标版本: v{version}"));
 
-    let stage = match download_and_stage(channel, &version, dir, pro) {
+    let stage = match download_and_stage(channel, &version, dir, pro, community, log) {
         Ok(s) => s,
         Err(e) => {
             log_line(log, &format!("下载升级包失败: {e}"));
@@ -665,6 +724,8 @@ fn cmd_upgrade(to: &str, channel: &str, force: bool, pro: bool, dir: &Path, log:
     });
     // 解包目录是一次性的：成功就清掉，失败时保留便于排查
     if code == 0 {
+        // 换线（社区版 → Pro，或 Pro → 社区版）必须落盘，否则下次升级又会按旧发行线拉包
+        persist_edition(edition_id(pro, community), log);
         let _ = fs::remove_dir_all(&stage);
     }
     code

@@ -191,14 +191,20 @@ fn normalize_stage(stage: &Path) {
     }
 }
 
-/// 包名里的「发行线」后缀：商业版（本二进制带 `commercial` feature）是 `-pro`。
+/// 包名里的「发行线」后缀：商业版是 `-pro`，社区版没有。
 ///
-/// 商业版与社区版同版本号、不同包名：这里按**编译期特性**取包名，
-/// 装的是哪条线就一直升哪条线，Pro 不会被社区版包覆盖回去。
-#[cfg(feature = "commercial")]
-const PKG_SUFFIX: &str = "-pro";
-#[cfg(not(feature = "commercial"))]
-const PKG_SUFFIX: &str = "";
+/// 商业版与社区版同版本号、不同包名：装的是哪条线就一直升哪条线，Pro 不会被社区版包
+/// 覆盖回去。以 `/etc/zap/edition`（install.sh 写入、zapupgrade 换线后回写）为准 ——
+/// 它是「这台机器跟哪条线」的唯一记录，能覆盖「二进制被回滚回旧版」这类不一致；
+/// 文件缺失时（老机器、或 /etc/zap 不可读）按本二进制的编译期特性兜底。
+fn pkg_suffix() -> &'static str {
+    match std::fs::read_to_string("/etc/zap/edition") {
+        Ok(s) if s.trim() == "pro" => "-pro",
+        Ok(s) if s.trim() == "community" => "",
+        _ if cfg!(feature = "commercial") => "-pro",
+        _ => "",
+    }
+}
 
 /// 下载发行包 → sha256 校验 → 解包 → 规整到 `stage/{run_id}/`（含 version 文件）。
 /// 返回绝对路径（zapexec 端的前缀白名单校验需要绝对路径）。
@@ -210,7 +216,7 @@ pub async fn download_and_stage(
     let channel = channel.trim_end_matches('/').to_string();
     let version = version.trim_start_matches('v').to_string();
     let arch = target_arch()?.to_string();
-    let pkg = format!("zap-v{version}{PKG_SUFFIX}-linux-{arch}.tar.gz");
+    let pkg = format!("zap-v{version}{}-linux-{arch}.tar.gz", pkg_suffix());
     let stage = stage_dir_for(run_id);
     tokio::task::spawn_blocking(move || -> Result<PathBuf, ZapError> {
         let base = format!("{channel}/{pkg}");

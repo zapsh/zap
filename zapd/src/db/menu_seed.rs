@@ -3,8 +3,8 @@
 //! 以前是一整段 `INSERT INTO menus (...) VALUES (...)` 的 SQL，三个痛点：
 //!
 //! - id 要手写：加一个菜单得先想「用哪个号」，父子靠数字 id 关联，看不出结构；
-//! - 状态分散：真正的最终形态（hidden / status / feature / 父级）散落在
-//!   `sync_added_menus()` 的 UPDATE 里，种子里写的是历史形态；
+//! - 状态分散：真正的最终形态（hidden / status / feature / 父级）要靠
+//!   一段段 UPDATE 补丁事后补，种子里写的是历史形态；
 //! - 授权另写一套：`role_menus` 又抄了一遍 id 列表，两者极易对不上。
 //!
 //! 现在改成一张声明式清单：
@@ -112,10 +112,6 @@ impl MenuSeed {
         self.feature = feature;
         self
     }
-    pub(crate) const fn disabled(mut self) -> Self {
-        self.status = 0;
-        self
-    }
 }
 
 /// 商业模块（Zap Pro）追加的菜单种子。
@@ -133,7 +129,7 @@ pub(crate) fn pro_seeds() -> &'static [MenuSeed] {
 }
 
 /// 全部种子：内置清单 + 商业模块追加的部分。
-fn all_seeds() -> impl Iterator<Item = &'static MenuSeed> {
+pub(crate) fn all_seeds() -> impl Iterator<Item = &'static MenuSeed> {
     MENU_SEEDS.iter().chain(pro_seeds())
 }
 
@@ -208,9 +204,8 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
         .icon("material-symbols:settings")
         .redirect("/system/access")
         .affix(),
-    // 基础设置（旧 `basic-config`）已下线：Mail 并入 Zap 设置的「通知设置」页签，
-    // 建站默认网络与联系信息不再提供界面入口（键值仍留在 server_env.yaml）。
-    // 存量库里的这条菜单由 `init_db::sync_added_menus()` 停用。
+    // 「基础设置」已整体下线：Mail 并入 Zap 设置的「通知设置」页签，建站默认网络
+    // 与联系信息不再提供界面入口（键值仍留在 server_env.yaml）。
     MenuSeed::new(
         "zap-config",
         "Zap 设置",
@@ -236,20 +231,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("system")
     .icon("material-symbols:badge")
     .affix(),
-    // 角色管理已并入 access；保留本行只为兼容既有 role_menus 授权
-    MenuSeed::new(
-        "roles",
-        "角色管理",
-        "menu",
-        "roles",
-        "system/access/index",
-        R_ADMIN,
-        4,
-    )
-    .parent("system")
-    .icon("material-symbols:visibility")
-    .affix()
-    .disabled(),
     MenuSeed::new(
         "menus",
         "菜单管理",
@@ -285,20 +266,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("system")
     .icon("material-symbols:confirmation-number")
     .affix(),
-    // 系统更新已并入 about 的第二个 nav pill；保留本行只为兼容既有授权
-    MenuSeed::new(
-        "system-update",
-        "系统更新",
-        "menu",
-        "update",
-        "system/about/index",
-        R_ADMIN,
-        8,
-    )
-    .parent("system")
-    .icon("material-symbols:refresh")
-    .affix()
-    .disabled(),
     MenuSeed::new(
         "about",
         "About ZAP",
@@ -323,20 +290,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("system")
     .icon("material-symbols:timer")
     .affix(),
-    // 计划任务已并入 automation-scripts；保留本行只为兼容既有授权
-    MenuSeed::new(
-        "script-cron",
-        "计划任务",
-        "menu",
-        "cron",
-        "automation/index",
-        R_ADMIN,
-        11,
-    )
-    .parent("system")
-    .icon("material-symbols:alarm")
-    .affix()
-    .disabled(),
     // ── 服务器配置（目录）────────────────────────────────────
     MenuSeed::new(
         "server",
@@ -363,20 +316,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server")
     .icon("material-symbols:settings")
     .affix(),
-    // 系统服务已并入 server-system
-    MenuSeed::new(
-        "server-services",
-        "系统服务",
-        "menu",
-        "services",
-        "server/system/index",
-        R_ADMIN,
-        2,
-    )
-    .parent("server")
-    .icon("material-symbols:build")
-    .affix()
-    .disabled(),
     // 服务配置：Nginx / PHP / MySQL 配置合到一页
     MenuSeed::new(
         "server-service-conf",
@@ -390,34 +329,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server")
     .icon("material-symbols:dns")
     .affix(),
-    // SSH 服务已并入 server-system
-    MenuSeed::new(
-        "server-ssh",
-        "SSH 服务",
-        "menu",
-        "ssh",
-        "server/system/index",
-        R_ADMIN,
-        4,
-    )
-    .parent("server")
-    .icon("material-symbols:cable")
-    .affix()
-    .disabled(),
-    // 进程管理已并入 server-system
-    MenuSeed::new(
-        "server-process",
-        "进程管理",
-        "menu",
-        "process",
-        "server/system/index",
-        R_ADMIN,
-        5,
-    )
-    .parent("server")
-    .icon("material-symbols:memory")
-    .affix()
-    .disabled(),
     // 网络配置：网络设置 + IP 设置 合到一页
     MenuSeed::new(
         "server-network",
@@ -431,20 +342,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server")
     .icon("material-symbols:link")
     .affix(),
-    // IP 设置已并入 server-network
-    MenuSeed::new(
-        "server-ip",
-        "IP 设置",
-        "menu",
-        "ip",
-        "server/network/index",
-        R_ADMIN,
-        7,
-    )
-    .parent("server")
-    .icon("material-symbols:badge")
-    .affix()
-    .disabled(),
     MenuSeed::new(
         "server-firewall",
         "防火墙",
@@ -469,20 +366,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server")
     .icon("material-symbols:auto-fix-high")
     .affix(),
-    // 同步运行环境已并入 server-env（第二个 nav pill）
-    MenuSeed::new(
-        "server-entities",
-        "同步运行环境",
-        "menu",
-        "entities",
-        "server/env/index",
-        R_ADMIN,
-        10,
-    )
-    .parent("server")
-    .icon("material-symbols:account-circle")
-    .affix()
-    .disabled(),
     MenuSeed::new(
         "server-migrate",
         "数据迁移",
@@ -735,7 +618,7 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
         .affix(),
     MenuSeed::new(
         "crontab-index",
-        "定时任务",
+        "计划任务",
         "menu",
         "index",
         "crontab/index",

@@ -10,8 +10,8 @@ use super::menu_seed;
 ///
 /// **约定（开发阶段）**：表结构与初始数据都以 `CREATE TABLE` + 种子清单为准，新建库
 /// 一次建齐（列、菜单、授权都在里面），所以加列 / 加菜单后**不必** `--reset-db`；
-/// 对**已存在**的库，留给将来升级用的机制是 `migrate_add_columns()`（补列）与
-/// `sync_added_menus()`（补菜单），两者当前为空（见各自注释）。
+/// 对**已存在**的库，`migrate_add_columns()` 补列、`sync_added_menus()` 补菜单
+/// （按种子清单补齐库里缺失的项，含 Zap Pro 菜单：老库换 Pro 二进制后靠它补入口）。
 /// 删列、改类型、改约束、改菜单种子（已存在的库不会被覆盖）仍需重建数据库。
 pub async fn init_schema() {
     init_system_user_table_schema().await;
@@ -371,7 +371,7 @@ async fn init_roles_table() {
 
 // ── menus ──────────────────────────────────────────────────
 
-/// 幂等收敛「后续版本变更」的菜单入口（**老库升级**用；新增 / 停用都在这里）。
+/// 幂等收敛存量库的菜单（**已存在的库**用；新增 / 停用都在这里）。
 ///
 /// 初始菜单已全部写在 [`menu_seed::MENU_SEEDS`] 里，且写的是最终形态（父级 /
 /// 隐藏 / 停用 / feature 都在种子里），新库建表即完整，所以这里只处理存量库。
@@ -392,20 +392,76 @@ async fn init_roles_table() {
 ///     .execute(pool).await;
 /// ```
 async fn sync_added_menus() {
+    // Zap Pro（商业模块）的菜单同样在**建库**时播入（见 `menu_seed::pro_seeds()`）。
+    // 但社区版机器用 `install.sh --pro` 重装后，zapd 换成了 Pro 二进制、库还是老库，
+    // 建库播种不会再跑一次 —— Pro 菜单就得在下面按种子补齐，否则面板一个 Pro 入口都没有
+    // （现象很像「没换成 Pro 版」，其实二进制已经是 Pro 了）。
+    sync_seed_menus().await;
+}
+
+/// 把种子清单里**库里还没有**的菜单补进存量库（按 name 去重，父子按 name 关联 id）。
+///
+/// 只补缺失项：已存在的菜单原样保留（管理员可能手工改过标题 / 排序 / 停用状态，
+/// 不能被种子覆盖回去）；新增项按种子的 `roles` 建 `role_menus` 授权，
+/// 否则菜单补进去了却没人看得到。全程幂等，每次启动都能安全跑。
+async fn sync_seed_menus() {
     let pool = get_db_pool().await;
+    let mut ids: HashMap<String, i64> =
+        sqlx::query_as::<_, (String, i64)>("SELECT name, id FROM menus")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+    let mut added: HashMap<String, i64> = HashMap::new();
 
-    // 「基础设置」下线：Mail 已并入 Zap 设置（页内「通知设置」pill），
-    // 建站默认网络 / 联系信息不再有界面入口。老库里的这条菜单停用即可
-    // （行保留，避免既有授权记录悬空）。
-    let _ = sqlx::query(
-        "UPDATE menus SET status = 0, updated_at = strftime('%s','now') \
-         WHERE name = 'basic-config' AND status <> 0",
-    )
-    .execute(pool)
-    .await;
+    for seed in menu_seed::all_seeds() {
+        if ids.contains_key(seed.name) {
+            continue;
+        }
+        // 父菜单可能是本次刚补进来的（例如 Pro 的父目录），所以用累积的 ids 解析
+        let parent_id = seed.parent.and_then(|p| ids.get(p).copied()).unwrap_or(0);
+        if parent_id == 0 && seed.parent.is_some() {
+            eprintln!("补种菜单 {}: 父菜单 {:?} 不在库里，按顶层处理", seed.name, seed.parent);
+        }
+        let res = sqlx::query(
+            "INSERT INTO menus
+                (parent_id, name, path, component, redirect, type, title, icon,
+                 hidden, affix, feature, roles, sort_order, status, created_at, updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,strftime('%s','now'),strftime('%s','now'))",
+        )
+        .bind(parent_id)
+        .bind(seed.name)
+        .bind(seed.path)
+        .bind(seed.component)
+        .bind(seed.redirect)
+        .bind(seed.kind)
+        .bind(seed.title)
+        .bind(seed.icon)
+        .bind(seed.hidden as i32)
+        .bind(seed.affix as i32)
+        .bind(seed.feature)
+        .bind(seed.roles)
+        .bind(seed.sort_order)
+        .bind(seed.status)
+        .execute(pool)
+        .await;
+        match res {
+            Ok(r) => {
+                let id = r.last_insert_rowid();
+                ids.insert(seed.name.to_string(), id);
+                added.insert(seed.name.to_string(), id);
+            }
+            Err(e) => eprintln!("补种菜单 {} 失败: {e}", seed.name),
+        }
+    }
 
-    // Zap Pro（商业模块）的菜单由 `menu_seed::pro_seeds()` 在**建库**时播入，
-    // 这里不需要补：项目还在开发阶段，只支持全新库（老库升级路径待将来再加）。
+    // 只给本次新增的菜单建授权：传空表会让 seed_role_menus 回落到全库重刷，
+    // 等于把管理员手工撤销的授权又加回来。
+    if !added.is_empty() {
+        info!("补种菜单 {} 条，同步授权", added.len());
+        menu_seed::seed_role_menus(pool, &added).await;
+    }
 }
 
 /// 建表 + 播种菜单（仅新建库）。
