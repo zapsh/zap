@@ -5208,7 +5208,10 @@ checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
 ]
 
@@ -5364,6 +5367,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.4",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.10.6",
  "thiserror 2.0.20",
  "utf-8",
@@ -6289,7 +6294,7 @@ dependencies = [
 
 [[package]]
 name = "zap-crypto"
-version = "1.0.13"
+version = "1.0.14"
 dependencies = [
  "aes-gcm 0.10.3",
  "base64 0.22.1",
@@ -6299,7 +6304,7 @@ dependencies = [
 
 [[package]]
 name = "zap-proto"
-version = "1.0.13"
+version = "1.0.14"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.16",
@@ -6313,7 +6318,7 @@ dependencies = [
 
 [[package]]
 name = "zapctl"
-version = "1.0.13"
+version = "1.0.14"
 dependencies = [
  "bcrypt",
  "chrono",
@@ -6330,7 +6335,7 @@ dependencies = [
 
 [[package]]
 name = "zapd"
-version = "1.0.13"
+version = "1.0.14"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -6382,6 +6387,7 @@ dependencies = [
  "tokio",
  "tokio-cron-scheduler",
  "tokio-rustls",
+ "tokio-tungstenite",
  "tokio-util",
  "tower",
  "tower-http",
@@ -6390,6 +6396,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "vergen",
+ "webpki-roots 0.26.11",
  "x509-parser",
  "zap-crypto",
  "zap-proto",
@@ -6397,7 +6404,7 @@ dependencies = [
 
 [[package]]
 name = "zapexec"
-version = "1.0.13"
+version = "1.0.14"
 dependencies = [
  "base64 0.22.1",
  "bollard",
@@ -6418,7 +6425,7 @@ dependencies = [
 
 [[package]]
 name = "zapupgrade"
-version = "1.0.13"
+version = "1.0.14"
 dependencies = [
  "clap",
  "flate2",

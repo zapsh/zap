@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Request},
-    http::{Method, StatusCode, Uri, header},
+    http::{HeaderMap, Method, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -100,7 +100,7 @@ async fn index_html() -> Response {
                 .body(Body::from(html))
                 .unwrap()
         }
-        None => not_found().await,
+        None => plain_404(),
     }
 }
 
@@ -134,11 +134,25 @@ fn inject_base_tag(html: &str, prefix_path: &str) -> String {
     }
 }
 
-async fn not_found() -> Response {
+/// 404 的裸响应（前后台共用）。
+fn plain_404() -> Response {
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .body(Body::from("404"))
         .unwrap()
+}
+
+/// 前缀之外的路径（fallback）。
+///
+/// 唯一例外（Zap Pro v1.1）：集群节点还在用**旧前缀**上报时会落到这里，此时回一个
+/// `MIGRATED`（带新地址），节点收到就地重连 —— 见文档 §6.4。
+async fn not_found(uri: Uri, headers: HeaderMap) -> Response {
+    #[cfg(feature = "commercial")]
+    if let Some(resp) = crate::pro::cluster::migrated_response(uri.path(), &headers) {
+        return resp;
+    }
+    let _ = (uri, headers);
+    plain_404()
 }
 
 async fn static_handler(uri: Uri) -> Response {
@@ -171,7 +185,7 @@ async fn static_handler(uri: Uri) -> Response {
         }
         None => {
             if path.contains('.') {
-                return not_found().await;
+                return plain_404();
             }
 
             index_html().await

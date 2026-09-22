@@ -69,6 +69,9 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
 ] }
 rustls-pemfile = "2"
+# 集群 v1.1 命令通道：受控端用它连主控的 agent/ws（服务端一侧由 axum 自带）
+tokio-tungstenite = { version = "0.26", features = ["__rustls-tls"] }
+webpki-roots = "0.26"
 time = "0.3"
 local-ip-address = "0.6.5"
 bcrypt = "0.17.1"

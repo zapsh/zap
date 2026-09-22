@@ -26,6 +26,10 @@ export interface ClusterNode {
   site_count: number
   approved_at: number
   created_at: number
+  /** 命令通道（长连）是否已建立：true 才能被主控推送命令 */
+  channel?: boolean
+  /** 长连建立时刻（时间戳秒，未连接为 null） */
+  channelSince?: number | null
 }
 
 /** 注册口令（列表项：不含明文，明文只在生成那一次返回） */
@@ -50,6 +54,8 @@ export interface ClusterUsage {
   plan: string
   machineId: string
   expiresAt: number | null
+  /** 当前已建立命令通道的节点数 */
+  channels: number
 }
 
 /** 本机接入状态（受管视图） */
@@ -65,8 +71,30 @@ export interface ClusterSelf {
   tlsMode: number
   tokenPrefix: string
   hasToken: boolean
+  /** 命令通道：1=已连上主控，可被推命令；0=未连接 */
+  wsState: number
+  wsSince: number
   /** 主控授权摘要（report 响应下发，仅展示用） */
   ctrlLicense: { expiresAt?: number | null; maxNodes?: number | null; usedNodes?: number }
+}
+
+/** 命令通道（v1.1）：顺着长连给节点下发命令 */
+export type ClusterCommand = 'ping' | 'report' | 'rejoin'
+
+export function commandNodes(data: { ids: number[]; cmd: ClusterCommand; url?: string; insecure?: boolean }) {
+  return http.post('/pro/cluster/nodes/command', data)
+}
+
+/** 让选中的节点改用新地址重连：有长连的直接推，推不到的返回人工命令 */
+export function rejoinNodes(ids: number[]) {
+  return http.post('/pro/cluster/nodes/rejoin', { ids })
+}
+
+/** 导出逐台重连命令（rejoin.sh） */
+export function getRejoinScript(ids?: number[]) {
+  return http.get('/pro/cluster/nodes/rejoin-script', {
+    params: ids && ids.length ? { ids: ids.join(',') } : {}
+  })
 }
 
 export function getNodes(state?: number) {
