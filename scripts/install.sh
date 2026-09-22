@@ -614,7 +614,11 @@ join_controller() {
 
     local out
     if ! out=$(ZAP_CONFIG=/etc/zap/zap.yaml "$ZAP_DIR/zapd" "${args[@]}" 2>&1); then
-        warn "接入主控失败（可稍后手动执行 zapd --join --url ${JOIN_URL} 重试）：${out}"
+        # 重试提示直接复用上面拼好的 args（-token 除外，别把口令打进日志）
+        local retry=(--join-url "$JOIN_URL")
+        [ -n "$JOIN_NAME" ] && retry+=(--join-name "$JOIN_NAME")
+        [ "$JOIN_INSECURE" = "1" ] && retry+=(--join-insecure)
+        warn "接入主控失败（可稍后手动执行 zapd ${retry[*]} 重试）：${out}"
         return 1
     fi
     echo "$out"
