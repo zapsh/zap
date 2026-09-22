@@ -16,3 +16,5 @@ ureq = "2.12"
 tar = "0.4"
 flate2 = "1.0"
 sha2 = "0.10"
+# 以 root 建目录后把属主还回数据区属主（zapadm），否则 zapd 写不进 stage/
+libc = "0.2"

@@ -233,8 +233,19 @@ pub async fn download_and_stage(
             ));
         }
         // 解包（发行包来自可信渠道，Archive::unpack 足够）
-        std::fs::create_dir_all(&stage)
-            .map_err(|e| ZapError::New(-1, format!("创建升级目录失败: {e}")))?;
+        std::fs::create_dir_all(&stage).map_err(|e| {
+            // 只说「Permission denied」没人修得动：升级区被 zapd（zapadm）与
+            // zapupgrade（root）两种身份混写，属主一旦不一致就是这里炸。
+            ZapError::New(
+                -1,
+                format!(
+                    "创建升级目录失败: {e}（{}）—— 该目录必须对运行 zapd 的账号可写；\
+                     修复：chown -R zapadm:zapadm {}",
+                    stage.display(),
+                    upgrade_dir().display()
+                ),
+            )
+        })?;
         let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(data));
         let mut archive = tar::Archive::new(decoder);
         archive

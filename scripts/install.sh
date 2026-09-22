@@ -535,9 +535,16 @@ ok "站点配置目录已就绪（/etc/zap/webservers）"
 # 面板数据区：zap.db（sqlite 还会写 -wal/-shm）、AppStore、升级包目录都必须可写；
 # 证书改为 zapd 首次启动自行生成，故安装脚本只负责把目录/文件归属准备好。
 info "设置运行目录权限（zapadm）..."
-mkdir -p "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/upgrade" "$ZAP_DIR/data/users"
+mkdir -p "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/users" \
+    "$ZAP_DIR/data/upgrade/stage" "$ZAP_DIR/data/upgrade/logs" "$ZAP_DIR/data/upgrade/backup"
 chown zapadm:zapadm "$ZAP_DIR/data" \
-    "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/upgrade" "$ZAP_DIR/data/users"
+    "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/users"
+# 升级数据区会被两种身份写入：zapd 本身（zapadm，下载解包）与 zapupgrade/zapexec
+# （root，备份替换）。谁先建目录谁就是属主，另一方立刻 EACCES 13 ——
+# 新装环境最常见的是 root 先建了 stage/，之后 zapd（zapadm）再也写不进去。
+# 所以这里预建子目录并递归改属：装完/升完整棵 upgrade/ 树都归 zapadm。
+chown -R zapadm:zapadm "$ZAP_DIR/data/upgrade" 2>/dev/null || true
+chmod 0755 "$ZAP_DIR/data/upgrade" 2>/dev/null || true
 # 用户私有目录（crontab.yaml / cloud / scripts）由面板进程直接读写：
 # 只放开 `users/<user>` 这一层，站点应用数据（webapps/<name>/<site_id>）仍归站点账号
 for d in "$ZAP_DIR"/data/users/*/; do

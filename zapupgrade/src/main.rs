@@ -28,6 +28,36 @@ const BINS: [&str; 4] = ["zapd", "zapexec", "zapctl", "zapupgrade"];
 /// 与 zapd `zap::appstore::DONE_MARKER` 保持一致的日志结束标记。
 const DONE_MARKER: &str = "__ZAP_DONE__";
 
+/// 建目录，并把属主对齐到数据区 `{dir}/data` 的属主。
+///
+/// 升级数据区会被两种身份写入：本程序（root）与 zapd（zapadm）。
+/// 谁先建目录谁就是属主，另一方立刻 `EACCES 13` —— root 抢先建了 `stage/`，
+/// zapd 就再也写不进去，升级必然失败。所以 root 建完要把属主还回去。
+fn ensure_dir(path: &Path, dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    align_owner(path, &dir.join("data"));
+    Ok(())
+}
+
+/// 仅 root 生效：把 `path` 的 uid/gid 设成 `data_dir` 的 uid/gid。
+/// 非 root 做不了 chown，也没必要 —— zapd 以 zapadm 运行，建的目录本就归自己。
+fn align_owner(path: &Path, data_dir: &Path) {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::metadata(data_dir) else {
+        return;
+    };
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return;
+    };
+    unsafe {
+        libc::chown(c.as_ptr(), meta.uid(), meta.gid());
+    }
+}
+
 /// 发行线标记文件：install.sh 写入，本工具升级成功后回写（见 persist_edition）。
 const EDITION_FILE: &str = "/etc/zap/edition";
 
@@ -245,7 +275,7 @@ fn default_log_path(dir: &Path) -> String {
         .join("data/upgrade/logs")
         .join(format!("run-cli-{}.log", now_secs()));
     if let Some(parent) = p.parent() {
-        let _ = fs::create_dir_all(parent);
+        let _ = ensure_dir(parent, dir);
     }
     p.to_string_lossy().into_owned()
 }
@@ -282,7 +312,7 @@ fn run_upgrade(ctx: &RunCtx) -> i32 {
     let backup_dir = dir
         .join("data/upgrade/backup")
         .join(format!("{ts}-{version}"));
-    if fs::create_dir_all(&backup_dir).is_err() {
+    if ensure_dir(&backup_dir, &dir).is_err() {
         log_line(&ctx.log, "创建备份目录失败");
         return 1;
     }
@@ -644,7 +674,14 @@ fn download_and_stage(
     let stage = dir
         .join("data/upgrade/stage")
         .join(format!("cli-{}-v{version}", now_secs()));
-    fs::create_dir_all(&stage).map_err(|e| format!("创建升级目录失败: {e}"))?;
+    ensure_dir(&stage, dir).map_err(|e| {
+        format!(
+            "创建升级目录失败: {e}（{}）—— 该目录必须对运行 zapd 的账号（zapadm）可写；\
+             修复：chown -R zapadm:zapadm {}",
+            stage.display(),
+            dir.join("data/upgrade").display()
+        )
+    })?;
     let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(data));
     let mut archive = tar::Archive::new(decoder);
     archive
