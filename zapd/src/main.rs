@@ -143,6 +143,20 @@ async fn main() {
         std::process::exit(code);
     }
 
+    // init db
+    db::init_db::init_schema().await;
+    // Zap Pro：读取授权文件、定下「是否生效」（必须在路由组装之前定论）
+    #[cfg(feature = "commercial")]
+    pro::init().await;
+
+    // Zap Pro 集群的一次性命令（--join / --join-status / --unjoin）：做完就退出。
+    // 必须排在**绑端口之前**：面板正在跑时这些命令仍要能用（`--join-status` 就是在
+    // 服务运行中查状态的），先 bind 会因为端口已被自己占用而 panic。
+    #[cfg(feature = "commercial")]
+    if let Some(code) = pro::cluster::cli::run_cli(&cli).await {
+        std::process::exit(code)
+    }
+
     // Ensure TLS certificates exist (generate self-signed if missing)
     // 面板只提供 HTTPS（HTTP 请求一律 301 跳转），没有证书就无法建立 TLS acceptor，
     // 因此这里直接以明确错误退出，而不是带着坏证书继续跑成崩溃重启循环。
@@ -168,19 +182,6 @@ async fn main() {
             "URL prefix: /{} — 页面在 /{}/ ，接口在 /{}/api/",
             url_prefix, url_prefix, url_prefix
         );
-    }
-
-    // init db
-    db::init_db::init_schema().await;
-    // Zap Pro：读取授权文件、定下「是否生效」（必须在路由组装之前定论）
-    #[cfg(feature = "commercial")]
-    pro::init().await;
-
-    // Zap Pro 集群的一次性命令：不绑端口、不启服务，做完就退出。
-    // 放在 init_schema + pro::init 之后 —— 它们要读写 `cluster_self` 表。
-    #[cfg(feature = "commercial")]
-    if let Some(code) = pro::cluster::cli::run_cli(&cli).await {
-        std::process::exit(code)
     }
 
     // 全新库还没有管理员时补一条（默认 admin / 123456；安装脚本会在此之前用
