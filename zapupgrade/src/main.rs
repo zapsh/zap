@@ -72,6 +72,9 @@ enum Command {
         /// 目标版本不高于当前版本时仍然安装
         #[arg(long, action)]
         force: bool,
+        /// 升级到商业版 Zap Pro（包名带 -pro）；缺省时按 /etc/zap/edition 判断
+        #[arg(long, action)]
+        pro: bool,
     },
     /// 回滚到历史备份（升级时自动备份到 data/upgrade/backup/）
     Rollback {
@@ -200,9 +203,15 @@ fn main() {
             log_line(&log, &format!("{DONE_MARKER} {code}"));
             code
         }
-        (None, Some(Command::Upgrade { to, channel, force })) => {
-            cmd_upgrade(to, channel, *force, &dir, &log)
-        }
+        (
+            None,
+            Some(Command::Upgrade {
+                to,
+                channel,
+                force,
+                pro,
+            }),
+        ) => cmd_upgrade(to, channel, *force, *pro, &dir, &log),
         (None, Some(Command::Rollback { list, to })) => cmd_rollback(*list, to, &dir, &log),
         (None, None) => {
             eprintln!(
@@ -540,11 +549,33 @@ fn normalize_stage(stage: &Path) {
     }
 }
 
+/// 包名里的「发行线」后缀：商业版是 `-pro`，社区版没有。
+///
+/// 商业版与社区版同版本号、不同包名，装哪条就得一直升哪条 ——
+/// 优先级：`--pro` > `/etc/zap/edition`（install.sh 写入）> 社区版。
+fn edition_suffix(pro: bool) -> &'static str {
+    if pro {
+        return "-pro";
+    }
+    match fs::read_to_string("/etc/zap/edition") {
+        Ok(s) if s.trim() == "pro" => "-pro",
+        _ => "",
+    }
+}
+
 /// 下载发行包 → sha256 校验 → 解包 → 规整到 `{dir}/data/upgrade/stage/cli-{ts}/`。
-fn download_and_stage(channel: &str, version: &str, dir: &Path) -> Result<PathBuf, String> {
+fn download_and_stage(
+    channel: &str,
+    version: &str,
+    dir: &Path,
+    pro: bool,
+) -> Result<PathBuf, String> {
     let channel = channel.trim_end_matches('/');
     let arch = target_arch()?;
-    let base = format!("{channel}/zap-v{version}-linux-{arch}.tar.gz");
+    let base = format!(
+        "{channel}/zap-v{version}{}-linux-{arch}.tar.gz",
+        edition_suffix(pro)
+    );
 
     let data = http_get_bytes(&base)?;
     // 校验：发行侧上传同名 .sha256（build.sh），远端缺失/为空时跳过强校验
@@ -574,8 +605,19 @@ fn download_and_stage(channel: &str, version: &str, dir: &Path) -> Result<PathBu
 }
 
 /// `zapupgrade upgrade --to <版本>`：下载 → 校验 → 走与面板同一套替换流程。
-fn cmd_upgrade(to: &str, channel: &str, force: bool, dir: &Path, log: &str) -> i32 {
+fn cmd_upgrade(to: &str, channel: &str, force: bool, pro: bool, dir: &Path, log: &str) -> i32 {
     log_line(log, "==== ZAP 系统升级开始（命令行）====");
+    log_line(
+        log,
+        &format!(
+            "发行版: {}",
+            if edition_suffix(pro).is_empty() {
+                "社区版"
+            } else {
+                "Zap Pro"
+            }
+        ),
+    );
     let cur = current_version(dir);
     log_line(
         log,
@@ -607,7 +649,7 @@ fn cmd_upgrade(to: &str, channel: &str, force: bool, dir: &Path, log: &str) -> i
     }
     log_line(log, &format!("目标版本: v{version}"));
 
-    let stage = match download_and_stage(channel, &version, dir) {
+    let stage = match download_and_stage(channel, &version, dir, pro) {
         Ok(s) => s,
         Err(e) => {
             log_line(log, &format!("下载升级包失败: {e}"));

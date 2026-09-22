@@ -12,34 +12,67 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 CUR_DIR=$(pwd)
 
 # ── 参数 ────────────────────────────────────────────────────
-# --with-pro 是手动开关：不带就是开源构建，产物与现在完全一致。
+# 默认只发社区版；--with-pro 一次发两份（社区版 + 商业版），两条发行线同版本。
 usage() {
     cat <<'EOF'
 用法：build.sh [选项]
 
-  --with-pro   启用商业模块 Zap Pro（cargo --features zapd/commercial）
+  （无参数）   只构建发布社区版（开源，包名 zap-v<版本>-linux-amd64.tar.gz）
+  --with-pro   连同商业版 Zap Pro 一起发布：**编两份、发两个包**
+               商业版 = cargo --features zapd/commercial，包名加 -pro
+               （zap-v<版本>-pro-linux-amd64.tar.gz）
                要求：仓库根目录下已有 zappro/（独立私有仓库，见 zappro/README.md）
-               产物包名加 -pro 后缀（升级通道只认无后缀的开源包名，不会串）
+  --pro-only   只构建发布商业版（社区版已在别处发布完时用）
   -h, --help   显示本帮助
+
+两条发行线的包名不同，在线升级各自认自己的那条（社区版装不出 Pro，
+Pro 装完升级也不会退化成社区版）；版本号共用 latest.txt，同版本一起发。
 EOF
 }
 WITH_PRO=0
+PRO_ONLY=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --with-pro) WITH_PRO=1; shift ;;
+        --pro-only) PRO_ONLY=1; shift ;;
         -h|--help)  usage; exit 0 ;;
         *)          echo -e "${RED}[✗]${NC} 未知参数: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
 
-if [[ "$WITH_PRO" -eq 1 ]]; then
+# 默认发社区版；--with-pro 追加商业版；--pro-only 只发商业版
+BUILD_COMMUNITY=1
+BUILD_PRO=0
+[[ "$WITH_PRO" -eq 1 ]] && BUILD_PRO=1
+[[ "$PRO_ONLY" -eq 1 ]] && { BUILD_PRO=1; BUILD_COMMUNITY=0; }
+
+if [[ "$BUILD_PRO" -eq 1 ]]; then
     # 模块源码不在本仓库，没 clone 就直接失败：开着开关编出「假 Pro 版」更危险
     [ -f "$CUR_DIR/zappro/src/mod.rs" ] \
-        || die "指定 --with-pro 但未找到 $CUR_DIR/zappro（先 clone 商业模块仓库）"
-    # Pro 页面必须已同步进 web/src/views/pro，否则菜单点进去是空白页
-    [ -d "$CUR_DIR/web/src/views/pro" ] \
-        || warn "未找到 web/src/views/pro：先跑 zappro/pro.sh setup 同步页面，否则菜单指向空白页"
-    info "启用商业模块 Zap Pro（--features zapd/commercial）"
+        || die "要构建商业版但未找到 $CUR_DIR/zappro（先 clone 商业模块仓库）"
+    # Pro 页面必须同步进 web/src/views/pro，否则菜单点进去是空白页。
+    # 构建时自动同步一次，保证打进去的是模块仓库里的最新页面（幂等，覆盖旧副本）。
+    if [ -d "$CUR_DIR/zappro/web/views" ]; then
+        info "同步 Pro 页面 → web/src/views/pro ..."
+        bash "$CUR_DIR/zappro/pro.sh" setup || die "同步 Pro 页面失败（zappro/pro.sh setup）"
+        ok "Pro 页面已同步"
+    elif [ -d "$CUR_DIR/web/src/views/pro" ]; then
+        warn "zappro/web/views 不存在，沿用已同步的 web/src/views/pro（可能不是最新）"
+    else
+        die "未找到 Pro 页面：$CUR_DIR/zappro/web/views 与 $CUR_DIR/web/src/views/pro 都不存在（模块仓库是否完整 clone？）"
+    fi
+    info "商业版 Zap Pro：--features zapd/commercial"
+fi
+# 只发社区版时先把同步过来的 Pro 页面清掉：前端构建会把 web/src/views/pro
+# 一起打进去，留着就是「社区版里躺着商业版页面」。发商业版时才需要它们。
+if [[ "$BUILD_COMMUNITY" -eq 1 && "$BUILD_PRO" -eq 0 && -d "$CUR_DIR/web/src/views/pro" ]]; then
+    info "清理 web/src/views/pro（社区版不含商业版页面）..."
+    if [ -f "$CUR_DIR/zappro/pro.sh" ]; then
+        bash "$CUR_DIR/zappro/pro.sh" clean || die "清理 Pro 页面失败（zappro/pro.sh clean）"
+    else
+        rm -rf "$CUR_DIR/web/src/views/pro" || die "清理 Pro 页面失败"
+    fi
+    ok "已移除 web/src/views/pro（下次发商业版前跑 zappro/pro.sh setup 同步回来）"
 fi
 
 # ── 架构与 Rust target 映射 ─────────────────────────────────
@@ -97,32 +130,57 @@ else
     warn "跳过前端构建（缺少 web/package.json 或 npm）：二进制将内嵌现有 web/dist，页面展示的 Web 版本可能落后于本次发布"
 fi
 
-# ── 构建 ────────────────────────────────────────────────────
-CARGO_FLAGS=()
-PRO_SUFFIX=""
-if [[ "$WITH_PRO" -eq 1 ]]; then
-    CARGO_FLAGS+=(--features zapd/commercial)
-    PRO_SUFFIX="-pro"
-fi
-info "构建 release 二进制（${TARGET}）..."
-cargo build --release --target "$TARGET" "${CARGO_FLAGS[@]}" || die "构建失败"
-
-# ── 打包 ────────────────────────────────────────────────────
+# ── 打包目录 ────────────────────────────────────────────────
 DIST_DIR="$CUR_DIR/dist"
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
 BIN_DIR="$CUR_DIR/target/$TARGET/release"
+# 两份构建共用同一个 target 目录：后一次 build 会覆盖前一次的 zapd
+# （社区版 / 商业版的差别就在 zapd 上），所以每编完一份立刻把四个二进制
+# 挪到各自的暂存目录，最后分别打包。
+BIN_STAGE="$DIST_DIR/.bins"
+PACKAGES=()
+
+# 用法：build_variant <community|pro>
+build_variant() {
+    local edition="$1" suffix=""
+    local -a flags=()
+    if [[ "$edition" == "pro" ]]; then
+        suffix="-pro"
+        flags=(--features zapd/commercial)
+    fi
+    info "构建 ${edition} 版 release 二进制（${TARGET}）..."
+    cargo build --release --target "$TARGET" ${flags[@]+"${flags[@]}"} \
+        || die "构建失败（${edition}）"
+    mkdir -p "$BIN_STAGE/$edition"
+    for bin in zapd zapctl zapexec zapupgrade; do
+        cp -f "$BIN_DIR/$bin" "$BIN_STAGE/$edition/$bin" \
+            || die "复制 $bin 失败（${edition}）"
+    done
+    ok "${edition} 二进制就位"
+}
+
 # 发行包统一为「单层 zap/ 目录」布局：
 #   zap/{zapd, zapctl, zapexec, zapupgrade} + zap/scripts + zap/data
 # 二进制与资源同级，install.sh 直接以 zap/ 作为唯一内容根；
 # zapupgrade 的 normalize_stage 同样从 zap/ 里取二进制，无需额外适配。
 DIST_ZAP="$DIST_DIR/zap"
 mkdir -p "$DIST_ZAP"
-for bin in zapd zapctl zapexec zapupgrade; do
-    cp -f "$BIN_DIR/$bin" "$DIST_ZAP/" || die "复制 $bin 失败"
-done
-ok "二进制复制完成: zap/{zapd, zapctl, zapexec, zapupgrade}"
+
+# 用法：package_variant <community|pro> <包名后缀>
+package_variant() {
+    local edition="$1" suffix="$2"
+    for bin in zapd zapctl zapexec zapupgrade; do
+        cp -f "$BIN_STAGE/$edition/$bin" "$DIST_ZAP/$bin" \
+            || die "复制 $bin 失败（${edition}）"
+    done
+    local name="zap-v${VERSION}${suffix}-${OS_NAME}-${ARCH}.tar.gz"
+    info "打包 ${name} ..."
+    (cd "$DIST_DIR" && tar -czf "$name" zap) || die "打包失败（${name}）"
+    PACKAGES+=("$name")
+    ok "打包完成：${name}"
+}
 
 # ── 内置 AppStore 源（git 仓库位于 data/appstore/repos/zap-appstore）──────
 # 源内容由独立 git 仓库管理并随构建机维护在此目录；打包前若有 .git 则 pull 到最新，
@@ -184,14 +242,19 @@ cp -Rf "$CUR_DIR/UPGRADE_zh-CN.md"     "$DIST_DATA/www/html/" 2>/dev/null || tru
 # 否则它们会跟着发行包一起装到线上（无意义文件，还容易让文档目录看着一堆脏东西）
 find "$DIST_DATA/www/html" -type f -name '*:Zone.Identifier' -delete 2>/dev/null || true
 
-ok "资源复制完成"
+ok "资源复制完成（两份包共用同一套 scripts / data）"
 
-cd "$DIST_DIR" || die "无法进入 dist 目录"
-# Pro 版加 -pro 后缀：升级通道只认无后缀的开源包名，两条线互不干扰
-ZAP_FILE_NAME="zap-v${VERSION}${PRO_SUFFIX}-${OS_NAME}-${ARCH}.tar.gz"
-info "打包 ${ZAP_FILE_NAME} ..."
-tar -czf "$ZAP_FILE_NAME" * || die "打包失败"
-ok "打包完成"
+# 注意：后面一律用绝对路径，不要再 `cd dist` —— cargo 必须落在仓库根的 target/。
+# ── 构建 + 打包（顺序有意义：编完一份就打包一份，别让后一次 build 覆盖前一次的二进制）──
+if [[ "$BUILD_COMMUNITY" -eq 1 ]]; then
+    build_variant community
+    package_variant community ""
+fi
+if [[ "$BUILD_PRO" -eq 1 ]]; then
+    build_variant pro
+    package_variant pro "-pro"
+fi
+[ "${#PACKAGES[@]}" -gt 0 ] || die "没有要发布的包（检查 --with-pro / --pro-only 参数）"
 
 # 上传 install.sh 和 uninstall.sh（zapd 升级下载时使用）
 if command -v zapfile >/dev/null 2>&1; then
@@ -204,12 +267,15 @@ else
 fi
 
 # ── 上传 ────────────────────────────────────────────────────
-info "上传 ${ZAP_FILE_NAME} ..."
-zapfile upload zap/releases/ "$ZAP_FILE_NAME" || die "上传失败"
-# sha256 校验文件（zapd 升级下载时比对；不带换行避免残留）
-printf '%s' "$(sha256sum "$ZAP_FILE_NAME" | awk '{print $1}')" > "$ZAP_FILE_NAME.sha256"
-info "上传校验文件 ${ZAP_FILE_NAME}.sha256 ..."
-zapfile upload zap/releases/ "$ZAP_FILE_NAME.sha256" || die "上传校验文件失败"
+for pkg in "${PACKAGES[@]}"; do
+    info "上传 ${pkg} ..."
+    zapfile upload zap/releases/ "$DIST_DIR/$pkg" || die "上传失败：${pkg}"
+    # sha256 校验文件（zapd 升级下载时比对；不带换行避免残留）
+    printf '%s' "$(sha256sum "$DIST_DIR/$pkg" | awk '{print $1}')" > "$DIST_DIR/$pkg.sha256"
+    info "上传校验文件 ${pkg}.sha256 ..."
+    zapfile upload zap/releases/ "$DIST_DIR/$pkg.sha256" || die "上传校验文件失败：${pkg}"
+done
+# 两条线同版本：共用一个 latest.txt（商业版装的就是同版本的 -pro 包）
 zapfile put "zap/releases/latest.txt" $VERSION || die "更新版本文件失败"
 ok "上传完成"
 
@@ -218,4 +284,8 @@ echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}   ZAP v${VERSION} (${ARCH}) 发布完成${NC}"
 echo -e "${GREEN}========================================${NC}"
-echo "  包名: ${ZAP_FILE_NAME}"
+echo "  版本: ${VERSION}"
+for pkg in "${PACKAGES[@]}"; do
+    echo "  包名: ${pkg}"
+done
+echo "  安装: bash install.sh ${VERSION}$([[ "$BUILD_PRO" -eq 1 ]] && echo ' --pro')"

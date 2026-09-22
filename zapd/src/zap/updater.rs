@@ -191,6 +191,15 @@ fn normalize_stage(stage: &Path) {
     }
 }
 
+/// 包名里的「发行线」后缀：商业版（本二进制带 `commercial` feature）是 `-pro`。
+///
+/// 商业版与社区版同版本号、不同包名：这里按**编译期特性**取包名，
+/// 装的是哪条线就一直升哪条线，Pro 不会被社区版包覆盖回去。
+#[cfg(feature = "commercial")]
+const PKG_SUFFIX: &str = "-pro";
+#[cfg(not(feature = "commercial"))]
+const PKG_SUFFIX: &str = "";
+
 /// 下载发行包 → sha256 校验 → 解包 → 规整到 `stage/{run_id}/`（含 version 文件）。
 /// 返回绝对路径（zapexec 端的前缀白名单校验需要绝对路径）。
 pub async fn download_and_stage(
@@ -201,7 +210,7 @@ pub async fn download_and_stage(
     let channel = channel.trim_end_matches('/').to_string();
     let version = version.trim_start_matches('v').to_string();
     let arch = target_arch()?.to_string();
-    let pkg = format!("zap-v{version}-linux-{arch}.tar.gz");
+    let pkg = format!("zap-v{version}{PKG_SUFFIX}-linux-{arch}.tar.gz");
     let stage = stage_dir_for(run_id);
     tokio::task::spawn_blocking(move || -> Result<PathBuf, ZapError> {
         let base = format!("{channel}/{pkg}");

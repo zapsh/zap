@@ -16,6 +16,10 @@ usage() {
 
   VERSION                要安装的版本号（默认 latest）
 
+发行版（商业版与社区版同版本号，包名不同）：
+  --pro                  安装商业版 Zap Pro（包名为 zap-v<版本>-pro-<os>-<arch>.tar.gz）
+                         不带就是社区版；已装机器上可用 /etc/zap/edition 查看当前发行版
+
 初始管理员凭据（仅首次安装、全新数据库时生效）：
   --admin-user <name>    管理员用户名（默认 admin）
                          同时作为 Linux 账号名，家目录为 /home/<name>
@@ -39,7 +43,8 @@ Zap Pro 集群接入（可选，需要含商业模块的构建）：
 示例:
   sudo bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
   sudo ZAP_ADMIN_PASSWORD='S3cret-Pass' bash install.sh
-  sudo ZAP_JOIN_TOKEN='zec_…' bash install.sh latest --join-url https://ctrl.example.com:2600/zap --join-insecure
+  sudo bash install.sh latest --pro          # 商业版 Zap Pro
+  sudo ZAP_JOIN_TOKEN='zec_…' bash install.sh latest --pro --join-url https://ctrl.example.com:2600/zap --join-insecure
 EOF
 }
 
@@ -80,8 +85,11 @@ printf "${GREEN}========================================${NC}\n"
 VERSION="latest"
 ADMIN_USER=""; ADMIN_PASS=""; PASS_GENERATED=0; ADMIN_UNCHANGED=0
 JOIN_URL=""; JOIN_TOKEN=""; JOIN_NAME=""; JOIN_INSECURE=0
+PRO=0
 while [ $# -gt 0 ]; do
     case "$1" in
+        --pro)
+            PRO=1; shift ;;
         --join-url)
             JOIN_URL="${2:-}"
             [ -n "$JOIN_URL" ] || die "--join-url 缺少主控地址"
@@ -160,6 +168,19 @@ case "$ADMIN_PASS" in
     *[!A-Za-z0-9._-]*) die "管理员密码只能包含字母、数字以及 . _ -（避免破坏 env 文件解析）" ;;
 esac
 [ "${#ADMIN_PASS}" -ge 8 ] || warn "管理员密码不足 8 位，建议登录后修改"
+# ── 发行版：社区版 / 商业版 Zap Pro ─────────────────────────
+# 两条线同版本号，只有包名不同（-pro 后缀）：装哪条就要一直升哪条，
+# 因此这里把发行线记进 /etc/zap/edition，zapupgrade 据此下载对应的包。
+if [ "$PRO" = "1" ]; then
+    EDITION="Zap Pro"; EDITION_ID="pro"; PRO_SUFFIX="-pro"
+else
+    EDITION="社区版"; EDITION_ID="community"; PRO_SUFFIX=""
+fi
+info "发行版: ${EDITION}"
+if [ "$PRO" != "1" ] && [ -n "$JOIN_URL" ]; then
+    warn "接入主控（--join-url）属于 Zap Pro 功能：本次装的是社区版，接入会失败（加 --pro 重试）"
+fi
+
 # ── 平台探测：操作系统 + 服务管理器 ─────────────────────────
 # 只支持 Linux + systemd：安装包、服务单元、防火墙后端都按这一套来。
 OS=$(uname -s)
@@ -182,7 +203,7 @@ case "$ARCH" in
     s390x)               ;;
     *) die "不支持的架构: $ARCH" ;;
 esac
-info "目标版本: ${VERSION}   系统: ${OS} (systemd)   架构: ${ARCH}"
+info "目标版本: ${VERSION}   发行版: ${EDITION}   系统: ${OS} (systemd)   架构: ${ARCH}"
 
 # ── bash 可用性提示（运行时由 zapexec 自行解析路径）──
 # 面板运行时按绝对路径调用 bash 拉起 AppStore 包脚本、计划任务与用户脚本，
@@ -212,7 +233,7 @@ if [ "$VERSION" = "latest" ]; then
     fi
 fi
 
-ZAP_FILENAME="zap-v${VERSION}-${OS_PKG}-${ARCH}.tar.gz"
+ZAP_FILENAME="zap-v${VERSION}${PRO_SUFFIX}-${OS_PKG}-${ARCH}.tar.gz"
 
 # ── 下载 ────────────────────────────────────────────────────
 if [ -f "$ZAP_FILENAME" ]; then
@@ -462,6 +483,10 @@ ok "程序部署完成"
 # ── 配置与凭据目录（/etc/zap）───────────────────────────────
 info "准备配置目录 /etc/zap ..."
 mkdir -p /etc/zap
+# 发行线标记：zapupgrade 升级时按它选包名（pro → -pro 包），
+# 否则 Pro 机器一升级就会被社区版包覆盖回去。可用 --pro 重装来改变。
+printf '%s\n' "$EDITION_ID" > /etc/zap/edition
+chmod 0644 /etc/zap/edition
 # zapd 以 zapadm 身份运行（见 zapd.service 的 User=），这里把 /etc/zap 交给 zapadm：
 # 首次启动要在此生成自签证书（zap.crt / zap.key）与面板自身的 secret.key。
 # 面板用户的 SSH 密钥存于各自家目录 ~/.ssh（zap_ 前缀），由 zapexec(root) 读写。
@@ -611,6 +636,7 @@ printf "${GREEN}========================================${NC}\n"
 printf "${GREEN}           ZAP Installation Complete${NC}\n"
 printf "${GREEN}========================================${NC}\n"
 echo "  Version:      ${VERSION}"
+echo "  Edition:      ${EDITION}"
 echo "  Program Directory:  /usr/local/zap"
 echo "  Configuration Directory:  /etc/zap"
 echo "  Access URL:  https://<Server IP>:2600"
@@ -632,4 +658,6 @@ else
     printf "${YELLOW}  ⚠ 首次登录后请立即修改密码！${NC}\n"
     printf "\n"
 fi
-printf "  后续升级:  zapupgrade upgrade --to latest（回滚: zapupgrade rollback --list）\n"
+UPGRADE_HINT="zapupgrade upgrade --to latest"
+[ "$PRO" = "1" ] && UPGRADE_HINT="${UPGRADE_HINT} --pro"
+printf "  后续升级:  ${UPGRADE_HINT}（回滚: zapupgrade rollback --list）\n"
