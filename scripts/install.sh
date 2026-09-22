@@ -174,7 +174,7 @@ esac
 if [ "$PRO" = "1" ]; then
     EDITION="Zap Pro"; EDITION_ID="pro"; PRO_SUFFIX="-pro"
 else
-    EDITION="社区版"; EDITION_ID="community"; PRO_SUFFIX=""
+    EDITION="Zap Community"; EDITION_ID="community"; PRO_SUFFIX=""
 fi
 info "发行版: ${EDITION}"
 if [ "$PRO" != "1" ] && [ -n "$JOIN_URL" ]; then
