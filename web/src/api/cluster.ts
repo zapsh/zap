@@ -47,7 +47,23 @@ export interface EnrollCode {
   created_at: number
 }
 
-/** 授权用量（列表页顶部 Banner） */
+/** 节点概览（仪表盘用，随用量一起下发） */
+export interface ClusterNodeStats {
+  /** 全部记录数（含待接入 / 已停用 / 已拒绝） */
+  total: number
+  /** 已接入（占授权名额） */
+  approved: number
+  /** 已接入且在线 */
+  online: number
+  /** 已接入但离线 / 尚未上报 */
+  offline: number
+  /** 待接入（等审批） */
+  pending: number
+  disabled: number
+  rejected: number
+}
+
+/** 授权用量（列表页顶部 Banner / 仪表盘） */
 export interface ClusterUsage {
   used: number
   max: number | null
@@ -56,6 +72,7 @@ export interface ClusterUsage {
   expiresAt: number | null
   /** 当前已建立命令通道的节点数 */
   channels: number
+  nodes: ClusterNodeStats
 }
 
 /** 本机接入状态（受管视图） */
