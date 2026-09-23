@@ -321,3 +321,32 @@ pub async fn network_set_resolver(
     }
     Ok(Json(json!({ "code": 0, "message": resp.message })))
 }
+
+// ── 包下载源（应用商店取源码包 / 离线本地目录）───────────────
+
+/// 当前下载源与可选预设（管理员）。
+pub async fn mirror_get(claims: ValidatedClaims) -> ZapJsonResult {
+    require_admin(&claims)?;
+    Ok(Json(json!({ "code": 0, "data": crate::zap::mirror::info() })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetMirrorPayload {
+    pub pkg_mirror: String,
+}
+
+/// 设置下载源：`https://…/pkg` 或本地目录（绝对路径 / file:// 开头）。
+///
+/// 只落 zapd 自己的配置文件，不惊动 zapexec：包脚本每次执行时才读它，
+/// 因此改完立即对**下一次**安装生效，跑着的任务不受影响。
+pub async fn mirror_set(
+    claims: ValidatedClaims,
+    Json(payload): Json<SetMirrorPayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let base = crate::zap::mirror::save(&payload.pkg_mirror)
+        .map_err(|e| ZapError::New(-1, e))?;
+    audit::log(Some(&claims), None, "system_mirror_set", &base, "").await;
+    info!(mirror = %base, "包下载源已更新");
+    Ok(Json(json!({ "code": 0, "data": { "pkgMirror": base } })))
+}

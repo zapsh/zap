@@ -626,6 +626,27 @@ export default {
   },
 
   /** 系统管理 · Zap 设置 → 通知设置（原「基础设置」的 Mail 迁到这里） */
+  mirrorCfg: {
+    title: '下载源',
+    subtitle: '应用商店取源码包（nginx / php / mysql 等）的地址，支持本地目录（离线环境）',
+    pillHint: '应用商店源码包的下载地址 / 离线本地目录',
+
+    hint:
+      '应用商店安装软件时从此处取源码包。国内机器用 mirrors.zap.cn，海外或国内源不通时用 Cloudflare mirrors.zap.sh；离线机房没有外网，可填一个本地目录（如 /opt/zap-pkg），按相同目录结构预先放好包即可。改动只对下一次安装生效，正在跑的任务不受影响。',
+    source: '下载源',
+    sourceHint: '可从下拉选择内置镜像，也可直接输入：https://…/pkg 形式的镜像地址，或本地目录的绝对路径（离线环境）',
+    current: '当前生效',
+    remote: '远端镜像',
+    local: '本地目录（离线）',
+    filePath: '配置文件',
+    save: '保存下载源',
+    saved: '下载源已保存',
+    empty: '下载源不能为空',
+    badFormat: '格式不合法：需为 http(s):// 开头的镜像地址，或 / 开头的本地目录绝对路径',
+    localPending: '本地目录源：保存时会在面板所在机器上校验该目录是否存在，需按镜像结构预放源码包（如 /opt/zap-pkg/php/php-8.3.6.tar.gz）',
+    saveFailed: '保存失败，请检查下载源是否合法',
+  },
+
   notifyCfg: {
     title: '通知设置',
     subtitle: '系统对外发送通知所使用的渠道与参数',

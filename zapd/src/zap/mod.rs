@@ -20,6 +20,7 @@ pub mod global;
 pub mod job;
 pub mod jwt;
 pub mod login_history;
+pub mod mirror;
 pub mod logrotate;
 pub mod notify;
 pub mod script_cron;

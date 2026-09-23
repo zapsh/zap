@@ -5,10 +5,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bell, Setting } from '@/icons'
+import { Bell, Download, Setting } from '@/icons'
 import NavPillPanels from '@/components/NavPillPanels.vue'
 import ZapPanel from './ZapPanel.vue'
 import NotifyPanel from './NotifyPanel.vue'
+import MirrorPanel from './MirrorPanel.vue'
 
 const { t } = useI18n()
 
@@ -33,6 +34,13 @@ const tabs = computed(() => [
     icon: Bell,
     panel: NotifyPanel,
     hint: t('notifyCfg.pillHint'),
+  },
+  {
+    key: 'mirror',
+    label: t('mirrorCfg.title'),
+    icon: Download,
+    panel: MirrorPanel,
+    hint: t('mirrorCfg.pillHint'),
   },
 ])
 </script>

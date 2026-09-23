@@ -275,12 +275,33 @@ cpu_count() {
 }
 
 # ── 下载 ──────────────────────────────────────────────────────────────────
+# 包下载源:AppStore 安装脚本取源码包的 base(由 pkg_mirror 给出)。
+#   取值优先 ZAP_PKG_MIRROR(zapexec 按 /etc/zap/mirror.conf 注入),未配置时回落国内镜像。
+#   既可以是 http(s):// 远端镜像,也可以是**本地目录**(绝对路径 / file:// 开头),
+#   后者用于离线环境:fetch_file 直接拷贝,不发任何网络请求。
+pkg_mirror() {
+  local base="${ZAP_PKG_MIRROR:-https://mirrors.zap.cn/pkg}"
+  printf '%s' "${base}" | sed 's:/*$::'
+}
+
 # 私有下载器:curl 优先,回退 wget;自动重试;成功返回 0
 # 进度输出:curl --progress-bar / wget --show-progress 强制在非 TTY(日志文件)下
 # 也以 `\r` 刷新同一行进度,面板日志(xterm 渲染)中表现为一条实时进度条。
+# 本地源(/path 或 file:///path)直接 cp:离线环境下没有网络,但目录里有同样的包。
 fetch_file() {
   # fetch_file <url> <dest> [重试次数,默认3]
   local url="$1" dest="$2" retries="${3:-3}" i=0
+  case "$url" in
+    /*|file://*)
+      local src="${url#file://}"
+      if [ -f "$src" ] && cp -f "$src" "$dest"; then
+        log_info "本地源取包: ${src}"
+        return 0
+      fi
+      log_error "本地源取包失败(文件不存在或不可读): ${src}"
+      return 1
+      ;;
+  esac
   if command -v curl >/dev/null 2>&1; then
     while [ "$i" -lt "$retries" ]; do
       if curl -fL --progress-bar --connect-timeout 15 -4 -o "$dest" "$url"; then return 0; fi

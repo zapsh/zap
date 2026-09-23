@@ -592,6 +592,27 @@ const enUS: Messages = {
   },
 
   // Zap settings → Notification settings (Mail moved here from the retired Basic Settings page)
+  mirrorCfg: {
+    title: 'Download Source',
+    subtitle: 'Where AppStore pulls source tarballs from (nginx / php / mysql, …); a local directory works offline',
+    pillHint: 'Mirror for AppStore source tarballs / local offline directory',
+
+    hint:
+      'AppStore fetches source tarballs from this base. Use mirrors.zap.cn inside China, Cloudflare mirrors.zap.sh when the CN mirror is unreachable; in air-gapped networks point it at a local directory (e.g. /opt/zap-pkg) holding the same layout. The change applies to the next install — running tasks are unaffected.',
+    source: 'Source',
+    sourceHint: 'Pick a built-in mirror, or type one: an https://…/pkg mirror, or an absolute local directory (offline)',
+    current: 'In effect',
+    remote: 'Remote mirror',
+    local: 'Local directory (offline)',
+    filePath: 'Config file',
+    save: 'Save source',
+    saved: 'Download source saved',
+    empty: 'Download source cannot be empty',
+    badFormat: 'Invalid format: an http(s):// mirror URL, or an absolute local directory path',
+    localPending: 'Local directory: on save the panel host checks that it exists and holds the mirror layout (e.g. /opt/zap-pkg/php/php-8.3.6.tar.gz)',
+    saveFailed: 'Save failed — check that the download source is valid',
+  },
+
   notifyCfg: {
     title: 'Notifications',
     subtitle: 'Channels and parameters used to send notifications',

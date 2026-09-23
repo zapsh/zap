@@ -1233,14 +1233,40 @@ fn wait_with_timeout(
 }
 
 fn base_env() -> Vec<(String, String)> {
-    vec![
+    let mut env = vec![
         ("ZAP_PATH".into(), zap_path().to_string_lossy().into_owned()),
         ("ZAPCTL".into(), zapctl_bin().to_string_lossy().into_owned()),
         (
             "APPS_DIR".into(),
             super::install_root().to_string_lossy().into_owned(),
         ),
-    ]
+    ];
+    // 包下载源：面板「系统设置 → 下载源」写进 {data}/mirror.yaml，这里读出后
+    // 注入脚本环境。没配就不注入 —— 脚本侧 pkg_mirror() 自带默认镜像。
+    if let Some(base) = pkg_mirror_from_conf() {
+        env.push(("ZAP_PKG_MIRROR".into(), base));
+    }
+    env
+}
+
+/// 读 `{data}/mirror.yaml` 的 `pkg_mirror`（zapd 落盘的那份配置）。
+///
+/// 只取一个键，不引入完整反序列化：这里要的是「有没有配、配成什么」，
+/// 文件坏了（手工编辑出错）就当没配，让脚本回落到默认镜像，而不是让安装失败。
+fn pkg_mirror_from_conf() -> Option<String> {
+    let text = std::fs::read_to_string(data_dir().join("mirror.yaml")).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(v) = line.strip_prefix("pkg_mirror:") else {
+            continue;
+        };
+        let v = v.trim().trim_matches('\'').trim_matches('"').trim();
+        // 空白与控制字符一律不认：这个值会进脚本环境
+        if !v.is_empty() && !v.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Some(v.to_string());
+        }
+    }
+    None
 }
 
 /// 构造包脚本执行环境：在 base_env 基础上补齐脚本通用变量。
