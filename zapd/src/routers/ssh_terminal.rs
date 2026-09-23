@@ -513,6 +513,17 @@ pub async fn ws_terminal(
             .body(axum::body::Body::from("Invalid token"))
             .unwrap();
     };
+    // 终端票据（一键 SSH）：绑死在这条连接上 —— 截到票据也换不了连接
+    if claims.scope == crate::zap::jwt::SSH_SCOPE
+        && claims.sub != format!("ssh:{id}")
+    {
+        return axum::response::Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(axum::body::Body::from(
+                "该终端票据绑定的不是这条连接".to_string(),
+            ))
+            .unwrap();
+    }
     // 演示账号仅支持浏览，禁止通过终端执行命令
     if crate::zap::jwt::is_demo(&claims) {
         return axum::response::Response::builder()

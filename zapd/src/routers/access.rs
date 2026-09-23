@@ -1603,6 +1603,10 @@ pub const CLUSTER_SCOPE: &str = "cluster";
 /// 机器凭据唯一可访问的路径前缀（`/api` 之后的形式，见 [`normalize`]）。
 pub const CLUSTER_AGENT_PREFIX: &str = "/pro/cluster/agent";
 
+/// 终端票据唯一可访问的路径前缀（`/api` 之后的形式，见 [`normalize`]）：
+/// `GET /api/terminal/ws/{id}` 本身。
+pub const SSH_WS_PREFIX: &str = "/terminal/ws";
+
 /// 统一角色门禁中间件（挂在 `api_routers()` 上，覆盖所有 `/api/*` 接口）。
 #[allow(clippy::result_large_err)] // axum 中间件约定 Result<Response, Response>
 pub async fn guard(req: Request, next: Next) -> Result<Response, Response> {
@@ -1616,6 +1620,21 @@ pub async fn guard(req: Request, next: Next) -> Result<Response, Response> {
         Some(token) => jwt::claims_from_token(token).await,
         None => None,
     };
+
+    // 终端票据（scope=ssh）收口：只能访问终端 WebSocket，别的接口一律拒绝。
+    //
+    // 这类 token 是被控端为「一键 SSH」签的短时效凭据（见 `pro::cluster::ssh`），
+    // 浏览器会带着它直连那台机器；就算被截获，攻击者也只能开这一个终端、
+    // 且只有几分钟，摸不到任何管理接口。
+    if let Some(c) = &claims
+        && c.scope == jwt::SSH_SCOPE
+    {
+        if !prefix_hit(&path, SSH_WS_PREFIX) {
+            warn!("ssh scope denied: user={} path={}", c.sub, path);
+            return Err(deny(StatusCode::FORBIDDEN, "终端票据只能用于终端会话"));
+        }
+        return Ok(next.run(req).await);
+    }
 
     // 机器凭据（scope=cluster）收口：只能访问集群上报接口。
     // 必须先于角色门禁判定 —— agent 组在 RULES 里是 Public，靠角色下限拦不住，
@@ -2377,6 +2396,18 @@ mod tests {
         assert!(readonly_allows("/site/list", &Method::GET));
         assert!(readonly_allows("/system/files/list", &Method::GET));
         assert!(!readonly_allows("/terminal/ws/1", &Method::GET));
+    }
+
+    /// v3 一键 SSH：终端票据只在终端 WebSocket 上有效，别的接口一律够不着。
+    #[test]
+    fn ssh_scope_is_confined_to_terminal_ws() {
+        assert!(prefix_hit("/terminal/ws/1", SSH_WS_PREFIX));
+        for path in ["/system/status", "/site/list", "/terminal/list", "/user/list"] {
+            assert!(
+                !prefix_hit(path, SSH_WS_PREFIX),
+                "{path} 不该落在终端票据的可见范围内"
+            );
+        }
     }
 
     #[test]

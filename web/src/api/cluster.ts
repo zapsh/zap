@@ -30,6 +30,10 @@ export interface ClusterNode {
   channel?: boolean
   /** 长连建立时刻（时间戳秒，未连接为 null） */
   channelSince?: number | null
+  /** v2：鉴权方式，1=Ed25519 请求签名，0=旧静态 Token */
+  auth_mode?: number
+  /** v2：节点公钥指纹（SPKI sha256 前 32 位 hex），空=未升级 */
+  key_fp?: string
 }
 
 /** 注册口令（列表项：不含明文，明文只在生成那一次返回） */
@@ -86,13 +90,17 @@ export interface ClusterSelf {
   lastError: string
   enrolledAt: number
   tlsMode: number
-  tokenPrefix: string
-  hasToken: boolean
   /** 命令通道：1=已连上主控，可被推命令；0=未连接 */
   wsState: number
   wsSince: number
   /** 主控授权摘要（report 响应下发，仅展示用） */
   ctrlLicense: { expiresAt?: number | null; maxNodes?: number | null; usedNodes?: number }
+  /** 本机 Ed25519 密钥指纹（主控侧登记的就是它） */
+  keyFp: string
+  /** 主控证书 SPKI 钉（前 16 位），钉住后换证书一律拒绝 */
+  ctrlPin: string
+  /** v3：本机面板地址 —— 主控「一键 SSH」就是直连这个地址 */
+  selfAddr: string
 }
 
 /** 命令通道（v1.1）：顺着长连给节点下发命令 */
@@ -142,8 +150,24 @@ export function enableNode(id: number) {
   return http.post('/pro/cluster/nodes/enable', { id })
 }
 
-export function rotateNode(id: number) {
-  return http.post('/pro/cluster/nodes/rotate', { id })
+/**
+ * v3 一键 SSH：向这台节点要一枚 5 分钟的终端票据。
+ *
+ * 票据由**被控端自己**签发（主控拿不到它的 JWT 密钥），浏览器随后直连返回的
+ * `wsUrl` 开终端 —— 全程不经过主控转发。
+ */
+export interface SshTicket {
+  wsUrl: string
+  token: string
+  connId: number
+  ttlSec: number
+}
+
+export function sshTicket(id: number) {
+  return http.post<{ code: number; message?: string; data: SshTicket }>(
+    '/pro/cluster/nodes/ssh',
+    { id },
+  )
 }
 
 // ── 注册口令 ────────────────────────────────────────────

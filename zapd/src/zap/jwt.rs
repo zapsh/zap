@@ -109,6 +109,45 @@ pub fn generate_jwt_token_with_expire(
     )
 }
 
+/// 凭据作用域：一次性终端票据（v3 一键 SSH，由**被控端自己**签发）。
+///
+/// 带这个 scope 的 token 只能访问终端 WebSocket，见 `access::guard`。
+pub const SSH_SCOPE: &str = "ssh";
+
+/// 签发一枚**限定作用域**的短时效 JWT。
+///
+/// 与 [`generate_jwt_token_with_expire`] 的唯一区别是可以指定 `scope` 与 `sub`：
+/// 终端票据用它把凭据绑死在一条 SSH 连接上（`sub = "ssh:{conn_id}"`），
+/// 并让 `access::guard` 能把它收口到终端接口。
+pub fn generate_scoped_jwt(
+    id: u64,
+    sub: &str,
+    roles: &str,
+    expire: u64,
+    scope: &str,
+) -> Result<String, Error> {
+    let now_secs = time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let claims = Claims {
+        iat: now_secs,
+        sub: sub.to_string(),
+        iss: "Zap".to_string(),
+        id,
+        exp: now_secs + expire,
+        roles: roles.to_string(),
+        token_version: crate::zap::session::version_of(id),
+        scope: scope.to_string(),
+    };
+    let secure_key = &config::get_config().read().unwrap().jwt.jwt_secure;
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secure_key.as_ref()),
+    )
+}
+
 /// Check if the claims contain the admin role
 pub fn is_admin(claims: &Claims) -> bool {
     claims.roles.split(',').any(|r| r.trim() == "admin")

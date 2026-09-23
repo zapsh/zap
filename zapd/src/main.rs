@@ -61,7 +61,8 @@ struct Cli {
     #[clap(long, value_name = "NAME", requires = "join_url")]
     join_name: Option<String>,
 
-    /// 主控是自签证书时跳过证书校验（默认拒绝）
+    /// 主控是自签证书：只信任**第一次**接入看到的证书，随后把它的指纹钉死
+    /// （不再是一路放行；主控换证书将被拒绝，需重新接入）
     #[cfg(feature = "commercial")]
     #[clap(long, action, requires = "join_url")]
     join_insecure: bool,
