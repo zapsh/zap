@@ -36,6 +36,8 @@ export interface ClusterNode {
   key_fp?: string
   /** v3 上报方式：0=节点主动上报（要能出网），1=主控主动拉取（给不能出网的机器） */
   report_mode?: number
+  /** v4 批量编排：分组标签（空 = 未分组） */
+  node_group?: string
 }
 
 /** 注册口令（列表项：不含明文，明文只在生成那一次返回） */
@@ -482,4 +484,97 @@ export function deleteWebhook(id: number) {
 /** 发一条测试载荷，验证地址/签名对不对 */
 export function testWebhook(id: number) {
   return http.post('/pro/cluster/webhooks/test', { id })
+}
+
+// ── v4 批量命令编排：分组 / 任务库 / 执行批次 ─────────────
+
+export function setNodeGroup(data: { ids: number[]; group: string }) {
+  return http.post('/pro/cluster/nodes/group', data)
+}
+
+export function getNodeGroups() {
+  return http.get('/pro/cluster/nodes/groups')
+}
+
+/** 预存任务：常用命令存成任务，对分组 / 选中节点一键复用 */
+export interface CmdTask {
+  id: number
+  name: string
+  command: string
+  timeout: number
+  note: string
+  created_by: number
+  created_at: number
+}
+
+export function getCmdTasks() {
+  return http.get('/pro/cluster/cmd/tasks')
+}
+
+export function saveCmdTask(data: {
+  id?: number
+  name: string
+  command: string
+  timeout?: number
+  note?: string
+}) {
+  return data.id ? http.put('/pro/cluster/cmd/tasks', data) : http.post('/pro/cluster/cmd/tasks', data)
+}
+
+export function deleteCmdTask(id: number) {
+  return http.delete(`/pro/cluster/cmd/tasks/${id}`)
+}
+
+/** 一次批量执行的批次（目标在发起时快照成 id 列表，分组变化不影响已发批次） */
+export interface CmdRun {
+  id: number
+  task_id: number
+  name: string
+  command: string
+  timeout: number
+  targets: string
+  total: number
+  ok_count: number
+  fail_count: number
+  /** 0=执行中 1=已结束 */
+  status: number
+  created_by: number
+  created_at: number
+  finished_at: number
+}
+
+export interface CmdResult {
+  id: number
+  run_id: number
+  node_id: number
+  name: string
+  /** 0=待执行 1=成功 2=失败 */
+  status: number
+  exit_code: number
+  message: string
+  output: string
+  duration_ms: number
+}
+
+export function createCmdRun(data: {
+  taskId?: number
+  command?: string
+  timeout?: number
+  ids?: number[]
+  group?: string
+  all?: boolean
+}) {
+  return http.post('/pro/cluster/cmd/runs', data)
+}
+
+export function getCmdRuns(limit = 20) {
+  return http.get('/pro/cluster/cmd/runs', { params: { limit } })
+}
+
+export function getCmdRun(id: number) {
+  return http.get(`/pro/cluster/cmd/runs/${id}`)
+}
+
+export function deleteCmdRun(id: number) {
+  return http.delete(`/pro/cluster/cmd/runs/${id}`)
 }
