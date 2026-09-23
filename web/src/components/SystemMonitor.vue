@@ -1,6 +1,18 @@
 <template>
   <div class="system-monitor">
-    <el-row :gutter="16">
+    <!-- 时间范围工具条：实时高频刷新；历史范围一次加载降采样数据，手动刷新 -->
+    <div class="monitor-toolbar">
+      <MonitorRangePicker v-model="range" />
+      <div v-if="!isLive" class="asof">
+        <span class="asof-text">
+          {{ refreshing ? t('monitorRange.loading') : t('monitorRange.asOf', { time: asOfText }) }}
+        </span>
+        <el-button link type="primary" :loading="refreshing" @click="run">
+          {{ t('monitorRange.refresh') }}
+        </el-button>
+      </div>
+    </div>
+    <el-row v-loading="refreshing" :gutter="16">
       <el-col v-for="card in cards" :key="card.id" :xs="24" :md="12" class="chart-col">
         <el-card shadow="never" class="chart-card">
           <template #header>
@@ -11,7 +23,7 @@
               </div>
               <div class="chart-meta">
                 <span class="chart-value">{{ card.value }}</span>
-                <span v-if="showRefreshHint" class="refresh-hint">
+                <span v-if="showRefreshHint && isLive" class="refresh-hint">
                   {{ t('systemMonitor.autoRefresh', { sec: countdown }) }}
                 </span>
               </div>
@@ -40,6 +52,8 @@ import { applyChartTheme, watchChartTheme } from '@/utils/chart-theme'
 import { isArray } from '@/utils/validate'
 import { formatBytes } from '@/utils/fmt'
 import { getRTStatus } from '@/api/dashboard.ts'
+import { monitorTimeLabel, useMonitorRange } from '@/composables/useMonitorRange'
+import MonitorRangePicker from '@/components/MonitorRangePicker.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -69,6 +83,16 @@ const COLORS = {
 const countdown = ref(props.refreshSecs)
 const canvases = new Map<string, HTMLCanvasElement>()
 const latest = ref({ cpu: '-', memory: '-', load: '-', up: '-', down: '-' })
+
+// ── 时间范围：live = 5s 倒计时轮询；历史范围一次加载 + 手动刷新 ──
+const lastTs = ref(0)
+const { range, isLive, refreshing, epoch, run } = useMonitorRange(
+  (r, ep) => fetchRTStatus(r, ep),
+  props.refreshSecs,
+)
+const asOfText = computed(() =>
+  lastTs.value ? new Date(lastTs.value * 1000).toLocaleString() : '-',
+)
 
 let cpu_chart: Chart
 let memory_chart: Chart
@@ -273,8 +297,7 @@ function initCharts() {
 }
 
 function timeLabel(ts: number) {
-  const tm = new Date(ts * 1000)
-  return `${tm.getHours()}:${tm.getMinutes().toString().padStart(2, '0')}:${tm.getSeconds().toString().padStart(2, '0')}`
+  return monitorTimeLabel(ts, range.value)
 }
 
 function updateCharts(resp: Record<string, any>) {
@@ -327,6 +350,7 @@ function updateCharts(resp: Record<string, any>) {
   // 卡片右上角的最新值，让用户不悬停也能看到当前状态
   const last = stats[stats.length - 1]
   const lastNet = net_stats[net_stats.length - 1]
+  lastTs.value = Number(last?.created_at || 0)
   latest.value = {
     cpu: last ? `${Number(last.cpu_usage || 0).toFixed(1)}%` : '-',
     memory: last ? `${Number(last.memory_usage || 0).toFixed(1)}%` : '-',
@@ -336,10 +360,13 @@ function updateCharts(resp: Record<string, any>) {
   }
 }
 
-/** 拉一次实时状态：成功后刷新图表并回传给调用方 */
-async function fetchRTStatus() {
+/** 拉一次状态（实时或按当前范围的历史降采样），成功后刷新图表并回传给调用方 */
+async function fetchRTStatus(rangeValue?: string, reqEpoch?: number) {
   try {
-    const resp: any = await getRTStatus()
+    const resp: any = await getRTStatus(
+      rangeValue && rangeValue !== 'live' ? { range: rangeValue } : undefined,
+    )
+    if (reqEpoch !== undefined && reqEpoch !== epoch.value) return // 范围已切换，丢弃过期响应
     if (destroyed || resp?.code !== 0) return
     const data = resp.data || {}
     updateCharts(data)
@@ -348,6 +375,23 @@ async function fetchRTStatus() {
     // 轮询失败不打断后续刷新（下次 tick 自动重试）
   }
 }
+
+/** 停掉实时倒计时（历史范围下不自动轮询） */
+function stopTicker() {
+  if (countdown_timer) {
+    clearInterval(countdown_timer)
+    countdown_timer = undefined
+  }
+}
+
+/** 切换范围后重置实时倒计时（仅 live 模式有自动轮询） */
+watch(range, (v) => {
+  if (v === 'live') {
+    startTicker()
+  } else {
+    stopTicker()
+  }
+})
 
 /** 倒计时 + 到点拉取（组件自行维护，父级无需关心） */
 function startTicker() {
@@ -388,7 +432,7 @@ watch(locale, () => {
 
 onMounted(async () => {
   initCharts()
-  await fetchRTStatus()
+  await run()
   if (destroyed) return
   startTicker()
   window.addEventListener('resize', resizeCharts)
@@ -409,6 +453,21 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.monitor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.asof {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
 .chart-col {
   margin-bottom: 16px;
 }

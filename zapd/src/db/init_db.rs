@@ -17,6 +17,7 @@ pub async fn init_schema() {
     init_system_user_table_schema().await;
     init_system_monitor_table_schema().await;
     init_system_monitor_networks_table_schema().await;
+    init_monitor_indexes().await;
     init_roles_table().await;
     // 菜单：建表 + 结构化种子（id 自增），随后按种子里的 roles 生成 role_menus
     let menu_ids = init_menus_table().await;
@@ -312,6 +313,19 @@ async fn init_system_monitor_table_schema() {
     )
     "#;
     let _ = get_db_pool().await.execute(sql_script).await;
+}
+
+/// 监控历史查询按 created_at 范围过滤 + 分桶聚合：这两张表没有索引的话，
+/// 一次 30 天范围查询就是 ~26 万行全表扫描（原始数据 10s 一条），
+/// 表现就是「切换时间范围没反应，隔一会数据才跳出来」。
+async fn init_monitor_indexes() {
+    let pool = get_db_pool().await;
+    let _ = pool
+        .execute("CREATE INDEX IF NOT EXISTS idx_system_stats_created ON system_stats(created_at)")
+        .await;
+    let _ = pool
+        .execute("CREATE INDEX IF NOT EXISTS idx_networks_stats_created ON networks_stats(created_at)")
+        .await;
 }
 
 async fn init_system_monitor_networks_table_schema() {

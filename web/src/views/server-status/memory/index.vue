@@ -41,13 +41,14 @@
       </el-col>
     </el-row>
 
-    <el-card shadow="hover" class="mt-4">
+    <el-card v-loading="refreshing" shadow="hover" class="mt-4">
       <template #header>
         <div class="card-header">
           <span>{{ t('statusMemory.trend') }}</span>
+          <MonitorRangePicker v-model="range" />
         </div>
       </template>
-      <canvas id="memory_chart" style="width: 100%; height: 320px"></canvas>
+      <canvas id="memory_chart" style="width: 100%; height: 240px"></canvas>
     </el-card>
   </div>
 </template>
@@ -58,6 +59,8 @@ import { applyChartTheme, watchChartTheme } from '@/utils/chart-theme'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getRTStatus, getSystemInfo } from '@/api/dashboard.ts'
+import MonitorRangePicker from '@/components/MonitorRangePicker.vue'
+import { monitorTimeLabel, useMonitorRange } from '@/composables/useMonitorRange'
 import { formatBytes } from '@/utils/fmt'
 
 const { t } = useI18n()
@@ -80,6 +83,12 @@ const memoryColor = computed(() => {
 let memory_chart: Chart
 let timer: ReturnType<typeof setInterval> | undefined
 let destroyed = false
+
+// 时间范围：实时高频轮询；历史范围一次加载降采样数据（不自动轮询）
+const { range, isLive, refreshing, epoch, run, startPolling, stopPolling } = useMonitorRange(
+  (r, ep) => FetchRTStatus(r, ep),
+  5,
+)
 
 onMounted(async () => {
   const container = document.getElementById('memory_chart') as HTMLCanvasElement
@@ -116,14 +125,14 @@ onMounted(async () => {
   if (destroyed) return
   await FetchRTStatus()
   if (destroyed) return
-  timer = setInterval(FetchRTStatus, 5000)
+  startPolling()
 })
 
 watchChartTheme(() => [memory_chart])
 
 onUnmounted(() => {
   destroyed = true
-  if (timer) clearInterval(timer)
+  stopPolling()
   memory_chart?.destroy()
 })
 
@@ -141,8 +150,11 @@ const loadSystemInfo = async () => {
   if (resp.code === 0) applyMemory(resp.data)
 }
 
-const FetchRTStatus = async () => {
-  const resp = await getRTStatus()
+const FetchRTStatus = async (rangeValue?: string, reqEpoch?: number) => {
+  const resp = await getRTStatus(
+    (rangeValue ?? range.value) === 'live' ? undefined : { range: rangeValue ?? range.value },
+  )
+  if (reqEpoch !== undefined && reqEpoch !== epoch.value) return // 范围已切换，丢弃过期响应
   if (destroyed || resp.code !== 0) return
   const data = resp.data
   applyMemory(data)
@@ -151,10 +163,7 @@ const FetchRTStatus = async () => {
   const mem: any[] = []
   data.system_stats.forEach((el: Record<string, any>) => {
     mem.push(parseFloat(el.memory_usage.toFixed(2)))
-    const tm = new Date(el.created_at * 1000)
-    labels.push(
-      `${tm.getHours()}:${String(tm.getMinutes()).padStart(2, '0')}:${String(tm.getSeconds()).padStart(2, '0')}`,
-    )
+    labels.push(monitorTimeLabel(el.created_at, range.value))
   })
   memory_chart.data.labels = labels
   memory_chart.data.datasets[0].data = mem

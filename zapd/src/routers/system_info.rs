@@ -1,5 +1,7 @@
 use axum::Json;
+use axum::extract::Query;
 use serde_json::json;
+use std::collections::HashMap;
 
 use crate::zap::{self, ZapJsonResult, jwt::ValidatedClaims};
 
@@ -7,8 +9,8 @@ pub async fn system_info(_: ValidatedClaims) -> ZapJsonResult {
     zap::system_info::get_system_info().await
 }
 
-pub async fn system_status(_: ValidatedClaims) -> ZapJsonResult {
-    zap::system_info::get_system_status().await
+pub async fn system_status(claims: ValidatedClaims, q: Query<HashMap<String, String>>) -> ZapJsonResult {
+    zap::system_info::get_system_status(claims, q).await
 }
 
 pub async fn system_overview(_: ValidatedClaims) -> ZapJsonResult {

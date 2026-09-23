@@ -161,7 +161,7 @@
       "description": "监控大盘 / 操作审计",
       "endpoints": [
         { "method": "GET", "path": "/system/info", "summary": "主机基础信息（CPU / 内存 / 磁盘 / 网络等）" },
-        { "method": "GET", "path": "/system/status", "summary": "实时运行状态快照" },
+        { "method": "GET", "path": "/system/status", "summary": "运行状态快照与历史曲线数据", "params": [{ "name": "range", "type": "string", "required": false, "desc": "时间范围：live（默认，近 5 分钟原始点）/ 1h / 6h / 24h / 7d / 30d（按时间桶 AVG 降采样，返回 ~120-180 点）" } ] },
         { "method": "GET", "path": "/system/overview", "summary": "大盘概览（图表数据源）" },
         { "method": "GET", "path": "/system/job/stop", "summary": "停止监控采集任务" },
         { "method": "GET", "path": "/system/job/start", "summary": "启动监控采集任务" },

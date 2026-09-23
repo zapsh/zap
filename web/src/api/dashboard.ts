@@ -9,8 +9,14 @@ export async function getSystemInfo() {
 }
 
 
-export async function getRTStatus(){
-  return http.get<ApiResponse>('/system/status')
+/**
+ * 服务器状态（含 CPU / 内存 / 负载 / 网络历史曲线数据）。
+ *
+ * @param range `live`（默认，近 5 分钟原始点 + 前端高频轮询）或
+ *              `1h / 6h / 24h / 7d / 30d`（后端按时间桶降采样，~120-180 点）
+ */
+export async function getRTStatus(params?: { range?: string }) {
+  return http.get<ApiResponse>('/system/status', { params })
 }
 
 export async function getSystemOverview() {

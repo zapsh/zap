@@ -76,6 +76,7 @@ declare module 'vue' {
     ElTree: typeof import('element-plus/es')['ElTree']
     ElUpload: typeof import('element-plus/es')['ElUpload']
     Hamburger: typeof import('./src/components/Hamburger/index.vue')['default']
+    MonitorRangePicker: typeof import('./src/components/MonitorRangePicker.vue')['default']
     NavPillPanels: typeof import('./src/components/NavPillPanels.vue')['default']
     Permission: typeof import('./src/components/Permission/index.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

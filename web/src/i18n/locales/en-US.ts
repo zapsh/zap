@@ -1607,6 +1607,18 @@ const enUS: Messages = {
     download: 'Download',
   },
 
+  monitorRange: {
+    live: 'Live',
+    '1h': '1 hour',
+    '6h': '6 hours',
+    '24h': '24 hours',
+    '7d': '7 days',
+    '30d': '30 days',
+    asOf: 'As of {time}',
+    refresh: 'Refresh',
+    loading: 'Loading…',
+  },
+
   /** Server status - CPU */
   statusCpu: {
     usage: 'CPU Usage',

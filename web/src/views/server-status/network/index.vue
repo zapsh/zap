@@ -27,10 +27,11 @@
       </el-table>
     </el-card>
 
-    <el-card shadow="hover" class="mt-4">
+    <el-card v-loading="refreshing" shadow="hover" class="mt-4">
       <template #header>
         <div class="card-header">
           <span>{{ t('statusNetwork.trend') }}</span>
+          <MonitorRangePicker v-model="range" />
           <el-select
             v-model="selectedNet"
             size="small"
@@ -41,7 +42,7 @@
           </el-select>
         </div>
       </template>
-      <canvas id="network_chart" style="width: 100%; height: 320px"></canvas>
+      <canvas id="network_chart" style="width: 100%; height: 240px"></canvas>
     </el-card>
   </div>
 </template>
@@ -53,6 +54,8 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Refresh } from '@/icons'
 import { getRTStatus } from '@/api/dashboard.ts'
+import MonitorRangePicker from '@/components/MonitorRangePicker.vue'
+import { monitorTimeLabel, useMonitorRange } from '@/composables/useMonitorRange'
 import { formatBytes } from '@/utils/fmt'
 
 const { t } = useI18n()
@@ -66,6 +69,12 @@ let history: Record<string, any[]> = {}
 let network_chart: Chart
 let timer: ReturnType<typeof setInterval> | undefined
 let destroyed = false
+
+// 时间范围：实时高频轮询；历史范围一次加载降采样数据（不自动轮询）
+const { range, isLive, refreshing, epoch, run, startPolling, stopPolling } = useMonitorRange(
+  (r, ep) => FetchRTStatus(r, ep),
+  5,
+)
 
 onMounted(async () => {
   const container = document.getElementById('network_chart') as HTMLCanvasElement
@@ -117,14 +126,14 @@ onMounted(async () => {
 
   await FetchRTStatus()
   if (destroyed) return
-  timer = setInterval(FetchRTStatus, 5000)
+  startPolling()
 })
 
 watchChartTheme(() => [network_chart])
 
 onUnmounted(() => {
   destroyed = true
-  if (timer) clearInterval(timer)
+  stopPolling()
   network_chart?.destroy()
 })
 
@@ -136,10 +145,7 @@ const rebuildNetworkChart = () => {
   samples.forEach((el: Record<string, any>) => {
     down.push((el.received / 1024).toFixed(2))
     up.push((el.transmitted / 1024).toFixed(2))
-    const tm = new Date(el.created_at * 1000)
-    labels.push(
-      `${tm.getHours()}:${String(tm.getMinutes()).padStart(2, '0')}:${String(tm.getSeconds()).padStart(2, '0')}`,
-    )
+    labels.push(monitorTimeLabel(el.created_at, range.value))
   })
   network_chart.data.labels = labels
   network_chart.data.datasets[0].data = down
@@ -147,11 +153,14 @@ const rebuildNetworkChart = () => {
   network_chart.update('none')
 }
 
-const FetchRTStatus = async () => {
+const FetchRTStatus = async (rangeValue?: string, reqEpoch?: number) => {
   if (destroyed) return
   loading.value = true
   try {
-    const resp = await getRTStatus()
+    const resp = await getRTStatus(
+      (rangeValue ?? range.value) === 'live' ? undefined : { range: rangeValue ?? range.value },
+    )
+    if (reqEpoch !== undefined && reqEpoch !== epoch.value) return // 范围已切换，丢弃过期响应
     if (destroyed || resp.code !== 0) return
     const stats: Record<string, any>[] = resp.data.network_stats || []
     if (!stats.length) return
@@ -174,11 +183,14 @@ const FetchRTStatus = async () => {
       const latest = samples[samples.length - 1]
       let downRate = ''
       let upRate = ''
-      if (samples.length >= 2) {
+      if (samples.length >= 2 && isLive.value) {
         const prev = samples[samples.length - 2]
         const dt = Math.max(latest.created_at - prev.created_at, 1)
         downRate = `${formatBytes(Math.max(latest.received - prev.received, 0) / dt)}/s`
         upRate = `${formatBytes(Math.max(latest.transmitted - prev.transmitted, 0) / dt)}/s`
+      } else if (latest) {
+        downRate = `${formatBytes(latest.received)}/s`
+        upRate = `${formatBytes(latest.transmitted)}/s`
       }
       return { ...latest, downRate, upRate }
     })

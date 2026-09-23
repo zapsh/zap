@@ -1612,6 +1612,18 @@ export default {
     download: '下行',
   },
 
+  monitorRange: {
+    live: '实时',
+    '1h': '近 1 小时',
+    '6h': '近 6 小时',
+    '24h': '近 24 小时',
+    '7d': '近 7 天',
+    '30d': '近 30 天',
+    asOf: '数据截至 {time}',
+    refresh: '刷新',
+    loading: '加载中…',
+  },
+
   /** 服务器状态 - CPU */
   statusCpu: {
     usage: 'CPU 使用率',

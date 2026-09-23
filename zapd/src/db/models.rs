@@ -22,6 +22,18 @@ pub struct SystemStatsModel {
     pub created_at: u64,
 }
 
+/// 降采样后的监控点（时间桶 AVG 聚合，见 `get_system_status` 的 range 模式）。
+#[derive(Debug, Clone, sqlx::FromRow, Deserialize, Serialize)]
+pub struct SystemStatsPoint {
+    pub created_at: i64,
+    pub loadavg_one: f64,
+    pub loadavg_five: f64,
+    pub loadavg_fifteen: f64,
+    pub cpu_usage: f64,
+    pub memory_usage: f64,
+    pub swap_usage: f64,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, sqlx::FromRow, Deserialize, Serialize)]
 pub struct NetworksStatsModel {

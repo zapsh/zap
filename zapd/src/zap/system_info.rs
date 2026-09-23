@@ -1,8 +1,8 @@
-use crate::{db, zap::ZapJsonResult};
-use axum::Json;
-use chrono::Duration;
+use crate::{db, zap::{ZapJsonResult, jwt::ValidatedClaims}};
+use axum::{Json, extract::Query};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration as StdDuration, Instant};
 
@@ -181,7 +181,7 @@ pub async fn get_system_info() -> ZapJsonResult {
     })))
 }
 
-pub async fn get_system_status() -> ZapJsonResult {
+pub async fn get_system_status(_: ValidatedClaims, Query(q): Query<HashMap<String, String>>) -> ZapJsonResult {
     let mut sys = System::new_all();
     let load_avg = System::load_average();
 
@@ -191,22 +191,81 @@ pub async fn get_system_status() -> ZapJsonResult {
         Err(_) => "0 s".to_string(),
     };
     let current_time = chrono::Local::now();
-    let five_algo = current_time - Duration::minutes(5);
+
+    // 时间范围：live（默认，近 5 分钟原始点，10s 一条）之外按桶降采样，
+    // 桶宽的选择让每种范围都落在 ~120-180 个点，前端曲线不会糊成一团。
+    // （参数与返回形状兼容：不带 range 的调用行为与旧版完全一致。）
+    let (window_secs, bucket): (i64, i64) = match q.get("range").map(|s| s.as_str()).unwrap_or("live") {
+        "1h" => (3600, 30),
+        "6h" => (6 * 3600, 180),
+        "24h" => (24 * 3600, 600),
+        "7d" => (7 * 86400, 3600),
+        "30d" => (30 * 86400, 14400),
+        _ => (300, 0),
+    };
+    let since = current_time.timestamp() - window_secs;
 
     let pool = db::get_db_pool().await;
-    let system_stats: Vec<db::models::SystemStatsModel> =
-        sqlx::query_as("select * from system_stats where created_at >= $1")
-            .bind(five_algo.timestamp())
-            .fetch_all(pool)
-            .await?;
-    let network_stats: Vec<db::models::NetworksStatsForDashboard> = sqlx::query_as(
-        "select name, received,transmitted,packets_received,
+    let (system_stats, network_stats) = if bucket > 0 {
+        // 历史范围：按时间桶 AVG 聚合（原始表 10s 一条，30 天内都有数据）。
+        // 累计计数器（total_*）取桶内 MAX 即桶末值；网络历史模式不回 IP 列表。
+        let system_stats: Vec<db::models::SystemStatsPoint> = sqlx::query_as(
+            "select (created_at / $2) * $2 as created_at,
+                    avg(loadavg_one) as loadavg_one, avg(loadavg_five) as loadavg_five,
+                    avg(loadavg_fifteen) as loadavg_fifteen, avg(cpu_usage) as cpu_usage,
+                    avg(memory_usage) as memory_usage, avg(swap_usage) as swap_usage
+             from system_stats where created_at >= $1
+             group by created_at / $2 order by created_at / $2",
+        )
+        .bind(since)
+        .bind(bucket)
+        .fetch_all(pool)
+        .await?;
+        let network_stats: Vec<db::models::NetworksStatsForDashboard> = sqlx::query_as(
+            "select name, (created_at / $2) * $2 as created_at,
+                    cast(avg(received) as integer) as received,
+                    cast(avg(transmitted) as integer) as transmitted,
+                    cast(avg(packets_received) as integer) as packets_received,
+                    cast(avg(packets_transmitted) as integer) as packets_transmitted,
+                    max(total_received) as total_received,
+                    max(total_transmitted) as total_transmitted,
+                    '' as ipaddrs
+             from networks_stats where created_at >= $1
+             group by name, created_at / $2 order by name, created_at / $2",
+        )
+        .bind(since)
+        .bind(bucket)
+        .fetch_all(pool)
+        .await?;
+        (system_stats, network_stats)
+    } else {
+        let rows: Vec<db::models::SystemStatsModel> =
+            sqlx::query_as("select * from system_stats where created_at >= $1")
+                .bind(since)
+                .fetch_all(pool)
+                .await?;
+        let system_stats: Vec<db::models::SystemStatsPoint> = rows
+            .into_iter()
+            .map(|r| db::models::SystemStatsPoint {
+                created_at: r.created_at as i64,
+                loadavg_one: r.loadavg_one,
+                loadavg_five: r.loadavg_five,
+                loadavg_fifteen: r.loadavg_fifteen,
+                cpu_usage: r.cpu_usage,
+                memory_usage: r.memory_usage,
+                swap_usage: r.swap_usage,
+            })
+            .collect();
+        let network_stats: Vec<db::models::NetworksStatsForDashboard> = sqlx::query_as(
+            "select name, received,transmitted,packets_received,
     packets_transmitted,total_received,total_transmitted,
     ipaddrs,created_at from networks_stats where created_at >= $1",
-    )
-    .bind(five_algo.timestamp())
-    .fetch_all(pool)
-    .await?;
+        )
+        .bind(since)
+        .fetch_all(pool)
+        .await?;
+        (system_stats, network_stats)
+    };
     sys.refresh_cpu_usage();
     Ok(Json(json!({
         "code":0,
@@ -228,6 +287,8 @@ pub async fn get_system_status() -> ZapJsonResult {
             "loadavg_one": load_avg.one,
             "loadavg_five": load_avg.five,
             "loadavg_fifteen": load_avg.fifteen,
+            "range": q.get("range").map(|s| s.as_str()).unwrap_or("live"),
+            "bucket": bucket,
             "system_stats" : system_stats,
             "network_stats" : network_stats,
         }
