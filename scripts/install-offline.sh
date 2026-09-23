@@ -45,6 +45,13 @@ if [ -z "${BASH_VERSION:-}" ]; then
     die "未找到 bash：请先安装后重试"
 fi
 
+# --help 要在 root 检查之前：非 root 想看用法时不该被「请先 sudo」挡回来
+for a in "$@"; do
+    [ "$a" = "-h" ] || [ "$a" = "--help" ] || continue
+    usage
+    exit 0
+done
+
 [ "$(id -u)" -eq 0 ] || die "请以 root 身份运行：sudo bash $0"
 
 PKG=""; NO_VERIFY=0
@@ -107,4 +114,5 @@ chmod +x "$INSTALL_SH" 2>/dev/null || true
 printf "${GREEN}========================================${NC}\n"
 printf "${GREEN}   ZAP 离线安装（无外网环境）${NC}\n"
 printf "${GREEN}========================================${NC}\n"
+info "后续升级: sudo bash ${HERE}/upgrade-offline.sh --pkg <新版本发布包>"
 exec bash "$INSTALL_SH" --pkg "$PKG" --offline "$@"

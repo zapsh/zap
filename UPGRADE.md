@@ -4,13 +4,14 @@
 > Copied to `data/www/html/UPGRADE.md` by `build.sh`,
 > rendered to HTML by `GET /api/docs/upgrade` (both copies are kept in sync).
 
-## Three ways to upgrade
+## Ways to upgrade
 
 | Method | When to use | Entry point |
 | --- | --- | --- |
 | Panel | day-to-day: progress, history, scheduled auto-update | System Settings → About ZAP → System Update → Check / Update now |
 | CLI | panel is down, services won't start, fleet ops | `zapupgrade upgrade --to latest` |
-| Install script | first deploy, offline, release tarball already at hand | `bash scripts/install.sh [version]` |
+| Offline scripts | air-gapped / intranet: install or upgrade from a local tarball | `bash install-offline.sh` / `bash upgrade-offline.sh` |
+| Install script | first deploy, release tarball already at hand | `bash scripts/install.sh [version]` |
 
 The CLI and the panel share the exact same replacement routine
 (backup → atomic replace → restart → rollback on failure); they only differ in who downloads
@@ -32,7 +33,8 @@ bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # tarball a
 ```
 
 Result: `dist/zap-offline-v<version>[-pro]-linux-<arch>.tar.gz`, containing the release tarball,
-`install.sh` / `install-offline.sh` / `uninstall.sh`, a `SHA256SUMS` and a short readme.
+`install.sh` / `install-offline.sh` / `upgrade-offline.sh` / `uninstall.sh`, a `SHA256SUMS`,
+a `<tarball>.sha256` and a short readme. One bundle serves both install and upgrade.
 
 **2. Copy it to the intranet host and install**
 
@@ -53,7 +55,41 @@ Notes:
 
 - A `-pro` tarball installs as Zap Pro (recorded in `/etc/zap/edition`); no need to pass `--pro`
 - AppStore falls back to the seed packages shipped inside the release; retry the update from the panel
-- Upgrading offline works the same way: copy the newer bundle over and rerun `install-offline.sh`
+- Upgrading an installed host uses the other entry point: `upgrade-offline.sh`, see below
+
+## Offline upgrade (air-gapped / intranet hosts)
+
+A host that already has ZAP installed upgrades from the **same** bundle — no reinstall needed:
+
+```bash
+tar zxf zap-offline-v<version>-linux-<arch>.tar.gz
+cd zap-offline
+sudo bash upgrade-offline.sh                      # picks the highest version in this directory
+sudo bash upgrade-offline.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz
+sudo bash upgrade-offline.sh --force              # reinstall / downgrade to this version
+```
+
+It picks and verifies the tarball exactly like `install-offline.sh`, then hands it to
+`zapupgrade upgrade --pkg <tarball>` — **the same replace flow as an online upgrade**
+(backup → atomic replace → restart → auto-rollback on failure → `zapupgrade rollback`).
+Offline only swaps "download" for "read a local file"; the upgrade is just as safe.
+
+The upgrader can be called directly too:
+
+```bash
+sudo zapupgrade upgrade --pkg ./zap-v1.2.3-linux-amd64.tar.gz --dir /usr/local/zap
+```
+
+Offline upgrades reject these **before** any binary is replaced (copying the wrong file over
+is far more likely offline than a bad download):
+
+| Rejected | Why | What to do |
+| --- | --- | --- |
+| version unparseable from the filename | offline the filename is the only metadata | name it `zap-v<version>[-pro]-linux-<arch>.tar.gz`, or pass `--to` |
+| wrong architecture | would brick the host | copy the tarball for this architecture |
+| no binaries inside | usually the outer `zap-offline-*.tar.gz` | use the `zap-v*.tar.gz` found inside it |
+| sha256 mismatch | corrupted in transit, or wrong file | re-copy; `--no-verify` if you're sure |
+| different edition than installed | avoid clobbering Pro with Community (or vice versa) | pass `--pro` / `--community` to confirm |
 
 ## CLI upgrade
 
@@ -63,6 +99,7 @@ Must run as root (writes `/usr/local/zap` and restarts services):
 zapupgrade upgrade                     # latest version
 zapupgrade upgrade --to v1.0.12        # specific version
 zapupgrade upgrade --to 1.0.12 --force # reinstall even if already on that version
+zapupgrade upgrade --pkg ./zap-v1.0.12-linux-amd64.tar.gz   # offline, from a local tarball
 ```
 
 Flow: read `latest.txt` from the channel → download
@@ -77,9 +114,14 @@ upstream) → unpack → back up the current binaries to
 | `--dir` | ZAP installation root | `/usr/local/zap` |
 | `--log` | upgrade log (append) | `data/upgrade/logs/run-cli-<timestamp>.log` |
 | `--force` | install even when the target is not newer | off |
+| `--pkg` | **offline upgrade**: use a local tarball, no network (version / edition / arch from the filename) | none |
+| `--sha256` | expected hash for the local tarball (defaults to `<tarball>.sha256`; no hash → skip) | none |
+| `--no-verify` | skip the sha256 check for the local tarball | off |
 
 Notes:
 
+- With both `--pkg` and `--to`, the version comes from `--to` (a mismatch is logged), but the
+  architecture and edition are always taken from the filename — offline, that is the trustworthy part.
 - The panel is briefly unavailable during the upgrade (`zapd` restarts last).
 - Without systemd (docker, bare `rundev.sh` processes) the binaries are replaced but not
   restarted; the log says a manual restart is required.

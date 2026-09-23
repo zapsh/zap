@@ -111,6 +111,15 @@ enum Command {
         /// 回退到社区版（包名无后缀）；与 --pro 互斥，缺省时按 /etc/zap/edition 判断
         #[arg(long, action, conflicts_with = "pro")]
         community: bool,
+        /// **离线升级**：用本地发行包，不联网（版本号 / 发行线 / 架构都从文件名解析）
+        #[arg(long, value_name = "路径")]
+        pkg: Option<String>,
+        /// 本地包的 sha256（缺省时读 `<包>.sha256`；两者都没有就跳过校验）
+        #[arg(long, value_name = "HEX")]
+        sha256: Option<String>,
+        /// 跳过本地包的 sha256 校验（包确实改过且确认无误时用）
+        #[arg(long, action)]
+        no_verify: bool,
     },
     /// 回滚到历史备份（升级时自动备份到 data/upgrade/backup/）
     Rollback {
@@ -256,8 +265,24 @@ fn main() {
                 force,
                 pro,
                 community,
+                pkg,
+                sha256,
+                no_verify,
             }),
-        ) => cmd_upgrade(to, channel, *force, *pro, *community, &dir, &log),
+        ) => cmd_upgrade(
+            &UpgradeOpts {
+                to,
+                channel,
+                force: *force,
+                pro: *pro,
+                community: *community,
+                pkg: pkg.as_deref(),
+                sha256: sha256.as_deref(),
+                no_verify: *no_verify,
+            },
+            &dir,
+            &log,
+        ),
         (None, Some(Command::Rollback { list, to })) => cmd_rollback(*list, to, &dir, &log),
         (None, None) => {
             eprintln!(
@@ -267,6 +292,12 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// 记一行错误并退出码 1（升级前的参数 / 包校验失败都用这个口径）。
+fn fail(log: &str, msg: &str) -> i32 {
+    log_line(log, msg);
+    1
 }
 
 /// 命令行模式的默认日志：`{dir}/data/upgrade/logs/run-cli-{ts}.log`。
@@ -671,6 +702,14 @@ fn download_and_stage(
         ));
     }
 
+    unpack_into_stage(&data, version, dir)
+}
+
+/// 解包 + 规整 + 写版本文件：`stage/{…}` 目录就绪。
+///
+/// 在线下载与离线本地包共用这一段 —— 两者只是**包从哪来**不同，
+/// 后面「备份 → 替换 → 重启 → 失败回滚」必须走同一条路（否则离线的升级质量没人保证）。
+fn unpack_into_stage(data: &[u8], version: &str, dir: &Path) -> Result<PathBuf, String> {
     let stage = dir
         .join("data/upgrade/stage")
         .join(format!("cli-{}-v{version}", now_secs()));
@@ -693,22 +732,217 @@ fn download_and_stage(
     Ok(stage)
 }
 
-/// `zapupgrade upgrade --to <版本>`：下载 → 校验 → 走与面板同一套替换流程。
-fn cmd_upgrade(
-    to: &str,
-    channel: &str,
+/// 发行包文件名：`zap-v<版本>[-pro]-linux-<架构>.tar.gz`。
+///
+/// 离线升级时**文件名是唯一的元信息来源**（包内没有清单、也不能联网查），
+/// 版本 / 发行线 / 架构全靠它 —— 拷错包（版本、架构、发行线）必须在替换二进制**之前**拦住。
+struct PkgName {
+    version: String,
+    pro: bool,
+    arch: String,
+}
+
+fn parse_pkg_name(path: &str) -> Option<PkgName> {
+    // 只取文件名：路径里可能有带 `-linux-amd64` 的目录名，会误导解析
+    let name = std::path::Path::new(path)
+        .file_name()?
+        .to_string_lossy()
+        .into_owned();
+    let rest = name.strip_prefix("zap-v")?.strip_suffix(".tar.gz")?;
+    // 从右往左剥：架构 → 固定的 linux → 可选的 -pro，剩下的就是版本号
+    let (rest, arch) = rest.rsplit_once("-linux-")?;
+    let (rest, pro) = match rest.strip_suffix("-pro") {
+        Some(r) => (r, true),
+        None => (rest, false),
+    };
+    if rest.is_empty() || arch.is_empty() {
+        return None;
+    }
+    Some(PkgName {
+        version: rest.to_string(),
+        pro,
+        arch: arch.to_string(),
+    })
+}
+
+/// 离线包校验：`--sha256 <hex>` > `<包>.sha256` > 没有就不校验。
+///
+/// 校验的是**传递过程**：离线包要经 U 盘 / 内网传输，损坏或拿错包的概率比直连下载高。
+/// 没有校验依据时不拦（自建包的场景很常见），但会记一条日志。
+fn verify_local_pkg(
+    pkg: &str,
+    data: &[u8],
+    sha256: Option<&str>,
+    no_verify: bool,
+    log: &str,
+) -> Result<(), String> {
+    if no_verify {
+        log_line(log, "已按 --no-verify 跳过 sha256 校验");
+        return Ok(());
+    }
+    let expected = match sha256.map(|s| s.trim().to_string()) {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            let side = format!("{pkg}.sha256");
+            match fs::read_to_string(&side) {
+                Ok(s) if !s.trim().is_empty() => {
+                    // 镜像上的同名文件格式是 "<hex>  <文件名>"，两种都认
+                    let first = s.split_whitespace().next().unwrap_or("").to_string();
+                    log_line(log, &format!("读取校验值: {side}"));
+                    first
+                }
+                _ => {
+                    log_line(
+                        log,
+                        &format!("未找到 {side}，跳过 sha256 校验（可用 --sha256 指定）"),
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    };
+    let actual = to_hex(&sha2::Sha256::digest(data));
+    if !actual.eq_ignore_ascii_case(&expected) {
+        return Err(format!(
+            "本地包校验失败：sha256 不匹配（期望 {expected}，实际 {actual}）—— \
+             包在传递中损坏或拿错了版本；确认无误可加 --no-verify"
+        ));
+    }
+    Ok(())
+}
+
+/// 从本地包准备 stage（离线升级）：读文件 → 校验 → 解包。
+fn stage_local_pkg(
+    pkg: &str,
+    version: &str,
+    dir: &Path,
+    sha256: Option<&str>,
+    no_verify: bool,
+    log: &str,
+) -> Result<PathBuf, String> {
+    let p = std::path::Path::new(pkg);
+    if !p.is_file() {
+        return Err(format!("本地包不存在: {pkg}"));
+    }
+    let data = fs::read(p).map_err(|e| format!("读取本地包失败 {pkg}: {e}"))?;
+    if data.is_empty() {
+        return Err(format!("本地包为空: {pkg}"));
+    }
+    log_line(log, &format!("本地发行包: {pkg}（{} 字节）", data.len()));
+    verify_local_pkg(pkg, &data, sha256, no_verify, log)?;
+    let stage = unpack_into_stage(&data, version, dir)?;
+    // 解包完再看一眼：包里真有二进制吗（空包 / 拿成了外层离线包都会走到这里）
+    if !BINS.iter().any(|b| stage.join(b).is_file()) {
+        let _ = fs::remove_dir_all(&stage);
+        return Err(format!(
+            "{pkg} 里没有可升级的二进制（{}\n  是否把外层离线包 zap-offline-*.tar.gz 当成发布包了？\
+             离线包解开后里面那个 zap-v*.tar.gz 才是发布包",
+            BINS.join(" / ")
+        ));
+    }
+    Ok(stage)
+}
+
+/// `upgrade` 子命令的那堆开关（打包成一个结构体，免得函数签名长到没人敢动）。
+struct UpgradeOpts<'a> {
+    to: &'a str,
+    channel: &'a str,
     force: bool,
     pro: bool,
     community: bool,
-    dir: &Path,
-    log: &str,
-) -> i32 {
+    /// 本地发布包路径：给了就是离线升级，不联网
+    pkg: Option<&'a str>,
+    sha256: Option<&'a str>,
+    no_verify: bool,
+}
+
+/// `zapupgrade upgrade --to <版本>`（或 `--pkg <本地包>`）：
+/// 取包 → 校验 → 走与面板同一套替换流程。
+fn cmd_upgrade(opts: &UpgradeOpts<'_>, dir: &Path, log: &str) -> i32 {
+    let UpgradeOpts {
+        to,
+        channel,
+        force,
+        pro,
+        community,
+        pkg,
+        sha256,
+        no_verify,
+    } = *opts;
     log_line(log, "==== ZAP 系统升级开始（命令行）====");
+    // 离线升级：版本与发行线先从文件名认，再把「当前装的是哪条线」核对一遍
+    let local = pkg.map(|p| -> Result<(String, PkgName), String> {
+        let info = parse_pkg_name(p).ok_or_else(|| {
+            format!(
+                "无法从文件名解析版本信息: {p}\n  \
+                 期望格式 zap-v<版本>[-pro]-linux-<架构>.tar.gz（例：zap-v1.2.3-linux-amd64.tar.gz）"
+            )
+        })?;
+        let v = match to.trim() {
+            // --to 缺省就是 latest：离线时没有 latest 可查，版本只能来自文件名
+            "" | "latest" => info.version.clone(),
+            given => {
+                let given = given.trim_start_matches('v').to_string();
+                if given != info.version {
+                    log_line(
+                        log,
+                        &format!("注意：--to {given} 与文件名版本 {} 不一致，以 --to 为准", info.version),
+                    );
+                }
+                given
+            }
+        };
+        // 架构错了不该等到替换二进制才发现：离线拷错架构的包很常见
+        let want = target_arch().unwrap_or("");
+        if !want.is_empty() && !info.arch.eq_ignore_ascii_case(want) {
+            return Err(format!(
+                "本地包是 linux-{} 的，本机是 linux-{want}：架构不匹配（请拷对应架构的发布包）",
+                info.arch
+            ));
+        }
+        Ok((v, info))
+    });
+
+    let (version, edition, local_pkg) = match local {
+        Some(Ok((v, info))) => {
+            // 发行线：显式参数 > 文件名 > /etc/zap/edition
+            let id = if pro {
+                "pro"
+            } else if community {
+                "community"
+            } else if info.pro {
+                "pro"
+            } else {
+                "community"
+            };
+            // 换线（社区版 ⇄ Pro）是合法但影响很大的操作：不显式确认就不做，
+            // 免得拷错包把 Pro 覆盖成社区版（或反过来把社区版升成无人授权的 Pro）
+            let installed = edition_id(false, false);
+            if id != installed && !pro && !community {
+                return fail(
+                    log,
+                    &format!(
+                        "本地包是{}，当前装的是{}：换发行线需显式确认（--pro 或 --community）",
+                        if info.pro { "Zap Pro" } else { "社区版" },
+                        if installed == "pro" {
+                            "Zap Pro"
+                        } else {
+                            "社区版"
+                        },
+                    ),
+                );
+            }
+            (v, id, Some((pkg.unwrap_or_default().to_string(), info)))
+        }
+        Some(Err(e)) => return fail(log, &format!("本地包不可用: {e}")),
+        None => (String::new(), edition_id(pro, community), None),
+    };
+
     log_line(
         log,
         &format!(
             "发行版: {}",
-            match edition_id(pro, community) {
+            match edition {
                 "pro" => "Zap Pro",
                 _ => "社区版",
             }
@@ -727,12 +961,16 @@ fn cmd_upgrade(
         ),
     );
 
-    let version = match resolve_version(channel, to) {
-        Ok(v) => v,
-        Err(e) => {
-            log_line(log, &format!("确定目标版本失败: {e}"));
-            return 1;
-        }
+    let version = match &local_pkg {
+        // 离线：版本取自文件名（或 --to），**不联网查 latest**
+        Some(_) => version,
+        None => match resolve_version(channel, to) {
+            Ok(v) => v,
+            Err(e) => {
+                log_line(log, &format!("确定目标版本失败: {e}"));
+                return 1;
+            }
+        },
     };
     if !force && !cur.is_empty() && !has_update(&cur, &version) {
         log_line(
@@ -745,14 +983,39 @@ fn cmd_upgrade(
     }
     log_line(log, &format!("目标版本: v{version}"));
 
-    let stage = match download_and_stage(channel, &version, dir, pro, community, log) {
+    let stage = match &local_pkg {
+        Some((p, _)) => stage_local_pkg(p, &version, dir, sha256, no_verify, log),
+        None => download_and_stage(channel, &version, dir, pro, community, log),
+    };
+    let stage = match stage {
         Ok(s) => s,
         Err(e) => {
-            log_line(log, &format!("下载升级包失败: {e}"));
+            log_line(
+                log,
+                &format!(
+                    "{}失败: {e}",
+                    if local_pkg.is_some() {
+                        "准备本地升级包"
+                    } else {
+                        "下载升级包"
+                    }
+                ),
+            );
             return 1;
         }
     };
-    log_line(log, &format!("升级包已就绪: {}", stage.display()));
+    log_line(
+        log,
+        &format!(
+            "升级包已就绪{}: {}",
+            if local_pkg.is_some() {
+                "（离线）"
+            } else {
+                ""
+            },
+            stage.display()
+        ),
+    );
 
     let code = run_upgrade(&RunCtx {
         stage: stage.to_string_lossy().into_owned(),
@@ -762,7 +1025,7 @@ fn cmd_upgrade(
     // 解包目录是一次性的：成功就清掉，失败时保留便于排查
     if code == 0 {
         // 换线（社区版 → Pro，或 Pro → 社区版）必须落盘，否则下次升级又会按旧发行线拉包
-        persist_edition(edition_id(pro, community), log);
+        persist_edition(edition, log);
         let _ = fs::remove_dir_all(&stage);
     }
     code
@@ -891,6 +1154,31 @@ mod tests {
         ];
         names.sort();
         assert_eq!(*names.last().unwrap(), "1700000000-v1.0.12");
+    }
+
+    /// 离线升级的元信息**只有文件名**：版本 / 发行线 / 架构全靠它，
+    /// 解析错了就会把错的二进制换上去，所以这里把各种形态都钉一遍。
+    #[test]
+    fn pkg_name_parses() {
+        let p = parse_pkg_name("/opt/zap/zap-v1.2.3-linux-amd64.tar.gz").unwrap();
+        assert_eq!(p.version, "1.2.3");
+        assert!(!p.pro);
+        assert_eq!(p.arch, "amd64");
+
+        let p = parse_pkg_name("zap-v1.2.3-pro-linux-arm64.tar.gz").unwrap();
+        assert_eq!(p.version, "1.2.3");
+        assert!(p.pro);
+        assert_eq!(p.arch, "arm64");
+
+        // 版本号里的 -linux- 不该被当成架构分隔符（rsplit 取最右一段）
+        let p = parse_pkg_name("zap-v1.0.0-beta.1-linux-amd64.tar.gz").unwrap();
+        assert_eq!(p.version, "1.0.0-beta.1");
+        assert_eq!(p.arch, "amd64");
+
+        // 拿错包要认不出：外层离线包、英文包名、光秃秃的 .tar.gz
+        assert!(parse_pkg_name("zap-offline-v1.2.3-linux-amd64.tar.gz").is_none());
+        assert!(parse_pkg_name("zap-1.2.3.tar.gz").is_none());
+        assert!(parse_pkg_name("zap-v.tar.gz").is_none());
     }
 
     #[test]

@@ -4,11 +4,24 @@ set -euo pipefail
 
 # ── 终端颜色 ────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-# 用 printf 而非 `echo -e`：dash/sh 的 echo 不解析 -e，会原样输出 "-e [✗] ..."
+
 info() { printf "${BLUE}[*]${NC} %s\n" "$*"; }
 ok()   { printf "${GREEN}[✓]${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
 die()  { printf "${RED}[✗]${NC} %s\n" "$*" >&2; exit 1; }
+
+detect_lang() {
+    local loc="${LANG_MODE:-${LC_ALL:-${LANG:-}}}"
+
+    case "$loc" in
+        zh_CN*|zh_TW*|zh_HK*|zh_SG*|zh) echo "zh" ;;
+        en_US*|en_GB*|en)               echo "en" ;;
+        C|C.UTF-8|POSIX|"")             echo "zh" ;;  # 默认中文
+        *)                              echo "en" ;;  # 其它语言回退英文
+    esac
+}
+
+LANG_MODE="$(detect_lang)"
 
 usage() {
     cat <<'EOF'
@@ -730,8 +743,9 @@ else
     printf "\n"
 fi
 if [ "$OFFLINE" = "1" ]; then
-    printf "${YELLOW}  ⚠ 离线安装：AppStore 用内置种子包，升级请自带安装包重跑本脚本${NC}\n"
-    printf "     例：sudo bash install.sh --pkg ./zap-v<版本>${PRO_SUFFIX}-linux-${ARCH}.tar.gz --offline\n"
+    printf "${YELLOW}  ⚠ 离线安装：AppStore 用内置种子包，升级请用离线升级入口${NC}\n"
+    printf "     sudo bash upgrade-offline.sh --pkg ./zap-v<版本>${PRO_SUFFIX}-linux-${ARCH}.tar.gz\n"
+    printf "     （与 install-offline.sh 同目录；会自动备份，失败可 zapupgrade rollback）\n"
     printf "\n"
 else
     UPGRADE_HINT="zapupgrade upgrade --to latest"
