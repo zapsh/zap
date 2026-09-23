@@ -14,6 +14,44 @@
 
 命令行与面板走的是同一套替换流程（备份 → 原子替换 → 重启 → 失败回滚），区别只在谁去下载发行包。
 
+## 离线安装（内网 / 无外网机器）
+
+安装脚本本身不依赖外网，联网的只有三处：查最新版本号、下载发行包、克隆 AppStore 仓库。
+离线模式下这三处全部跳过，**其余（部署、建库、systemd、初始化管理员）与在线安装完全一致**。
+
+**1. 在有外网的机器上制作离线包**
+
+```bash
+bash scripts/offline-pack.sh                        # 最新社区版 + 本机架构
+bash scripts/offline-pack.sh --pro --version 1.2.3  # 指定版本的商业版
+bash scripts/offline-pack.sh --arch arm64           # 给另一架构的机器准备
+bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # 手上已有发行包
+```
+
+产物 `dist/zap-offline-v<版本>[-pro]-linux-<架构>.tar.gz`，解开后是：
+发行包本体 + `install.sh` / `install-offline.sh` / `uninstall.sh` + `SHA256SUMS` + 说明。
+
+**2. 拷到内网机器上安装**
+
+```bash
+tar zxf zap-offline-v<版本>-linux-<架构>.tar.gz
+cd zap-offline
+sudo bash install-offline.sh          # --admin-pass / --join-url 等参数原样透传给 install.sh
+```
+
+`install-offline.sh` 自动挑本目录下版本号最大的发行包、按 `SHA256SUMS` 校验，
+再以 `--pkg <包> --offline` 交给 `install.sh`。也可以直接：
+
+```bash
+sudo bash install.sh --pkg ./zap-v<版本>-linux-amd64.tar.gz --offline
+```
+
+要点：
+
+- 包名带 `-pro` 就按商业版装（写入 `/etc/zap/edition`），不必再加 `--pro`
+- AppStore 用发行包内置的种子包，不克隆远端仓库；面板里可随时重试更新
+- 升级同样走离线包：把新版本的包拷进来重跑一次 `install-offline.sh`
+
 ## 命令行升级
 
 需要 root（要写 `/usr/local/zap` 并重启服务）：

@@ -20,6 +20,11 @@ usage() {
   --pro                  安装商业版 Zap Pro（包名为 zap-v<版本>-pro-<os>-<arch>.tar.gz）
                          不带就是社区版；已装机器上可用 /etc/zap/edition 查看当前发行版
 
+离线安装（内网 / 无外网机器）：
+  --pkg <路径>           使用**本地已有的**安装包，不联网下载（版本号从文件名解析）
+  --offline              全程不访问外网：不查 latest、不下载、不克隆 AppStore 仓库
+                         （AppStore 用发行包内置的种子包，面板里可随时重试更新）
+
 初始管理员凭据（仅首次安装、全新数据库时生效）：
   --admin-user <name>    管理员用户名（默认 admin）
                          同时作为 Linux 账号名，家目录为 /home/<name>
@@ -45,6 +50,8 @@ Zap Pro 集群接入（可选，需要含商业模块的构建）：
   sudo ZAP_ADMIN_PASSWORD='S3cret-Pass' bash install.sh
   sudo bash install.sh latest --pro          # 商业版 Zap Pro
   sudo ZAP_JOIN_TOKEN='zec_…' bash install.sh latest --pro --join-url https://ctrl.example.com:2600/zap --join-insecure
+
+  sudo bash install.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz --offline   # 内网离线安装
 EOF
 }
 
@@ -86,10 +93,21 @@ VERSION="latest"
 ADMIN_USER=""; ADMIN_PASS=""; PASS_GENERATED=0; ADMIN_UNCHANGED=0
 JOIN_URL=""; JOIN_TOKEN=""; JOIN_NAME=""; JOIN_INSECURE=0
 PRO=0
+LOCAL_PKG=""; OFFLINE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --pro)
             PRO=1; shift ;;
+        --pkg)
+            LOCAL_PKG="${2:-}"
+            [ -n "$LOCAL_PKG" ] || die "--pkg 缺少安装包路径"
+            shift 2 ;;
+        --pkg=*)
+            LOCAL_PKG="${1#*=}"
+            [ -n "$LOCAL_PKG" ] || die "--pkg 缺少安装包路径"
+            shift ;;
+        --offline)
+            OFFLINE=1; shift ;;
         --join-url)
             JOIN_URL="${2:-}"
             [ -n "$JOIN_URL" ] || die "--join-url 缺少主控地址"
@@ -168,6 +186,17 @@ case "$ADMIN_PASS" in
     *[!A-Za-z0-9._-]*) die "管理员密码只能包含字母、数字以及 . _ -（避免破坏 env 文件解析）" ;;
 esac
 [ "${#ADMIN_PASS}" -ge 8 ] || warn "管理员密码不足 8 位，建议登录后修改"
+# ── 离线安装：发行线跟着包名走 ─────────────────────────────
+# 包名带 -pro 就是商业版，不必再显式 --pro —— 记错发行线的代价是
+# zapupgrade 以后会拉错那条线的包把 Pro 覆盖回社区版，宁可多认一次。
+if [ -n "$LOCAL_PKG" ] && [ "$PRO" != "1" ]; then
+    local_base=$(basename "$LOCAL_PKG")
+    if [[ "$local_base" =~ -pro-[a-z0-9_]+-[a-z0-9_]+\.tar\.gz$ ]]; then
+        PRO=1
+        info "离线包名带 -pro：按商业版安装"
+    fi
+fi
+
 # ── 发行版：社区版 / 商业版 Zap Pro ─────────────────────────
 # 两条线同版本号，只有包名不同（-pro 后缀）：装哪条就要一直升哪条，
 # 因此这里把发行线记进 /etc/zap/edition，zapupgrade 据此下载对应的包。
@@ -214,31 +243,56 @@ if ! find_bash >/dev/null 2>&1; then
 fi
 
 # ── 下载工具 ────────────────────────────────────────────────
+# 离线安装（--pkg）时用不到下载，缺 wget 不该拦住安装：这里只记录能力。
+HAVE_FETCH=0
 if command -v wget >/dev/null 2>&1; then
     fetch_url()  { wget -q -O - "$1"; }
     fetch_file() { wget -O "$2" "$1"; }
-else
-    die "未找到 wget，无法下载安装包"
+    HAVE_FETCH=1
 fi
 
 # ── 解析 latest 版本号 ──────────────────────────────────────
 DOWNLOAD_ZAP_URL="https://mirrors.zap.cn/zap/releases"
-if [ "$VERSION" = "latest" ]; then
-    info "查询最新版本..."
-    if LATEST=$(fetch_url "${DOWNLOAD_ZAP_URL}/latest.txt?t=$(date +%s)") && [ -n "$LATEST" ]; then
-        VERSION="$LATEST"
-        info "最新版本: ${VERSION}"
+NEED_DOWNLOAD=1
+if [ -n "$LOCAL_PKG" ]; then
+    NEED_DOWNLOAD=0
+fi
+if [ "$VERSION" = "latest" ] && [ "$NEED_DOWNLOAD" = "1" ]; then
+    if [ "$HAVE_FETCH" = "1" ] && [ "$OFFLINE" != "1" ]; then
+        info "查询最新版本..."
+        if LATEST=$(fetch_url "${DOWNLOAD_ZAP_URL}/latest.txt?t=$(date +%s)") && [ -n "$LATEST" ]; then
+            VERSION="$LATEST"
+            info "最新版本: ${VERSION}"
+        else
+            warn "无法查询最新版本，使用 latest 标签"
+        fi
     else
-        warn "无法查询最新版本，使用 latest 标签"
+        warn "离线模式：不查询最新版本，请显式指定版本号"
     fi
 fi
 
 ZAP_FILENAME="zap-v${VERSION}${PRO_SUFFIX}-${OS_PKG}-${ARCH}.tar.gz"
 
-# ── 下载 ────────────────────────────────────────────────────
-if [ -f "$ZAP_FILENAME" ]; then
+# ── 取包：本地指定 > 当前目录已存在 > 下载 ────────────────────
+DOWNLOADED=0
+if [ -n "$LOCAL_PKG" ]; then
+    [ -f "$LOCAL_PKG" ] || die "指定的安装包不存在: ${LOCAL_PKG}"
+    [ -s "$LOCAL_PKG" ] || die "指定的安装包为空: ${LOCAL_PKG}"
+    # 版本号从文件名解析（zap-v<版本>[-pro]-<os>-<arch>.tar.gz），装完的总结页要用
+    local_base=$(basename "$LOCAL_PKG")
+    if [[ "$local_base" =~ ^zap-v(.+)(-pro)?-${OS_PKG}-${ARCH}\.tar\.gz$ ]]; then
+        VERSION="${BASH_REMATCH[1]}"
+    else
+        warn "包名不是 zap-v<版本>[-pro]-${OS_PKG}-${ARCH}.tar.gz，按 ${VERSION} 继续（仅影响完成页显示）"
+    fi
+    ZAP_FILENAME="$LOCAL_PKG"
+    info "离线安装：使用本地安装包 ${LOCAL_PKG}（版本 ${VERSION}）"
+elif [ -f "$ZAP_FILENAME" ]; then
     info "使用已存在的安装包 ${ZAP_FILENAME}"
 else
+    # 只有真要下载这一步，才要求机器上有下载工具且允许连外网
+    [ "$OFFLINE" != "1" ] || die "离线模式且当前目录没有安装包 ${ZAP_FILENAME}：请先用 --pkg 指定本地包"
+    [ "$HAVE_FETCH" = "1" ] || die "未找到 wget，且当前目录没有安装包 ${ZAP_FILENAME}：请先用 --pkg 指定本地包"
     info "下载 ${ZAP_FILENAME} ..."
     # fetch_file 需要两个参数：URL + 落盘路径
     # 先写 .part 再改名：中途失败不会留下半截包，被下次运行当成完整包解压
@@ -247,6 +301,7 @@ else
         || die "下载失败，请检查网络或版本号"
     [ -s "${ZAP_FILENAME}.part" ] || die "下载内容为空: ${DOWNLOAD_ZAP_URL}/${ZAP_FILENAME}"
     mv -f "${ZAP_FILENAME}.part" "${ZAP_FILENAME}"
+    DOWNLOADED=1
 fi
 
 # ── 创建运行用户 ───────────────────────────────────────────
@@ -396,7 +451,9 @@ deploy_appstore() {
     fi
 
     # 首次初始化官方 git 仓库（离线时保留种子包，面板中可重试更新）
-    if [ ! -d "$BUILTIN/.git" ] && command -v git >/dev/null 2>&1; then
+    if [ "$OFFLINE" = "1" ]; then
+        info "离线模式：跳过 AppStore 仓库克隆，沿用发行包内置种子包"
+    elif [ ! -d "$BUILTIN/.git" ] && command -v git >/dev/null 2>&1; then
         info "初始化 AppStore 官方仓库..."
         if git clone -q --depth 1 "$APPSTORE_REPO_URL" "$DEST/repos/.tmp-zap-appstore" 2>/dev/null; then
             local has_seed
@@ -639,7 +696,10 @@ join_controller() {
 join_controller || true
 
 # ── Cleanup ────────────────────────────────────────────
-rm -f "$ZAP_FILENAME"
+# 只删本次**下载的**包；--pkg 指定的本地包是运维自己带进来的，不能删
+if [ "$DOWNLOADED" = "1" ]; then
+    rm -f "$ZAP_FILENAME"
+fi
 systemctl status zapd.service --no-pager || true
 # ── 完成总结 ────────────────────────────────────────────────
 printf "\n"
@@ -669,6 +729,12 @@ else
     printf "${YELLOW}  ⚠ 首次登录后请立即修改密码！${NC}\n"
     printf "\n"
 fi
-UPGRADE_HINT="zapupgrade upgrade --to latest"
-[ "$PRO" = "1" ] && UPGRADE_HINT="${UPGRADE_HINT} --pro"
-printf "  后续升级:  ${UPGRADE_HINT}（回滚: zapupgrade rollback --list）\n"
+if [ "$OFFLINE" = "1" ]; then
+    printf "${YELLOW}  ⚠ 离线安装：AppStore 用内置种子包，升级请自带安装包重跑本脚本${NC}\n"
+    printf "     例：sudo bash install.sh --pkg ./zap-v<版本>${PRO_SUFFIX}-linux-${ARCH}.tar.gz --offline\n"
+    printf "\n"
+else
+    UPGRADE_HINT="zapupgrade upgrade --to latest"
+    [ "$PRO" = "1" ] && UPGRADE_HINT="${UPGRADE_HINT} --pro"
+    printf "  后续升级:  ${UPGRADE_HINT}（回滚: zapupgrade rollback --list）\n"
+fi

@@ -16,6 +16,45 @@ The CLI and the panel share the exact same replacement routine
 (backup → atomic replace → restart → rollback on failure); they only differ in who downloads
 the release package.
 
+## Offline install (air-gapped / intranet hosts)
+
+The installer itself needs no internet; only three steps do: resolving `latest`, downloading the
+release tarball, and cloning the AppStore repo. Offline mode skips all three — everything else
+(deploy, DB init, systemd, admin bootstrap) is identical to an online install.
+
+**1. Build the offline bundle on a machine with internet access**
+
+```bash
+bash scripts/offline-pack.sh                        # latest community build, current arch
+bash scripts/offline-pack.sh --pro --version 1.2.3  # a specific Zap Pro release
+bash scripts/offline-pack.sh --arch arm64           # for hosts of another architecture
+bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # tarball already at hand
+```
+
+Result: `dist/zap-offline-v<version>[-pro]-linux-<arch>.tar.gz`, containing the release tarball,
+`install.sh` / `install-offline.sh` / `uninstall.sh`, a `SHA256SUMS` and a short readme.
+
+**2. Copy it to the intranet host and install**
+
+```bash
+tar zxf zap-offline-v<version>-linux-<arch>.tar.gz
+cd zap-offline
+sudo bash install-offline.sh          # --admin-pass / --join-url ... are passed through
+```
+
+`install-offline.sh` picks the highest-versioned release tarball in that directory, verifies it
+against `SHA256SUMS`, then hands over to `install.sh --pkg <tarball> --offline`. Equivalent one-liner:
+
+```bash
+sudo bash install.sh --pkg ./zap-v<version>-linux-amd64.tar.gz --offline
+```
+
+Notes:
+
+- A `-pro` tarball installs as Zap Pro (recorded in `/etc/zap/edition`); no need to pass `--pro`
+- AppStore falls back to the seed packages shipped inside the release; retry the update from the panel
+- Upgrading offline works the same way: copy the newer bundle over and rerun `install-offline.sh`
+
 ## CLI upgrade
 
 Must run as root (writes `/usr/local/zap` and restarts services):
