@@ -26,7 +26,6 @@ ZAP 的后端以 **Rust** 编写（Axum + Tokio + SQLx），前端采用 **Vue 3
 
 ZAP 以 **[Apache-2.0](./LICENSE)** 开源许可发布：个人与企业均可免费使用。
 
-> 演示与下载：<https://zap.sh> ｜ 文档建设中
 
 ---
 
@@ -37,7 +36,7 @@ ZAP 以 **[Apache-2.0](./LICENSE)** 开源许可发布：个人与企业均可�
 - 站点全生命周期管理：创建 / 编辑 / 删除 / 停用 / 维护模式（三态切换）
 - 多域名绑定、多 IP 绑定、自定义站点目录、运行目录
 - Nginx 虚拟主机配置在线编辑与保存，配置语法校验
-- Nginx 服务状态、启停重载、`stub_status` 监控
+- Nginx 服务状态、启停重载、状态监控
 - PHP-FPM 多版本实例管理（php74 / php81 …）与 `fpm_spec` 参数调优
 - 站点目录与文件结构浏览，目录保护
 
@@ -48,13 +47,6 @@ ZAP 以 **[Apache-2.0](./LICENSE)** 开源许可发布：个人与企业均可�
 - **Let's Encrypt** 自动签发（ACME HTTP-01 / DNS-01，含泛域名与 DNS 服务商 API 自动处理）
 - 证书列表、详情、续期、删除，到期预警
 
-### 应用商店（AppStore）
-
-- Web 服务器 / 数据库 / 运行环境 / Web 应用 的在线安装、卸载、升级
-- 多 Git 源管理，内置官方源 + 管理员自定义源
-- 安装过程实时日志（WebSocket + xterm，可中断）
-- 用户自定义包与自定义脚本（按用户隔离，升级永不覆盖）
-- 通用服务配置管理：PHP / MySQL / MariaDB 配置在线读写与启停
 
 ### 服务器运维
 
@@ -65,7 +57,7 @@ ZAP 以 **[Apache-2.0](./LICENSE)** 开源许可发布：个人与企业均可�
 | Web 终端 | 浏览器内 SSH 终端（xterm.js + ssh2），支持密钥推送 |
 | SSH 管理 | SSH 服务状态 / 重启 / 安装、SSH 密钥管理、主机连接管理 |
 | 计划任务 | Cron 任务增删改查与执行记录 |
-| 防火墙 | firewalld / ufw / nftables / iptables 统一抽象，面板端口防自锁 |
+| 防火墙 | firewalld / ufw / nftables / iptables 统一抽象管理 |
 | 系统配置 | 时间同步、时区、主机名、DNS Resolver、IP 池、环境变量 |
 | 服务管理 | systemd 服务状态与进程管理 |
 | 备份升级 | 面板备份 / 还原；面板一键升级或命令行升级（zapupgrade：下载校验 → 备份 → 原子替换 → 重启 → 可回滚） |
@@ -74,67 +66,21 @@ ZAP 以 **[Apache-2.0](./LICENSE)** 开源许可发布：个人与企业均可�
 
 - **用户 / 角色 / 权限**：RBAC 角色体系，菜单级权限控制
 - **套餐（Package）与分销（Reseller）**：资源配额与代理账号体系
-- **TOTP 两步验证**：登录二次校验（二维码绑定）
+- **TOTP 两步验证**：登录二次校验（二维码绑定）, Google Authenticator / Mircrosoft Authenticator / 2FA 支持
 - **站内通知**：系统公告与用户消息
 - **审计日志**：所有关键操作留痕，可追溯
 
-### 安全设计
-
-- 面板 **仅提供 HTTPS**，HTTP 自动 301 跳转；TLS 1.2+，支持 ALPN h2
-- **特权分离架构**：业务进程以非特权用户 `zapadm` 运行，root 操作收敛至独立守护进程
-- JWT 鉴权 + 密钥轮换，密码 bcrypt 加盐存储
-- 演示账号只读守卫，防止越权写入
-- 支持 URL 前缀部署（`url_prefix`），便于反向代理与路径隔离
-- **接口两级鉴权**（`zapd/src/routers/access.rs`）：
-  1. **角色下限**：路径前缀 → 最低角色（admin / reseller / user），未登记的接口默认要求 admin（fail-closed）；
-  2. **动作级权限点**：`role_permissions` 表按 `{模块}:{动作}` 授权（如 `site:create`、`site:delete`、`ssl:create`、`system.config:process`、`appstore:install`），
-     在路由层强制校验，admin 恒直通；另支持**个人附加权限**（`user.permissions`，只做加法，用于给单个用户临时开小灶）。
-  菜单可见性（`role_menus`）与前端 `v-permission` 只影响展示，**不是安全边界**
-
----
-
-## 架构设计
-
-### 组件划分
-
-| 组件 | 运行身份 | 职责 |
-| --- | --- | --- |
-| **zapd** | `zapadm`（非特权） | 业务主进程：HTTP/HTTPS 服务、路由、鉴权、SQLite 持久化、调度器 |
-| **zapexec** | `root` | 特权守护进程：白名单动词执行系统变更，**不提供任意 shell 执行入口** |
-| **zap-proto** | — | 共享协议库：长度前缀 JSON 帧编解码 + HMAC-SHA256 挑战/响应认证 |
-| **zapctl** | `root` | 命令行运维工具：服务管理、备份还原、用户管理、配置读写 |
-| **zapupgrade** | `root`（一次性） | 系统升级器：下载校验 → 备份 → 原子替换 → 重启服务 → 失败回滚；支持面板触发与命令行 `upgrade` / `rollback` |
-
-### 特权调用链路
-
-```
-浏览器 ──HTTPS──> zapd (zapadm)
-                     │
-                     │  Unix Socket /run/zap/exec.sock
-                     │  ├─ SO_PEERCRED 校验对端 uid
-                     │  └─ HMAC-SHA256 挑战/响应认证
-                     ▼
-                  zapexec (root) ──> 白名单动词分发
-                                     time / ssh / ssh_key / file / appstore ...
-```
-
-业务进程永不持有 root 权限，所有系统级变更必须经过协议校验与白名单分发，从架构上收敛攻击面。
-
-### 技术栈
-
-**后端**：Rust 2024 · Axum 0.8 · Tokio · SQLx(SQLite) · Rustls / ring · rcgen / instant-acme(ACME HTTP-01 / DNS-01) · ssh2 · jsonwebtoken / bcrypt · sysinfo / systemstat · tokio-cron-scheduler · rust-embed
-
-**前端**：Vue 3.5 · TypeScript · Vite · Element Plus · Pinia · UnoCSS · xterm.js · CodeMirror 6 · Chart.js · Axios
-
----
 
 ## Quick Start
 
-### 环境要求
+### 支持的操作系统
+  * CentOS Stream 9 / 10
+  * RHEL 8 / 9 / 10
+  * Rocky Linux 8 / 9 / 10
+  * AlmaLinux 8 / 9 / 10
+  * Ubuntu 20 LTS ( End of Life ) / 22 LTS / 24 LTS / 26 LTS
+  * Debian 11 LTS (End of Life ) / 12 LTS / 13 LTS
 
-- 操作系统：CentOS / RHEL / Rocky Linux / AlmaLinux / Ubuntu / Debian（**amd64、arm64**）
-- 全新安装，建议使用干净的 minimal 系统
-- root 权限；防火墙需放行面板端口
 
 ### Install
 

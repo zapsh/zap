@@ -25,7 +25,7 @@ LANG_MODE="$(detect_lang)"
 
 usage() {
     cat <<'EOF'
-用法: sudo bash install.sh [VERSION] [选项]
+用法: sudo bash install.sh [VERSION] [OPTIONS]
 
   VERSION                要安装的版本号（默认 latest）
 
