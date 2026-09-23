@@ -34,6 +34,8 @@ export interface ClusterNode {
   auth_mode?: number
   /** v2：节点公钥指纹（SPKI sha256 前 32 位 hex），空=未升级 */
   key_fp?: string
+  /** v3 上报方式：0=节点主动上报（要能出网），1=主控主动拉取（给不能出网的机器） */
+  report_mode?: number
 }
 
 /** 注册口令（列表项：不含明文，明文只在生成那一次返回） */
@@ -167,6 +169,25 @@ export function sshTicket(id: number) {
   return http.post<{ code: number; message?: string; data: SshTicket }>(
     '/pro/cluster/nodes/ssh',
     { id },
+  )
+}
+
+/**
+ * v3 pull：切上报方式。`pull` = 主控主动去拉（节点出不了网时用它），
+ * 切换后会立刻拉一次，拉不通当场把原因带回来。
+ */
+export interface NodeModeResult {
+  mode: string
+  reportMode: number
+  /** 切到 pull 时是否立刻拉到了快照 */
+  pulled?: boolean
+  error?: string
+}
+
+export function setNodeMode(id: number, mode: 'push' | 'pull') {
+  return http.post<{ code: number; message?: string; data: NodeModeResult }>(
+    '/pro/cluster/nodes/mode',
+    { id, mode },
   )
 }
 
