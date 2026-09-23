@@ -27,7 +27,7 @@ use zap_proto::Response;
 
 pub const BUILTIN_REPO_ID: &str = "zap-appstore";
 pub const BUILTIN_REPO_NAME: &str = "Zap 官方应用商店";
-pub const BUILTIN_REPO_URL: &str = "https://github.com/zapj/zap-appstore.git";
+pub const BUILTIN_REPO_URL: &str = "https://github.com/zapsh/zap-appstore.git";
 
 // ── 目录定位 ───────────────────────────────────────────────
 
@@ -2806,7 +2806,7 @@ mod tests {
     #[test]
     fn id_from_url_extracts_repo_name() {
         assert_eq!(
-            id_from_url("https://github.com/zapj/zap-appstore.git"),
+            id_from_url("https://github.com/zapsh/zap-appstore.git"),
             "zap-appstore"
         );
         assert_eq!(id_from_url("https://gitlab.com/org/store"), "store");

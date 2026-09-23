@@ -441,7 +441,7 @@ info "安装包内容目录: ${SRC}"
 
 # ── AppStore 官方仓库地址 ──────────────────────────────────
 # 官方包脚本存放于独立 git 仓库，便于单独升级；面板中可添加/更换其他源
-APPSTORE_REPO_URL="${APPSTORE_REPO_URL:-https://github.com/zapj/zap-appstore.git}"
+APPSTORE_REPO_URL="${APPSTORE_REPO_URL:-https://github.com/zapsh/zap-appstore.git}"
 
 # ── AppStore 目录部署（多 Git 源，幂等：不覆盖 repos/.git 与 custom/）──
 deploy_appstore() {

@@ -1112,7 +1112,7 @@ pub async fn read_repos_value() -> Option<Value> {
             "repos": [{
                 "id": "zap-appstore",
                 "name": "Zap 官方应用商店",
-                "url": "https://github.com/zapj/zap-appstore.git",
+                "url": "https://github.com/zapsh/zap-appstore.git",
                 "builtin": true,
                 "enabled": true,
                 "version": "",
