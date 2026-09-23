@@ -95,6 +95,14 @@ const PEEK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() {
+    // rustls 0.23 的 CryptoProvider 必须在第一次用到 TLS 前确定。
+    // 依赖树里 ring（本仓声明的 rustls feature，jsonwebtoken / russh / rcgen 同源）
+    // 与 aws-lc-rs（instant-acme → hyper-rustls 的默认 feature）同时存在，
+    // rustls 拒绝自动二选一 —— 不显式安装的话，任何走 rustls 的路径
+    // （--join-url、ACME、reqwest）都会直接 panic。
+    // 这里统一选 ring（纯 Rust、无 C 工具链要求）；install 已被占用时静默跳过。
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
     if cli.version {
         println!("zapd version {}", env!("CARGO_PKG_VERSION"));
