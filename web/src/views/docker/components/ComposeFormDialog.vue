@@ -1,0 +1,231 @@
+<template>
+  <el-dialog
+    v-model="visible"
+    :title="isEdit ? t('docker.compose.editTitle') : t('docker.compose.createTitle')"
+    width="760px"
+    top="6vh"
+    :close-on-click-modal="false"
+    destroy-on-close
+    @opened="onOpened"
+  >
+    <el-form label-width="96px" label-position="top">
+      <el-form-item :label="t('docker.compose.project')">
+        <el-input
+          v-model="name"
+          :disabled="isEdit"
+          :placeholder="t('docker.compose.namePlaceholder')"
+        />
+        <div v-if="!isEdit" class="field-hint">{{ t('docker.compose.nameHint') }}</div>
+      </el-form-item>
+
+      <el-form-item :label="t('docker.compose.content')">
+        <div class="editor">
+          <div class="editor__toolbar">
+            <el-button size="small" :icon="Upload" @click="pickFile">
+              {{ t('docker.compose.importFile') }}
+            </el-button>
+            <el-button size="small" :icon="DocumentAdd" @click="useTemplate">
+              {{ t('docker.compose.template') }}
+            </el-button>
+            <span class="editor__hint">{{ t('docker.compose.editorHint') }}</span>
+            <!-- 隐藏的原生文件选择器：导入 .yml / .yaml -->
+            <input
+              ref="fileRef"
+              type="file"
+              accept=".yml,.yaml,text/yaml,text/plain"
+              class="editor__file"
+              @change="onFilePicked"
+            />
+          </div>
+          <el-input
+            v-model="body"
+            type="textarea"
+            :rows="16"
+            spellcheck="false"
+            class="editor__area"
+            :placeholder="t('docker.compose.contentPlaceholder')"
+          />
+        </div>
+      </el-form-item>
+
+      <el-form-item v-if="!isEdit">
+        <el-checkbox v-model="startAfterSave">{{ t('docker.compose.startAfterCreate') }}</el-checkbox>
+      </el-form-item>
+    </el-form>
+
+    <template #footer>
+      <el-button @click="visible = false">{{ t('docker.common.cancel') }}</el-button>
+      <el-button type="primary" :loading="saving" @click="submit">
+        {{ t('docker.common.save') }}
+      </el-button>
+    </template>
+  </el-dialog>
+</template>
+
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { DocumentAdd, Upload } from '@/icons'
+import { composeSave } from '@/api/docker'
+
+const props = defineProps<{
+  modelValue: boolean
+  /** 编辑模式：项目名不可改 */
+  mode?: 'create' | 'edit'
+  project?: string
+  content?: string
+  /** 新建时预填的项目名（如从文件名推断） */
+  presetName?: string
+  /** 已存在的项目名：新建时重名要再确认一次，避免一键覆盖别人的配置 */
+  existing?: string[]
+}>()
+
+const emit = defineEmits<{
+  'update:modelValue': [boolean]
+  /** 保存成功：父组件负责刷新列表、选中项目，必要时再 up */
+  saved: [project: string, start: boolean]
+}>()
+
+const { t } = useI18n()
+
+const visible = computed({
+  get: () => props.modelValue,
+  set: (v: boolean) => emit('update:modelValue', v),
+})
+
+const isEdit = computed(() => props.mode === 'edit')
+
+const name = ref('')
+const body = ref('')
+const startAfterSave = ref(false)
+const saving = ref(false)
+const fileRef = ref<HTMLInputElement | null>(null)
+
+/** 打开时把编辑目标填进来：编辑用传入值，新建用预填名 + 模板留空 */
+function onOpened() {
+  name.value = isEdit.value ? (props.project ?? '') : (props.presetName ?? '')
+  body.value = props.content ?? ''
+  startAfterSave.value = !isEdit.value
+}
+
+/** 与后端 `valid_project_name` 保持一致：字母数字开头，可含 `_ . -`，最长 63 */
+const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$/
+
+function pickFile() {
+  fileRef.value?.click()
+}
+
+async function onFilePicked(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 同一个文件连选两次也要触发 change
+  if (!file) return
+
+  body.value = await file.text()
+  // 新建模式下顺手用文件名当项目名：`nginx-compose.yml` → `nginx-compose`
+  if (!isEdit.value && !name.value.trim()) name.value = normalizeName(file.name)
+}
+
+/** 文件名 → 合法项目名（非法字符换成 `-`，并裁掉扩展名） */
+function normalizeName(filename: string): string {
+  const base = filename.replace(/\.(ya?ml)$/i, '')
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '')
+  return cleaned.slice(0, 63)
+}
+
+/** 最小可用模板：不写模板用户容易连 YAML 缩进都没对齐，试跑一次就报错 */
+function useTemplate() {
+  body.value = [
+    'services:',
+    '  web:',
+    '    image: nginx:latest',
+    '    restart: unless-stopped',
+    '    ports:',
+    '      - "8080:80"',
+    '',
+  ].join('\n')
+}
+
+async function submit() {
+  const project = name.value.trim()
+  if (!isEdit.value && !NAME_RE.test(project)) {
+    ElMessage.warning(t('docker.compose.nameInvalid'))
+    return
+  }
+  if (!body.value.trim()) {
+    ElMessage.warning(t('docker.compose.contentRequired'))
+    return
+  }
+  // 新建时撞名：这里覆盖的是整个配置文件，确认一次再动手
+  if (!isEdit.value && props.existing?.includes(project)) {
+    try {
+      await ElMessageBox.confirm(
+        t('docker.compose.overwriteConfirm', { name: project }),
+        t('docker.compose.createTitle'),
+        { type: 'warning' },
+      )
+    } catch {
+      return
+    }
+  }
+
+  saving.value = true
+  try {
+    // 编辑模式项目名固定，用 props 里的值，避免用户改到一半的输入串了项目
+    const target = isEdit.value ? (props.project ?? '') : project
+    await composeSave(target, body.value)
+    ElMessage.success(t('docker.compose.saved'))
+    visible.value = false
+    emit('saved', target, !isEdit.value && startAfterSave.value)
+  } catch (e: any) {
+    ElMessage.error(e.message || t('docker.compose.saveFailed'))
+  } finally {
+    saving.value = false
+  }
+}
+</script>
+
+<style scoped>
+.field-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.editor {
+  width: 100%;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.editor__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: var(--el-fill-color-light);
+  border-bottom: 1px solid var(--el-border-color);
+  flex-wrap: wrap;
+}
+
+.editor__hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.editor__file {
+  display: none;
+}
+
+/* 等宽正文：compose.yaml 的缩进对齐很重要 */
+.editor__area :deep(textarea) {
+  font-family: Menlo, Monaco, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+</style>

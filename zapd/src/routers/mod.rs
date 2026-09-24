@@ -536,6 +536,10 @@ fn api_routers() -> Router {
         .route("/docker/events/ws", get(docker::ws_events))
         .route("/docker/compose", get(docker::compose_list))
         .route("/docker/compose/action", post(docker::compose_action))
+        .route("/docker/compose/file", get(docker::compose_file))
+        .route("/docker/compose/save", post(docker::compose_save))
+        .route("/docker/compose/logs", get(docker::compose_logs))
+        .route("/docker/compose/remove", post(docker::compose_remove))
         // SSH terminal
         .route("/terminal/connections", get(ssh_terminal::list_connections))
         .route(

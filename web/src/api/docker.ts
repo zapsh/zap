@@ -77,11 +77,14 @@ export interface DockerNetwork {
   CreatedAt?: string
 }
 
-/** Compose 项目（`docker compose ls`） */
+/** Compose 项目（`docker compose ls` + 后端扫描的受管目录） */
 export interface DockerComposeProject {
   Name: string
+  /** `running(2)` / `exited(1)` / `created`（受管目录里还没启动的项目） */
   Status: string
   ConfigFiles: string
+  /** 配置文件是否在面板的 stacks 目录里：只有受管项目允许在面板中编辑 */
+  Managed?: boolean
 }
 
 export interface DockerEnvStatus {
@@ -296,9 +299,43 @@ export function listComposeProjects() {
   return http.get<Api<{ items: DockerComposeProject[] }>>('/docker/compose')
 }
 
-/** up / down / start / stop / restart / pull */
+/** up / down / start / stop / restart / pull / update */
 export function composeAction(project: string, action: string) {
   return http.post<Api<DockerActionResult>>('/docker/compose/action', { project, action })
+}
+
+/** compose 项目的配置文件（yaml 预览 / 编辑） */
+export interface DockerComposeFile {
+  /** 宿主机上的配置文件路径；受管项目即 `stacks/<项目>/compose.yaml` */
+  path: string
+  content: string
+  /**
+   * 是否归面板管（文件就在面板的 stacks 目录里）。
+   * 外部项目只能看不能改：改了会另写一份到 stacks 目录，反而把项目拆成两半。
+   */
+  managed: boolean
+}
+
+export function composeFile(project: string) {
+  return http.get<Api<DockerComposeFile>>('/docker/compose/file', { params: { project } })
+}
+
+/** 新建 / 覆盖受管项目的 compose.yaml */
+export function composeSave(project: string, content: string) {
+  return http.post<Api<{ project: string; path: string }>>('/docker/compose/save', {
+    project,
+    content,
+  })
+}
+
+/** 项目日志尾部（`docker compose logs --tail N`） */
+export function composeLogs(project: string, tail = 300) {
+  return http.get<Api<DockerActionResult>>('/docker/compose/logs', { params: { project, tail } })
+}
+
+/** 删除项目：down + 清理受管目录 */
+export function composeRemove(project: string) {
+  return http.post<Api<DockerActionResult>>('/docker/compose/remove', { project })
 }
 
 // ── 容器终端（WebSocket）─────────────────────────────────

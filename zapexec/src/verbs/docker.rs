@@ -1641,29 +1641,112 @@ fn compose_response(result: Result<(bool, String, String), String>) -> Response 
     }
 }
 
-/// Compose 项目列表（`docker compose ls -a`）。
+/// Compose 项目列表（`docker compose ls -a` + 受管目录扫描）。
+///
+/// `compose ls` 只认「创建过的项目」（有过容器 / 网络），刚在面板里建好、
+/// 还没 `up` 的项目不会出现 —— 所以这里再扫一遍 stacks 目录补齐，
+/// 前端左侧列表才能立刻看到新建的项目。
 pub async fn compose_list() -> Response {
-    match run_compose(
+    let (ok, stdout, stderr) = match run_compose(
         &["compose", "ls", "--all", "--format", "json"],
         CALL_TIMEOUT,
     )
     .await
     {
-        Ok((true, stdout, _)) => match serde_json::from_str::<Vec<Value>>(stdout.trim()) {
-            Ok(items) => list_response(Ok(items)),
-            Err(e) => Response::err(-1, format!("解析 compose 列表失败: {e}")),
-        },
-        Ok((false, stdout, stderr)) => {
-            Response::err(-1, merge_output(&stdout, &stderr).trim().to_string())
-        }
-        Err(e) => Response::err(-1, e),
+        Ok(v) => v,
+        Err(e) => return Response::err(-1, e),
+    };
+    if !ok {
+        return Response::err(-1, merge_output(&stdout, &stderr).trim().to_string());
     }
+
+    let mut items = match serde_json::from_str::<Vec<Value>>(stdout.trim()) {
+        Ok(v) => v,
+        Err(e) => return Response::err(-1, format!("解析 compose 列表失败: {e}")),
+    };
+
+    let root = stacks_root();
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            let Some(name) = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let file = dir.join("compose.yaml");
+            if !dir.is_dir()
+                || !valid_project_name(&name)
+                || !file.is_file()
+                || items
+                    .iter()
+                    .any(|i| i.get("Name").and_then(Value::as_str) == Some(name.as_str()))
+            {
+                continue;
+            }
+            items.push(json!({
+                "Name": name,
+                // 还没跑过：前端把 `created` 显示成「未启动」
+                "Status": "created",
+                "ConfigFiles": file.to_string_lossy(),
+            }));
+        }
+    }
+
+    // 标注受管（配置文件就在 stacks 目录里）：只有这种项目的配置才允许面板改
+    for item in items.iter_mut() {
+        let managed = item
+            .get("ConfigFiles")
+            .and_then(Value::as_str)
+            .and_then(|files| files.split(',').next())
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .is_some_and(|f| Path::new(f).starts_with(&root));
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert("Managed".to_string(), json!(managed));
+        }
+    }
+
+    list_response(Ok(items))
+}
+
+/// 受管 Compose 项目的根目录（`{ZAP_PATH}/data/stacks`）。
+///
+/// 面板里「+ Compose」建的、以及导入的项目都落在这里，一个项目一个目录，
+/// 里面固定叫 `compose.yaml`（同目录的 `.env` / 其它 yaml 由用户自己放，compose 会一并加载）。
+fn stacks_root() -> PathBuf {
+    super::zap_path().join("data/stacks")
+}
+
+/// Compose 项目名：docker 允许字母数字开头，可含 `_ . -`；另外排除 `.` / `..`。
+///
+/// 项目名会拼进宿主机路径，因此这里必须自己挡住路径穿越，不能只靠 docker 校验。
+fn valid_project_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// 受管项目的配置文件路径（名字非法时返回 `None`）。
+fn managed_file(project: &str) -> Option<PathBuf> {
+    valid_project_name(project).then(|| stacks_root().join(project).join("compose.yaml"))
 }
 
 /// 查项目对应的 compose 配置文件路径。
 ///
 /// 只从 `compose ls` 的结果里反查，不接受前端传入任意路径：
 /// 否则就成了「指定任意文件启动容器」的提权口子。
+/// 还没 `up` 过的受管项目（`compose ls` 里没有）兜底到 stacks 目录的约定文件名。
 async fn compose_config_file(project: &str) -> Result<String, String> {
     let (ok, stdout, stderr) = run_compose(
         &["compose", "ls", "--all", "--format", "json"],
@@ -1693,30 +1776,48 @@ async fn compose_config_file(project: &str) -> Result<String, String> {
         }
         return Err(format!("项目 {project} 未登记配置文件"));
     }
+
+    // 还没 up 过的受管项目：`compose ls` 里当然查不到，按约定文件名兜底
+    if let Some(f) = managed_file(project)
+        && f.is_file()
+    {
+        return Ok(f.to_string_lossy().to_string());
+    }
     Err(format!("未找到 Compose 项目 {project}"))
 }
 
-/// Compose 动作：up / down / start / stop / restart / pull。
+/// Compose 动作：up / down / start / stop / restart / pull / update。
 pub async fn compose_action(project: &str, action: &str) -> Response {
-    let args_tail: Vec<&str> = match action {
-        "up" => vec!["up", "-d"],
-        "down" => vec!["down"],
-        "start" => vec!["start"],
-        "stop" => vec!["stop"],
-        "restart" => vec!["restart"],
-        "pull" => vec!["pull"],
+    // update 是组合动作：先拉最新镜像，成功后再强制重建容器 ——
+    // 拉取失败就别用旧镜像重建一遍，那样只是白重启一次。
+    if action == "update" {
+        let pulled = run_compose_action(project, &["pull"], COMPOSE_TIMEOUT).await;
+        if pulled.code != 0 {
+            return pulled;
+        }
+        return run_compose_action(project, &["up", "-d", "--force-recreate"], COMPOSE_TIMEOUT).await;
+    }
+
+    let (tail, dur): (&[&str], Duration) = match action {
+        "up" => (&["up", "-d"], COMPOSE_TIMEOUT),
+        "down" => (&["down"], ACTION_TIMEOUT),
+        "start" => (&["start"], ACTION_TIMEOUT),
+        "stop" => (&["stop"], ACTION_TIMEOUT),
+        "restart" => (&["restart"], ACTION_TIMEOUT),
+        "pull" => (&["pull"], COMPOSE_TIMEOUT),
         _ => return Response::err(-1, format!("不支持的 Compose 操作: {action}")),
     };
 
-    let file = match compose_config_file(project).await {
-        Ok(f) => f,
-        Err(e) => return Response::err(-1, e),
-    };
+    run_compose_action(project, tail, dur).await
+}
 
-    // 工作目录取配置文件所在目录，`build` / `env_file` 等相对路径才能命中
-    let dir = match std::path::Path::new(&file).parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().to_string(),
-        _ => "/".to_string(),
+/// 定位项目文件并执行一条 compose 子命令。
+///
+/// 工作目录取配置文件所在目录：`build` / `env_file` / 相对 bind mount 才能命中。
+async fn run_compose_action(project: &str, tail: &[&str], dur: Duration) -> Response {
+    let (file, dir) = match compose_target(project).await {
+        Ok(v) => v,
+        Err(e) => return Response::err(-1, e),
     };
 
     let mut args = vec![
@@ -1726,22 +1827,138 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
         "--project-directory",
         dir.as_str(),
     ];
-    args.extend(args_tail);
-
-    let dur = if matches!(action, "up" | "pull") {
-        COMPOSE_TIMEOUT
-    } else {
-        ACTION_TIMEOUT
-    };
+    args.extend_from_slice(tail);
     compose_response(run_compose(&args, dur).await)
+}
+
+/// 项目配置文件路径 + 工作目录（配置文件所在目录）。
+async fn compose_target(project: &str) -> Result<(String, String), String> {
+    let file = compose_config_file(project).await?;
+    let dir = match Path::new(&file).parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().to_string(),
+        _ => "/".to_string(),
+    };
+    Ok((file, dir))
+}
+
+/// 读取项目配置文件内容（面板的 yaml 预览 / 编辑）。
+pub async fn compose_file(project: &str) -> Response {
+    let (file, _) = match compose_target(project).await {
+        Ok(v) => v,
+        Err(e) => return Response::err(-1, e),
+    };
+    match std::fs::read_to_string(&file) {
+        Ok(content) => {
+            // 受管 = 文件就在 stacks 目录里；只有这种面板才允许改（外部项目的文件不归我们管）
+            let managed = managed_file(project).is_some_and(|p| p.to_string_lossy() == file);
+            Response::ok(
+                "ok",
+                Some(json!({ "path": file, "content": content, "managed": managed })),
+            )
+        }
+        Err(e) => Response::err(-1, format!("读取配置文件失败 {file}: {e}")),
+    }
+}
+
+/// 单份 compose 文件的大小上限：配置文件不该这么大，这里挡的是误传与刷盘。
+const COMPOSE_FILE_LIMIT: usize = 512 * 1024;
+
+/// 新建 / 覆盖受管项目的 compose.yaml。
+pub fn compose_save(project: &str, content: &str) -> Response {
+    let Some(file) = managed_file(project) else {
+        return Response::err(
+            -1,
+            format!("非法的项目名: {project}（字母数字开头，可含 _ . -，最长 63 字符）"),
+        );
+    };
+    if content.trim().is_empty() {
+        return Response::err(-1, "Compose 内容不能为空".to_string());
+    }
+    if content.len() > COMPOSE_FILE_LIMIT {
+        return Response::err(
+            -1,
+            format!("Compose 内容过大（上限 {} KiB）", COMPOSE_FILE_LIMIT / 1024),
+        );
+    }
+
+    let Some(dir) = file.parent() else {
+        return Response::err(-1, "无法定位项目目录".to_string());
+    };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return Response::err(-1, format!("创建项目目录失败 {}: {e}", dir.display()));
+    }
+    if let Err(e) = std::fs::write(&file, content) {
+        return Response::err(-1, format!("写入配置文件失败 {}: {e}", file.display()));
+    }
+    Response::ok(
+        "ok",
+        Some(json!({ "project": project, "path": file.to_string_lossy() })),
+    )
+}
+
+/// 删除项目：`down` 之后清理受管目录。
+///
+/// 外部项目（`compose ls` 里登记、文件不在 stacks 目录）只 down，不动它的文件 ——
+/// 那些文件是用户自己放的，面板不该替他做主。
+pub async fn compose_remove(project: &str) -> Response {
+    let resp = run_compose_action(project, &["down"], COMPOSE_TIMEOUT).await;
+    // 只有 down 成功才清目录：down 失败往往意味着还有容器在跑（或 compose 插件不可用），
+    // 这时候把配置文件删掉，用户想收拾现场反而没抓手了。
+    if resp.code == 0
+        && let Some(dir) = managed_file(project).and_then(|f| f.parent().map(Path::to_path_buf))
+    {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    resp
+}
+
+/// 项目日志尾部（`docker compose logs --tail N`），一次性拉取。
+pub async fn compose_logs(project: &str, tail: u32) -> Response {
+    let tail = tail.clamp(1, 5000).to_string();
+    let (file, dir) = match compose_target(project).await {
+        Ok(v) => v,
+        Err(e) => return Response::err(-1, e),
+    };
+
+    let args = [
+        "compose",
+        "-f",
+        file.as_str(),
+        "--project-directory",
+        dir.as_str(),
+        "logs",
+        "--tail",
+        tail.as_str(),
+        // 面板里按等宽正文展示，彩色转义只会变成乱码
+        "--no-color",
+    ];
+    compose_response(run_compose(&args, CALL_TIMEOUT).await)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         installed_from, parse_port_spec, prepare_bind_dir, valid_build_arg_key,
-        valid_container_name, valid_platform, validate_volume_name,
+        valid_container_name, valid_platform, valid_project_name, validate_volume_name,
     };
+
+    /// 项目名会拼进宿主机路径（`stacks/<name>/compose.yaml`）：
+    /// 路径穿越必须在入口挡住，而不是指望 docker 自己报错。
+    #[test]
+    fn project_name_guards_traversal() {
+        assert!(valid_project_name("nginx"));
+        assert!(valid_project_name("my-app_1.2"));
+        assert!(valid_project_name("9front"));
+
+        assert!(!valid_project_name(""));
+        assert!(!valid_project_name("."));
+        assert!(!valid_project_name(".."));
+        assert!(!valid_project_name("../etc"));
+        assert!(!valid_project_name("a/b"));
+        assert!(!valid_project_name("-lead"));
+        assert!(!valid_project_name("has space"));
+        assert!(!valid_project_name(&"a".repeat(64)));
+    }
 
     /// 装了但 daemon 没启动（socket 不存在）仍必须算「已安装」：
     /// 否则面板侧栏的容器入口会消失，用户会以为 Docker 没了而重装一遍。

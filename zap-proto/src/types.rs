@@ -974,11 +974,32 @@ pub enum Request {
     /// Compose 项目列表（`docker compose ls -a`）。
     #[serde(rename = "docker.compose_list")]
     DockerComposeList,
-    /// Compose 动作：up / down / start / stop / restart / pull。
+    /// Compose 动作：up / down / start / stop / restart / pull / update。
     ///
-    /// 项目配置文件从 `compose ls` 结果中反查，避免前端直接传任意路径。
+    /// 项目配置文件从 `compose ls` 结果中反查（受管项目再兜底到 stacks 目录），
+    /// 避免前端直接传任意路径。
     #[serde(rename = "docker.compose_action")]
     DockerComposeAction { project: String, action: String },
+    /// 读取 Compose 项目的配置文件内容（面板的 yaml 预览 / 编辑）。
+    ///
+    /// 只读 `compose ls` 反查到的路径，或受管目录
+    /// `{ZAP_PATH}/data/stacks/<project>/compose.yaml`：不接受前端传路径，
+    /// 否则就是一个「读任意文件」的口子。
+    #[serde(rename = "docker.compose_file")]
+    DockerComposeFile { project: String },
+    /// 新建 / 覆盖受管项目的 compose.yaml（面板「+ Compose」与「导入」）。
+    ///
+    /// 文件固定落在 `{ZAP_PATH}/data/stacks/<project>/compose.yaml`，
+    /// `project` 只允许 docker 的项目名字符集，写盘前自行挡路径穿越。
+    #[serde(rename = "docker.compose_save")]
+    DockerComposeSave { project: String, content: String },
+    /// 删除项目：先 `down` 再清理受管目录；`compose ls` 里的外部项目只 down、
+    /// 不动它的文件（那些文件不归面板管）。
+    #[serde(rename = "docker.compose_remove")]
+    DockerComposeRemove { project: String },
+    /// 项目日志尾部（`docker compose logs --tail N`），一次性拉取。
+    #[serde(rename = "docker.compose_logs")]
+    DockerComposeLogs { project: String, tail: u32 },
     /// 容器内交互式终端（`docker exec -it` 的等价物）。
     ///
     /// 这是**长会话**：stdin 需要持续输入、stdout 需要增量回传，

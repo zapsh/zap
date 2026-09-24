@@ -480,6 +480,12 @@ pub async fn dispatch(req: Request) -> Response {
         Request::DockerComposeAction { project, action } => {
             docker::compose_action(&project, &action).await
         }
+        Request::DockerComposeFile { project } => docker::compose_file(&project).await,
+        Request::DockerComposeSave { project, content } => {
+            docker::compose_save(&project, &content)
+        }
+        Request::DockerComposeRemove { project } => docker::compose_remove(&project).await,
+        Request::DockerComposeLogs { project, tail } => docker::compose_logs(&project, tail).await,
         // 交互式终端与事件流都是长会话，只能走 `dispatch_stream`（StreamOpen）：
         // 一问一答的通道承载不了持续输入 / 持续输出。
         Request::DockerContainerExec { .. } => {

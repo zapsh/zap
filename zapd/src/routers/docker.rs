@@ -18,6 +18,10 @@
 //! - POST /docker/network/action        网络动作 create / remove / prune（body: name, action, driver）
 //! - GET  /docker/compose               Compose 项目列表
 //! - POST /docker/compose/action        Compose 动作 up / down / …（body: project, action）
+//! - GET  /docker/compose/file          项目配置文件内容（Query: project）
+//! - POST /docker/compose/save          新建 / 覆盖项目配置文件（body: project, content）
+//! - GET  /docker/compose/logs          项目日志尾部（Query: project, tail）
+//! - POST /docker/compose/remove        删除项目（down + 清理受管目录）
 //!
 //! 本模块不做白名单校验之外的业务：容器 / 镜像 / 卷 / 网络的名字原样传给
 //! `docker` CLI 作为**被操作对象**，命令本身由 zapexec 的 `verbs/docker.rs` 固定构造。
@@ -652,7 +656,7 @@ pub async fn compose_action(
     require_admin(&claims)?;
     if !matches!(
         body.action.as_str(),
-        "up" | "down" | "start" | "stop" | "restart" | "pull"
+        "up" | "down" | "start" | "stop" | "restart" | "pull" | "update"
     ) {
         return Err(ZapError::New(-1, "不支持的 Compose 操作".to_string()));
     }
@@ -664,6 +668,94 @@ pub async fn compose_action(
         Request::DockerComposeAction {
             project: body.project.clone(),
             action: body.action.clone(),
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ComposeFileQuery {
+    pub project: String,
+}
+
+/// GET /docker/compose/file —— 读项目配置文件（yaml 预览 / 编辑）。
+pub async fn compose_file(
+    claims: ValidatedClaims,
+    Query(q): Query<ComposeFileQuery>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    exec(Request::DockerComposeFile { project: q.project }).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ComposeLogsQuery {
+    pub project: String,
+    #[serde(default)]
+    pub tail: u32,
+}
+
+/// GET /docker/compose/logs —— 项目日志尾部（一次性拉取）。
+pub async fn compose_logs(
+    claims: ValidatedClaims,
+    Query(q): Query<ComposeLogsQuery>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    exec(Request::DockerComposeLogs {
+        project: q.project,
+        tail: q.tail,
+    })
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ComposeSaveBody {
+    pub project: String,
+    pub content: String,
+}
+
+/// POST /docker/compose/save —— 新建 / 覆盖受管项目的 compose.yaml。
+pub async fn compose_save(
+    claims: ValidatedClaims,
+    addr: Extension<SocketAddr>,
+    Json(body): Json<ComposeSaveBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    exec_audited(
+        &claims,
+        &addr,
+        "docker_compose_save",
+        format!(
+            "Compose 项目 {} → 保存配置（{} 字节）",
+            body.project,
+            body.content.len()
+        ),
+        Request::DockerComposeSave {
+            project: body.project.clone(),
+            content: body.content.clone(),
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ComposeRemoveBody {
+    pub project: String,
+}
+
+/// POST /docker/compose/remove —— 删除项目（down + 清理受管目录）。
+pub async fn compose_remove(
+    claims: ValidatedClaims,
+    addr: Extension<SocketAddr>,
+    Json(body): Json<ComposeRemoveBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    exec_audited(
+        &claims,
+        &addr,
+        "docker_compose_remove",
+        format!("Compose 项目 {} → 删除", body.project),
+        Request::DockerComposeRemove {
+            project: body.project.clone(),
         },
     )
     .await
