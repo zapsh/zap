@@ -656,7 +656,7 @@ pub async fn compose_action(
     require_admin(&claims)?;
     if !matches!(
         body.action.as_str(),
-        "up" | "down" | "start" | "stop" | "restart" | "pull" | "update"
+        "up" | "down" | "start" | "stop" | "restart" | "pull" | "build" | "update" | "rebuild"
     ) {
         return Err(ZapError::New(-1, "不支持的 Compose 操作".to_string()));
     }
@@ -711,27 +711,57 @@ pub async fn compose_logs(
 pub struct ComposeSaveBody {
     pub project: String,
     pub content: String,
+    /// 存放位置：`global`（默认，`/opt/docker`）/ `user`（自己的目录）/ `panel`（面板目录）
+    #[serde(default)]
+    pub location: Option<String>,
 }
 
-/// POST /docker/compose/save —— 新建 / 覆盖受管项目的 compose.yaml。
+/// POST /docker/compose/save —— 新建 / 覆盖 Compose 项目的 compose.yaml。
 pub async fn compose_save(
     claims: ValidatedClaims,
     addr: Extension<SocketAddr>,
     Json(body): Json<ComposeSaveBody>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
+    // 只有两个可选区域：系统公共区域（/opt/docker）与自己的目录。
+    // 面板数据目录不再作为存放位置（早期落在那里的项目照旧能编辑、能删除）。
+    let location = body
+        .location
+        .as_deref()
+        .unwrap_or("global")
+        .trim()
+        .to_string();
+    if !matches!(location.as_str(), "global" | "user") {
+        return Err(ZapError::New(
+            -1,
+            "存放位置只支持 global（/opt/docker）与 user（自己的目录）".to_string(),
+        ));
+    }
+    // 「放到我的目录」得先知道是谁的目录：家目录与 Linux 账号都取自 user 表 ——
+    // 迁移过挂载点的用户 home 不再是 `/home/<名字>`，不能在 zapexec 里硬拼。
+    let (home, owner) = if location == "user" {
+        let (home, _) = super::system_file::user_private_prefixes(&claims).await;
+        let (linux_user, _) = super::system_file::actor_identity(&claims).await?;
+        (Some(home), linux_user)
+    } else {
+        (None, None)
+    };
     exec_audited(
         &claims,
         &addr,
         "docker_compose_save",
         format!(
-            "Compose 项目 {} → 保存配置（{} 字节）",
+            "Compose 项目 {} → 保存配置（{} 字节，位置 {}）",
             body.project,
-            body.content.len()
+            body.content.len(),
+            location
         ),
         Request::DockerComposeSave {
             project: body.project.clone(),
             content: body.content.clone(),
+            location: Some(location),
+            home,
+            owner,
         },
     )
     .await

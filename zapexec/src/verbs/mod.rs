@@ -481,8 +481,20 @@ pub async fn dispatch(req: Request) -> Response {
             docker::compose_action(&project, &action).await
         }
         Request::DockerComposeFile { project } => docker::compose_file(&project).await,
-        Request::DockerComposeSave { project, content } => {
-            docker::compose_save(&project, &content)
+        Request::DockerComposeSave {
+            project,
+            content,
+            location,
+            home,
+            owner,
+        } => {
+            docker::compose_save(
+                &project,
+                &content,
+                location.as_deref(),
+                home.as_deref(),
+                owner.as_deref(),
+            )
         }
         Request::DockerComposeRemove { project } => docker::compose_remove(&project).await,
         Request::DockerComposeLogs { project, tail } => docker::compose_logs(&project, tail).await,

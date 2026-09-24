@@ -18,6 +18,21 @@
         <div v-if="!isEdit" class="field-hint">{{ t('docker.compose.nameHint') }}</div>
       </el-form-item>
 
+      <!--
+        存放位置：决定项目目录落在哪儿 —— 也就决定了 compose 里 `./src` 这类
+        相对路径指向哪儿。编辑时位置跟着文件走，只显示当前路径。
+      -->
+      <el-form-item :label="t('docker.compose.locationLabel')">
+        <el-radio-group v-if="!isEdit" v-model="location">
+          <el-radio value="global">{{ t('docker.compose.locationGlobal') }}</el-radio>
+          <el-radio value="user">{{ t('docker.compose.locationUser') }}</el-radio>
+        </el-radio-group>
+        <div class="loc-preview mono">{{ isEdit ? (path || '—') : locationPath }}</div>
+        <div class="field-hint">
+          {{ isEdit ? t('docker.compose.locationLocked') : t('docker.compose.locationHint') }}
+        </div>
+      </el-form-item>
+
       <el-form-item :label="t('docker.compose.content')">
         <div class="editor">
           <div class="editor__toolbar">
@@ -76,8 +91,9 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { DocumentAdd, FolderOpened, Upload } from '@/icons'
-import { composeSave } from '@/api/docker'
+import { composeSave, type ComposeLocation } from '@/api/docker'
 import { readFile } from '@/api/file'
+import { getUserInfo } from '@/api/user'
 import ComposeFilePicker from './ComposeFilePicker.vue'
 
 const props = defineProps<{
@@ -86,6 +102,8 @@ const props = defineProps<{
   mode?: 'create' | 'edit'
   project?: string
   content?: string
+  /** 编辑时项目当前所在的配置文件路径（只读展示） */
+  path?: string
   /** 新建时预填的项目名（如从文件名推断） */
   presetName?: string
   /** 已存在的项目名：新建时重名要再确认一次，避免一键覆盖别人的配置 */
@@ -117,12 +135,39 @@ const pickerVisible = ref(false)
 /** 内容是从哪儿来的（服务器路径 / 本机文件名），编辑时留空表示沿用项目配置 */
 const sourcePath = ref('')
 
+/** 新建时的存放位置：公共区域（`/opt/docker`）还是自己的家目录 */
+const location = ref<ComposeLocation>('global')
+/** 当前账号的家目录，用于预览落点（取不到就显示 `~`，不影响保存） */
+const homeDir = ref('')
+
+async function ensureHomeDir() {
+  if (homeDir.value) return
+  try {
+    const resp = await getUserInfo()
+    homeDir.value = (resp.data as any)?.home_dir || ''
+  } catch {
+    // 拿不到只影响预览，后端仍会用自己的 home_dir 落盘
+  }
+}
+
+/** 落点预览：项目名还没填时给占位，让用户看懂两个选项的区别 */
+const locationPath = computed(() => {
+  const project = name.value.trim() || '<name>'
+  if (location.value === 'user') {
+    const home = homeDir.value.trim().replace(/\/+$/, '')
+    return `${home || '~'}/${project}`
+  }
+  return `/opt/docker/${project}`
+})
+
 /** 打开时把编辑目标填进来：编辑用传入值，新建用预填名 + 模板留空 */
 function onOpened() {
   name.value = isEdit.value ? (props.project ?? '') : (props.presetName ?? '')
   body.value = props.content ?? ''
   startAfterSave.value = !isEdit.value
   sourcePath.value = ''
+  location.value = 'global'
+  if (!isEdit.value) ensureHomeDir()
 }
 
 /** 与后端 `valid_project_name` 保持一致：字母数字开头，可含 `_ . -`，最长 63 */
@@ -208,9 +253,10 @@ async function submit() {
 
   saving.value = true
   try {
-    // 编辑模式项目名固定，用 props 里的值，避免用户改到一半的输入串了项目
+    // 编辑模式项目名固定，用 props 里的值，避免用户改到一半的输入串了项目；
+    // 位置只在新建时下发（编辑就地覆盖，不会被搬家）
     const target = isEdit.value ? (props.project ?? '') : project
-    await composeSave(target, body.value)
+    await composeSave(target, body.value, isEdit.value ? undefined : location.value)
     ElMessage.success(t('docker.compose.saved'))
     visible.value = false
     emit('saved', target, !isEdit.value && startAfterSave.value)
@@ -249,6 +295,13 @@ async function submit() {
 .editor__hint {
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+/* 落点预览 / 编辑时当前位置：等宽字体交给全局 `.mono`，这里只管间距与换行 */
+.loc-preview {
+  margin-top: 6px;
+  color: var(--el-text-color-regular);
+  word-break: break-all;
 }
 
 /* 内容来源（服务器路径 / 本机文件名）：提醒用户保存后会另存到 stacks 目录 */

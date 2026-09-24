@@ -974,7 +974,7 @@ pub enum Request {
     /// Compose 项目列表（`docker compose ls -a`）。
     #[serde(rename = "docker.compose_list")]
     DockerComposeList,
-    /// Compose 动作：up / down / start / stop / restart / pull / update。
+    /// Compose 动作：up / down / start / stop / restart / pull / build / update / rebuild。
     ///
     /// 项目配置文件从 `compose ls` 结果中反查（受管项目再兜底到 stacks 目录），
     /// 避免前端直接传任意路径。
@@ -982,17 +982,32 @@ pub enum Request {
     DockerComposeAction { project: String, action: String },
     /// 读取 Compose 项目的配置文件内容（面板的 yaml 预览 / 编辑）。
     ///
-    /// 只读 `compose ls` 反查到的路径，或受管目录
-    /// `{ZAP_PATH}/data/stacks/<project>/compose.yaml`：不接受前端传路径，
-    /// 否则就是一个「读任意文件」的口子。
+    /// 路径由后端自行定位（面板登记的位置 → `compose ls` 反查 → 约定目录扫描），
+    /// 不接受前端传路径：否则就是一个「读任意文件」的口子。
     #[serde(rename = "docker.compose_file")]
     DockerComposeFile { project: String },
-    /// 新建 / 覆盖受管项目的 compose.yaml（面板「+ Compose」与「导入」）。
+    /// 新建 / 覆盖 Compose 项目的 compose.yaml（面板「+ Compose」与「导入」）。
     ///
-    /// 文件固定落在 `{ZAP_PATH}/data/stacks/<project>/compose.yaml`，
+    /// 存放位置由 `location` 决定（路径不让前端传，只能选区域）：
+    /// - `global`（默认）：`/opt/docker/<project>` —— 系统公共区域，所有管理员都能管；
+    /// - `user`：`<home>/<project>` —— `home` 是当前用户的家目录，文件归该用户所有。
+    ///
+    /// 面板数据目录 `{ZAP_PATH}/data/stacks` 不再接受新建：早期落在那里的项目
+    /// 照旧可以编辑、删除（`compose_list` 仍会扫到，标为 `panel`）。
+    ///
+    /// 项目已存在（面板认得它的配置文件）时**就地覆盖**，不会被 location 搬家。
     /// `project` 只允许 docker 的项目名字符集，写盘前自行挡路径穿越。
     #[serde(rename = "docker.compose_save")]
-    DockerComposeSave { project: String, content: String },
+    DockerComposeSave {
+        project: String,
+        content: String,
+        #[serde(default)]
+        location: Option<String>,
+        #[serde(default)]
+        home: Option<String>,
+        #[serde(default)]
+        owner: Option<String>,
+    },
     /// 删除项目：先 `down` 再清理受管目录；`compose ls` 里的外部项目只 down、
     /// 不动它的文件（那些文件不归面板管）。
     #[serde(rename = "docker.compose_remove")]

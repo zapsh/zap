@@ -152,7 +152,7 @@ pub(crate) async fn user_private_prefixes(claims: &Claims) -> (String, String) {
 /// 属主规则统一放在 zapexec 侧：新建的内容归操作者，修改已有文件时保持原属主。
 /// 后者尤其关键 —— 编辑 /etc 下的系统配置若把属主改成操作者本人，
 /// 依赖 root 属主读取配置的服务就会起不来。
-async fn actor_identity(claims: &Claims) -> Result<(Option<String>, bool), ZapError> {
+pub(crate) async fn actor_identity(claims: &Claims) -> Result<(Option<String>, bool), ZapError> {
     let pool = db::get_db_pool().await;
     let lu: Option<String> = sqlx::query_scalar("SELECT linux_user FROM user WHERE id = ?")
         .bind(claims.id as i64)

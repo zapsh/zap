@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -1665,57 +1665,116 @@ pub async fn compose_list() -> Response {
         Err(e) => return Response::err(-1, format!("解析 compose 列表失败: {e}")),
     };
 
-    let root = stacks_root();
-    if let Ok(entries) = std::fs::read_dir(&root) {
-        for entry in entries.flatten() {
-            let dir = entry.path();
-            let Some(name) = dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(str::to_string)
-            else {
-                continue;
-            };
-            let file = dir.join("compose.yaml");
-            if !dir.is_dir()
-                || !valid_project_name(&name)
-                || !file.is_file()
-                || items
-                    .iter()
-                    .any(|i| i.get("Name").and_then(Value::as_str) == Some(name.as_str()))
-            {
-                continue;
-            }
-            items.push(json!({
-                "Name": name,
-                // 还没跑过：前端把 `created` 显示成「未启动」
-                "Status": "created",
-                "ConfigFiles": file.to_string_lossy(),
-            }));
+    // 扫各区域目录补齐 `compose ls` 认不出来的项目（刚建好、还没 up 的那些）
+    let mut scanned: Vec<(String, PathBuf)> = Vec::new();
+    scan_project_dirs(&stacks_root(), &mut scanned);
+    scan_project_dirs(Path::new(COMPOSE_GLOBAL_ROOT), &mut scanned);
+    scan_user_projects(&mut scanned);
+    for (name, file) in scanned {
+        if items
+            .iter()
+            .any(|i| i.get("Name").and_then(Value::as_str) == Some(name.as_str()))
+        {
+            continue;
         }
+        items.push(json!({
+            "Name": name,
+            // 还没跑过：前端把 `created` 显示成「未启动」
+            "Status": "created",
+            "ConfigFiles": file.to_string_lossy(),
+        }));
     }
 
-    // 标注受管（配置文件就在 stacks 目录里）：只有这种项目的配置才允许面板改
+    // 标注位置与受管范围：
+    // - `Location`：global（/opt/docker）/ user（用户 home）/ panel（stacks）/ external；
+    // - `Managed`：配置允许面板改（认得它的位置才算）；
+    // - `ManagedDir`：目录归面板管，删除项目时会被一并清理 ——
+    //   用户在 home 里自己放的、面板没登记过的项目只 down，不动他的文件。
+    let root = stacks_root();
+    let global = Path::new(COMPOSE_GLOBAL_ROOT);
+    let registry = read_registry();
     for item in items.iter_mut() {
-        let managed = item
+        let file = item
             .get("ConfigFiles")
             .and_then(Value::as_str)
             .and_then(|files| files.split(',').next())
             .map(str::trim)
             .filter(|f| !f.is_empty())
-            .is_some_and(|f| Path::new(f).starts_with(&root));
+            .map(PathBuf::from);
+        // 整个列表只读一次注册表：项目可能上百个，逐个读盘没必要
+        let registered = item
+            .get("Name")
+            .and_then(Value::as_str)
+            .and_then(|name| registry.get(name))
+            .and_then(|v| v.get("path"))
+            .and_then(Value::as_str);
+        let location = match file.as_deref() {
+            Some(f) if f.starts_with(&root) => "panel",
+            Some(f) if f.starts_with(global) => "global",
+            Some(f) if registered.is_some_and(|r| Path::new(r) == f) || in_user_home(f) => "user",
+            _ => "external",
+        };
+        let managed = location != "external";
+        // 用户区域里"面板建的项目"删除时一并清理；用户自己放的只 down（见 removable_dir）
+        let managed_dir = location == "panel" || location == "global" || registered.is_some();
         if let Some(obj) = item.as_object_mut() {
+            obj.insert("Location".to_string(), json!(location));
             obj.insert("Managed".to_string(), json!(managed));
+            obj.insert("ManagedDir".to_string(), json!(managed_dir));
         }
     }
 
     list_response(Ok(items))
 }
 
-/// 受管 Compose 项目的根目录（`{ZAP_PATH}/data/stacks`）。
+/// 扫描一个区域根目录下的一层子目录，收集 compose 项目（`<根>/<项目>/compose.yaml`）。
 ///
-/// 面板里「+ Compose」建的、以及导入的项目都落在这里，一个项目一个目录，
-/// 里面固定叫 `compose.yaml`（同目录的 `.env` / 其它 yaml 由用户自己放，compose 会一并加载）。
+/// 用户区域没有独立的根目录（每个 home 都是根），因此 `compose_list` 单独扫 `home` 集合；
+/// 这里只处理 global / panel 这种「一个根下挂多个项目」的布局。
+fn scan_project_dirs(root: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let Some(name) = dir.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        let file = dir.join("compose.yaml");
+        if dir.is_dir() && valid_project_name(&name) && file.is_file() {
+            out.push((name, file));
+        }
+    }
+}
+
+/// 扫描各用户 home 里的 compose 项目（`/home/<用户>/<项目>/compose.yaml`、`/root/<项目>/…`）。
+fn scan_user_projects(out: &mut Vec<(String, PathBuf)>) {
+    let mut homes: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/home") {
+        for entry in entries.flatten() {
+            let home = entry.path();
+            if home.is_dir() {
+                homes.push(home);
+            }
+        }
+    }
+    homes.push(PathBuf::from("/root"));
+    for home in homes {
+        scan_project_dirs(&home, out);
+    }
+}
+
+/// 系统公共区域根目录（`/opt/docker/<项目>`）。
+///
+/// compose 项目的**默认**落脚点：放在这里的项目属于系统而非某个用户，
+/// 所有管理员都能看到、能改、能删。
+const COMPOSE_GLOBAL_ROOT: &str = "/opt/docker";
+
+/// 面板私有目录（`{ZAP_PATH}/data/stacks`）。
+///
+/// 早期版本把新建项目一律放这里（于是 `./src` 这类相对路径全指到面板数据目录去，
+/// 项目自己的源码反而挂不进来）；现在只作为兼容区域保留 ——
+/// 已经在里面的项目仍在原地编辑 / 删除，新建时不再默认落这里。
 fn stacks_root() -> PathBuf {
     super::zap_path().join("data/stacks")
 }
@@ -1737,17 +1796,259 @@ fn valid_project_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
-/// 受管项目的配置文件路径（名字非法时返回 `None`）。
-fn managed_file(project: &str) -> Option<PathBuf> {
-    valid_project_name(project).then(|| stacks_root().join(project).join("compose.yaml"))
+/// Linux 账号名：字母 / 下划线开头，含字母数字 `_` `-`（与面板建号规则一致）。
+fn valid_linux_user(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+}
+
+/// Compose 项目的存放区域。
+///
+/// 一个项目一个目录，里面固定叫 `compose.yaml`（同目录的 `.env` / 其它 yaml
+/// 由 compose 自行加载）—— 这一点三个区域一致，区别只在**目录在谁的地盘上**。
+#[derive(Debug, Clone)]
+enum ComposeLocation {
+    /// 系统公共区域：`/opt/docker/<project>`
+    Global,
+    /// 用户自己的区域：`<home>/<project>`（如 `/home/admin/podhello`）
+    User { home: String, owner: Option<String> },
+    /// 面板私有目录：`{ZAP_PATH}/data/stacks/<project>`。
+    ///
+    /// **只用于兼容早期落在那里的项目**（照旧能编辑、能删除），
+    /// 新建时不再接受这个位置：面板数据目录不是放项目文件的地方
+    /// （`./src` 这类相对路径会指到面板目录里，而不是项目自己的位置）。
+    Panel,
+}
+
+impl ComposeLocation {
+    /// 项目目录（绝对路径）
+    fn dir(&self, project: &str) -> PathBuf {
+        match self {
+            ComposeLocation::Global => PathBuf::from(COMPOSE_GLOBAL_ROOT).join(project),
+            ComposeLocation::User { home, .. } => PathBuf::from(home).join(project),
+            ComposeLocation::Panel => stacks_root().join(project),
+        }
+    }
+
+    fn file(&self, project: &str) -> PathBuf {
+        self.dir(project).join("compose.yaml")
+    }
+}
+
+/// 解析前端选定的存放位置。
+///
+/// 只有两个可选区域：系统公共区域（`global`）与自己的目录（`user`）；
+/// 面板数据目录（`panel`）只保留给早期落在那里的项目，不能再选。
+///
+/// 路径不让前端传：目录一律由「区域 + 项目名（+ 家目录）」拼出来。
+/// `project` 走 `valid_project_name` 挡穿越，`home` 必须是干净的绝对路径 ——
+/// 否则这里就成了「往任意路径写文件」的口子。
+fn parse_location(
+    location: Option<&str>,
+    home: Option<&str>,
+    owner: Option<&str>,
+) -> Result<ComposeLocation, String> {
+    match location.unwrap_or("global") {
+        "" | "global" => Ok(ComposeLocation::Global),
+        "user" => {
+            let Some(home) = home.map(str::trim).filter(|h| !h.is_empty()) else {
+                return Err("缺少用户家目录，无法放到用户区域".to_string());
+            };
+            let path = Path::new(home);
+            if !path.is_absolute()
+                || path
+                    .components()
+                    .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
+            {
+                return Err(format!("非法的家目录路径: {home}"));
+            }
+            let owner = owner
+                .map(str::trim)
+                .filter(|o| !o.is_empty())
+                .map(str::to_string);
+            if let Some(name) = owner.as_deref()
+                && !valid_linux_user(name)
+            {
+                return Err(format!("非法的系统账号: {name}"));
+            }
+            Ok(ComposeLocation::User {
+                home: home.trim_end_matches('/').to_string(),
+                owner,
+            })
+        }
+        other => Err(format!("不支持的存放位置: {other}")),
+    }
+}
+
+/// 解析 /etc/passwd 取 `(uid, gid)`。
+fn user_ids(name: &str) -> Option<(u32, u32)> {
+    let content = std::fs::read_to_string("/etc/passwd").ok()?;
+    for line in content.lines() {
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() >= 4 && parts[0] == name {
+            return Some((parts[2].parse().ok()?, parts[3].parse().ok()?));
+        }
+    }
+    None
+}
+
+/// 把面板新建的目录 / 文件交给用户自己。
+///
+/// 不 chown 的话文件是 root 属主：用户 SSH 进去改不动 compose.yaml，
+/// 往项目目录里放 `src/` 也会被权限挡住 —— 而面板把项目放在用户区域，
+/// 本来就是让"项目文件和人待在一起"的。
+fn chown_to_user(path: &Path, owner: &str) -> Result<(), String> {
+    let Some((uid, gid)) = user_ids(owner) else {
+        return Err(format!("系统账号不存在: {owner}"));
+    };
+    std::os::unix::fs::chown(path, Some(uid), Some(gid))
+        .map_err(|e| format!("设置属主失败 {}: {e}", path.display()))
+}
+
+// ── 项目位置注册表 ──────────────────────────────────────────
+
+/// 面板创建过的项目 → 落盘位置（`{ "项目": { "path": …, "location": … } }`）。
+///
+/// `compose ls` 只认「创建过的项目」，而用户区域的项目（`<home>/<项目>`）
+/// 又不在任何约定目录里 —— 两者叠起来，「刚在面板里建好、还没 up」的项目
+/// 就会定位不到自己的配置文件。这里把位置记下来作为第一手依据。
+///
+/// 它只是线索不是真相：文件不在时会被忽略（用户手工删掉目录也不会卡住面板）。
+fn registry_path() -> PathBuf {
+    super::zap_path().join("data/compose-projects.json")
+}
+
+fn read_registry() -> serde_json::Map<String, Value> {
+    std::fs::read_to_string(registry_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn registry_project_path(project: &str) -> Option<String> {
+    read_registry()
+        .get(project)
+        .and_then(|v| v.get("path"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// 登记项目位置（写盘失败只忽略：它不影响本次保存，下次靠约定目录也能扫到）
+fn registry_set(project: &str, file: &Path, location: &str) {
+    let mut reg = read_registry();
+    reg.insert(
+        project.to_string(),
+        json!({ "path": file.to_string_lossy(), "location": location }),
+    );
+    registry_write(reg);
+}
+
+fn registry_remove(project: &str) {
+    let mut reg = read_registry();
+    if reg.remove(project).is_some() {
+        registry_write(reg);
+    }
+}
+
+fn registry_write(reg: serde_json::Map<String, Value>) {
+    let path = registry_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // 先写临时文件再 rename：面板重启 / 并发保存时不会读到写了一半的 JSON
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, Value::Object(reg).to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+// ── 位置判定 ────────────────────────────────────────────────
+
+/// 配置文件是否落在某个用户 home 的一层子目录（`<home>/<项目>/compose.yaml`）。
+fn in_user_home(file: &Path) -> bool {
+    let Some(dir) = file.parent() else {
+        return false;
+    };
+    let Some(home) = dir.parent() else {
+        return false;
+    };
+    // 管理员的家目录可能是 /root（不在 /home 下面）
+    home == Path::new("/root") || home.parent() == Some(Path::new("/home"))
+}
+
+/// 面板认得这个配置文件吗（认得才允许改、允许作为受管项目处理）。
+///
+/// 认得 = 面板登记过，或位于 `/opt/docker`、stacks、某个用户 home 的一层子目录。
+/// 其余（用户自己散放在别处的 compose 文件）算外部项目，只读配置。
+fn is_managed_file(project: &str, file: &Path) -> bool {
+    registry_project_path(project).is_some_and(|p| Path::new(&p) == file)
+        || file.starts_with(stacks_root())
+        || file.starts_with(COMPOSE_GLOBAL_ROOT)
+        || in_user_home(file)
+}
+
+/// 约定位置上的候选配置文件（按优先级）。
+///
+/// 服务「面板刚建好、还没 `up`」的项目：这类项目 `compose ls` 里查不到，
+/// 只能按约定路径找。用户区域靠扫各 home 的一层子目录（`/home/<用户>/<项目>`）。
+fn candidate_files(project: &str) -> Vec<PathBuf> {
+    let mut out = vec![
+        ComposeLocation::Global.file(project),
+        ComposeLocation::Panel.file(project),
+        Path::new("/root").join(project).join("compose.yaml"),
+    ];
+    if let Ok(entries) = std::fs::read_dir("/home") {
+        for entry in entries.flatten() {
+            let home = entry.path();
+            if home.is_dir() {
+                out.push(home.join(project).join("compose.yaml"));
+            }
+        }
+    }
+    out
+}
+
+/// 面板已认得的项目文件（保存时就地覆盖用；`project` 名非法时 `None`）。
+fn existing_managed_file(project: &str) -> Option<PathBuf> {
+    if !valid_project_name(project) {
+        return None;
+    }
+    if let Some(f) = registry_project_path(project) {
+        let p = PathBuf::from(f);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    candidate_files(project)
+        .into_iter()
+        .find(|f| f.is_file() && is_managed_file(project, f))
 }
 
 /// 查项目对应的 compose 配置文件路径。
 ///
-/// 只从 `compose ls` 的结果里反查，不接受前端传入任意路径：
-/// 否则就成了「指定任意文件启动容器」的提权口子。
-/// 还没 `up` 过的受管项目（`compose ls` 里没有）兜底到 stacks 目录的约定文件名。
+/// 定位顺序：面板登记的位置 → `compose ls` 反查 → 约定目录扫描。
+/// **不接受前端传入任意路径**：否则就成了「指定任意文件启动容器」的提权口子。
 async fn compose_config_file(project: &str) -> Result<String, String> {
+    if !valid_project_name(project) {
+        return Err(format!("非法的项目名: {project}"));
+    }
+
+    // 1) 面板登记过的位置最准（用户区域尤其需要：它不在任何约定目录里）
+    if let Some(f) = registry_project_path(project)
+        && Path::new(&f).is_file()
+    {
+        return Ok(f);
+    }
+
+    // 2) 跑过的项目：`compose ls` 里带着配置文件路径
     let (ok, stdout, stderr) = run_compose(
         &["compose", "ls", "--all", "--format", "json"],
         CALL_TIMEOUT,
@@ -1777,16 +2078,14 @@ async fn compose_config_file(project: &str) -> Result<String, String> {
         return Err(format!("项目 {project} 未登记配置文件"));
     }
 
-    // 还没 up 过的受管项目：`compose ls` 里当然查不到，按约定文件名兜底
-    if let Some(f) = managed_file(project)
-        && f.is_file()
-    {
+    // 3) 还没 up 过的项目：按约定目录兜底
+    if let Some(f) = candidate_files(project).into_iter().find(|f| f.is_file()) {
         return Ok(f.to_string_lossy().to_string());
     }
     Err(format!("未找到 Compose 项目 {project}"))
 }
 
-/// Compose 动作：up / down / start / stop / restart / pull / update。
+/// Compose 动作：up / down / start / stop / restart / pull / build / update / rebuild。
 pub async fn compose_action(project: &str, action: &str) -> Response {
     // update 是组合动作：先拉最新镜像，成功后再强制重建容器 ——
     // 拉取失败就别用旧镜像重建一遍，那样只是白重启一次。
@@ -1798,6 +2097,16 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
         return run_compose_action(project, &["up", "-d", "--force-recreate"], COMPOSE_TIMEOUT).await;
     }
 
+    // rebuild 同理：先**无缓存**重打镜像，成功后再强制重建容器。
+    // 构建失败就停手 —— 否则服务被停掉了，起的还是旧镜像，中间那段就是白宕机。
+    if action == "rebuild" {
+        let built = run_compose_action(project, &["build", "--no-cache"], COMPOSE_TIMEOUT).await;
+        if built.code != 0 {
+            return built;
+        }
+        return run_compose_action(project, &["up", "-d", "--force-recreate"], COMPOSE_TIMEOUT).await;
+    }
+
     let (tail, dur): (&[&str], Duration) = match action {
         "up" => (&["up", "-d"], COMPOSE_TIMEOUT),
         "down" => (&["down"], ACTION_TIMEOUT),
@@ -1805,6 +2114,8 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
         "stop" => (&["stop"], ACTION_TIMEOUT),
         "restart" => (&["restart"], ACTION_TIMEOUT),
         "pull" => (&["pull"], COMPOSE_TIMEOUT),
+        // 构建只造镜像、不动正在跑的容器，服务不受影响
+        "build" => (&["build"], COMPOSE_TIMEOUT),
         _ => return Response::err(-1, format!("不支持的 Compose 操作: {action}")),
     };
 
@@ -1849,28 +2160,59 @@ pub async fn compose_file(project: &str) -> Response {
     };
     match std::fs::read_to_string(&file) {
         Ok(content) => {
-            // 受管 = 文件就在 stacks 目录里；只有这种面板才允许改（外部项目的文件不归我们管）
-            let managed = managed_file(project).is_some_and(|p| p.to_string_lossy() == file);
+            // 受管 = 面板认得这个位置；外部项目的配置只给看，不归我们改
+            let managed = is_managed_file(project, Path::new(&file));
+            let location = location_of(project, Path::new(&file));
             Response::ok(
                 "ok",
-                Some(json!({ "path": file, "content": content, "managed": managed })),
+                Some(json!({
+                    "path": file,
+                    "content": content,
+                    "managed": managed,
+                    "location": location,
+                })),
             )
         }
         Err(e) => Response::err(-1, format!("读取配置文件失败 {file}: {e}")),
     }
 }
 
+/// 配置文件落在哪个区域（列表 / 详情里的位置标签用它）。
+fn location_of(project: &str, file: &Path) -> &'static str {
+    if file.starts_with(stacks_root()) {
+        "panel"
+    } else if file.starts_with(COMPOSE_GLOBAL_ROOT) {
+        "global"
+    } else if registry_project_path(project).is_some_and(|p| Path::new(&p) == file)
+        || in_user_home(file)
+    {
+        "user"
+    } else {
+        "external"
+    }
+}
+
 /// 单份 compose 文件的大小上限：配置文件不该这么大，这里挡的是误传与刷盘。
 const COMPOSE_FILE_LIMIT: usize = 512 * 1024;
 
-/// 新建 / 覆盖受管项目的 compose.yaml。
-pub fn compose_save(project: &str, content: &str) -> Response {
-    let Some(file) = managed_file(project) else {
+/// 新建 / 覆盖 Compose 项目的 compose.yaml。
+///
+/// - 项目已存在（面板认得它的位置）：**就地覆盖**，不按 `location` 搬家 ——
+///   否则编辑一个 `/opt/docker` 里的项目会顺手把它搬到别处，相对路径全废；
+/// - 新建：按 `location` 落在 global（`/opt/docker`，默认）/ user（`<home>`）/ panel（stacks）。
+pub fn compose_save(
+    project: &str,
+    content: &str,
+    location: Option<&str>,
+    home: Option<&str>,
+    owner: Option<&str>,
+) -> Response {
+    if !valid_project_name(project) {
         return Response::err(
             -1,
             format!("非法的项目名: {project}（字母数字开头，可含 _ . -，最长 63 字符）"),
         );
-    };
+    }
     if content.trim().is_empty() {
         return Response::err(-1, "Compose 内容不能为空".to_string());
     }
@@ -1881,6 +2223,15 @@ pub fn compose_save(project: &str, content: &str) -> Response {
         );
     }
 
+    // 已有项目就地覆盖：位置以磁盘上的实际位置为准（`loc` 只在新建时有值）
+    let existing = existing_managed_file(project);
+    let (file, loc) = match existing {
+        Some(file) => (file, None),
+        None => match parse_location(location, home, owner) {
+            Ok(l) => (l.file(project), Some(l)),
+            Err(e) => return Response::err(-1, e),
+        },
+    };
     let Some(dir) = file.parent() else {
         return Response::err(-1, "无法定位项目目录".to_string());
     };
@@ -1890,26 +2241,64 @@ pub fn compose_save(project: &str, content: &str) -> Response {
     if let Err(e) = std::fs::write(&file, content) {
         return Response::err(-1, format!("写入配置文件失败 {}: {e}", file.display()));
     }
+
+    // 用户区域：把目录与文件交给本人（root 属主的文件用户改不动、也放不进 src/）
+    if let Some(ComposeLocation::User {
+        owner: Some(owner), ..
+    }) = &loc
+    {
+        for path in [dir, file.as_path()] {
+            if let Err(e) = chown_to_user(path, owner) {
+                return Response::err(-1, e);
+            }
+        }
+    }
+
+    registry_set(project, &file, &location_of(project, &file));
     Response::ok(
         "ok",
-        Some(json!({ "project": project, "path": file.to_string_lossy() })),
+        Some(json!({
+            "project": project,
+            "path": file.to_string_lossy(),
+            "location": location_of(project, &file),
+        })),
     )
 }
 
-/// 删除项目：`down` 之后清理受管目录。
+/// 删除项目：`down` 之后清理面板拥有的项目目录。
 ///
-/// 外部项目（`compose ls` 里登记、文件不在 stacks 目录）只 down，不动它的文件 ——
-/// 那些文件是用户自己放的，面板不该替他做主。
+/// 外部项目（用户在 home 里自己放的、面板没登记过的）只 down，不动他的文件 ——
+/// 那些文件是用户自己的，面板不该替他做主。
 pub async fn compose_remove(project: &str) -> Response {
+    // 先定位再 down：`down` 之后项目会从 `compose ls` 里消失，那时就找不到目录了
+    let dir = removable_dir(project).await;
     let resp = run_compose_action(project, &["down"], COMPOSE_TIMEOUT).await;
     // 只有 down 成功才清目录：down 失败往往意味着还有容器在跑（或 compose 插件不可用），
     // 这时候把配置文件删掉，用户想收拾现场反而没抓手了。
-    if resp.code == 0
-        && let Some(dir) = managed_file(project).and_then(|f| f.parent().map(Path::to_path_buf))
-    {
-        let _ = std::fs::remove_dir_all(dir);
+    if resp.code == 0 {
+        if let Some(dir) = dir {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        registry_remove(project);
     }
     resp
+}
+
+/// 删除项目时该清理哪个目录：
+/// - 面板登记过的（含用户区域里面板建的项目）→ 清理；
+/// - `/opt/docker`、stacks 下的 → 清理（这两处是面板领地）；
+/// - 用户在 home 里自己放的、面板没登记过 → `None`（只 down 不删文件）。
+async fn removable_dir(project: &str) -> Option<PathBuf> {
+    let file = compose_config_file(project).await.ok()?;
+    let file = PathBuf::from(file);
+    let dir = file.parent()?.to_path_buf();
+    // 登记路径要与实际路径一致才算「面板建的项目」：用户把目录搬走后，
+    // 面板不该按旧线索去删他新位置上的目录
+    let registered = registry_project_path(project);
+    let managed = registered.as_deref().is_some_and(|r| Path::new(r) == file)
+        || dir.starts_with(stacks_root())
+        || dir.starts_with(COMPOSE_GLOBAL_ROOT);
+    managed.then_some(dir)
 }
 
 /// 项目日志尾部（`docker compose logs --tail N`），一次性拉取。
@@ -1938,9 +2327,44 @@ pub async fn compose_logs(project: &str, tail: u32) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        installed_from, parse_port_spec, prepare_bind_dir, valid_build_arg_key,
-        valid_container_name, valid_platform, valid_project_name, validate_volume_name,
+        ComposeLocation, in_user_home, installed_from, parse_location, parse_port_spec,
+        prepare_bind_dir, valid_build_arg_key, valid_container_name, valid_platform,
+        valid_project_name, validate_volume_name,
     };
+    use std::path::Path;
+
+    /// 存放位置只认白名单值，目录由「区域 + 项目名（+ 家目录）」拼出来：
+    /// 家目录必须是干净的绝对路径，否则就成了「往任意路径写文件」的口子。
+    #[test]
+    fn location_parses_only_clean_paths() {
+        assert!(matches!(
+            parse_location(None, None, None),
+            Ok(ComposeLocation::Global)
+        ));
+        assert!(matches!(
+            parse_location(Some("user"), Some("/home/admin"), Some("admin")),
+            Ok(ComposeLocation::User { .. })
+        ));
+
+        // 面板数据目录不再作为存放位置：那里不是放项目文件的地方
+        assert!(parse_location(Some("panel"), None, None).is_err());
+        assert!(parse_location(Some("user"), None, None).is_err());
+        assert!(parse_location(Some("user"), Some("relative/home"), None).is_err());
+        assert!(parse_location(Some("user"), Some("/home/../etc"), None).is_err());
+        assert!(parse_location(Some("user"), Some("/home/admin"), Some("../root")).is_err());
+        assert!(parse_location(Some("elsewhere"), None, None).is_err());
+    }
+
+    /// 用户区域判定：正好是 `<home>/<项目>/compose.yaml` 一层，再深就不算「面板的项目」
+    #[test]
+    fn user_home_layout_is_recognised() {
+        assert!(in_user_home(Path::new("/home/admin/podhello/compose.yaml")));
+        assert!(in_user_home(Path::new("/root/podhello/compose.yaml")));
+
+        assert!(!in_user_home(Path::new("/opt/docker/podhello/compose.yaml")));
+        assert!(!in_user_home(Path::new("/home/admin/compose.yaml")));
+        assert!(!in_user_home(Path::new("/home/admin/src/podhello/compose.yaml")));
+    }
 
     /// 项目名会拼进宿主机路径（`stacks/<name>/compose.yaml`）：
     /// 路径穿越必须在入口挡住，而不是指望 docker 自己报错。

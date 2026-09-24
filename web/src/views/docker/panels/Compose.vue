@@ -63,6 +63,18 @@
               >
                 {{ t('docker.compose.up') }}
               </el-button>
+              <!-- 构建只造镜像、不动运行中的容器；重建会强制重建容器（因而要确认） -->
+              <el-button
+                size="small"
+                :icon="Box"
+                :loading="busy === 'build'"
+                @click="act('build')"
+              >
+                {{ t('docker.compose.build') }}
+              </el-button>
+              <el-button size="small" :loading="busy === 'rebuild'" @click="act('rebuild')">
+                {{ t('docker.compose.rebuild') }}
+              </el-button>
               <el-button size="small" :loading="busy === 'stop'" @click="act('stop')">
                 {{ t('docker.compose.stop') }}
               </el-button>
@@ -100,10 +112,10 @@
           </header>
 
           <div class="detail-path mono">
-            {{ current.ConfigFiles || '—' }}
-            <el-tag v-if="!current.Managed" size="small" type="warning" effect="plain">
-              {{ t('docker.compose.external') }}
+            <el-tag size="small" :type="locationType(current.Location)" effect="plain">
+              {{ locationText(current.Location) }}
             </el-tag>
+            {{ current.ConfigFiles || '—' }}
           </div>
 
           <!-- 服务容器 -->
@@ -184,6 +196,7 @@
       :mode="formMode"
       :project="active"
       :content="editContent"
+      :path="current?.ConfigFiles"
       :existing="rows.map((r) => r.Name)"
       @saved="onSaved"
     />
@@ -195,7 +208,7 @@
 import { computed, inject, nextTick, onMounted, ref, watch, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Copy, Delete, Download, Edit, Play, Plus, Refresh, Search } from '@/icons'
+import { Box, Copy, Delete, Download, Edit, Play, Plus, Refresh, Search } from '@/icons'
 import {
   composeAction,
   composeFile,
@@ -365,13 +378,32 @@ const DONE_KEYS: Record<string, string> = {
   stop: 'docker.compose.stopDone',
   restart: 'docker.compose.restartDone',
   pull: 'docker.compose.pulled',
+  build: 'docker.compose.built',
+  rebuild: 'docker.compose.rebuilt',
   update: 'docker.compose.updated',
   start: 'docker.compose.upDone',
+}
+
+/** 会中断服务的动作：动手前先把后果讲清楚 */
+const CONFIRM_KEYS: Record<string, string> = {
+  rebuild: 'docker.compose.rebuildConfirm',
 }
 
 async function act(action: string) {
   const project = current.value
   if (!project) return
+  const confirmKey = CONFIRM_KEYS[action]
+  if (confirmKey) {
+    try {
+      await ElMessageBox.confirm(
+        t(confirmKey, { name: project.Name }),
+        t('docker.compose.rebuild'),
+        { type: 'warning' },
+      )
+    } catch {
+      return
+    }
+  }
   busy.value = action
   try {
     await composeAction(project.Name, action)
@@ -388,9 +420,13 @@ async function act(action: string) {
 async function remove() {
   const project = current.value
   if (!project) return
+  // 只 down、不删文件的项目（文件在用户自己那儿）得说明白，别让人以为文件也没了
+  const keepFiles = project.ManagedDir === false
   try {
     await ElMessageBox.confirm(
-      t('docker.compose.downConfirm', { name: project.Name }),
+      t(keepFiles ? 'docker.compose.downConfirmKeep' : 'docker.compose.downConfirm', {
+        name: project.Name,
+      }),
       t('docker.compose.down'),
       { type: 'warning' },
     )
@@ -456,6 +492,25 @@ function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
   if (s.startsWith('running')) return 'success'
   if (s.startsWith('created')) return 'info'
   if (s.includes('exited') || s.includes('dead')) return 'danger'
+  return 'warning'
+}
+
+/** 位置标签：告诉用户这个项目的文件到底放在宿主机哪儿 */
+const LOCATION_KEYS: Record<string, string> = {
+  global: 'docker.compose.locationGlobal',
+  user: 'docker.compose.locationUser',
+  panel: 'docker.compose.locationPanel',
+  external: 'docker.compose.external',
+}
+
+function locationText(location?: string): string {
+  return t(LOCATION_KEYS[location ?? ''] ?? 'docker.compose.external')
+}
+
+function locationType(location?: string): 'success' | 'primary' | 'info' | 'warning' {
+  if (location === 'global') return 'success'
+  if (location === 'user') return 'primary'
+  if (location === 'panel') return 'info'
   return 'warning'
 }
 

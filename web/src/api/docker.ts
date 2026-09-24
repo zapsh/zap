@@ -77,14 +77,21 @@ export interface DockerNetwork {
   CreatedAt?: string
 }
 
-/** Compose 项目（`docker compose ls` + 后端扫描的受管目录） */
+/** Compose 项目存放区域 */
+export type ComposeLocation = 'global' | 'user' | 'panel' | 'external'
+
+/** Compose 项目（`docker compose ls` + 后端扫描的各区域目录） */
 export interface DockerComposeProject {
   Name: string
-  /** `running(2)` / `exited(1)` / `created`（受管目录里还没启动的项目） */
+  /** `running(2)` / `exited(1)` / `created`（扫到的、还没启动的项目） */
   Status: string
   ConfigFiles: string
-  /** 配置文件是否在面板的 stacks 目录里：只有受管项目允许在面板中编辑 */
+  /** 存放区域：`global`（/opt/docker）/ `user`（用户 home）/ `panel`（stacks）/ `external` */
+  Location?: ComposeLocation
+  /** 位置是否归面板管：只有受管项目允许在面板中编辑配置 */
   Managed?: boolean
+  /** 目录是否归面板管：删除项目时会一并清理（用户自己在 home 里放的项目只 down） */
+  ManagedDir?: boolean
 }
 
 export interface DockerEnvStatus {
@@ -299,9 +306,18 @@ export function listComposeProjects() {
   return http.get<Api<{ items: DockerComposeProject[] }>>('/docker/compose')
 }
 
-/** up / down / start / stop / restart / pull / update */
+/**
+ * Compose 动作：up / down / start / stop / restart / pull / build / update / rebuild。
+ *
+ * 后端最长要等 10 分钟（打镜像、拉镜像就是这么慢），这里把 axios 默认的 15s
+ * 超时一并放开：否则任务还在跑，前端已经先弹「请求超时」了。
+ */
 export function composeAction(project: string, action: string) {
-  return http.post<Api<DockerActionResult>>('/docker/compose/action', { project, action })
+  return http.post<Api<DockerActionResult>>(
+    '/docker/compose/action',
+    { project, action },
+    { timeout: 600_000 },
+  )
 }
 
 /** compose 项目的配置文件（yaml 预览 / 编辑） */
@@ -320,12 +336,17 @@ export function composeFile(project: string) {
   return http.get<Api<DockerComposeFile>>('/docker/compose/file', { params: { project } })
 }
 
-/** 新建 / 覆盖受管项目的 compose.yaml */
-export function composeSave(project: string, content: string) {
-  return http.post<Api<{ project: string; path: string }>>('/docker/compose/save', {
-    project,
-    content,
-  })
+/**
+ * 新建 / 覆盖 Compose 项目的 compose.yaml。
+ *
+ * `location` 只在**新建**时生效：`global`（默认，`/opt/docker`）/ `user`（当前用户家目录）/
+ * `panel`（面板 stacks）。项目已存在时后端就地覆盖，不会被搬到别处。
+ */
+export function composeSave(project: string, content: string, location?: ComposeLocation) {
+  return http.post<Api<{ project: string; path: string; location: ComposeLocation }>>(
+    '/docker/compose/save',
+    { project, content, location },
+  )
 }
 
 /** 项目日志尾部（`docker compose logs --tail N`） */
