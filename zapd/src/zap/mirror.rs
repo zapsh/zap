@@ -3,14 +3,15 @@
 //! ## 为什么要有它
 //!
 //! 应用商店的安装脚本要从镜像取源码包（nginx / php / mysql / pcre2 / …）。
-//! 镜像不该写死在脚本里：国内机器走 `mirrors.zap.cn`、海外机器走 Cloudflare
 //! `mirrors.zap.sh`、离线机房根本没有外网 —— 那种环境里源是一个**本地目录**
 //! （运维把同样的包按相同目录结构预先放进去，如 `/opt/zap-pkg/php/php-8.3.6.tar.gz`）。
-//!
-//! ## 落盘位置与读写双方
+//! Mirrors:
+//! - 国内：`https://mirrors.zap.cn/pkg`（默认）
+//! - Cloudflare：`https://mirrors.zap.sh/pkg`（海外)
+//! - 本地目录：`/opt/zap-pkg` 或 `file:///opt/zap-pkg`（离线机房）
 //!
 //! 与 `update_config.yaml` 同级（`{data}/`，即 zap.db 旁边）：
-//! - **zapd 写**：面板「系统设置 → 下载源」保存时落盘；
+//! - **zapd 写**：面板「系统设置 → 下载源」；
 //! - **zapexec 读**：执行包脚本时注入 `ZAP_PKG_MIRROR`（见 `verbs/appstore::base_env`）。
 //!
 //! 脚本侧由 `bash_utils::pkg_mirror()` 消费，未注入时回落国内镜像；
@@ -133,7 +134,6 @@ fn normalize(mut f: MirrorFile) -> MirrorFile {
         f.version = default_version();
     }
     // 手工编辑可能删掉值，也可能填了个不合法的：不合法就退回默认，
-    // 免得一个坏值让所有包脚本都去连一个不存在的地址。
     match validate(&f.pkg_mirror) {
         Ok(v) => f.pkg_mirror = v,
         Err(_) => f.pkg_mirror = default_pkg_mirror(),
