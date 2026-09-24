@@ -3,7 +3,7 @@ resolver = "3"
 members = ["zapd","zapctl","zap-proto","zapexec","zapupgrade","zap-crypto"]
 
 [workspace.package]
-version = "1.0.17"
+version = "1.0.18"
 license = "Apache-2.0"
 
 
