@@ -2,47 +2,53 @@
   <!--
     非模态浮窗：Teleport 到 body（文件管理自身 overflow:hidden，且浮窗要能盖住整个视口）。
     生命周期由父组件（文件管理）控制：父级 v-if 决定挂载/卸载，本组件只管显示、最小化与关闭意图。
+    内部是多标签模型：一个文件一个标签，各自保留内容、光标、语言选择与 dirty 状态。
   -->
   <Teleport to="body">
     <!-- 最小化态：缩成底部小图标，点图标还原，点 × 关闭 -->
-    <div
-      v-if="dockShown"
-      class="few-dock"
-      :title="currentPath || t('fileEditor.title')"
-      @click="restore"
-    >
+    <div v-if="dockShown" class="few-dock" :title="dockTitle" @click="restore">
       <el-icon class="few-dock-icon"><Edit /></el-icon>
-      <span class="few-dock-name">{{ fileName || t('fileEditor.title') }}</span>
-      <span v-if="dirty" class="few-dock-dot" :title="t('fileEditor.unsaved')" />
+      <span class="few-dock-name">{{ dockName }}</span>
+      <span v-if="dirtyCount" class="few-dock-dot" :title="t('fileEditor.unsaved')" />
       <el-icon class="few-dock-close" @click.stop="requestClose"><Close /></el-icon>
     </div>
 
-    <div
-      v-else-if="shown"
-      class="few-window"
-      :class="{ 'is-loading': loading }"
-      :style="winStyle"
-      @mousedown="bringToFront"
-    >
-      <!-- 顶部工具栏：标题 + 保存/重新加载/最小化/关闭，整条可拖动（按钮区除外） -->
+    <div v-else-if="shown" class="few-window" :style="winStyle" @mousedown="bringToFront">
+      <!-- 顶部工具栏：标题 + 保存/保存全部/重新加载/最小化/关闭，整条可拖动（按钮区除外） -->
       <div class="few-header" @mousedown="startDrag">
         <div class="few-header-left">
           <el-icon class="few-header-icon"><Edit /></el-icon>
-          <span class="few-title">{{ fileName || t('fileEditor.title') }}</span>
-          <span v-if="dirty" class="few-dirty-dot" :title="t('fileEditor.unsaved')" />
+          <span class="few-title">{{ activeName || t('fileEditor.title') }}</span>
+          <span
+            v-if="activeTab && activeDirty"
+            class="few-dirty-dot"
+            :title="t('fileEditor.unsaved')"
+          />
+          <span v-if="tabs.length > 1" class="few-tabs-count">
+            {{ t('fileEditor.filesCount', { n: tabs.length }) }}
+          </span>
         </div>
         <div class="few-header-right" @mousedown.stop>
           <el-button
             size="small"
             type="primary"
-            :disabled="!currentPath || saving"
-            :loading="saving"
+            :disabled="!activeTab || activeTab.saving"
+            :loading="!!activeTab?.saving"
             @click="saveFile()"
           >
             <el-icon><Save /></el-icon>
             {{ t('common.save') }}
           </el-button>
-          <el-button size="small" :disabled="!currentPath || loading" @click="reloadFile">
+          <el-button
+            v-if="dirtyCount > 1"
+            size="small"
+            :title="t('fileEditor.saveAll')"
+            @click="saveAllTabs"
+          >
+            <el-icon><Save /></el-icon>
+            {{ t('fileEditor.saveAll') }}
+          </el-button>
+          <el-button size="small" :disabled="!activeTab || activeTab.loading" @click="reloadFile">
             <el-icon><Refresh /></el-icon>
             {{ t('fileEditor.reload') }}
           </el-button>
@@ -55,7 +61,7 @@
         </div>
       </div>
 
-      <!-- 中间：左侧文件树 + 右侧编辑器 -->
+      <!-- 中间：左侧文件树 + 右侧（标签条 + 编辑器） -->
       <div class="few-body">
         <div class="few-sidebar">
           <div class="few-sidebar-header">
@@ -78,7 +84,7 @@
               node-key="path"
               lazy
               highlight-current
-              :current-node-key="currentPath"
+              :current-node-key="activePath"
               @node-click="onTreeNodeClick"
             >
               <template #default="{ node, data }">
@@ -98,28 +104,52 @@
         </div>
 
         <div class="few-editor-area">
-          <CodeEditor
-            v-if="currentPath"
-            v-model="content"
-            class="few-editor"
-            :path="currentPath"
-            :lang="editorLang"
-            @cursor="onCursor"
-          />
-          <div v-else-if="loading" class="few-placeholder">{{ t('common.loading') }}</div>
-          <div v-else class="few-placeholder">{{ t('fileEditor.empty') }}</div>
+          <!-- 标签条：已打开的文件都在这里，点标签切换，× 关闭单个标签 -->
+          <div v-if="tabs.length" class="few-tabs">
+            <div
+              v-for="tab in tabs"
+              :key="tab.path"
+              class="few-tab"
+              :class="{ 'is-active': tab.path === activePath }"
+              :title="tab.path"
+              @click="activateTab(tab)"
+              @mousedown.middle.prevent="closeTab(tab)"
+            >
+              <span class="few-tab-name">{{ nameOf(tab.path) }}</span>
+              <span v-if="tabDirty(tab)" class="few-tab-dot" :title="t('fileEditor.unsaved')" />
+              <el-icon class="few-tab-close" @click.stop="closeTab(tab)"><Close /></el-icon>
+            </div>
+          </div>
+
+          <!-- 每个标签一个编辑器实例：v-show 切换，各自的 undo 历史与光标都留着 -->
+          <div class="few-editors">
+            <CodeEditor
+              v-for="tab in tabs"
+              v-show="tab.path === activePath"
+              :key="tab.path"
+              v-model="tab.content"
+              class="few-editor"
+              :path="tab.path"
+              :lang="langOf(tab)"
+              :active="tab.path === activePath"
+              @cursor="(pos) => onCursor(tab, pos)"
+            />
+            <div v-if="!tabs.length" class="few-placeholder">{{ t('fileEditor.empty') }}</div>
+          </div>
         </div>
       </div>
 
       <!-- 底部状态栏：光标位置 / 路径 / 语言 / 大小与权限 / 保存状态 -->
       <div class="few-status">
-        <span class="few-status-item">{{ t('fileEditor.pos', { line, col }) }}</span>
-        <span class="few-status-path" :title="currentPath">{{ currentPath || '—' }}</span>
+        <span class="few-status-item">
+          {{ t('fileEditor.pos', { line: activeTab?.line ?? 1, col: activeTab?.col ?? 1 }) }}
+        </span>
+        <span class="few-status-path" :title="activePath">{{ activePath || '—' }}</span>
         <el-select
-          v-if="currentPath"
+          v-if="activeTab"
           class="few-lang"
           size="small"
-          :model-value="langPick"
+          :model-value="activeTab.langPick"
           :title="t('fileEditor.lang')"
           @update:model-value="onLangChange"
         >
@@ -130,11 +160,11 @@
             :value="opt.value"
           />
         </el-select>
-        <span v-if="meta" class="few-status-item">
-          {{ formatSize(meta.size) }} · {{ meta.permissions }}
+        <span v-if="activeTab?.meta" class="few-status-item">
+          {{ formatSize(activeTab.meta.size) }} · {{ activeTab.meta.permissions }}
         </span>
-        <span class="few-status-item" :class="dirty ? 'is-dirty' : 'is-saved'">
-          {{ dirty ? t('fileEditor.unsaved') : t('fileEditor.savedState') }}
+        <span class="few-status-item" :class="activeDirty ? 'is-dirty' : 'is-saved'">
+          {{ activeDirty ? t('fileEditor.unsaved') : t('fileEditor.savedState') }}
         </span>
       </div>
 
@@ -174,7 +204,7 @@ const props = withDefaults(
   defineProps<{
     /** 要打开的文件路径；为空表示只开窗口，从左侧树里挑 */
     filePath?: string
-    /** 每次「使用编辑器打开」自增，用于在已挂载的窗口里换文件 / 从最小化还原 */
+    /** 每次「使用编辑器打开」自增，用于在已挂载的窗口里加标签 / 从最小化还原 */
     token?: number
     /** 树根（家目录）；为空时向后端要一次 */
     homePath?: string
@@ -192,43 +222,68 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-// ── 文档状态 ────────────────────────────────────────────────
+// ── 标签页模型 ──────────────────────────────────────────────
 
-const currentPath = ref('')
-const content = ref('')
-/** 上次读盘 / 保存时的内容，用来判断「是否脏」 */
-const original = ref('')
-const meta = ref<FileEntry | null>(null)
-const loading = ref(false)
-const saving = ref(false)
-const line = ref(1)
-const col = ref(1)
+interface EditorTab {
+  path: string
+  content: string
+  /** 上次读盘 / 保存时的内容，用来判断「是否脏」 */
+  original: string
+  meta: FileEntry | null
+  /** 正在重新读盘 */
+  loading: boolean
+  /** 正在保存 */
+  saving: boolean
+  line: number
+  col: number
+  /** 手选的语法语言；'auto' = 按扩展名判断 */
+  langPick: EditorLangName | 'auto'
+}
 
-const fileName = computed(() => currentPath.value.split('/').filter(Boolean).pop() || '')
-const dirty = computed(() => !!currentPath.value && content.value !== original.value)
+const tabs = ref<EditorTab[]>([])
+const activePath = ref('')
+
+const activeTab = computed(() => tabs.value.find((tab) => tab.path === activePath.value) ?? null)
+const activeDirty = computed(() => (activeTab.value ? tabDirty(activeTab.value) : false))
+const dirtyTabs = computed(() => tabs.value.filter(tabDirty))
+const dirtyCount = computed(() => dirtyTabs.value.length)
+const activeName = computed(() => (activeTab.value ? nameOf(activeTab.value.path) : ''))
+
+function nameOf(path: string) {
+  return path.split('/').filter(Boolean).pop() || ''
+}
+
+function tabDirty(tab: EditorTab) {
+  return tab.content !== tab.original
+}
+
+function activateTab(tab: EditorTab) {
+  activePath.value = tab.path
+}
 
 // ── 语法语言：默认按扩展名自动判断，可在状态栏手动指定（按文件记住） ──
 
 /** 路径 → 手选语言；没记录的走自动判断 */
 const langOverrides = new Map<string, EditorLangName>()
-const langPick = ref<EditorLangName | 'auto'>('auto')
-/** 按扩展名推断出来的语言（下拉里「自动（X）」用得上） */
-const autoLang = computed<EditorLangName>(() =>
-  currentPath.value ? langFromPath(currentPath.value) : 'text',
-)
-/** 传给 CodeEditor：auto 时给 undefined，让组件自己按 path 判断 */
-const editorLang = computed<EditorLangName | undefined>(() =>
-  langPick.value === 'auto' ? undefined : langPick.value,
-)
-const langOptions = computed<LangOption[]>(() => [
-  { value: 'auto', label: t('fileEditor.autoLang', { name: langLabel(autoLang.value) }) },
-  ...LANG_OPTIONS,
-])
+
+function langOf(tab: EditorTab): EditorLangName | undefined {
+  return tab.langPick === 'auto' ? undefined : tab.langPick
+}
+
+const langOptions = computed<LangOption[]>(() => {
+  const auto = activeTab.value ? langFromPath(activeTab.value.path) : 'text'
+  return [
+    { value: 'auto', label: t('fileEditor.autoLang', { name: langLabel(auto) }) },
+    ...LANG_OPTIONS,
+  ]
+})
 
 function onLangChange(v: EditorLangName | 'auto') {
-  if (v === 'auto') langOverrides.delete(currentPath.value)
-  else langOverrides.set(currentPath.value, v)
-  langPick.value = v
+  const tab = activeTab.value
+  if (!tab) return
+  if (v === 'auto') langOverrides.delete(tab.path)
+  else langOverrides.set(tab.path, v)
+  tab.langPick = v
 }
 
 // ── 窗口状态：最小化 / 位置 / 尺寸 ────────────────────────────
@@ -253,6 +308,14 @@ const winStyle = computed(() => ({
   height: `${h.value}px`,
   zIndex: zIndex.value,
 }))
+
+/** 最小化的图标上显示什么：优先当前文件名，多个标签补一句「共 N 个文件」 */
+const dockName = computed(() => activeName.value || t('fileEditor.title'))
+const dockTitle = computed(() =>
+  tabs.value.length > 1
+    ? `${activePath.value} · ${t('fileEditor.filesCount', { n: tabs.value.length })}`
+    : activePath.value || t('fileEditor.title'),
+)
 
 function clamp(v: number, min: number, max: number) {
   return Math.min(Math.max(v, min), Math.max(min, max))
@@ -335,106 +398,163 @@ function restore() {
 // ── 文件读写 ────────────────────────────────────────────────
 
 async function loadMeta(path: string) {
+  const tab = tabs.value.find((item) => item.path === path)
+  if (!tab) return
   try {
     const res = await getFileInfo(path)
-    meta.value = res.data ?? null
+    tab.meta = res.data ?? null
   } catch {
-    meta.value = null
+    tab.meta = null
   }
 }
 
 /**
- * 打开文件。`force` 用于「外部指定打开」的场景（父级菜单项 / 首次挂载），
- * 此时不做脏检查——否则会为一个用户没参与过的动作弹确认框。
+ * 打开一个文件：已开过的直接切到那个标签，否则读盘后新开一个标签。
+ * 多标签下「打开文件」不再销毁任何东西，所以不需要脏检查。
  */
-async function openPath(path: string, force = false) {
+async function openPath(path: string) {
   if (!path) return
-  if (!force && dirty.value) {
-    try {
-      await ElMessageBox.confirm(
-        t('fileEditor.dirtySwitch', { name: fileName.value }),
-        t('fileEditor.dirtyTitle'),
-        {
-          confirmButtonText: t('fileEditor.discard'),
-          cancelButtonText: t('common.cancel'),
-          type: 'warning',
-        },
-      )
-    } catch {
-      return
-    }
+  const exist = tabs.value.find((tab) => tab.path === path)
+  if (exist) {
+    activePath.value = path
+    return
   }
-  loading.value = true
+  let text: string
   try {
     const res = await readFile(path)
-    const text = res.data?.content ?? ''
-    // 二进制文件（含 NUL）进编辑器没意义，直接拒绝
-    if (text.includes('\u0000')) {
-      ElMessage.warning(t('fileEditor.binary'))
-      return
-    }
-    currentPath.value = path
-    original.value = text
-    content.value = text
-    meta.value = null
+    text = res.data?.content ?? ''
+  } catch {
+    // 由拦截器统一提示
+    return
+  }
+  // 二进制文件（含 NUL）进编辑器没意义，直接拒绝
+  if (text.includes('\u0000')) {
+    ElMessage.warning(t('fileEditor.binary'))
+    return
+  }
+  tabs.value.push({
+    path,
+    content: text,
+    original: text,
+    meta: null,
+    loading: false,
+    saving: false,
+    line: 1,
+    col: 1,
     // 这个文件之前手选过语言就沿用，否则回到自动判断
-    langPick.value = langOverrides.get(path) ?? 'auto'
-    void loadMeta(path)
+    langPick: langOverrides.get(path) ?? 'auto',
+  })
+  activePath.value = path
+  void loadMeta(path)
+}
+
+/** 重新读盘：脏文件先问「保存 / 放弃 / 取消」 */
+async function reloadFile() {
+  const tab = activeTab.value
+  if (!tab) return
+  if (tabDirty(tab)) {
+    const choice = await confirmDirty(t('fileEditor.dirtySwitch', { name: nameOf(tab.path) }), {
+      saveText: t('common.save'),
+    })
+    if (choice === 'cancel') return
+    if (choice === 'save' && !(await saveTab(tab, true))) return
+  }
+  tab.loading = true
+  try {
+    const res = await readFile(tab.path)
+    tab.content = res.data?.content ?? ''
+    tab.original = tab.content
+    void loadMeta(tab.path)
   } catch {
     // 由拦截器统一提示
   } finally {
-    loading.value = false
+    tab.loading = false
   }
 }
 
-async function reloadFile() {
-  if (!currentPath.value) return
-  await openPath(currentPath.value, true)
-}
-
-async function saveFile(silent = false) {
-  if (!currentPath.value) return false
-  saving.value = true
+async function saveTab(tab: EditorTab, silent = false): Promise<boolean> {
+  tab.saving = true
   try {
-    await writeFile(currentPath.value, content.value)
-    original.value = content.value
-    emit('saved', currentPath.value)
+    await writeFile(tab.path, tab.content)
+    tab.original = tab.content
+    emit('saved', tab.path)
     if (!silent) ElMessage.success(t('common.saveSuccess'))
-    void loadMeta(currentPath.value)
+    void loadMeta(tab.path)
     return true
   } catch {
     return false
   } finally {
-    saving.value = false
+    tab.saving = false
   }
 }
 
-/** 关闭：脏文件先给「保存并关闭 / 放弃修改 / 取消」三选一 */
+async function saveFile() {
+  const tab = activeTab.value
+  if (!tab) return
+  await saveTab(tab)
+}
+
+/** 工具栏上的「保存全部」：串行保存所有脏标签，返回是否全部成功 */
+async function saveAllTabs(): Promise<boolean> {
+  let ok = true
+  for (const tab of [...dirtyTabs.value]) {
+    if (!(await saveTab(tab, true))) ok = false
+  }
+  if (ok) ElMessage.success(t('common.saveSuccess'))
+  return ok
+}
+
+/** 单个标签的关闭：脏文件给「保存并关闭 / 放弃修改 / 取消」三选一 */
+async function closeTab(tab: EditorTab) {
+  if (tabDirty(tab)) {
+    const choice = await confirmDirty(t('fileEditor.dirtyClose', { name: nameOf(tab.path) }))
+    if (choice === 'cancel') return
+    if (choice === 'save' && !(await saveTab(tab, true))) return
+  }
+  const idx = tabs.value.indexOf(tab)
+  tabs.value.splice(idx, 1)
+  if (activePath.value !== tab.path) return
+  // 关掉的是当前标签：优先切右边的，没有就切左边的
+  const next = tabs.value[idx] ?? tabs.value[idx - 1]
+  activePath.value = next ? next.path : ''
+}
+
+/** 关闭整个窗口：有脏标签时给「全部保存并关闭 / 全部放弃 / 取消」 */
 async function requestClose() {
-  if (dirty.value) {
-    try {
-      await ElMessageBox.confirm(
-        t('fileEditor.dirtyClose', { name: fileName.value }),
-        t('fileEditor.dirtyTitle'),
-        {
-          confirmButtonText: t('fileEditor.saveAndClose'),
-          cancelButtonText: t('fileEditor.discard'),
-          type: 'warning',
-        },
-      )
-      const ok = await saveFile(true)
-      if (!ok) return
-    } catch (e) {
-      // cancel = 放弃修改；close / 其它 = 什么都不做
-      if (e !== 'cancel') return
-    }
+  if (dirtyCount.value) {
+    const choice = await confirmDirty(t('fileEditor.dirtyCloseAll', { n: dirtyCount.value }), {
+      saveText: t('fileEditor.saveAllAndClose'),
+      discardText: t('fileEditor.discardAll'),
+    })
+    if (choice === 'cancel') return
+    if (choice === 'save' && !(await saveAllTabs())) return
   }
   emit('close')
 }
 
-function onCursor(pos: { line: number; col: number }) {
-  line.value = pos.line
-  col.value = pos.col
+/**
+ * 脏文件三选一。
+ * confirm = 保存按钮文案，cancel = 放弃按钮文案，关闭弹窗（X / ESC）= 取消。
+ */
+async function confirmDirty(
+  message: string,
+  opts?: { saveText?: string; discardText?: string },
+): Promise<'save' | 'discard' | 'cancel'> {
+  try {
+    await ElMessageBox.confirm(message, t('fileEditor.dirtyTitle'), {
+      confirmButtonText: opts?.saveText ?? t('fileEditor.saveAndClose'),
+      cancelButtonText: opts?.discardText ?? t('fileEditor.discard'),
+      type: 'warning',
+    })
+    return 'save'
+  } catch (e) {
+    return e === 'cancel' ? 'discard' : 'cancel'
+  }
+}
+
+function onCursor(tab: EditorTab, pos: { line: number; col: number }) {
+  tab.line = pos.line
+  tab.col = pos.col
 }
 
 function formatSize(bytes: number): string {
@@ -500,18 +620,18 @@ function onTreeNodeClick(data: TreeNode) {
   if (!data.is_dir) void openPath(data.path)
 }
 
-// ── 快捷键：窗口内 Ctrl / Cmd + S 保存 ───────────────────────
+// ── 快捷键：窗口内 Ctrl / Cmd + S 保存当前标签 ───────────────
 
 /**
  * 捕获阶段监听：命中时 stopPropagation，避免同一个按键被页面上其它
  * 编辑器（例如文件管理的编辑对话框）再消费一次。
  */
 function onKeydown(e: KeyboardEvent) {
-  if (minimized.value || !props.active || !currentPath.value) return
+  if (minimized.value || !props.active || !activeTab.value) return
   if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return
   e.preventDefault()
   e.stopPropagation()
-  if (!saving.value) void saveFile()
+  if (!activeTab.value.saving) void saveFile()
 }
 
 onMounted(async () => {
@@ -520,7 +640,7 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeydown, true)
   window.addEventListener('resize', clampToViewport)
   await loadTreeRoot()
-  if (props.filePath) await openPath(props.filePath, true)
+  if (props.filePath) await openPath(props.filePath)
 })
 
 onBeforeUnmount(() => {
@@ -537,7 +657,7 @@ watch(
     // 缩成图标时无论是否带文件都先还原，让窗口重新可见
     if (minimized.value) restore()
     if (!props.filePath) return
-    void openPath(props.filePath, true)
+    void openPath(props.filePath)
   },
 )
 </script>
@@ -552,10 +672,6 @@ watch(
   border: 1px solid var(--el-border-color-light);
   border-radius: 6px;
   box-shadow: var(--el-box-shadow-dark);
-
-  &.is-loading {
-    cursor: progress;
-  }
 }
 
 // ── 顶部工具栏 ──────────────────────────────────────────────
@@ -597,6 +713,13 @@ watch(
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.few-tabs-count {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--el-text-color-placeholder);
 }
 
 .few-dirty-dot {
@@ -656,7 +779,87 @@ watch(
 .few-editor-area {
   flex: 1;
   min-width: 0;
-  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px 8px;
+  gap: 6px;
+}
+
+// ── 标签条 ─────────────────────────────────────────────────
+
+.few-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  padding-bottom: 4px;
+
+  &::-webkit-scrollbar {
+    height: 4px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: var(--el-border-color-light);
+    border-radius: 2px;
+  }
+}
+
+.few-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--el-text-color-primary);
+  }
+
+  &.is-active {
+    color: var(--el-color-primary);
+    font-weight: 600;
+    background: var(--el-bg-color);
+    border-color: var(--el-color-primary-light-5);
+  }
+
+  &-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--el-color-warning);
+    flex-shrink: 0;
+  }
+
+  &-close {
+    font-size: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+
+    &:hover {
+      color: var(--el-color-danger);
+    }
+  }
+}
+
+// ── 编辑器 ─────────────────────────────────────────────────
+
+.few-editors {
+  flex: 1;
+  min-height: 0;
 }
 
 .few-editor {

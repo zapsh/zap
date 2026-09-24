@@ -17,6 +17,11 @@ const props = withDefaults(
     readonly?: boolean
     placeholder?: string
     autofocus?: boolean
+    /**
+     * 父级用 v-show 切标签时传：变为可见会重新测量一次。
+     * CodeMirror 在 display:none 期间量不到尺寸，不测量的话尺寸/行号可能不对。
+     */
+    active?: boolean
   }>(),
   {
     lang: undefined,
@@ -24,6 +29,7 @@ const props = withDefaults(
     readonly: false,
     placeholder: undefined,
     autofocus: false,
+    active: true,
   },
 )
 
@@ -156,6 +162,14 @@ watch(
   () => props.readonly,
   (val) => {
     view?.dispatch({ effects: readOnlyConf.reconfigure(EditorState.readOnly.of(val)) })
+  },
+)
+
+// 多标签场景：从隐藏切回可见时重新测量，避免沿用 display:none 时的旧尺寸
+watch(
+  () => props.active,
+  (val) => {
+    if (val) view?.requestMeasure()
   },
 )
 </script>
