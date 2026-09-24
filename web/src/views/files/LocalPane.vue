@@ -642,65 +642,87 @@
       @saved="onEditorWindowSaved"
     />
 
-    <!-- 右键菜单 -->
-    <div v-if="contextMenuVisible" class="fm-context-backdrop" @click="closeContextMenu" />
-    <div
-      v-if="contextMenuVisible"
-      class="fm-context-menu"
-      :style="{ left: contextMenuX + 'px', top: contextMenuY + 'px' }"
-      @click.stop
-    >
-      <div class="fm-context-item" :class="{ disabled: !canOpen }" @click="openSelectedFromMenu">
-        <el-icon><Open /></el-icon>
-        <span>{{ t('filesLocal.open') }}</span>
-      </div>
-      <div class="fm-context-item" :class="{ disabled: !canEditFile }" @click="editInEditorFromMenu">
-        <el-icon><Edit /></el-icon>
-        <span>{{ t('filesLocal.openInEditor') }}</span>
-      </div>
-      <div class="fm-context-item" :class="{ disabled: !canCopy }" @click="copyFromMenu">
-        <el-icon><Copy /></el-icon>
-        <span>{{ t('filesLocal.copyTo') }}</span>
-      </div>
-      <div class="fm-context-item" :class="{ disabled: !canDuplicate }" @click="duplicateFromMenu">
-        <el-icon><Copy /></el-icon>
-        <span>{{ t('filesLocal.duplicate') }}</span>
-      </div>
-      <div class="fm-context-item" :class="{ disabled: !canMove }" @click="moveFromMenu">
-        <el-icon><Move /></el-icon>
-        <span>{{ t('filesLocal.moveTo') }}</span>
-      </div>
-      <div class="fm-context-item" :class="{ disabled: !canDownload }" @click="downloadFromMenu">
-        <el-icon><Download /></el-icon>
-        <span>{{ t('filesLocal.download') }}</span>
-      </div>
-      <div class="fm-context-item" :class="{ disabled: !canArchive }" @click="archiveFromMenu">
-        <el-icon><Archive /></el-icon>
-        <span>{{ t('filesLocal.archive') }}</span>
-      </div>
-      <div class="fm-context-item" :class="{ disabled: !canRename }" @click="renameFromMenu">
-        <el-icon><Edit /></el-icon>
-        <span>{{ t('filesLocal.rename') }}</span>
-      </div>
-      <div class="fm-context-item" :class="{ disabled: !canSetPermissions }" @click="permFromMenu">
-        <el-icon><Setting /></el-icon>
-        <span>{{ t('filesLocal.perm') }}</span>
-      </div>
+    <!--
+      右键菜单：Teleport 到 body。文件管理容器是 overflow:hidden，
+      放在里面会被容器裁掉；挪到 body 后只需自己处理视口边界。
+    -->
+    <Teleport to="body">
+      <div v-if="contextMenuVisible" class="fm-context-backdrop" @click="closeContextMenu" />
       <div
-        v-if="isAdmin"
-        class="fm-context-item"
-        :class="{ disabled: !hasSelection }"
-        @click="ownFromMenu"
+        v-if="contextMenuVisible"
+        ref="contextMenuRef"
+        class="fm-context-menu"
+        :style="{ left: contextMenuX + 'px', top: contextMenuY + 'px' }"
+        @click.stop
       >
-        <el-icon><User /></el-icon>
-        <span>{{ t('filesLocal.ownerGroup') }}</span>
+        <div class="fm-context-item" :class="{ disabled: !canOpen }" @click="openSelectedFromMenu">
+          <el-icon><Open /></el-icon>
+          <span>{{ t('filesLocal.open') }}</span>
+        </div>
+        <div
+          class="fm-context-item"
+          :class="{ disabled: !canEditFile }"
+          @click="editInEditorFromMenu"
+        >
+          <el-icon><Edit /></el-icon>
+          <span>{{ t('filesLocal.openInEditor') }}</span>
+        </div>
+        <div class="fm-context-item" :class="{ disabled: !canCopy }" @click="copyFromMenu">
+          <el-icon><Copy /></el-icon>
+          <span>{{ t('filesLocal.copyTo') }}</span>
+        </div>
+        <div
+          class="fm-context-item"
+          :class="{ disabled: !canDuplicate }"
+          @click="duplicateFromMenu"
+        >
+          <el-icon><Copy /></el-icon>
+          <span>{{ t('filesLocal.duplicate') }}</span>
+        </div>
+        <div class="fm-context-item" :class="{ disabled: !canMove }" @click="moveFromMenu">
+          <el-icon><Move /></el-icon>
+          <span>{{ t('filesLocal.moveTo') }}</span>
+        </div>
+        <div class="fm-context-item" :class="{ disabled: !canDownload }" @click="downloadFromMenu">
+          <el-icon><Download /></el-icon>
+          <span>{{ t('filesLocal.download') }}</span>
+        </div>
+        <div class="fm-context-item" :class="{ disabled: !canArchive }" @click="archiveFromMenu">
+          <el-icon><Archive /></el-icon>
+          <span>{{ t('filesLocal.archive') }}</span>
+        </div>
+        <div class="fm-context-item" :class="{ disabled: !canRename }" @click="renameFromMenu">
+          <el-icon><Edit /></el-icon>
+          <span>{{ t('filesLocal.rename') }}</span>
+        </div>
+        <div
+          class="fm-context-item"
+          :class="{ disabled: !canSetPermissions }"
+          @click="permFromMenu"
+        >
+          <el-icon><Setting /></el-icon>
+          <span>{{ t('filesLocal.perm') }}</span>
+        </div>
+        <div
+          v-if="isAdmin"
+          class="fm-context-item"
+          :class="{ disabled: !hasSelection }"
+          @click="ownFromMenu"
+        >
+          <el-icon><User /></el-icon>
+          <span>{{ t('filesLocal.ownerGroup') }}</span>
+        </div>
+        <div class="fm-context-divider" />
+        <div
+          class="fm-context-item danger"
+          :class="{ disabled: !canRemove }"
+          @click="removeFromMenu"
+        >
+          <el-icon><Delete /></el-icon>
+          <span>{{ t('common.delete') }}</span>
+        </div>
       </div>
-      <div class="fm-context-divider" />
-      <div class="fm-context-item danger" :class="{ disabled: !canRemove }" @click="removeFromMenu">
-        <el-icon><Delete /></el-icon>
-        <span>{{ t('common.delete') }}</span>
-      </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
@@ -825,6 +847,7 @@ const canDownload = computed(() => hasSelection.value)
 const contextMenuVisible = ref(false)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
+const contextMenuRef = ref<HTMLElement | null>(null)
 
 // Tree / Table refs
 const treeRef = ref<InstanceType<typeof ElTree>>()
@@ -1203,12 +1226,25 @@ function onGridContextMenu(event: MouseEvent, row: FileEntry) {
   openContextMenu(event, row)
 }
 
-function openContextMenu(event: MouseEvent, row?: FileEntry) {
+/**
+ * 右键菜单：先按鼠标位置放一次，等 DOM 出来量到真实尺寸后，
+ * 再把它夹回视口内（菜单有十几项，在列表底部右键时不夹会被裁掉）。
+ */
+async function openContextMenu(event: MouseEvent, row?: FileEntry) {
   event.preventDefault()
   if (row && !isSelected(row)) setSelection(row)
   contextMenuX.value = event.clientX
   contextMenuY.value = event.clientY
   contextMenuVisible.value = true
+
+  await nextTick()
+  const el = contextMenuRef.value
+  if (!el) return
+  const margin = 8
+  const maxX = Math.max(margin, window.innerWidth - el.offsetWidth - margin)
+  const maxY = Math.max(margin, window.innerHeight - el.offsetHeight - margin)
+  contextMenuX.value = Math.min(Math.max(event.clientX, margin), maxX)
+  contextMenuY.value = Math.min(Math.max(event.clientY, margin), maxY)
 }
 
 function closeContextMenu() {
@@ -2704,6 +2740,9 @@ watch(viewMode, async (mode) => {
   position: fixed;
   z-index: 1999;
   min-width: 160px;
+  // 视口比菜单还矮时（小屏 / 浏览器半屏）内部滚动，别让底部几项点不到
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   background: var(--el-bg-color-overlay);
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
