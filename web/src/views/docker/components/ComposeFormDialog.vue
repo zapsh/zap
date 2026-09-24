@@ -21,6 +21,9 @@
       <el-form-item :label="t('docker.compose.content')">
         <div class="editor">
           <div class="editor__toolbar">
+            <el-button size="small" :icon="FolderOpened" @click="pickerVisible = true">
+              {{ t('docker.compose.pickServer') }}
+            </el-button>
             <el-button size="small" :icon="Upload" @click="pickFile">
               {{ t('docker.compose.importFile') }}
             </el-button>
@@ -28,7 +31,7 @@
               {{ t('docker.compose.template') }}
             </el-button>
             <span class="editor__hint">{{ t('docker.compose.editorHint') }}</span>
-            <!-- 隐藏的原生文件选择器：导入 .yml / .yaml -->
+            <!-- 隐藏的原生文件选择器：从本机上传 .yml / .yaml -->
             <input
               ref="fileRef"
               type="file"
@@ -36,6 +39,9 @@
               class="editor__file"
               @change="onFilePicked"
             />
+          </div>
+          <div v-if="sourcePath" class="editor__source">
+            {{ t('docker.compose.source') }}：<code>{{ sourcePath }}</code>
           </div>
           <el-input
             v-model="body"
@@ -53,6 +59,9 @@
       </el-form-item>
     </el-form>
 
+    <!-- 从服务器挑文件：起点是当前用户的主目录 -->
+    <ComposeFilePicker v-model="pickerVisible" @pick="onServerPicked" />
+
     <template #footer>
       <el-button @click="visible = false">{{ t('docker.common.cancel') }}</el-button>
       <el-button type="primary" :loading="saving" @click="submit">
@@ -66,8 +75,10 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { DocumentAdd, Upload } from '@/icons'
+import { DocumentAdd, FolderOpened, Upload } from '@/icons'
 import { composeSave } from '@/api/docker'
+import { readFile } from '@/api/file'
+import ComposeFilePicker from './ComposeFilePicker.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -101,12 +112,17 @@ const body = ref('')
 const startAfterSave = ref(false)
 const saving = ref(false)
 const fileRef = ref<HTMLInputElement | null>(null)
+/** 服务器文件选择窗口 */
+const pickerVisible = ref(false)
+/** 内容是从哪儿来的（服务器路径 / 本机文件名），编辑时留空表示沿用项目配置 */
+const sourcePath = ref('')
 
 /** 打开时把编辑目标填进来：编辑用传入值，新建用预填名 + 模板留空 */
 function onOpened() {
   name.value = isEdit.value ? (props.project ?? '') : (props.presetName ?? '')
   body.value = props.content ?? ''
   startAfterSave.value = !isEdit.value
+  sourcePath.value = ''
 }
 
 /** 与后端 `valid_project_name` 保持一致：字母数字开头，可含 `_ . -`，最长 63 */
@@ -125,6 +141,26 @@ async function onFilePicked(ev: Event) {
   body.value = await file.text()
   // 新建模式下顺手用文件名当项目名：`nginx-compose.yml` → `nginx-compose`
   if (!isEdit.value && !name.value.trim()) name.value = normalizeName(file.name)
+  sourcePath.value = file.name
+}
+
+/**
+ * 从服务器挑好文件后读盘回填。
+ *
+ * 服务器上的文件只是"拷贝进来的模板"：保存时会另写一份到面板的 stacks 目录，
+ * 不会去改用户 home 里的原件（否则面板一改，用户自己的文件就跟着变了）。
+ */
+async function onServerPicked(serverPath: string) {
+  try {
+    const res = await readFile(serverPath)
+    body.value = res.data.content ?? ''
+    const basename = serverPath.split('/').pop() ?? ''
+    if (!isEdit.value && !name.value.trim()) name.value = normalizeName(basename)
+    sourcePath.value = serverPath
+    pickerVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e.message || t('docker.common.loadFailed'))
+  }
 }
 
 /** 文件名 → 合法项目名（非法字符换成 `-`，并裁掉扩展名） */
@@ -213,6 +249,19 @@ async function submit() {
 .editor__hint {
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+/* 内容来源（服务器路径 / 本机文件名）：提醒用户保存后会另存到 stacks 目录 */
+.editor__source {
+  padding: 6px 10px;
+  border-top: 1px dashed var(--el-border-color);
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  word-break: break-all;
+}
+
+.editor__source code {
+  font-family: Menlo, Monaco, 'Courier New', monospace;
 }
 
 .editor__file {

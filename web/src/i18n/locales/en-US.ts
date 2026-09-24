@@ -838,6 +838,19 @@ const enUS: Messages = {
     loadFailed: 'Failed to read the directory',
   },
 
+  /** Server file picker (Compose import, cloud "pick from server", …) */
+  filePicker: {
+    title: 'Select File',
+    confirm: 'Use This File',
+    home: 'Home',
+    up: 'Parent',
+    refresh: 'Refresh',
+    pathPlaceholder: 'Absolute path, press Enter to jump',
+    empty: 'No file here',
+    cancel: 'Cancel',
+    loadFailed: 'Failed to read the directory',
+  },
+
   /** Documents menu (Changelog / User Manual / FAQ / Upgrade Guide) */
   docs: {
     intro:
@@ -2804,7 +2817,10 @@ const enUS: Messages = {
       content: 'compose.yaml',
       contentPlaceholder: 'Paste the compose content, or click "Import file" to pick a .yml / .yaml',
       editorHint: 'Indent YAML with spaces',
-      importFile: 'Import file',
+      pickServer: 'Pick from server',
+      importFile: 'Upload from this machine',
+      onlyYaml: 'YAML only',
+      source: 'Source',
       template: 'Insert template',
       startAfterCreate: 'Start right after saving',
       contentRequired: 'Compose content is required',

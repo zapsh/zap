@@ -857,6 +857,19 @@ export default {
     loadFailed: '目录读取失败',
   },
 
+  /** 服务器文件选择窗口（Compose 导入 / 云存储「从服务器选择」这类场景） */
+  filePicker: {
+    title: '选择文件',
+    confirm: '选择该文件',
+    home: '主目录',
+    up: '返回上级',
+    refresh: '刷新',
+    pathPlaceholder: '绝对路径，回车跳转',
+    empty: '该目录下没有文件',
+    cancel: '取消',
+    loadFailed: '目录读取失败',
+  },
+
   /** 文档菜单（CHANGELOG / 用户手册 / FAQ / 升级指南） */
   docs: {
     intro:
@@ -2788,7 +2801,10 @@ export default {
       content: 'compose.yaml',
       contentPlaceholder: '粘贴 compose 内容，或点「导入文件」选一个 .yml / .yaml',
       editorHint: 'YAML 缩进请用空格',
-      importFile: '导入文件',
+      pickServer: '从服务器选择',
+      importFile: '从本机上传',
+      onlyYaml: '只看 yaml',
+      source: '内容来源',
       template: '插入模板',
       startAfterCreate: '保存后立即启动',
       contentRequired: '请填写 compose 内容',
