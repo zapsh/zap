@@ -925,6 +925,7 @@ const enUS: Messages = {
     ownNote:
       'The Linux user / group must already exist on the system; only administrators can perform this action.',
 
+    openInEditor: 'Open in Editor',
     editTitle: 'Edit: {name}',
     editorPlaceholder: 'File content',
     editorTip: 'Tip: press {key} to save (unsaved changes are lost when you close)',
@@ -1107,6 +1108,23 @@ const enUS: Messages = {
     deleteFileTitle: 'Delete File',
     deleted: 'Deleted',
     errDelete: 'Failed to delete "{name}"',
+  },
+
+  /** File manager · editor window (async, non-modal, minimizable) */
+  fileEditor: {
+    title: 'Editor',
+    empty: 'Pick a file in the tree on the left, or right-click a file and choose "Open in Editor"',
+    reload: 'Reload',
+    minimize: 'Minimize',
+    unsaved: 'Unsaved',
+    savedState: 'Saved',
+    pos: 'Ln {line}, Col {col}',
+    binary: 'That looks like a binary file — opening was cancelled',
+    dirtyTitle: 'Unsaved changes',
+    dirtySwitch: '"{name}" has unsaved changes. Opening another file discards them.',
+    dirtyClose: '"{name}" has unsaved changes.',
+    saveAndClose: 'Save and Close',
+    discard: 'Discard',
   },
 
   /** Server - system time */

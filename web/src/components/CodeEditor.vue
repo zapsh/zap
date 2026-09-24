@@ -29,6 +29,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
+  /** 光标位置（1 起算），供调用方的状态栏显示「行 / 列」 */
+  (e: 'cursor', pos: { line: number; col: number }): void
 }>()
 
 const host = ref<HTMLElement | null>(null)
@@ -66,6 +68,13 @@ const baseTheme = EditorView.theme({
   '.cm-tooltip': { zIndex: 3100 },
 })
 
+/** 光标所在行列（1 起算） */
+function cursorOf(state: EditorState) {
+  const pos = state.selection.main.head
+  const line = state.doc.lineAt(pos)
+  return { line: line.number, col: pos - line.from + 1 }
+}
+
 function createView() {
   if (!host.value || view) return
   const extensions: Extension[] = [
@@ -76,11 +85,13 @@ function createView() {
     EditorView.lineWrapping,
     EditorView.updateListener.of((u) => {
       if (u.docChanged) emit('update:modelValue', u.state.doc.toString())
+      if (u.docChanged || u.selectionSet) emit('cursor', cursorOf(u.state))
     }),
   ]
   if (props.placeholder) extensions.push(placeholder(props.placeholder))
   const state = EditorState.create({ doc: props.modelValue ?? '', extensions })
   view = new EditorView({ state, parent: host.value })
+  emit('cursor', cursorOf(state))
   if (props.autofocus) view.focus()
 }
 

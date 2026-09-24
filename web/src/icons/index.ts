@@ -55,6 +55,7 @@ import IconLock from '~icons/material-symbols/lock'
 import IconLogout from '~icons/material-symbols/logout'
 import IconMemory from '~icons/material-symbols/memory'
 import IconMenu from '~icons/material-symbols/menu'
+import IconMinimize from '~icons/material-symbols/minimize'
 import IconMenuBook from '~icons/material-symbols/menu-book'
 import IconMonitor from '~icons/material-symbols/monitor'
 import IconMonitorHeart from '~icons/material-symbols/monitor-heart'
@@ -98,6 +99,7 @@ import IconPlayArrow from '~icons/material-symbols/play-arrow'
 import IconElectricBoltOutline from '~icons/material-symbols/electric-bolt-outline' 
 import IconShieldWatchOutline from '~icons/material-symbols/shield-watch-outline'
 import IconRocketLaunch from '~icons/material-symbols/rocket-launch'
+import IconSave from '~icons/material-symbols/save'
 import IconNetworkNode from '~icons/material-symbols/network-node'
 import IconDashboard from '~icons/material-symbols/dashboard'
 
@@ -240,6 +242,7 @@ export const List = IconViewList
 export const Loading = IconProgressActivity
 export const Lock = IconLock
 export const MagicStick = IconAutoFixHigh
+export const Minimize = IconMinimize
 export const Monitor = IconMonitor
 export const Moon = IconDarkMode
 export const MoreFilled = IconMoreVert
@@ -248,6 +251,7 @@ export const Odometer = IconSpeed
 export const Open = IconOpenInNew
 export const Plus = IconAdd
 export const Refresh = IconRefresh
+export const Save = IconSave
 export const Search = IconSearch
 export const Setting = IconSettings
 export const Sunny = IconLightMode

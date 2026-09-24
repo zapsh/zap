@@ -97,6 +97,11 @@
           <el-button size="small" @click="refreshList" :loading="loading">
             <el-icon><Refresh /></el-icon>
           </el-button>
+          <!-- 打开常驻编辑器浮窗：已打开时复用同一实例（可能正缩成图标） -->
+          <el-button size="small" @click="openInEditor()">
+            <el-icon><Edit /></el-icon>
+            {{ t('filesLocal.openInEditor') }}
+          </el-button>
         </div>
       </div>
 
@@ -623,6 +628,20 @@
       </template>
     </DirPicker>
 
+    <!--
+      常驻编辑器浮窗：异步组件，首次打开才加载 chunk；非模态（无遮罩，文件管理照样可点）。
+      生命周期跟随文件管理：除浮窗内点「关闭」外不卸载（最小化只是缩成底部图标）。
+    -->
+    <FileEditorWindow
+      v-if="editorWinMounted"
+      :file-path="editorWinPath"
+      :token="editorWinToken"
+      :home-path="homePath"
+      :active="pageActive"
+      @close="onEditorWindowClose"
+      @saved="onEditorWindowSaved"
+    />
+
     <!-- 右键菜单 -->
     <div v-if="contextMenuVisible" class="fm-context-backdrop" @click="closeContextMenu" />
     <div
@@ -634,6 +653,10 @@
       <div class="fm-context-item" :class="{ disabled: !canOpen }" @click="openSelectedFromMenu">
         <el-icon><Open /></el-icon>
         <span>{{ t('filesLocal.open') }}</span>
+      </div>
+      <div class="fm-context-item" :class="{ disabled: !canEditFile }" @click="editInEditorFromMenu">
+        <el-icon><Edit /></el-icon>
+        <span>{{ t('filesLocal.openInEditor') }}</span>
       </div>
       <div class="fm-context-item" :class="{ disabled: !canCopy }" @click="copyFromMenu">
         <el-icon><Copy /></el-icon>
@@ -686,6 +709,9 @@ import {
   ref,
   reactive,
   computed,
+  defineAsyncComponent,
+  onActivated,
+  onDeactivated,
   onMounted,
   onBeforeUnmount,
   nextTick,
@@ -742,6 +768,9 @@ import {
 import CodeEditor from '@/components/CodeEditor.vue'
 import DirPicker from '@/components/DirPicker.vue'
 
+/** 编辑器浮窗按需加载：只有真正用过「使用编辑器打开」才会请求这个 chunk */
+const FileEditorWindow = defineAsyncComponent(() => import('./FileEditorWindow.vue'))
+
 const { t } = useI18n()
 
 // ── store ──────────────────────────────────────────────────
@@ -781,6 +810,8 @@ const canDownloadDirectly = computed(
 const hasDirectory = computed(() => selectedItems.value.some((e) => e.is_dir))
 
 const canOpen = computed(() => selectionCount.value === 1)
+/** 「使用编辑器打开」：只能对单个文件（目录没有内容可编辑） */
+const canEditFile = computed(() => selectionCount.value === 1 && !singleSelected.value?.is_dir)
 const canRename = computed(() => selectionCount.value === 1)
 const canDuplicate = computed(() => selectionCount.value === 1)
 const canSetPermissions = computed(() => hasSelection.value)
@@ -909,6 +940,39 @@ function onEditKeydown(e: KeyboardEvent) {
   e.preventDefault()
   if (saving.value) return
   void doSaveEdit()
+}
+
+// ── 常驻编辑器浮窗 ──────────────────────────────────────────
+
+/** 是否已挂载浮窗组件（只有浮窗内点「关闭」才会回到 false，借此卸载） */
+const editorWinMounted = ref(false)
+/** 要打开的文件；为空 = 只把窗口叫出来，由用户在窗口内选文件 */
+const editorWinPath = ref('')
+/** 每次调用自增：已挂载时用它换文件 / 从最小化还原 */
+const editorWinToken = ref(0)
+/** 文件管理页被路由切走时（keep-alive 缓存）浮窗一并隐藏，切回来再显示 */
+const pageActive = ref(true)
+
+function openInEditor(entry?: FileEntry | null) {
+  const item = entry ?? (canEditFile.value ? singleSelected.value : null)
+  editorWinPath.value = item?.path ?? ''
+  editorWinToken.value++
+  editorWinMounted.value = true
+}
+
+function editInEditorFromMenu() {
+  closeContextMenu()
+  openInEditor(singleSelected.value)
+}
+
+/** 浮窗内点关闭：卸载组件（与文件管理「除非点关闭不移除」的约定一致） */
+function onEditorWindowClose() {
+  editorWinMounted.value = false
+  editorWinPath.value = ''
+}
+
+function onEditorWindowSaved() {
+  loadFileList()
 }
 
 // ── breadcrumbs ────────────────────────────────────────────
@@ -2207,6 +2271,14 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditKeydown)
+})
+
+// 文件管理页被 keep-alive 缓存后切走时，编辑器浮窗跟着隐藏（组件本身不卸载）
+onActivated(() => {
+  pageActive.value = true
+})
+onDeactivated(() => {
+  pageActive.value = false
 })
 
 // 切回列表视图时，把当前选中态同步到 el-table 的复选框

@@ -943,6 +943,7 @@ export default {
     ownGroupPlaceholder: 'Linux 用户组名，留空表示不修改',
     ownNote: '需填写系统已存在的 Linux 用户名 / 用户组名；该操作仅管理员可用。',
 
+    openInEditor: '使用编辑器打开',
     editTitle: '编辑: {name}',
     editorPlaceholder: '文件内容',
     editorTip: '提示：按 {key} 可直接保存（未保存的修改在关闭后不会保留）',
@@ -1122,6 +1123,23 @@ export default {
     deleteFileTitle: '删除文件',
     deleted: '已删除',
     errDelete: '删除「{name}」失败',
+  },
+
+  /** 文件管理 · 编辑器浮窗（异步加载、非模态、可最小化，与文件管理同生命周期） */
+  fileEditor: {
+    title: '编辑器',
+    empty: '从左侧目录树里挑一个文件，或在文件列表上右键「使用编辑器打开」',
+    reload: '重新加载',
+    minimize: '最小化',
+    unsaved: '未保存',
+    savedState: '已保存',
+    pos: '行 {line}，列 {col}',
+    binary: '这看起来是二进制文件，已取消打开',
+    dirtyTitle: '未保存的修改',
+    dirtySwitch: '「{name}」有未保存的修改，打开其它文件会丢失这些修改。',
+    dirtyClose: '「{name}」有未保存的修改。',
+    saveAndClose: '保存并关闭',
+    discard: '放弃修改',
   },
 
   /** 服务器 - 时间设置 */
