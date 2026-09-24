@@ -3510,6 +3510,7 @@ export default {
     pwdPrompt: "请输入 {user}{'@'}{host} 的 SSH 密码（仅本次会话使用，不会保存）",
     connectTitle: '连接 {name}',
     pwdNotEmpty: '密码不能为空',
+    nodePwdPrompt: '节点「{name}」的终端需要 SSH 密码（仅本次会话使用，不会保存）',
   },
 
   /** 站点管理 */

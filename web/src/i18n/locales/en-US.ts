@@ -3561,6 +3561,8 @@ const enUS: Messages = {
     pwdPrompt: "Enter the SSH password for {user}{'@'}{host} (this session only, not saved)",
     connectTitle: 'Connect {name}',
     pwdNotEmpty: 'The password cannot be empty',
+    nodePwdPrompt:
+      'The terminal on node "{name}" requires an SSH password (this session only, not saved)',
   },
 
   /** Site management */
