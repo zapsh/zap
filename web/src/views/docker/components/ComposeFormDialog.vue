@@ -230,8 +230,8 @@ async function onServerPicked(serverPath: string) {
       const home = homeDir.value.trim().replace(/\/+$/, '')
       const dir = serverPath.slice(0, serverPath.lastIndexOf('/'))
       const rel = dir.startsWith(`${home}/`) ? dir.slice(home.length + 1) : ''
-      // 太深（后端最多 3 层）就不预填，免得保存时才报错
-      subDir.value = rel && rel.split('/').length <= 3 ? rel : ''
+      // 太深（后端最多两级）就不预填，免得保存时才报错
+      subDir.value = rel && rel.split('/').length <= 2 ? rel : ''
     }
   } catch (e: any) {
     ElMessage.error(e.message || t('docker.common.loadFailed'))

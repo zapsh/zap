@@ -104,10 +104,10 @@ fn scan_php_roots(base: &Path) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     let mut visit = |dir: &Path| {
         let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        if let Some(ver) = php_digits(name) {
-            if dir.join("etc/php-fpm.conf").is_file() {
-                out.push((ver, dir.to_path_buf()));
-            }
+        if let Some(ver) = php_digits(name)
+            && dir.join("etc/php-fpm.conf").is_file()
+        {
+            out.push((ver, dir.to_path_buf()));
         }
     };
     let Ok(top) = std::fs::read_dir(base) else {

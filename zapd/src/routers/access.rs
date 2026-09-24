@@ -2402,7 +2402,12 @@ mod tests {
     #[test]
     fn ssh_scope_is_confined_to_terminal_ws() {
         assert!(prefix_hit("/terminal/ws/1", SSH_WS_PREFIX));
-        for path in ["/system/status", "/site/list", "/terminal/list", "/user/list"] {
+        for path in [
+            "/system/status",
+            "/site/list",
+            "/terminal/list",
+            "/user/list",
+        ] {
             assert!(
                 !prefix_hit(path, SSH_WS_PREFIX),
                 "{path} 不该落在终端票据的可见范围内"

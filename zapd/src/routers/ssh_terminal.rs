@@ -514,9 +514,7 @@ pub async fn ws_terminal(
             .unwrap();
     };
     // 终端票据（一键 SSH）：绑死在这条连接上 —— 截到票据也换不了连接
-    if claims.scope == crate::zap::jwt::SSH_SCOPE
-        && claims.sub != format!("ssh:{id}")
-    {
+    if claims.scope == crate::zap::jwt::SSH_SCOPE && claims.sub != format!("ssh:{id}") {
         return axum::response::Response::builder()
             .status(StatusCode::FORBIDDEN)
             .body(axum::body::Body::from(

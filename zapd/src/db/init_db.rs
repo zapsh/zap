@@ -324,7 +324,9 @@ async fn init_monitor_indexes() {
         .execute("CREATE INDEX IF NOT EXISTS idx_system_stats_created ON system_stats(created_at)")
         .await;
     let _ = pool
-        .execute("CREATE INDEX IF NOT EXISTS idx_networks_stats_created ON networks_stats(created_at)")
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_networks_stats_created ON networks_stats(created_at)",
+        )
         .await;
 }
 
@@ -436,7 +438,10 @@ async fn sync_seed_menus() {
         // 父菜单可能是本次刚补进来的（例如 Pro 的父目录），所以用累积的 ids 解析
         let parent_id = seed.parent.and_then(|p| ids.get(p).copied()).unwrap_or(0);
         if parent_id == 0 && seed.parent.is_some() {
-            eprintln!("补种菜单 {}: 父菜单 {:?} 不在库里，按顶层处理", seed.name, seed.parent);
+            eprintln!(
+                "补种菜单 {}: 父菜单 {:?} 不在库里，按顶层处理",
+                seed.name, seed.parent
+            );
         }
         let res = sqlx::query(
             "INSERT INTO menus

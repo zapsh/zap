@@ -266,14 +266,18 @@ pub fn validate(raw: &str) -> Result<String, String> {
         }
         let d = PathBuf::from(&p);
         if !d.is_dir() {
-            return Err(format!("本地目录不存在或不是目录: {p}（离线源需预先放好包）"));
+            return Err(format!(
+                "本地目录不存在或不是目录: {p}（离线源需预先放好包）"
+            ));
         }
         // 规范写法统一成 file:// 前缀，脚本侧与远端 URL 一眼可分
         return Ok(format!("file://{}", p.trim_end_matches('/')));
     }
 
     if !base.starts_with("https://") && !base.starts_with("http://") {
-        return Err("下载源需为 http(s):// 地址，或本地目录（绝对路径 / file:// 开头）".to_string());
+        return Err(
+            "下载源需为 http(s):// 地址，或本地目录（绝对路径 / file:// 开头）".to_string(),
+        );
     }
     let rest = base.split("://").nth(1).unwrap_or("");
     if rest.is_empty() || rest.starts_with('/') {
@@ -321,7 +325,14 @@ mod tests {
 
     #[test]
     fn 损坏的配置退回默认源() {
-        assert_eq!(normalize(MirrorFile { pkg_mirror: "ftp://x".into(), ..Default::default() }).pkg_mirror, MIRROR_CN);
+        assert_eq!(
+            normalize(MirrorFile {
+                pkg_mirror: "ftp://x".into(),
+                ..Default::default()
+            })
+            .pkg_mirror,
+            MIRROR_CN
+        );
         assert_eq!(
             normalize(MirrorFile {
                 pkg_mirror: "".into(),

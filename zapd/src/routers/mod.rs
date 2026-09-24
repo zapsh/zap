@@ -374,10 +374,7 @@ fn api_routers() -> Router {
         )
         // ── 包下载源（应用商店镜像 / 离线本地目录）─────
         .route("/system/config/mirror", get(system_config::mirror_get))
-        .route(
-            "/system/config/mirror",
-            post(system_config::mirror_set),
-        )
+        .route("/system/config/mirror", post(system_config::mirror_set))
         // ── IP 池管理 ────────────────────────────────
         .route("/system/ip/list", get(system_ip::ip_list))
         .route("/system/ip/add", post(system_ip::ip_add))

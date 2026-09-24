@@ -1,4 +1,7 @@
-use crate::{db, zap::{ZapJsonResult, jwt::ValidatedClaims}};
+use crate::{
+    db,
+    zap::{ZapJsonResult, jwt::ValidatedClaims},
+};
 use axum::{Json, extract::Query};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -181,7 +184,10 @@ pub async fn get_system_info() -> ZapJsonResult {
     })))
 }
 
-pub async fn get_system_status(_: ValidatedClaims, Query(q): Query<HashMap<String, String>>) -> ZapJsonResult {
+pub async fn get_system_status(
+    _: ValidatedClaims,
+    Query(q): Query<HashMap<String, String>>,
+) -> ZapJsonResult {
     let mut sys = System::new_all();
     let load_avg = System::load_average();
 
@@ -195,14 +201,15 @@ pub async fn get_system_status(_: ValidatedClaims, Query(q): Query<HashMap<Strin
     // 时间范围：live（默认，近 5 分钟原始点，10s 一条）之外按桶降采样，
     // 桶宽的选择让每种范围都落在 ~120-180 个点，前端曲线不会糊成一团。
     // （参数与返回形状兼容：不带 range 的调用行为与旧版完全一致。）
-    let (window_secs, bucket): (i64, i64) = match q.get("range").map(|s| s.as_str()).unwrap_or("live") {
-        "1h" => (3600, 30),
-        "6h" => (6 * 3600, 180),
-        "24h" => (24 * 3600, 600),
-        "7d" => (7 * 86400, 3600),
-        "30d" => (30 * 86400, 14400),
-        _ => (300, 0),
-    };
+    let (window_secs, bucket): (i64, i64) =
+        match q.get("range").map(|s| s.as_str()).unwrap_or("live") {
+            "1h" => (3600, 30),
+            "6h" => (6 * 3600, 180),
+            "24h" => (24 * 3600, 600),
+            "7d" => (7 * 86400, 3600),
+            "30d" => (30 * 86400, 14400),
+            _ => (300, 0),
+        };
     let since = current_time.timestamp() - window_secs;
 
     let pool = db::get_db_pool().await;

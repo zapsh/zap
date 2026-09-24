@@ -1790,10 +1790,10 @@ fn scan_user_projects(out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
-/// 自定义子路径允许的最大层数（`docker/podhello` 是 2 层）。
+/// 自定义子路径允许的最大层数：`docker/podhello` 这样两级为止。
 ///
-/// 不给无限层：项目目录本就该浅，太深既扫不到也说明放错了地方。
-const COMPOSE_SUB_MAX_DEPTH: usize = 3;
+/// 项目目录本就该浅，再深既扫不到也说明放错了地方。
+const COMPOSE_SUB_MAX_DEPTH: usize = 2;
 
 /// 系统公共区域根目录（`/opt/docker/<项目>`）。
 ///
@@ -1931,7 +1931,7 @@ fn parse_location(
         Some(s) => {
             return Err(format!(
                 "非法的子目录: {s}（相对路径，最多 {COMPOSE_SUB_MAX_DEPTH} 层，不含 . / ..）"
-            ))
+            ));
         }
         None => None,
     };
@@ -2199,7 +2199,8 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
         if pulled.code != 0 {
             return pulled;
         }
-        return run_compose_action(project, &["up", "-d", "--force-recreate"], COMPOSE_TIMEOUT).await;
+        return run_compose_action(project, &["up", "-d", "--force-recreate"], COMPOSE_TIMEOUT)
+            .await;
     }
 
     // rebuild 同理：先**无缓存**重打镜像，成功后再强制重建容器。
@@ -2209,7 +2210,8 @@ pub async fn compose_action(project: &str, action: &str) -> Response {
         if built.code != 0 {
             return built;
         }
-        return run_compose_action(project, &["up", "-d", "--force-recreate"], COMPOSE_TIMEOUT).await;
+        return run_compose_action(project, &["up", "-d", "--force-recreate"], COMPOSE_TIMEOUT)
+            .await;
     }
 
     let (tail, dur): (&[&str], Duration) = match action {
@@ -2366,7 +2368,7 @@ pub fn compose_save(
         }
     }
 
-    registry_set(project, &file, &location_of(project, &file));
+    registry_set(project, &file, location_of(project, &file));
     Response::ok(
         "ok",
         Some(json!({
@@ -2464,9 +2466,7 @@ mod tests {
         assert!(parse_location(Some("user"), None, None, None).is_err());
         assert!(parse_location(Some("user"), Some("relative/home"), None, None).is_err());
         assert!(parse_location(Some("user"), Some("/home/../etc"), None, None).is_err());
-        assert!(
-            parse_location(Some("user"), Some("/home/admin"), Some("../root"), None).is_err()
-        );
+        assert!(parse_location(Some("user"), Some("/home/admin"), Some("../root"), None).is_err());
         assert!(parse_location(Some("elsewhere"), None, None, None).is_err());
     }
 
@@ -2488,18 +2488,12 @@ mod tests {
         assert_eq!(dir(Some("docker/podhello")), "/home/admin/docker/podhello");
 
         assert!(parse_location(Some("user"), Some("/home/admin"), None, Some("/etc")).is_err());
-        assert!(
-            parse_location(Some("user"), Some("/home/admin"), None, Some("../etc")).is_err()
-        );
+        assert!(parse_location(Some("user"), Some("/home/admin"), None, Some("../etc")).is_err());
         assert!(
             parse_location(Some("user"), Some("/home/admin"), None, Some("a/../../etc")).is_err()
         );
-        assert!(
-            parse_location(Some("user"), Some("/home/admin"), None, Some(".ssh/key")).is_err()
-        );
-        assert!(
-            parse_location(Some("user"), Some("/home/admin"), None, Some("a/b/c/d")).is_err()
-        );
+        assert!(parse_location(Some("user"), Some("/home/admin"), None, Some(".ssh/key")).is_err());
+        assert!(parse_location(Some("user"), Some("/home/admin"), None, Some("a/b/c/d")).is_err());
     }
 
     /// 用户区域判定：`/home/<用户>/…`、`/root/…` 之下都算（自定义子路径可以更深）
@@ -2507,9 +2501,13 @@ mod tests {
     fn user_home_layout_is_recognised() {
         assert!(in_user_home(Path::new("/home/admin/podhello/compose.yaml")));
         assert!(in_user_home(Path::new("/root/podhello/compose.yaml")));
-        assert!(in_user_home(Path::new("/home/admin/docker/podhello/compose.yaml")));
+        assert!(in_user_home(Path::new(
+            "/home/admin/docker/podhello/compose.yaml"
+        )));
 
-        assert!(!in_user_home(Path::new("/opt/docker/podhello/compose.yaml")));
+        assert!(!in_user_home(Path::new(
+            "/opt/docker/podhello/compose.yaml"
+        )));
         assert!(!in_user_home(Path::new("/srv/podhello/compose.yaml")));
         assert!(!in_user_home(Path::new("/home/admin")));
     }

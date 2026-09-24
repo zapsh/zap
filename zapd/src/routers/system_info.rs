@@ -9,7 +9,10 @@ pub async fn system_info(_: ValidatedClaims) -> ZapJsonResult {
     zap::system_info::get_system_info().await
 }
 
-pub async fn system_status(claims: ValidatedClaims, q: Query<HashMap<String, String>>) -> ZapJsonResult {
+pub async fn system_status(
+    claims: ValidatedClaims,
+    q: Query<HashMap<String, String>>,
+) -> ZapJsonResult {
     zap::system_info::get_system_status(claims, q).await
 }
 
