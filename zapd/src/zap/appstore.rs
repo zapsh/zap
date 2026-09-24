@@ -244,6 +244,83 @@ pub fn find_slot(pkg_path: &str, instance: Option<&str>) -> Option<InstalledSlot
     slots.into_iter().next()
 }
 
+/// 从 PHP 实例标识里取版本数字串：`php74` / `php-74` / `74` / `7.4` → `74`。
+fn php_version_digits(s: &str) -> Option<String> {
+    let t = s.trim().trim_start_matches("php").trim_start_matches('-');
+    let d: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
+    (!d.is_empty()).then_some(d)
+}
+
+/// PHP 实例标识归一到「脚本登记的 instance」（`php74` / `php83`）。
+///
+/// 站点表里存的是用户当时选中的值，而 PHP 允许多版本共存后这个值有三种来源：
+/// - 脚本登记的 instance（`php74`，新布局槽位 `apps/application/php/74` 里登记）；
+/// - 槽位目录名（多版本 `74`，或旧布局 `default`）；
+/// - 版本写法（`8.3`，面板「默认 PHP」就是这种）。
+///
+/// 执行端按 `php<版本>` 定位安装目录并命名 pool socket，面板侧又用它推导 socket 路径，
+/// 两边必须是同一个字符串 —— 所以这里统一折算成登记名：
+/// 1) 命中已安装 PHP 槽位（登记名 / 槽位名 / 版本数字比对）→ 登记名；
+/// 2) 只装了一个 PHP 且站点里存的是旧布局槽位名 `default` → 该实例的登记名；
+/// 3) 都没命中（PHP 由面板外部部署 / 数据目录不可读）→ 折算成 `php<数字>`，保持旧行为。
+pub fn canonical_php_instance(raw: &str) -> String {
+    use zap_proto::appstore::DEFAULT_INSTANCE;
+
+    let s = raw.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    let want = php_version_digits(s);
+    let slots: Vec<InstalledSlot> = scan_slots()
+        .into_iter()
+        .filter(|slot| slot.name == "php")
+        .collect();
+    let registered_of = |slot: &InstalledSlot| -> Option<String> {
+        slot.registered
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(String::from)
+    };
+    // 1) 精确命中：登记的 instance 或槽位目录名
+    if let Some(hit) = slots
+        .iter()
+        .find(|slot| registered_of(slot).as_deref() == Some(s) || slot.instance == s)
+    {
+        // 槽位命中但脚本没登记 instance（旧安装）：用槽位名折算，折算不出就原样返回
+        return registered_of(hit).unwrap_or_else(|| match php_version_digits(&hit.instance) {
+            Some(d) => format!("php{d}"),
+            None => s.to_string(),
+        });
+    }
+    // 2) 版本数字命中：php74 / 74 / 7.4 都指向同一个槽位
+    if let Some(w) = want.as_deref() {
+        let hit = slots.iter().find(|slot| {
+            php_version_digits(&slot.instance).as_deref() == Some(w)
+                || registered_of(slot)
+                    .as_deref()
+                    .and_then(php_version_digits)
+                    .as_deref()
+                    == Some(w)
+        });
+        if let Some(reg) = hit.and_then(registered_of) {
+            return reg;
+        }
+    }
+    // 3) 旧布局槽位名 `default` + 只装了一个 PHP：没有歧义，取它的登记名
+    if s == DEFAULT_INSTANCE
+        && slots.len() == 1
+        && let Some(reg) = registered_of(&slots[0])
+    {
+        return reg;
+    }
+    // 4) 兜底：折算成 php<数字>（认不出版本时原样返回）
+    match want {
+        Some(d) => format!("php{d}"),
+        None => s.to_string(),
+    }
+}
+
 pub fn logs_dir() -> PathBuf {
     appstore_dir().join("logs")
 }

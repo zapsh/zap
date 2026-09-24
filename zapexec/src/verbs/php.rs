@@ -35,8 +35,22 @@ fn dir_ok(p: &str) -> bool {
     p.starts_with('/') && !p.split('/').any(|s| s == "..")
 }
 
+/// 从 PHP 实例标识里取版本数字串：`php74` / `php-74` / `74` / `7.4` → `74`。
+///
+/// 认不出版本（旧布局槽位名 `default`）时返回 None。
+fn php_digits(instance: &str) -> Option<String> {
+    let t = instance
+        .trim()
+        .trim_start_matches("php")
+        .trim_start_matches('-');
+    let d: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
+    (!d.is_empty()).then_some(d)
+}
+
+/// 版本后缀（pool socket / 服务名用），与面板侧同一套归一规则：
+/// `php74` / `php-74` / `74` / `7.4` → `74`。认不出版本时原样返回。
 fn php_version(instance: &str) -> String {
-    instance.trim_start_matches("php").to_string()
+    php_digits(instance).unwrap_or_else(|| instance.trim().to_string())
 }
 
 fn cmd_err(o: &std::process::Output, fallback: &str) -> String {
@@ -53,39 +67,114 @@ fn cmd_err(o: &std::process::Output, fallback: &str) -> String {
     }
 }
 
-/// 从安装根（默认 /usr/local/apps）下定位 PHP 实例目录（含 etc/php-fpm.conf）。
-/// 兼容两种布局：`<root>/php-85` 顶层目录 或 `<root>/<分类>/php-85`。
-fn find_php_root(instance: &str) -> Option<PathBuf> {
-    let ver = php_version(instance);
-    let names = [instance.to_string(), format!("php-{ver}")];
-    let base = super::install_root();
-    let mut hits = Vec::new();
-    if let Ok(top) = std::fs::read_dir(&base) {
-        for e in top.flatten() {
-            let p = e.path();
-            if !p.is_dir() {
-                continue;
+/// 应用商店登记的 PHP 安装根（**权威来源**）。
+///
+/// PHP 允许多版本共存后，一个包有多个槽位（`apps/application/php/{74,83}/`），
+/// 安装目录由脚本在 info.yaml 里登记（`install_dir`），**不再能从实例名推断**：
+/// 槽位名可能只是版本短名（`74`），旧布局更是统一叫 `default`。
+/// 命中顺序：登记名（`php74`）→ 槽位名（`74` / `default`）→ 版本数字。
+fn registered_php_root(instance: &str) -> Option<PathBuf> {
+    let want = php_digits(instance);
+    let mut fallback: Option<PathBuf> = None;
+    for a in super::appstore::registered_apps() {
+        if a.pkg != "php" {
+            continue;
+        }
+        let hit = a.instance == instance
+            || a.slot_instance == instance
+            || matches!(
+                (want.as_deref(), php_digits(&a.instance).as_deref()),
+                (Some(w), Some(d)) if w == d
+            );
+        if !hit {
+            continue;
+        }
+        match a.install_dir {
+            // 登记目录里有 fpm 主配置才算数（pool 要写进它的 php-fpm.d）
+            Some(d) if d.join("etc/php-fpm.conf").is_file() => return Some(d),
+            Some(d) if d.is_dir() && fallback.is_none() => fallback = Some(d),
+            _ => {}
+        }
+    }
+    fallback
+}
+
+/// 安装根下按目录名找 PHP（顶层 `php-85` 或分类二级目录 `<分类>/php-85`）。
+fn scan_php_roots(base: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    let mut visit = |dir: &Path| {
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        if let Some(ver) = php_digits(name) {
+            if dir.join("etc/php-fpm.conf").is_file() {
+                out.push((ver, dir.to_path_buf()));
             }
-            let nm = e.file_name().to_string_lossy().to_string();
-            if names.iter().any(|n| n == &nm) && p.join("etc/php-fpm.conf").is_file() {
-                hits.push(p.clone());
-            }
-            // 分类二级目录（application / server / ...）
-            if let Ok(sub) = std::fs::read_dir(&p) {
-                for e2 in sub.flatten() {
-                    let q = e2.path();
-                    if !q.is_dir() {
-                        continue;
-                    }
-                    let nm2 = e2.file_name().to_string_lossy().to_string();
-                    if names.iter().any(|n| n == &nm2) && q.join("etc/php-fpm.conf").is_file() {
-                        hits.push(q);
-                    }
+        }
+    };
+    let Ok(top) = std::fs::read_dir(base) else {
+        return out;
+    };
+    for e in top.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        visit(&p);
+        // 分类二级目录（application / server / ...）
+        if let Ok(sub) = std::fs::read_dir(&p) {
+            for e2 in sub.flatten() {
+                let q = e2.path();
+                if q.is_dir() {
+                    visit(&q);
                 }
             }
         }
     }
-    hits.into_iter().next()
+    out
+}
+
+/// 定位 PHP 实例目录（含 etc/php-fpm.conf）：
+/// 1) 应用商店登记（多版本槽位 + install_dir）；
+/// 2) 兜底：安装根下按目录名扫描（兼容未走商店的手工部署）。
+fn find_php_root(instance: &str) -> Option<PathBuf> {
+    if let Some(dir) = registered_php_root(instance) {
+        return Some(dir);
+    }
+    let ver = php_version(instance);
+    let base = super::install_root();
+    scan_php_roots(&base)
+        .into_iter()
+        .find(|(v, _)| *v == ver)
+        .map(|(_, dir)| dir)
+        .or_else(|| {
+            // 目录名就是实例名（`php83` / `php-83` 之类）
+            let direct = base.join(instance.trim());
+            (direct.join("etc/php-fpm.conf").is_file()).then_some(direct)
+        })
+}
+
+/// 全部 PHP 安装根（登记表优先 + 目录扫描兜底，按安装目录去重）：(版本数字串, 安装根)
+fn php_installations() -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    let mut push = |ver: String, dir: PathBuf| {
+        if !out.iter().any(|(_, d)| *d == dir) {
+            out.push((ver, dir));
+        }
+    };
+    for a in super::appstore::registered_apps() {
+        if a.pkg != "php" {
+            continue;
+        }
+        let Some(ver) = php_digits(&a.instance) else {
+            continue;
+        };
+        if let Some(d) = a.install_dir.filter(|d| d.is_dir()) {
+            push(ver, d);
+        }
+    }
+    for (ver, dir) in scan_php_roots(&super::install_root()) {
+        push(ver, dir);
+    }
+    out
 }
 
 fn find_fpm_bin(root: &Path) -> Option<PathBuf> {
@@ -307,7 +396,20 @@ pub async fn pool_sync(
             return Err("home_dir 必须是合法绝对路径".into());
         }
         let root = find_php_root(php_instance).ok_or_else(|| {
-            format!("未找到 PHP 实例 {php_instance} 的安装（安装根 /usr/local/apps 下无 etc/php-fpm.conf）")
+            let known = php_installations()
+                .into_iter()
+                .map(|(v, _)| format!("php{v}"))
+                .collect::<Vec<_>>()
+                .join("、");
+            let hint = if known.is_empty() {
+                String::new()
+            } else {
+                format!("（当前已安装：{known}）")
+            };
+            format!(
+                "未找到 PHP 实例 {php_instance} 的安装{hint}：\
+                 请确认该版本已在「应用商店 → 运行环境 → PHP」安装并登记 etc/php-fpm.conf"
+            )
         })?;
         let fpm_bin = find_fpm_bin(&root).ok_or("未找到 php-fpm 可执行文件")?;
         let conf = root.join("etc/php-fpm.conf");
@@ -372,29 +474,15 @@ pub async fn pool_clean(linux_user: String) -> Response {
         }
         let mut removed = 0;
         let mut reloaded: Vec<String> = Vec::new();
-        // 扫描所有已安装 PHP：目录名 php-{ver}（含分类二级目录）
-        let base = super::install_root();
-        if let Ok(top) = std::fs::read_dir(&base) {
-            for e in top.flatten() {
-                let p = e.path();
-                if !p.is_dir() {
-                    continue;
-                }
-                let nm = e.file_name().to_string_lossy().to_string();
-                if !nm.starts_with("php-") {
-                    continue;
-                }
-                let conf = p.join("etc/php-fpm.conf");
-                if !conf.is_file() {
-                    continue;
-                }
-                let pool_file = p.join("etc/php-fpm.d").join(format!("{linux_user}.conf"));
-                if pool_file.exists() && std::fs::remove_file(&pool_file).is_ok() {
-                    removed += 1;
-                    let ver = nm.trim_start_matches("php-").to_string();
-                    if reload_master(&ver, &p).is_ok() {
-                        reloaded.push(ver);
-                    }
+        // 全部已安装 PHP：应用商店登记（多版本槽位 + install_dir）优先，目录名兜底
+        for (ver, root) in php_installations() {
+            let pool_file = root
+                .join("etc/php-fpm.d")
+                .join(format!("{linux_user}.conf"));
+            if pool_file.exists() && std::fs::remove_file(&pool_file).is_ok() {
+                removed += 1;
+                if reload_master(&ver, &root).is_ok() {
+                    reloaded.push(ver);
                 }
             }
         }
@@ -415,6 +503,21 @@ pub async fn pool_clean(linux_user: String) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 实例标识 → 版本数字串：多版本布局下站点里存的可能是槽位名或版本写法
+    #[test]
+    fn version_digits_are_normalized() {
+        assert_eq!(php_digits("php74").as_deref(), Some("74"));
+        assert_eq!(php_digits("php-74").as_deref(), Some("74"));
+        assert_eq!(php_digits("74").as_deref(), Some("74"));
+        assert_eq!(php_digits("8.3").as_deref(), Some("83"));
+        assert_eq!(php_digits("php8.3").as_deref(), Some("83"));
+        // 旧布局的槽位名认不出版本
+        assert_eq!(php_digits("default"), None);
+        assert_eq!(php_version("php-74"), "74");
+        assert_eq!(php_version("php83"), "83");
+        assert_eq!(php_version("default"), "default");
+    }
 
     #[test]
     fn render_basic_pool() {

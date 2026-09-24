@@ -285,7 +285,9 @@ async function loadPhpOptions() {
     const opts: PhpOption[] = []
     for (const p of apps) {
       if (!isPhpRuntime(p) || p.state !== 'running') continue
-      const instance = p.instance || p.name
+      // 站点绑定的是「脚本登记的 instance」（php74 / php83）：执行端按它定位安装目录并
+      // 命名 pool socket。槽位目录名只是版本短名（74）或旧布局的 default，不能直接用。
+      const instance = (p.info?.instance as string) || p.instance || p.name
       if (!instance || opts.some((o) => o.instance === instance)) continue
       opts.push({
         instance,

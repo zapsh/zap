@@ -242,8 +242,12 @@ pub(crate) fn resolve_slot_with_legacy(
 /// 其它模块（如 service_conf 的 PHP 实例探测）应读它，而不是按目录名反推。
 #[derive(Debug, Clone)]
 pub(crate) struct AppRegistration {
+    /// 包名（如 `php`）：判断「这是不是某个运行时」用，多版本槽位名（74）本身不带包名
+    pub pkg: String,
     /// info.yaml 的 instance（缺省回退包名），如 `php74`
     pub instance: String,
+    /// 槽位目录名：多版本为版本短名（`74`），旧布局为 `default`
+    pub slot_instance: String,
     pub install_dir: Option<PathBuf>,
     pub config_file: Option<PathBuf>,
     pub svc_name: Option<String>,
@@ -266,7 +270,9 @@ pub(crate) fn registered_apps() -> Vec<AppRegistration> {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| slot.instance.clone());
         out.push(AppRegistration {
+            pkg: slot.name.clone(),
             instance,
+            slot_instance: slot.instance.clone(),
             install_dir: pick("install_dir").map(PathBuf::from),
             config_file: pick("config_file").map(PathBuf::from),
             svc_name: pick("svc_name"),

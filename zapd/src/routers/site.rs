@@ -1822,7 +1822,10 @@ pub async fn site_add(
         RUN_RUNNING
     };
     let remark = payload.remark.unwrap_or_default().trim().to_string();
-    let php_instance = payload.php_instance.unwrap_or_default().trim().to_string();
+    // 归一到脚本登记的 instance（php74 / php83）：下拉里选的可能是槽位名（default / 74）
+    let php_instance = crate::zap::appstore::canonical_php_instance(
+        payload.php_instance.unwrap_or_default().trim(),
+    );
     if !valid_php_instance(&php_instance) {
         return Err(ZapError::New(
             -1,
@@ -2134,7 +2137,8 @@ pub async fn site_update(
         remark = rk.trim().to_string();
     }
     if let Some(p) = &payload.php_instance {
-        let p = p.trim().to_string();
+        // 与新增一致：归一到脚本登记的 instance（php74 / php83）
+        let p = crate::zap::appstore::canonical_php_instance(p.trim());
         if !valid_php_instance(&p) {
             return Err(ZapError::New(
                 -1,
@@ -2656,7 +2660,7 @@ async fn sync_one_site_inner(
     let Some((
         name,
         status,
-        php_instance,
+        php_instance_raw,
         web_root,
         log_root,
         run_state,
@@ -2670,6 +2674,10 @@ async fn sync_one_site_inner(
     else {
         return Err(ZapError::New(-1, "站点不存在".to_string()));
     };
+    // PHP 实例归一到脚本登记的 instance（php74 / php83）：
+    // 站点里可能存着槽位名（多版本 `74`、旧布局 `default`）或版本写法（`8.3`），
+    // 执行端按登记名定位安装目录并命名 pool，面板又按它推导 socket，必须是同一个串。
+    let php_instance = crate::zap::appstore::canonical_php_instance(&php_instance_raw);
     // 域名 → server_name
     let mut domains = Vec::new();
     let dsql = "SELECT domain FROM site_domain WHERE site_id = ? ORDER BY id";
@@ -2878,9 +2886,17 @@ pub async fn site_sync_all(
     Ok(Json(json!({ "code": 0, "message": summary })))
 }
 
-/// PHP 实例 → 版本后缀：php8.3 → 8.3，php74 → 74
+/// PHP 实例 → 版本后缀：php74 / php-74 → 74，php83 → 83
+///
+/// 与执行端（zapexec `php::php_version`）**完全同一套规则**（去掉 php 前缀后只留数字），
+/// 否则两侧推导出的 pool socket 路径会不一致（站点 502）。
 fn php_version_suffix(php_instance: &str) -> String {
-    php_instance.trim_start_matches("php").to_string()
+    let t = php_instance
+        .trim()
+        .trim_start_matches("php")
+        .trim_start_matches('-');
+    let d: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
+    if d.is_empty() { t.to_string() } else { d }
 }
 
 // ── AppStore provision：为建站包准备站点 ────────────────────
@@ -3353,6 +3369,16 @@ pub async fn site_traffic(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 版本后缀必须与执行端（zapexec `php::php_version`）一致，否则 pool socket 对不上
+    #[test]
+    fn php_version_suffix_matches_exec_side() {
+        assert_eq!(php_version_suffix("php74"), "74");
+        assert_eq!(php_version_suffix("php-74"), "74");
+        assert_eq!(php_version_suffix("php83"), "83");
+        assert_eq!(php_version_suffix("php8.3"), "83");
+        assert_eq!(php_version_suffix("default"), "default");
+    }
 
     #[test]
     fn domain_normalization_rules() {
