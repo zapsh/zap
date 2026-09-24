@@ -392,6 +392,25 @@ fn cleanup_snapshot(run_id: &str, code: i32) {
     }
 }
 
+/// 重跑成功后收尾：连被重跑的那次、以及更早的快照一起清掉。
+///
+/// 失败时不能动 —— 那些快照正是用户要改脚本再试的那份。
+fn cleanup_retry_chain(run_id: &str) {
+    let mut cur = run_id.to_string();
+    // 每次重跑都在自己的 run.json 里记了 `retry_of`，顺着就能回到最初那次
+    for _ in 0..8 {
+        let _ = std::fs::remove_dir_all(runs_dir().join(&cur));
+        let Some(prev) = std::fs::read_to_string(run_meta_path(&cur))
+            .ok()
+            .and_then(|c| serde_json::from_str::<Value>(&c).ok())
+            .and_then(|v| v.get("retry_of")?.as_str().map(str::to_string))
+        else {
+            break;
+        };
+        cur = prev;
+    }
+}
+
 // ── 安装/升级选项（app.yaml options）─────────────────────────
 // 选项值全为标量字符串（前端已归一：多选按 separator 拼接）。
 // 落盘 options.env（shell 可 source，便于查看/重跑前修改）与 options.json（结构化备份），
@@ -501,9 +520,36 @@ fn read_options_env(snapshot: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// 取某次运行的可重跑记录 `run.json`：自身没有就沿 `retry_of` 回到上一次运行。
+///
+/// 返回「真正持有快照的那次运行的 id + spec」。重跑链上每一次都会给自己
+/// 复制一份快照，所以通常是自己；回溯是给早期遗留记录兜底的
+/// （那时候重跑只复用旧快照，新 run 既没有 run.json 也没有 pkg）。
+fn run_meta_for(run_id: &str) -> Option<(String, Value)> {
+    let mut cur = run_id.to_string();
+    // 链不会无限长：追 8 层已经足够，多出来的只可能是环
+    for _ in 0..8 {
+        let content = std::fs::read_to_string(run_meta_path(&cur)).ok()?;
+        let spec: Value = serde_json::from_str(&content).ok()?;
+        if run_snapshot_dir(&cur).is_dir() {
+            return Some((cur, spec));
+        }
+        cur = spec.get("retry_of")?.as_str()?.to_string();
+    }
+    None
+}
+
+/// 该运行的脚本快照在谁那儿（通常就是自己；见 `run_meta_for`）。
+fn snapshot_owner(run_id: &str) -> Option<String> {
+    run_meta_for(run_id).map(|(id, _)| id)
+}
+
 /// run_id 快照内相对路径安全解析（仅限 runs/<run_id>/pkg/ 内）。
 fn run_safe_path(run_id: &str, rel: &str) -> Result<PathBuf, String> {
-    let root = run_snapshot_dir(run_id);
+    // 读写都落在真正持有快照的那次运行上（重跑链上可能是上一次）
+    let owner = snapshot_owner(run_id)
+        .ok_or_else(|| "该运行没有可编辑脚本快照（可能已成功结束并自动清理）".to_string())?;
+    let root = run_snapshot_dir(&owner);
     let p = safe_join(&root, rel)?;
     if !p.starts_with(&root) {
         return Err("路径越界".into());
@@ -1916,10 +1962,11 @@ pub async fn upgrade(
 /// 列出一次运行的可编辑脚本快照文件树（runs/<run_id>/pkg/ 递归）。
 pub async fn run_files(run_id: String) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
-        let root = run_snapshot_dir(&run_id);
-        if !root.is_dir() {
-            return Err("该运行没有可编辑脚本快照（可能已成功结束并自动清理）".into());
-        }
+        // 重跑出来的新 run 也有自己的快照；早期遗留的（只有日志没有快照）
+        // 沿 `retry_of` 回到被重跑的那次，否则列表里这条会显示成「没有脚本可编辑」
+        let owner = snapshot_owner(&run_id)
+            .ok_or_else(|| "该运行没有可编辑脚本快照（可能已成功结束并自动清理）".to_string())?;
+        let root = run_snapshot_dir(&owner);
         fn walk(dir: &Path, base: &Path, out: &mut Vec<Value>) -> Result<(), String> {
             for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
                 let entry = entry.map_err(|e| e.to_string())?;
@@ -1992,15 +2039,21 @@ pub async fn run_file_write(run_id: String, path: String, content: String) -> Re
 /// 以 new_run_id 记录新日志/pid，按 run.json 记录的原始动作重新执行。
 pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
-        let meta_content = std::fs::read_to_string(run_meta_path(&run_id))
-            .map_err(|_| "该运行没有可重跑记录（run.json 缺失，可能已成功并清理）".to_string())?;
-        let spec: Value =
-            serde_json::from_str(&meta_content).map_err(|e| format!("run.json 解析失败: {e}"))?;
-        let kind = spec["kind"].as_str().unwrap_or("install");
-        let snapshot = run_snapshot_dir(&run_id);
-        if !snapshot.is_dir() {
+        let (src_run, mut spec) = run_meta_for(&run_id)
+            .ok_or_else(|| "该运行没有可重跑记录（run.json 缺失，可能已成功并清理）".to_string())?;
+        let kind = spec["kind"].as_str().unwrap_or("install").to_string();
+        let src_snapshot = run_snapshot_dir(&src_run);
+        if !src_snapshot.is_dir() {
             return Err("运行快照缺失，无法重跑".into());
         }
+        // 重跑也给自己复制一份快照并记 run.json：
+        // 列表里显示的是新 run，前端只会拿新 run_id 去要脚本文件 ——
+        // 复用旧快照的话，新 run 既没法编辑脚本也没法再重跑一次。
+        // 用户在上一次里改过的脚本 / 选项随快照一起复制过来，继续生效。
+        if let Some(obj) = spec.as_object_mut() {
+            obj.insert("retry_of".to_string(), json!(src_run));
+        }
+        let snapshot = prepare_snapshot(&new_run_id, &src_snapshot, &spec)?;
         let pkg_path = spec["pkg_path"].as_str().unwrap_or("").to_string();
         let name = pkg_path.rsplit('/').next().unwrap_or("").to_string();
         let version = spec["version"].as_str().unwrap_or("").to_string();
@@ -2052,7 +2105,7 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
         // 重跑复用原 run 的快照：成功后清理原快照防堆积；失败保留供继续编辑重试
         let done_old_run = run_id.clone();
         let done_app = app_path.clone();
-        let on_done_extra: Option<Box<dyn FnOnce(i32) + Send>> = match kind {
+        let on_done_extra: Option<Box<dyn FnOnce(i32) + Send>> = match kind.as_str() {
             "uninstall" => {
                 let (script, interpreter) = script_file(&snapshot, "uninstall", "uninstall.sh")?;
                 steps.push(ScriptStep {
@@ -2065,7 +2118,12 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                     if code == 0 {
                         let _ = std::fs::remove_dir_all(&done_app);
                     }
-                    cleanup_snapshot(&done_old_run, code);
+                    // 重跑有自己的快照：成功清自己的，顺带收走被重跑的那次；
+                    // 失败两个都留着，好继续编辑脚本再试
+                    cleanup_snapshot(&done_run_id, code);
+                    if code == 0 {
+                        cleanup_retry_chain(&done_old_run);
+                    }
                 }))
             }
             "upgrade" => {
@@ -2113,7 +2171,11 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                         };
                         let _ = write_meta(&done_app, &meta);
                     }
-                    cleanup_snapshot(&done_old_run, code);
+                    // 成功清掉本次重跑的快照（以及被重跑的那次）；失败留下供继续编辑
+                    cleanup_snapshot(&done_run_id, code);
+                    if code == 0 {
+                        cleanup_retry_chain(&done_old_run);
+                    }
                 }))
             }
             _ => {
@@ -2144,7 +2206,11 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                         };
                         let _ = write_meta(&done_app, &meta);
                     }
-                    cleanup_snapshot(&done_old_run, code);
+                    // 成功清掉本次重跑的快照（以及被重跑的那次）；失败留下供继续编辑
+                    cleanup_snapshot(&done_run_id, code);
+                    if code == 0 {
+                        cleanup_retry_chain(&done_old_run);
+                    }
                 }))
             }
         };
