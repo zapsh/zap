@@ -3690,7 +3690,7 @@ const enUS: Messages = {
     colDisk: 'Disk Usage',
     colTraffic: 'Traffic (Month)',
     diskTip: 'Document root + log dir, measured at {time}',
-    diskUnknown: 'Not measured',
+    diskUnknown: 'Not updated',
     trafficMonthTip: 'Outbound traffic this month, parsed from access.log',
     colDeploy: 'Deploy',
     colStatus: 'Status',
