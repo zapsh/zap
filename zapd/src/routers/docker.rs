@@ -886,12 +886,26 @@ async fn handle_exec(socket: WebSocket, container: String, shell: String, cols: 
     info!("容器终端会话结束: {container}");
 }
 
-/// 下行控制消息（Text 帧）。
+/// 下行控制消息（Text 帧，容器终端那条链路用 `type`）。
 fn ctrl_text(kind: &str, code: Option<i32>, message: Option<String>) -> WsMessage {
     let mut v = json!({ "type": kind });
     if let Some(c) = code {
         v["code"] = json!(c);
     }
+    if let Some(m) = message {
+        v["message"] = json!(m);
+    }
+    WsMessage::Text(Utf8Bytes::from(v.to_string()))
+}
+
+/// 事件流的下行控制消息。
+///
+/// 字段名必须是 `kind`：事件载荷自身带 `type`（container / image …），
+/// 前端靠 `kind` 区分「控制消息」和「事件数据」。早先这里复用 `ctrl_text`
+/// 发的是 `{"type":"ready"}` —— 前端一律识别不了，页面就永远停在「正在连接事件流…」，
+/// 连 zapexec 报的错误也被一起吞掉。
+fn ctrl_kind(kind: &str, message: Option<String>) -> WsMessage {
+    let mut v = json!({ "kind": kind });
     if let Some(m) = message {
         v["message"] = json!(m);
     }
@@ -925,7 +939,7 @@ pub async fn ws_events(
 }
 
 /// 把 zapexec 推来的事件流转成 WebSocket 文本帧。
-async fn handle_events(socket: WebSocket) {
+async fn handle_events(mut socket: WebSocket) {
     info!("Docker 事件流建立");
 
     let exec_cfg = {
@@ -941,6 +955,11 @@ async fn handle_events(socket: WebSocket) {
         Ok(c) => c,
         Err(e) => {
             warn!("连接 zapexec 失败: {e}");
+            // 升级已经完成：静默 return 会让前端一直停在「正在连接」，把原因推下去
+            let _ = socket
+                .send(ctrl_kind("error", Some(format!("连接 zapexec 失败: {e}"))))
+                .await;
+            let _ = socket.close().await;
             return;
         }
     };
@@ -954,6 +973,10 @@ async fn handle_events(socket: WebSocket) {
     };
     if crate::zapexec::send(&mut exec_wr, &open).await.is_err() {
         warn!("开启 Docker 事件流失败");
+        let _ = socket
+            .send(ctrl_kind("error", Some("开启事件流失败".to_string())))
+            .await;
+        let _ = socket.close().await;
         return;
     }
 
@@ -985,14 +1008,14 @@ async fn handle_events(socket: WebSocket) {
                         }
                     }
                     ExecMessage::StreamReady { .. } => {
-                        let _ = ws_tx.send(ctrl_text("ready", None, None)).await;
+                        let _ = ws_tx.send(ctrl_kind("ready", None)).await;
                     }
                     ExecMessage::StreamEnd { .. } => {
-                        let _ = ws_tx.send(ctrl_text("end", None, None)).await;
+                        let _ = ws_tx.send(ctrl_kind("end", None)).await;
                         break;
                     }
                     ExecMessage::StreamError { message, .. } => {
-                        let _ = ws_tx.send(ctrl_text("error", None, Some(message))).await;
+                        let _ = ws_tx.send(ctrl_kind("error", Some(message))).await;
                         break;
                     }
                     _ => {}

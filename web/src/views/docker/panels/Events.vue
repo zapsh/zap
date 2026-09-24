@@ -120,6 +120,9 @@ const activeId = ref('')
 const activeName = ref('')
 
 let ws: WebSocket | null = null
+/** 断线重连的定时器 + 已重试次数（daemon 重启 / 网络抖动的自动恢复） */
+let reconnectTimer: number | null = null
+let retries = 0
 
 const statusType = computed(() => {
   switch (status.value) {
@@ -178,6 +181,7 @@ function connect() {
     }
     if (msg.kind === 'ready') {
       status.value = 'connected'
+      retries = 0
     } else if (msg.kind === 'event' && msg.data) {
       push(msg.data)
     } else if (msg.kind === 'error') {
@@ -200,10 +204,31 @@ function connect() {
     if (status.value === 'connecting' || status.value === 'connected') {
       status.value = 'closed'
     }
+    // daemon 重启 / 网络抖动会静默断流：还开着就退避重连，别让页面停在「已断开」
+    if (live.value) scheduleReconnect()
+  }
+}
+
+/** 3s 起步、逐次翻倍、最长 30s；真正连上（收到 ready）后计数归零 */
+function scheduleReconnect() {
+  clearReconnect()
+  const delay = Math.min(3000 * 2 ** retries, 30_000)
+  retries += 1
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null
+    if (live.value) connect()
+  }, delay)
+}
+
+function clearReconnect() {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
   }
 }
 
 function disconnect() {
+  clearReconnect()
   const sock = ws
   ws = null
   if (!sock) return
