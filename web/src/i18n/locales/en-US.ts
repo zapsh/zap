@@ -897,6 +897,7 @@ const enUS: Messages = {
     retry: 'Retry',
 
     cancel: 'Cancel',
+    close: 'Close',
     ok: 'OK',
     save: 'Save',
     moreItems: 'and {n} more',
@@ -934,6 +935,7 @@ const enUS: Messages = {
 
     editTitle: 'Edit: {name}',
     editorPlaceholder: 'File content',
+    editorTip: 'Tip: press {key} to save (unsaved changes are lost when you close)',
 
     archiveLabel: 'Archive Name',
     archivePlaceholder: 'e.g. backup',

@@ -587,8 +587,12 @@
         :path="editingFullPath"
         :placeholder="t('filesLocal.editorPlaceholder')"
       />
+      <div class="fm-editor-tip">
+        <el-icon><InfoFilled /></el-icon>
+        <span>{{ t('filesLocal.editorTip', { key: saveShortcut }) }}</span>
+      </div>
       <template #footer>
-        <el-button @click="editVisible = false">{{ t('filesLocal.cancel') }}</el-button>
+        <el-button @click="editVisible = false">{{ t('filesLocal.close') }}</el-button>
         <el-button type="primary" :loading="saving" @click="doSaveEdit">
           {{ t('filesLocal.save') }}
         </el-button>
@@ -678,7 +682,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, nextTick, watch, shallowReactive, markRaw } from 'vue'
+import {
+  ref,
+  reactive,
+  computed,
+  onMounted,
+  onBeforeUnmount,
+  nextTick,
+  watch,
+  shallowReactive,
+  markRaw,
+} from 'vue'
 import {
   Refresh,
   Upload,
@@ -704,6 +718,7 @@ import {
   ArrowDown,
   CircleCloseFilled,
   User,
+  InfoFilled,
 } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ElTree } from 'element-plus'
@@ -882,6 +897,19 @@ const editingFile = ref('')
 const editingFullPath = ref('')
 const editContent = ref('')
 const saving = ref(false)
+
+/** macOS 用 ⌘ + S，其余平台用 Ctrl + S：提示文案与实际监听的按键保持一致 */
+const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
+const saveShortcut = computed(() => (isMac ? '⌘ + S' : 'Ctrl + S'))
+
+/** 编辑器内 Ctrl / Cmd + S 直接保存（浏览器自己的「保存网页」要拦掉） */
+function onEditKeydown(e: KeyboardEvent) {
+  if (!editVisible.value) return
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return
+  e.preventDefault()
+  if (saving.value) return
+  void doSaveEdit()
+}
 
 // ── breadcrumbs ────────────────────────────────────────────
 
@@ -2174,6 +2202,11 @@ onMounted(async () => {
   await loadFileList()
   treeData.value = buildTreeData()
   await revealInTree()
+  window.addEventListener('keydown', onEditKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onEditKeydown)
 })
 
 // 切回列表视图时，把当前选中态同步到 el-table 的复选框
@@ -2680,6 +2713,16 @@ watch(viewMode, async (mode) => {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 4px;
   overflow: hidden;
+}
+
+// 编辑器下方的快捷键提示
+.fm-editor-tip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 // ── 修改权限（cPanel 风格）──────────────────────────────────

@@ -917,6 +917,7 @@ export default {
     retry: '重试',
 
     cancel: '取消',
+    close: '关闭',
     ok: '确定',
     save: '保存',
     moreItems: '等 {n} 项',
@@ -952,6 +953,7 @@ export default {
 
     editTitle: '编辑: {name}',
     editorPlaceholder: '文件内容',
+    editorTip: '提示：按 {key} 可直接保存（未保存的修改在关闭后不会保留）',
 
     archiveLabel: '压缩包名称',
     archivePlaceholder: '例如 backup',
