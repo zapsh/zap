@@ -4,10 +4,10 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { EditorState, type Extension } from '@codemirror/state'
+import { Compartment, EditorState, type Extension } from '@codemirror/state'
 import { EditorView, placeholder } from '@codemirror/view'
 import { basicSetup } from 'codemirror'
-import { langExtension, langFromPath, type EditorLangName } from '@/utils/editorLang'
+import { loadLangExtension, langFromPath, type EditorLangName } from '@/utils/editorLang'
 
 const props = withDefaults(
   defineProps<{
@@ -35,6 +35,13 @@ const emit = defineEmits<{
 
 const host = ref<HTMLElement | null>(null)
 let view: EditorView | null = null
+
+/**
+ * 语言与只读状态各用一个 Compartment：切换时 dispatch reconfigure 即可，
+ * 不用重建 EditorView（重建会丢光标、丢滚动位置、丢 undo 历史）。
+ */
+const langConf = new Compartment()
+const readOnlyConf = new Compartment()
 
 function effectiveLang(): EditorLangName {
   if (props.lang) return props.lang
@@ -75,13 +82,33 @@ function cursorOf(state: EditorState) {
   return { line: line.number, col: pos - line.from + 1 }
 }
 
+/** 语言切换的序号：异步加载回来时据此丢弃过期结果（期间又切了一次） */
+let langSeq = 0
+
+/**
+ * 异步加载语言包并热替换。视图先以「无语言」创建，语言 chunk 到位后
+ * reconfigure 上去，高亮才生效——换来的好处是 CodeEditor 主 chunk 不再
+ * 塞进所有语言包。
+ */
+async function applyLang(name: EditorLangName) {
+  const seq = ++langSeq
+  let ext: Extension
+  try {
+    ext = await loadLangExtension(name)
+  } catch {
+    return
+  }
+  if (!view || seq !== langSeq) return
+  view.dispatch({ effects: langConf.reconfigure(ext) })
+}
+
 function createView() {
   if (!host.value || view) return
   const extensions: Extension[] = [
     basicSetup,
     baseTheme,
-    langExtension(effectiveLang()),
-    EditorState.readOnly.of(props.readonly),
+    langConf.of([]),
+    readOnlyConf.of(EditorState.readOnly.of(props.readonly)),
     EditorView.lineWrapping,
     EditorView.updateListener.of((u) => {
       if (u.docChanged) emit('update:modelValue', u.state.doc.toString())
@@ -93,6 +120,7 @@ function createView() {
   view = new EditorView({ state, parent: host.value })
   emit('cursor', cursorOf(state))
   if (props.autofocus) view.focus()
+  void applyLang(effectiveLang())
 }
 
 function destroyView() {
@@ -115,12 +143,19 @@ watch(
   },
 )
 
-// 语言或只读状态变化时重建视图(切文件/保存锁定等低频事件)
+// 语言变化：热替换（不重建视图，光标与滚动位置都不动）
 watch(
-  () => [effectiveLang(), props.readonly],
-  () => {
-    destroyView()
-    createView()
+  () => effectiveLang(),
+  (name) => {
+    void applyLang(name)
+  },
+)
+
+// 只读变化：同样只 reconfigure
+watch(
+  () => props.readonly,
+  (val) => {
+    view?.dispatch({ effects: readOnlyConf.reconfigure(EditorState.readOnly.of(val)) })
   },
 )
 </script>

@@ -1134,6 +1134,8 @@ export default {
     unsaved: '未保存',
     savedState: '已保存',
     pos: '行 {line}，列 {col}',
+    lang: '语法语言',
+    autoLang: '自动（{name}）',
     binary: '这看起来是二进制文件，已取消打开',
     dirtyTitle: '未保存的修改',
     dirtySwitch: '「{name}」有未保存的修改，打开其它文件会丢失这些修改。',

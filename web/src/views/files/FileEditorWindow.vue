@@ -103,6 +103,7 @@
             v-model="content"
             class="few-editor"
             :path="currentPath"
+            :lang="editorLang"
             @cursor="onCursor"
           />
           <div v-else-if="loading" class="few-placeholder">{{ t('common.loading') }}</div>
@@ -110,10 +111,25 @@
         </div>
       </div>
 
-      <!-- 底部状态栏：光标位置 / 路径 / 大小与权限 / 保存状态 -->
+      <!-- 底部状态栏：光标位置 / 路径 / 语言 / 大小与权限 / 保存状态 -->
       <div class="few-status">
         <span class="few-status-item">{{ t('fileEditor.pos', { line, col }) }}</span>
         <span class="few-status-path" :title="currentPath">{{ currentPath || '—' }}</span>
+        <el-select
+          v-if="currentPath"
+          class="few-lang"
+          size="small"
+          :model-value="langPick"
+          :title="t('fileEditor.lang')"
+          @update:model-value="onLangChange"
+        >
+          <el-option
+            v-for="opt in langOptions"
+            :key="opt.value"
+            :label="opt.label"
+            :value="opt.value"
+          />
+        </el-select>
         <span v-if="meta" class="few-status-item">
           {{ formatSize(meta.size) }} · {{ meta.permissions }}
         </span>
@@ -134,6 +150,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import CodeEditor from '@/components/CodeEditor.vue'
 import { getFileInfo, listFiles, readFile, writeFile, type FileEntry } from '@/api/file'
+import {
+  LANG_OPTIONS,
+  langFromPath,
+  langLabel,
+  type EditorLangName,
+  type LangOption,
+} from '@/utils/editorLang'
 import {
   Close,
   Document,
@@ -184,10 +207,38 @@ const col = ref(1)
 const fileName = computed(() => currentPath.value.split('/').filter(Boolean).pop() || '')
 const dirty = computed(() => !!currentPath.value && content.value !== original.value)
 
+// ── 语法语言：默认按扩展名自动判断，可在状态栏手动指定（按文件记住） ──
+
+/** 路径 → 手选语言；没记录的走自动判断 */
+const langOverrides = new Map<string, EditorLangName>()
+const langPick = ref<EditorLangName | 'auto'>('auto')
+/** 按扩展名推断出来的语言（下拉里「自动（X）」用得上） */
+const autoLang = computed<EditorLangName>(() =>
+  currentPath.value ? langFromPath(currentPath.value) : 'text',
+)
+/** 传给 CodeEditor：auto 时给 undefined，让组件自己按 path 判断 */
+const editorLang = computed<EditorLangName | undefined>(() =>
+  langPick.value === 'auto' ? undefined : langPick.value,
+)
+const langOptions = computed<LangOption[]>(() => [
+  { value: 'auto', label: t('fileEditor.autoLang', { name: langLabel(autoLang.value) }) },
+  ...LANG_OPTIONS,
+])
+
+function onLangChange(v: EditorLangName | 'auto') {
+  if (v === 'auto') langOverrides.delete(currentPath.value)
+  else langOverrides.set(currentPath.value, v)
+  langPick.value = v
+}
+
 // ── 窗口状态：最小化 / 位置 / 尺寸 ────────────────────────────
 
 const minimized = ref(false)
-const zIndex = ref(2400)
+/**
+ * 层级压在 Element Plus 的弹层（对话框 / 下拉 2000+、Message 3000+）之下：
+ * 这样文件管理里弹出对话框一定盖在浮窗之上，浮窗内的下拉（el-select）也能正常浮出来。
+ */
+const zIndex = ref(1500)
 const x = ref(0)
 const y = ref(0)
 const w = ref(980)
@@ -272,7 +323,8 @@ function startResize(e: MouseEvent) {
 }
 
 function bringToFront() {
-  zIndex.value = Math.max(zIndex.value, 2400) + 1
+  // 上限留在 2000 以下，避免抬着抬着盖住对话框与下拉
+  zIndex.value = Math.min(Math.max(zIndex.value, 1500) + 1, 1900)
 }
 
 function restore() {
@@ -325,6 +377,8 @@ async function openPath(path: string, force = false) {
     original.value = text
     content.value = text
     meta.value = null
+    // 这个文件之前手选过语言就沿用，否则回到自动判断
+    langPick.value = langOverrides.get(path) ?? 'auto'
     void loadMeta(path)
   } catch {
     // 由拦截器统一提示
@@ -645,6 +699,17 @@ watch(
     white-space: nowrap;
   }
 
+  // 语言选择：状态栏里压扁一点，别把路径挤没了
+  .few-lang {
+    width: 130px;
+    flex-shrink: 0;
+
+    :deep(.el-select__wrapper) {
+      min-height: 22px;
+      font-size: 12px;
+    }
+  }
+
   .is-dirty {
     color: var(--el-color-warning);
   }
@@ -678,7 +743,7 @@ watch(
   position: fixed;
   left: 16px;
   bottom: 16px;
-  z-index: 2400;
+  z-index: 1500;
   display: flex;
   align-items: center;
   gap: 6px;

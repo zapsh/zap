@@ -1,24 +1,20 @@
 /**
- * CodeMirror 6 语言支持(最小化):
- * - shell / nginx / ini / yaml / python / css / xml 取自 @codemirror/legacy-modes(按需 import 单个模式文件,体积小)
- * - js / ts / json / markdown / html 使用官方语言包
+ * CodeMirror 6 语言支持（按需加载）。
+ *
+ * 语言包体量差异很大（lang-javascript / lang-php / lang-rust 各自几百 KB），
+ * 静态全量 import 会把它们统统塞进 CodeEditor 那个 chunk，不管用户有没有用到。
+ * 这里改成**按语言名动态 import**：
+ * - 每个语言一个 `() => import(...)`，由打包器切成独立 chunk，用到才下载；
+ * - 加载结果进 `cache`（同一个语言第二次用直接命中），并发请求合并成一次（inflight）；
+ * - 调用方（CodeEditor）通过 Compartment 热替换语言扩展，不重建 EditorView，
+ *   光标位置 / 滚动位置 / undo 历史都保留。
+ *
+ * 语言来源：
+ * - shell / nginx / ini / yaml / python / css / xml 取自 @codemirror/legacy-modes 的单个模式文件（很小）
+ * - js / ts / json / markdown / html / php / rust / go 使用官方语言包
  */
 import type { Extension } from '@codemirror/state'
 import { StreamLanguage } from '@codemirror/language'
-import { javascript } from '@codemirror/lang-javascript'
-import { json } from '@codemirror/lang-json'
-import { markdown } from '@codemirror/lang-markdown'
-import { html } from '@codemirror/lang-html'
-import { shell } from '@codemirror/legacy-modes/mode/shell'
-import { nginx } from '@codemirror/legacy-modes/mode/nginx'
-import { properties } from '@codemirror/legacy-modes/mode/properties'
-import { yaml } from '@codemirror/legacy-modes/mode/yaml'
-import { python } from '@codemirror/legacy-modes/mode/python'
-import { css } from '@codemirror/legacy-modes/mode/css'
-import { xml } from '@codemirror/legacy-modes/mode/xml'
-import { php } from '@codemirror/lang-php'
-import { rust } from '@codemirror/lang-rust'
-import { go } from '@codemirror/lang-go'
 
 export type EditorLangName =
   | 'text'
@@ -37,32 +33,97 @@ export type EditorLangName =
   | 'rust'
   | 'go'
 
-const BUILDERS: Record<EditorLangName, () => Extension> = {
-  text: () => [],
-  shell: () => StreamLanguage.define(shell),
-  javascript: () => javascript({ typescript: true, jsx: true }),
-  json: () => json(),
-  markdown: () => markdown(),
+/** 语言名 → 动态加载器（加载完成后返回可直接塞进编辑器的 Extension） */
+const LOADERS: Record<EditorLangName, () => Promise<Extension>> = {
+  text: async () => [],
+  shell: async () =>
+    StreamLanguage.define((await import('@codemirror/legacy-modes/mode/shell')).shell),
+  javascript: async () =>
+    (await import('@codemirror/lang-javascript')).javascript({ typescript: true, jsx: true }),
+  json: async () => (await import('@codemirror/lang-json')).json(),
+  markdown: async () => (await import('@codemirror/lang-markdown')).markdown(),
   // 官方包支持标签闭合补全,并对 <style>/<script> 内嵌 CSS/JS 继续高亮
-  html: () => html(),
-  css: () => StreamLanguage.define(css),
-  xml: () => StreamLanguage.define(xml),
-  yaml: () => StreamLanguage.define(yaml),
-  ini: () => StreamLanguage.define(properties),
-  nginx: () => StreamLanguage.define(nginx),
-  python: () => StreamLanguage.define(python),
-  php: () => php(),
-  rust: () => rust(),
-  go: () => go(),
+  html: async () => (await import('@codemirror/lang-html')).html(),
+  css: async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/css')).css),
+  xml: async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/xml')).xml),
+  yaml: async () =>
+    StreamLanguage.define((await import('@codemirror/legacy-modes/mode/yaml')).yaml),
+  ini: async () =>
+    StreamLanguage.define((await import('@codemirror/legacy-modes/mode/properties')).properties),
+  nginx: async () =>
+    StreamLanguage.define((await import('@codemirror/legacy-modes/mode/nginx')).nginx),
+  python: async () =>
+    StreamLanguage.define((await import('@codemirror/legacy-modes/mode/python')).python),
+  php: async () => (await import('@codemirror/lang-php')).php(),
+  rust: async () => (await import('@codemirror/lang-rust')).rust(),
+  go: async () => (await import('@codemirror/lang-go')).go(),
 }
 
-/** 按语言名构建 CodeMirror Extension */
-export function langExtension(name: EditorLangName): Extension {
-  return (BUILDERS[name] || BUILDERS.text)()
+/** 已加载的语言扩展：切走再切回来不用重新下载 */
+const cache = new Map<EditorLangName, Extension>()
+/** 正在加载中的请求：并发切换同一语言时合并为一次 import */
+const inflight = new Map<EditorLangName, Promise<Extension>>()
+
+/** 按语言名异步构建 CodeMirror Extension（带缓存） */
+export function loadLangExtension(name: EditorLangName): Promise<Extension> {
+  const hit = cache.get(name)
+  if (hit) return Promise.resolve(hit)
+  const pending = inflight.get(name)
+  if (pending) return pending
+
+  const task = LOADERS[name]()
+    .then((ext) => {
+      cache.set(name, ext)
+      inflight.delete(name)
+      return ext
+    })
+    .catch((err) => {
+      // 加载失败不该把编辑器拖死：退化为纯文本，并让下一次还能重试
+      inflight.delete(name)
+      throw err
+    })
+  inflight.set(name, task)
+  return task
+}
+
+/** 语言选择器用：值是 EditorLangName，'auto' 表示「按扩展名自动判断」 */
+export interface LangOption {
+  value: EditorLangName | 'auto'
+  label: string
+}
+
+/** 语言下拉的可选项（不含 auto，auto 由调用方按当前文件动态拼） */
+export const LANG_OPTIONS: LangOption[] = [
+  { value: 'text', label: 'Plain Text' },
+  { value: 'shell', label: 'Shell' },
+  { value: 'javascript', label: 'JavaScript / TypeScript' },
+  { value: 'json', label: 'JSON' },
+  { value: 'markdown', label: 'Markdown' },
+  { value: 'html', label: 'HTML' },
+  { value: 'css', label: 'CSS / SCSS' },
+  { value: 'xml', label: 'XML' },
+  { value: 'yaml', label: 'YAML' },
+  { value: 'ini', label: 'INI / Conf' },
+  { value: 'nginx', label: 'Nginx' },
+  { value: 'python', label: 'Python' },
+  { value: 'php', label: 'PHP' },
+  { value: 'rust', label: 'Rust' },
+  { value: 'go', label: 'Go' },
+]
+
+const LABELS = new Map(LANG_OPTIONS.map((o) => [o.value, o.label]))
+
+/** 语言名 → 展示名（状态栏 / 下拉里直接用） */
+export function langLabel(name: EditorLangName | 'auto'): string {
+  return LABELS.get(name) || String(name)
 }
 
 function baseName(path: string): string {
-  return String(path || '').split(/[\\/]/).pop() || ''
+  return (
+    String(path || '')
+      .split(/[\\/]/)
+      .pop() || ''
+  )
 }
 
 /**

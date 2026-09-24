@@ -1119,6 +1119,8 @@ const enUS: Messages = {
     unsaved: 'Unsaved',
     savedState: 'Saved',
     pos: 'Ln {line}, Col {col}',
+    lang: 'Language',
+    autoLang: 'Auto ({name})',
     binary: 'That looks like a binary file — opening was cancelled',
     dirtyTitle: 'Unsaved changes',
     dirtySwitch: '"{name}" has unsaved changes. Opening another file discards them.',
