@@ -121,7 +121,7 @@
             style="width: 100%"
             @row-dblclick="onRowDblClick"
           >
-            <el-table-column :label="t('filesCloud.name')" min-width="300">
+            <el-table-column :label="t('common.name')" min-width="300">
               <template #default="{ row }">
                 <div class="cm-file-name" @click="onNameClick(row)">
                   <el-icon
@@ -137,7 +137,7 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column :label="t('filesCloud.size')" width="120" align="right">
+            <el-table-column :label="t('common.size')" width="120" align="right">
               <template #default="{ row }">
                 <span v-if="!row.is_dir">{{ formatSize(row.size) }}</span>
                 <span v-else class="cm-muted">-</span>
@@ -163,7 +163,7 @@
                   {{ t('filesCloud.rename') }}
                 </el-button>
                 <el-button link type="danger" size="small" @click="doDelete(row)">
-                  {{ t('filesCloud.remove') }}
+                  {{ t('common.delete') }}
                 </el-button>
               </template>
             </el-table-column>
@@ -249,7 +249,7 @@
             @selection-change="onServerSelectionChange"
           >
             <el-table-column type="selection" width="42" :selectable="selectableServerRow" />
-            <el-table-column :label="t('filesCloud.name')" min-width="240">
+            <el-table-column :label="t('common.name')" min-width="240">
               <template #default="{ row }">
                 <div class="cm-file-name" @click="onServerNameClick(row)">
                   <el-icon
@@ -265,7 +265,7 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column :label="t('filesCloud.size')" width="100" align="right">
+            <el-table-column :label="t('common.size')" width="100" align="right">
               <template #default="{ row }">
                 <span v-if="!row.is_dir">{{ formatSize(row.size) }}</span>
                 <span v-else class="cm-muted">-</span>
@@ -337,7 +337,7 @@
 
       <template #footer>
         <el-button :disabled="uploading" @click="uploadVisible = false">
-          {{ t('filesCloud.cancel') }}
+          {{ t('common.cancel') }}
         </el-button>
         <el-button
           type="primary"
@@ -362,8 +362,8 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="mkdirVisible = false">{{ t('filesCloud.cancel') }}</el-button>
-        <el-button type="primary" @click="doMkdir">{{ t('filesCloud.confirm') }}</el-button>
+        <el-button @click="mkdirVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doMkdir">{{ t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
 
@@ -379,8 +379,8 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="renameVisible = false">{{ t('filesCloud.cancel') }}</el-button>
-        <el-button type="primary" @click="doRename">{{ t('filesCloud.confirm') }}</el-button>
+        <el-button @click="renameVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doRename">{{ t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
 
@@ -398,7 +398,7 @@
         label-width="130px"
         @submit.prevent
       >
-        <el-form-item :label="t('filesCloud.name')" prop="name">
+        <el-form-item :label="t('common.name')" prop="name">
           <el-input
             v-model="storeForm.name"
             :placeholder="t('filesCloud.namePlaceholder')"
@@ -476,9 +476,9 @@
         <el-alert type="info" :closable="false" show-icon :title="t('filesCloud.secretNote')" />
       </el-form>
       <template #footer>
-        <el-button @click="storeDialogVisible = false">{{ t('filesCloud.cancel') }}</el-button>
+        <el-button @click="storeDialogVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="storeSaving" @click="doSaveStore">
-          {{ t('filesCloud.save') }}
+          {{ t('common.save') }}
         </el-button>
       </template>
     </el-dialog>

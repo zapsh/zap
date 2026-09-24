@@ -52,6 +52,9 @@ const enUS: Messages = {
     optional: 'Optional',
     keyword: 'Keyword',
     name: 'Name',
+    user: 'User',
+    group: 'Group',
+    userGroup: 'Group',
     size: 'Size',
     type: 'Type',
     time: 'Time',
@@ -875,14 +878,9 @@ const enUS: Messages = {
     perm: 'Permissions',
     owner: 'Owner',
     ownerGroup: 'Owner / Group',
-    remove: 'Delete',
     clearSelection: 'Clear Selection',
 
-    colName: 'Name',
-    colSize: 'Size',
     colModified: 'Modified',
-    colUser: 'User',
-    colGroup: 'Group',
     tipPerm: 'Click to change permissions',
     tipOwner: 'Click to change owner / group',
 
@@ -896,10 +894,6 @@ const enUS: Messages = {
     retryAll: 'Retry All',
     retry: 'Retry',
 
-    cancel: 'Cancel',
-    close: 'Close',
-    ok: 'OK',
-    save: 'Save',
     moreItems: 'and {n} more',
     recursive: 'Apply recursively (including subdirectories and files)',
 
@@ -917,8 +911,6 @@ const enUS: Messages = {
     permRead: 'Read',
     permWrite: 'Write',
     permExec: 'Execute',
-    permUser: 'User',
-    permGroup: 'Group',
     permOther: 'Other',
     permSpecial: 'Special',
     permNote:
@@ -1021,13 +1013,10 @@ const enUS: Messages = {
     upload: 'Upload',
     newDir: 'New Folder',
     showHidden: 'Show hidden files',
-    name: 'Name',
-    size: 'Size',
     modified: 'Modified',
     actions: 'Actions',
     download: 'Download',
     rename: 'Rename',
-    remove: 'Delete',
     emptyDir: 'This folder is empty',
     truncated:
       'Too many entries — showing the first {n} (use the object storage console for the full list)',
@@ -1051,10 +1040,6 @@ const enUS: Messages = {
     sourceServer: 'Server',
     removeItem: 'Remove',
     startUpload: 'Start Upload',
-
-    cancel: 'Cancel',
-    confirm: 'OK',
-    save: 'Save',
 
     dirName: 'Folder name',
     dirNamePlaceholder: 'Enter a folder name',

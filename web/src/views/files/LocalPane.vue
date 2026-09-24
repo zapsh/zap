@@ -153,7 +153,7 @@
           </el-button>
           <el-button size="small" type="danger" :disabled="!canRemove" @click="removeSelected">
             <el-icon><Delete /></el-icon>
-            {{ t('filesLocal.remove') }}
+            {{ t('common.delete') }}
           </el-button>
         </el-button-group>
         <el-button size="small" text :disabled="!hasSelection" @click="clearSelection">
@@ -184,7 +184,7 @@
             style="width: 100%"
           >
             <el-table-column type="selection" width="40" />
-            <el-table-column :label="t('filesLocal.colName')" min-width="260">
+            <el-table-column :label="t('common.name')" min-width="260">
               <template #default="{ row }">
                 <div class="fm-file-name">
                   <el-icon
@@ -200,7 +200,7 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column :label="t('filesLocal.colSize')" width="120" align="right">
+            <el-table-column :label="t('common.size')" width="120" align="right">
               <template #default="{ row }">
                 <span v-if="!row.is_dir">{{ formatSize(row.size) }}</span>
                 <span v-else class="text-muted">-</span>
@@ -224,7 +224,7 @@
                 </el-button>
               </template>
             </el-table-column>
-            <el-table-column :label="t('filesLocal.colUser')" width="110">
+            <el-table-column :label="t('common.user')" width="110">
               <template #default="{ row }">
                 <!-- admin 可点击直接修改属主/属组，其余角色只读展示 -->
                 <el-button
@@ -241,7 +241,7 @@
                 <span v-else class="text-muted">-</span>
               </template>
             </el-table-column>
-            <el-table-column :label="t('filesLocal.colGroup')" width="110">
+            <el-table-column :label="t('common.group')" width="110">
               <template #default="{ row }">
                 <el-button
                   v-if="isAdmin"
@@ -383,8 +383,8 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="mkdirVisible = false">{{ t('filesLocal.cancel') }}</el-button>
-        <el-button type="primary" @click="doMkdir">{{ t('filesLocal.ok') }}</el-button>
+        <el-button @click="mkdirVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doMkdir">{{ t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
 
@@ -400,8 +400,8 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="newFileVisible = false">{{ t('filesLocal.cancel') }}</el-button>
-        <el-button type="primary" @click="doNewFile">{{ t('filesLocal.ok') }}</el-button>
+        <el-button @click="newFileVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doNewFile">{{ t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
 
@@ -417,8 +417,8 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="renameVisible = false">{{ t('filesLocal.cancel') }}</el-button>
-        <el-button type="primary" @click="doRename">{{ t('filesLocal.ok') }}</el-button>
+        <el-button @click="renameVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doRename">{{ t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
 
@@ -434,9 +434,9 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dupVisible = false">{{ t('filesLocal.cancel') }}</el-button>
+        <el-button @click="dupVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="dupSaving" @click="doDuplicate">
-          {{ t('filesLocal.ok') }}
+          {{ t('common.confirm') }}
         </el-button>
       </template>
     </el-dialog>
@@ -478,13 +478,13 @@
         </thead>
         <tbody>
           <tr>
-            <td class="fm-perm-owner">{{ t('filesLocal.permUser') }}</td>
+            <td class="fm-perm-owner">{{ t('common.user') }}</td>
             <td><el-checkbox v-model="permBits.ur" @change="onPermBitsChange" /></td>
             <td><el-checkbox v-model="permBits.uw" @change="onPermBitsChange" /></td>
             <td><el-checkbox v-model="permBits.ux" @change="onPermBitsChange" /></td>
           </tr>
           <tr>
-            <td class="fm-perm-owner">{{ t('filesLocal.permGroup') }}</td>
+            <td class="fm-perm-owner">{{ t('common.userGroup') }}</td>
             <td><el-checkbox v-model="permBits.gr" @change="onPermBitsChange" /></td>
             <td><el-checkbox v-model="permBits.gw" @change="onPermBitsChange" /></td>
             <td><el-checkbox v-model="permBits.gx" @change="onPermBitsChange" /></td>
@@ -524,9 +524,9 @@
       </div>
 
       <template #footer>
-        <el-button @click="permVisible = false">{{ t('filesLocal.cancel') }}</el-button>
+        <el-button @click="permVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="permSaving" @click="doChmod">
-          {{ t('filesLocal.ok') }}
+          {{ t('common.confirm') }}
         </el-button>
       </template>
     </el-dialog>
@@ -566,9 +566,9 @@
       </div>
 
       <template #footer>
-        <el-button @click="ownVisible = false">{{ t('filesLocal.cancel') }}</el-button>
+        <el-button @click="ownVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="ownSaving" @click="doChown">
-          {{ t('filesLocal.ok') }}
+          {{ t('common.confirm') }}
         </el-button>
       </template>
     </el-dialog>
@@ -592,9 +592,9 @@
         <span>{{ t('filesLocal.editorTip', { key: saveShortcut }) }}</span>
       </div>
       <template #footer>
-        <el-button @click="editVisible = false">{{ t('filesLocal.close') }}</el-button>
+        <el-button @click="editVisible = false">{{ t('common.close') }}</el-button>
         <el-button type="primary" :loading="saving" @click="doSaveEdit">
-          {{ t('filesLocal.save') }}
+          {{ t('common.save') }}
         </el-button>
       </template>
     </el-dialog>
@@ -675,7 +675,7 @@
       <div class="fm-context-divider" />
       <div class="fm-context-item danger" :class="{ disabled: !canRemove }" @click="removeFromMenu">
         <el-icon><Delete /></el-icon>
-        <span>{{ t('filesLocal.remove') }}</span>
+        <span>{{ t('common.delete') }}</span>
       </div>
     </div>
   </div>
