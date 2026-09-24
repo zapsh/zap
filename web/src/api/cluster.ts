@@ -11,7 +11,6 @@ export interface ClusterNode {
   os: string
   version: string
   state: number
-  token_id: number
   node_prefix: string
   ctrl_addr: string
   enroll_code_id: number
@@ -30,9 +29,7 @@ export interface ClusterNode {
   channel?: boolean
   /** 长连建立时刻（时间戳秒，未连接为 null） */
   channelSince?: number | null
-  /** v2：鉴权方式，1=Ed25519 请求签名，0=旧静态 Token */
-  auth_mode?: number
-  /** v2：节点公钥指纹（SPKI sha256 前 32 位 hex），空=未升级 */
+  /** 节点公钥指纹（SPKI sha256 前 32 位 hex），空=未登记公钥 */
   key_fp?: string
   /** v3 上报方式：0=节点主动上报（要能出网），1=主控主动拉取（给不能出网的机器） */
   report_mode?: number
