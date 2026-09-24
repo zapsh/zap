@@ -27,6 +27,18 @@
           <el-radio value="global">{{ t('docker.compose.locationGlobal') }}</el-radio>
           <el-radio value="user">{{ t('docker.compose.locationUser') }}</el-radio>
         </el-radio-group>
+        <!--
+          子目录：项目目录不必贴着区域根，想放哪层自己定（`docker/podhello`）。
+          留空就是默认布局 —— `<区域>/<项目名>`。
+        -->
+        <el-input
+          v-if="!isEdit"
+          v-model="subDir"
+          class="loc-subdir"
+          size="small"
+          clearable
+          :placeholder="t('docker.compose.subdirPlaceholder')"
+        />
         <div class="loc-preview mono">{{ isEdit ? (path || '—') : locationPath }}</div>
         <div class="field-hint">
           {{ isEdit ? t('docker.compose.locationLocked') : t('docker.compose.locationHint') }}
@@ -139,6 +151,8 @@ const sourcePath = ref('')
 const location = ref<ComposeLocation>('global')
 /** 当前账号的家目录，用于预览落点（取不到就显示 `~`，不影响保存） */
 const homeDir = ref('')
+/** 区域根之下的子目录（可选）：留空 = 项目目录就叫项目名 */
+const subDir = ref('')
 
 async function ensureHomeDir() {
   if (homeDir.value) return
@@ -150,14 +164,19 @@ async function ensureHomeDir() {
   }
 }
 
+/** 子目录相对路径：没填就用项目名（`docker/` 这类多余的斜杠也顺手去掉） */
+const relDir = computed(() => {
+  const sub = subDir.value.trim().replace(/^\/+/, '').replace(/\/+$/, '')
+  return sub || name.value.trim() || '<name>'
+})
+
 /** 落点预览：项目名还没填时给占位，让用户看懂两个选项的区别 */
 const locationPath = computed(() => {
-  const project = name.value.trim() || '<name>'
   if (location.value === 'user') {
     const home = homeDir.value.trim().replace(/\/+$/, '')
-    return `${home || '~'}/${project}`
+    return `${home || '~'}/${relDir.value}`
   }
-  return `/opt/docker/${project}`
+  return `/opt/docker/${relDir.value}`
 })
 
 /** 打开时把编辑目标填进来：编辑用传入值，新建用预填名 + 模板留空 */
@@ -167,6 +186,7 @@ function onOpened() {
   startAfterSave.value = !isEdit.value
   sourcePath.value = ''
   location.value = 'global'
+  subDir.value = ''
   if (!isEdit.value) ensureHomeDir()
 }
 
@@ -203,6 +223,16 @@ async function onServerPicked(serverPath: string) {
     if (!isEdit.value && !name.value.trim()) name.value = normalizeName(basename)
     sourcePath.value = serverPath
     pickerVisible.value = false
+    // 顺手把子目录预填成源文件所在的目录：从 `/home/admin/docker/podhello/x.yml`
+    // 导入时默认落到 `docker/podhello` 这一层，跟原文件待在一起
+    if (!isEdit.value) {
+      await ensureHomeDir()
+      const home = homeDir.value.trim().replace(/\/+$/, '')
+      const dir = serverPath.slice(0, serverPath.lastIndexOf('/'))
+      const rel = dir.startsWith(`${home}/`) ? dir.slice(home.length + 1) : ''
+      // 太深（后端最多 3 层）就不预填，免得保存时才报错
+      subDir.value = rel && rel.split('/').length <= 3 ? rel : ''
+    }
   } catch (e: any) {
     ElMessage.error(e.message || t('docker.common.loadFailed'))
   }
@@ -256,7 +286,13 @@ async function submit() {
     // 编辑模式项目名固定，用 props 里的值，避免用户改到一半的输入串了项目；
     // 位置只在新建时下发（编辑就地覆盖，不会被搬家）
     const target = isEdit.value ? (props.project ?? '') : project
-    await composeSave(target, body.value, isEdit.value ? undefined : location.value)
+    // 位置与子目录只在新建时下发（编辑就地覆盖，不会被搬家）
+    await composeSave(
+      target,
+      body.value,
+      isEdit.value ? undefined : location.value,
+      isEdit.value ? undefined : subDir.value.trim(),
+    )
     ElMessage.success(t('docker.compose.saved'))
     visible.value = false
     emit('saved', target, !isEdit.value && startAfterSave.value)
@@ -298,6 +334,12 @@ async function submit() {
 }
 
 /* 落点预览 / 编辑时当前位置：等宽字体交给全局 `.mono`，这里只管间距与换行 */
+/* 自定义子目录输入框：紧跟位置选项，视觉上属于同一组 */
+.loc-subdir {
+  margin-top: 8px;
+  max-width: 320px;
+}
+
 .loc-preview {
   margin-top: 6px;
   color: var(--el-text-color-regular);

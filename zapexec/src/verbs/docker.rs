@@ -1667,9 +1667,24 @@ pub async fn compose_list() -> Response {
 
     // 扫各区域目录补齐 `compose ls` 认不出来的项目（刚建好、还没 up 的那些）
     let mut scanned: Vec<(String, PathBuf)> = Vec::new();
-    scan_project_dirs(&stacks_root(), &mut scanned);
-    scan_project_dirs(Path::new(COMPOSE_GLOBAL_ROOT), &mut scanned);
+    scan_project_dirs(&stacks_root(), &mut scanned, 1);
+    scan_project_dirs(
+        Path::new(COMPOSE_GLOBAL_ROOT),
+        &mut scanned,
+        COMPOSE_SUB_MAX_DEPTH,
+    );
     scan_user_projects(&mut scanned);
+    // 自定义子路径可能比扫描深度更深（或目录名不合规），
+    // 这些项目靠注册表兜底 —— 面板建的都登记过位置
+    for (name, entry) in read_registry() {
+        let Some(file) = entry.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        let path = PathBuf::from(file);
+        if path.is_file() {
+            scanned.push((name, path));
+        }
+    }
     for (name, file) in scanned {
         if items
             .iter()
@@ -1727,27 +1742,38 @@ pub async fn compose_list() -> Response {
     list_response(Ok(items))
 }
 
-/// 扫描一个区域根目录下的一层子目录，收集 compose 项目（`<根>/<项目>/compose.yaml`）。
+/// 扫描区域根目录下的项目目录（`<根>/<项目>/compose.yaml`），最深看 `depth` 层。
+///
+/// 项目目录默认在根下一层，但也可以是自定义子路径（`<home>/docker/<项目>`），
+/// 所以要往下多看几层；命中的目录不再往里钻（项目里不该还嵌着另一个项目）。
 ///
 /// 用户区域没有独立的根目录（每个 home 都是根），因此 `compose_list` 单独扫 `home` 集合；
 /// 这里只处理 global / panel 这种「一个根下挂多个项目」的布局。
-fn scan_project_dirs(root: &Path, out: &mut Vec<(String, PathBuf)>) {
+fn scan_project_dirs(root: &Path, out: &mut Vec<(String, PathBuf)>, depth: usize) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
         let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
         let Some(name) = dir.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
             continue;
         };
         let file = dir.join("compose.yaml");
-        if dir.is_dir() && valid_project_name(&name) && file.is_file() {
+        if valid_project_name(&name) && file.is_file() {
             out.push((name, file));
+            continue;
+        }
+        if depth > 1 {
+            scan_project_dirs(&dir, out, depth - 1);
         }
     }
 }
 
-/// 扫描各用户 home 里的 compose 项目（`/home/<用户>/<项目>/compose.yaml`、`/root/<项目>/…`）。
+/// 扫描各用户 home 里的 compose 项目（`/home/<用户>/<项目>/compose.yaml`、
+/// `/root/<项目>/…`，自定义子路径下同样找得到）。
 fn scan_user_projects(out: &mut Vec<(String, PathBuf)>) {
     let mut homes: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir("/home") {
@@ -1760,9 +1786,14 @@ fn scan_user_projects(out: &mut Vec<(String, PathBuf)>) {
     }
     homes.push(PathBuf::from("/root"));
     for home in homes {
-        scan_project_dirs(&home, out);
+        scan_project_dirs(&home, out, COMPOSE_SUB_MAX_DEPTH);
     }
 }
+
+/// 自定义子路径允许的最大层数（`docker/podhello` 是 2 层）。
+///
+/// 不给无限层：项目目录本就该浅，太深既扫不到也说明放错了地方。
+const COMPOSE_SUB_MAX_DEPTH: usize = 3;
 
 /// 系统公共区域根目录（`/opt/docker/<项目>`）。
 ///
@@ -1815,10 +1846,15 @@ fn valid_linux_user(name: &str) -> bool {
 /// 由 compose 自行加载）—— 这一点三个区域一致，区别只在**目录在谁的地盘上**。
 #[derive(Debug, Clone)]
 enum ComposeLocation {
-    /// 系统公共区域：`/opt/docker/<project>`
-    Global,
-    /// 用户自己的区域：`<home>/<project>`（如 `/home/admin/podhello`）
-    User { home: String, owner: Option<String> },
+    /// 系统公共区域：`/opt/docker/<子路径>`，默认 `/opt/docker/<project>`
+    Global { sub: Option<String> },
+    /// 用户自己的区域：`<home>/<子路径>`，默认 `<home>/<project>`
+    /// （子路径可以自己定，例如 `docker/podhello` → `/home/admin/docker/podhello`）
+    User {
+        home: String,
+        owner: Option<String>,
+        sub: Option<String>,
+    },
     /// 面板私有目录：`{ZAP_PATH}/data/stacks/<project>`。
     ///
     /// **只用于兼容早期落在那里的项目**（照旧能编辑、能删除），
@@ -1829,10 +1865,19 @@ enum ComposeLocation {
 
 impl ComposeLocation {
     /// 项目目录（绝对路径）
+    ///
+    /// `sub` 是相对区域根的子路径（可选，默认就是项目名）：
+    /// 想让项目文件待在别的位置（`/home/admin/docker/podhello`）就填它。
     fn dir(&self, project: &str) -> PathBuf {
+        let sub = match self {
+            ComposeLocation::Global { sub } | ComposeLocation::User { sub, .. } => sub.as_deref(),
+            ComposeLocation::Panel => None,
+        };
         match self {
-            ComposeLocation::Global => PathBuf::from(COMPOSE_GLOBAL_ROOT).join(project),
-            ComposeLocation::User { home, .. } => PathBuf::from(home).join(project),
+            ComposeLocation::Global { .. } => {
+                Path::new(COMPOSE_GLOBAL_ROOT).join(sub.unwrap_or(project))
+            }
+            ComposeLocation::User { home, .. } => Path::new(home).join(sub.unwrap_or(project)),
             ComposeLocation::Panel => stacks_root().join(project),
         }
     }
@@ -1842,21 +1887,56 @@ impl ComposeLocation {
     }
 }
 
+/// 区域根之下的子路径：自定义项目目录时由前端传（如 `docker/podhello`）。
+///
+/// 只接受相对路径，段数有限、且不含 `.` / `..` —— 保证拼出来还在区域根内部，
+/// 不会溜到 `/etc`、`/root` 这类地方去。
+fn valid_sub_path(sub: &str) -> bool {
+    let sub = sub.trim();
+    // 绝对路径不收：默默变成 `<区域>/etc/…` 只会让人以为自己真的写了 /etc
+    if sub.is_empty() || sub.len() > 200 || sub.starts_with('/') {
+        return false;
+    }
+    let sub = sub.trim_end_matches('/');
+    let parts: Vec<&str> = sub.split('/').collect();
+    if parts.len() > COMPOSE_SUB_MAX_DEPTH {
+        return false;
+    }
+    parts.iter().all(|p| {
+        !p.is_empty()
+            && *p != "."
+            && *p != ".."
+            && !p.starts_with('.')
+            && p.chars().all(|c| !c.is_control() && c != '/' && c != '\\')
+    })
+}
+
 /// 解析前端选定的存放位置。
 ///
 /// 只有两个可选区域：系统公共区域（`global`）与自己的目录（`user`）；
 /// 面板数据目录（`panel`）只保留给早期落在那里的项目，不能再选。
 ///
-/// 路径不让前端传：目录一律由「区域 + 项目名（+ 家目录）」拼出来。
-/// `project` 走 `valid_project_name` 挡穿越，`home` 必须是干净的绝对路径 ——
+/// 路径不让前端传：目录由「区域 + 子路径（默认项目名）」拼出来，
+/// 子路径走 `valid_sub_path`、`home` 必须是干净的绝对路径 ——
 /// 否则这里就成了「往任意路径写文件」的口子。
 fn parse_location(
     location: Option<&str>,
     home: Option<&str>,
     owner: Option<&str>,
+    sub: Option<&str>,
 ) -> Result<ComposeLocation, String> {
+    // 空 / 纯空白 → 用项目名（默认布局）；否则校验后收下
+    let sub = match sub.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) if valid_sub_path(s) => Some(s.trim_end_matches('/').to_string()),
+        Some(s) => {
+            return Err(format!(
+                "非法的子目录: {s}（相对路径，最多 {COMPOSE_SUB_MAX_DEPTH} 层，不含 . / ..）"
+            ))
+        }
+        None => None,
+    };
     match location.unwrap_or("global") {
-        "" | "global" => Ok(ComposeLocation::Global),
+        "" | "global" => Ok(ComposeLocation::Global { sub }),
         "user" => {
             let Some(home) = home.map(str::trim).filter(|h| !h.is_empty()) else {
                 return Err("缺少用户家目录，无法放到用户区域".to_string());
@@ -1881,6 +1961,7 @@ fn parse_location(
             Ok(ComposeLocation::User {
                 home: home.trim_end_matches('/').to_string(),
                 owner,
+                sub,
             })
         }
         other => Err(format!("不支持的存放位置: {other}")),
@@ -1910,6 +1991,22 @@ fn chown_to_user(path: &Path, owner: &str) -> Result<(), String> {
     };
     std::os::unix::fs::chown(path, Some(uid), Some(gid))
         .map_err(|e| format!("设置属主失败 {}: {e}", path.display()))
+}
+
+/// 把 `root → dir` 之间新建的每一级目录都交给用户（自上而下）。
+///
+/// 项目落在自定义子路径（`docker/podhello`）时，中间的 `docker` 也是面板刚建的，
+/// 只 chown 最里层的话用户在自己 home 里反而进不去。
+fn chown_new_dirs(root: &Path, dir: &Path, owner: &str) -> Result<(), String> {
+    let Ok(rel) = dir.strip_prefix(root) else {
+        return Ok(());
+    };
+    let mut cur = root.to_path_buf();
+    for part in rel.components() {
+        cur = cur.join(part);
+        chown_to_user(&cur, owner)?;
+    }
+    Ok(())
 }
 
 // ── 项目位置注册表 ──────────────────────────────────────────
@@ -1972,22 +2069,30 @@ fn registry_write(reg: serde_json::Map<String, Value>) {
 
 // ── 位置判定 ────────────────────────────────────────────────
 
-/// 配置文件是否落在某个用户 home 的一层子目录（`<home>/<项目>/compose.yaml`）。
+/// 配置文件是否落在某个用户 home 之下（`/home/<用户>/…`、`/root/…`，任意深度）。
+///
+/// 项目目录可以由用户自定义子路径（`<home>/docker/<项目>`），
+/// 所以只要是 home 里的就算用户区域 —— 深度不再作数。
 fn in_user_home(file: &Path) -> bool {
-    let Some(dir) = file.parent() else {
+    let comps: Vec<Component<'_>> = file.components().collect();
+    // 至少 `/home/<用户>/<文件>` 这么深才算 home 里的东西
+    if comps.len() < 4 {
         return false;
-    };
-    let Some(home) = dir.parent() else {
-        return false;
-    };
-    // 管理员的家目录可能是 /root（不在 /home 下面）
-    home == Path::new("/root") || home.parent() == Some(Path::new("/home"))
+    }
+    match (comps.first(), comps.get(1)) {
+        (Some(Component::RootDir), Some(Component::Normal(top))) => {
+            // 管理员的家目录可能是 /root（不在 /home 下面）
+            let top = top.to_string_lossy();
+            top == "home" || top == "root"
+        }
+        _ => false,
+    }
 }
 
 /// 面板认得这个配置文件吗（认得才允许改、允许作为受管项目处理）。
 ///
-/// 认得 = 面板登记过，或位于 `/opt/docker`、stacks、某个用户 home 的一层子目录。
-/// 其余（用户自己散放在别处的 compose 文件）算外部项目，只读配置。
+/// 认得 = 面板登记过，或位于 `/opt/docker`、stacks、某个用户 home 之下。
+/// 其余（`/srv`、`/data` 这类地方散放的 compose 文件）算外部项目，只读配置。
 fn is_managed_file(project: &str, file: &Path) -> bool {
     registry_project_path(project).is_some_and(|p| Path::new(&p) == file)
         || file.starts_with(stacks_root())
@@ -2001,7 +2106,7 @@ fn is_managed_file(project: &str, file: &Path) -> bool {
 /// 只能按约定路径找。用户区域靠扫各 home 的一层子目录（`/home/<用户>/<项目>`）。
 fn candidate_files(project: &str) -> Vec<PathBuf> {
     let mut out = vec![
-        ComposeLocation::Global.file(project),
+        ComposeLocation::Global { sub: None }.file(project),
         ComposeLocation::Panel.file(project),
         Path::new("/root").join(project).join("compose.yaml"),
     ];
@@ -2199,13 +2304,15 @@ const COMPOSE_FILE_LIMIT: usize = 512 * 1024;
 ///
 /// - 项目已存在（面板认得它的位置）：**就地覆盖**，不按 `location` 搬家 ——
 ///   否则编辑一个 `/opt/docker` 里的项目会顺手把它搬到别处，相对路径全废；
-/// - 新建：按 `location` 落在 global（`/opt/docker`，默认）/ user（`<home>`）/ panel（stacks）。
+/// - 新建：按 `location` 落在 global（`/opt/docker`，默认）/ user（`<home>`），
+///   目录名默认就是项目名，`sub` 可指定区域根之下的子路径（`docker/podhello`）。
 pub fn compose_save(
     project: &str,
     content: &str,
     location: Option<&str>,
     home: Option<&str>,
     owner: Option<&str>,
+    sub: Option<&str>,
 ) -> Response {
     if !valid_project_name(project) {
         return Response::err(
@@ -2227,7 +2334,7 @@ pub fn compose_save(
     let existing = existing_managed_file(project);
     let (file, loc) = match existing {
         Some(file) => (file, None),
-        None => match parse_location(location, home, owner) {
+        None => match parse_location(location, home, owner, sub) {
             Ok(l) => (l.file(project), Some(l)),
             Err(e) => return Response::err(-1, e),
         },
@@ -2244,13 +2351,18 @@ pub fn compose_save(
 
     // 用户区域：把目录与文件交给本人（root 属主的文件用户改不动、也放不进 src/）
     if let Some(ComposeLocation::User {
-        owner: Some(owner), ..
+        owner: Some(owner),
+        home,
+        ..
     }) = &loc
     {
-        for path in [dir, file.as_path()] {
-            if let Err(e) = chown_to_user(path, owner) {
-                return Response::err(-1, e);
-            }
+        // 子路径下中间目录也是刚建的（`docker/podhello` 里的 `docker`），
+        // 一并交给用户，否则他连自己的项目目录都进不去
+        if let Err(e) = chown_new_dirs(Path::new(home), dir, owner) {
+            return Response::err(-1, e);
+        }
+        if let Err(e) = chown_to_user(&file, owner) {
+            return Response::err(-1, e);
         }
     }
 
@@ -2333,37 +2445,73 @@ mod tests {
     };
     use std::path::Path;
 
-    /// 存放位置只认白名单值，目录由「区域 + 项目名（+ 家目录）」拼出来：
-    /// 家目录必须是干净的绝对路径，否则就成了「往任意路径写文件」的口子。
+    /// 存放位置只认白名单值，目录由「区域 + 子路径（+ 家目录）」拼出来：
+    /// 家目录必须是干净的绝对路径，子路径不能逃出区域根 ——
+    /// 否则就成了「往任意路径写文件」的口子。
     #[test]
     fn location_parses_only_clean_paths() {
         assert!(matches!(
-            parse_location(None, None, None),
-            Ok(ComposeLocation::Global)
+            parse_location(None, None, None, None),
+            Ok(ComposeLocation::Global { sub: None })
         ));
         assert!(matches!(
-            parse_location(Some("user"), Some("/home/admin"), Some("admin")),
+            parse_location(Some("user"), Some("/home/admin"), Some("admin"), None),
             Ok(ComposeLocation::User { .. })
         ));
 
         // 面板数据目录不再作为存放位置：那里不是放项目文件的地方
-        assert!(parse_location(Some("panel"), None, None).is_err());
-        assert!(parse_location(Some("user"), None, None).is_err());
-        assert!(parse_location(Some("user"), Some("relative/home"), None).is_err());
-        assert!(parse_location(Some("user"), Some("/home/../etc"), None).is_err());
-        assert!(parse_location(Some("user"), Some("/home/admin"), Some("../root")).is_err());
-        assert!(parse_location(Some("elsewhere"), None, None).is_err());
+        assert!(parse_location(Some("panel"), None, None, None).is_err());
+        assert!(parse_location(Some("user"), None, None, None).is_err());
+        assert!(parse_location(Some("user"), Some("relative/home"), None, None).is_err());
+        assert!(parse_location(Some("user"), Some("/home/../etc"), None, None).is_err());
+        assert!(
+            parse_location(Some("user"), Some("/home/admin"), Some("../root"), None).is_err()
+        );
+        assert!(parse_location(Some("elsewhere"), None, None, None).is_err());
     }
 
-    /// 用户区域判定：正好是 `<home>/<项目>/compose.yaml` 一层，再深就不算「面板的项目」
+    /// 自定义子路径：项目目录不必贴着 home 根（`docker/podhello` 也行），
+    /// 但绝对路径、`..`、隐藏目录这些一律不收。
+    #[test]
+    fn sub_path_stays_inside_the_area() {
+        let dir = |sub: Option<&str>| match parse_location(
+            Some("user"),
+            Some("/home/admin"),
+            Some("admin"),
+            sub,
+        ) {
+            Ok(loc) => loc.dir("podhello").to_string_lossy().to_string(),
+            Err(e) => e,
+        };
+        assert_eq!(dir(None), "/home/admin/podhello");
+        assert_eq!(dir(Some("")), "/home/admin/podhello");
+        assert_eq!(dir(Some("docker/podhello")), "/home/admin/docker/podhello");
+
+        assert!(parse_location(Some("user"), Some("/home/admin"), None, Some("/etc")).is_err());
+        assert!(
+            parse_location(Some("user"), Some("/home/admin"), None, Some("../etc")).is_err()
+        );
+        assert!(
+            parse_location(Some("user"), Some("/home/admin"), None, Some("a/../../etc")).is_err()
+        );
+        assert!(
+            parse_location(Some("user"), Some("/home/admin"), None, Some(".ssh/key")).is_err()
+        );
+        assert!(
+            parse_location(Some("user"), Some("/home/admin"), None, Some("a/b/c/d")).is_err()
+        );
+    }
+
+    /// 用户区域判定：`/home/<用户>/…`、`/root/…` 之下都算（自定义子路径可以更深）
     #[test]
     fn user_home_layout_is_recognised() {
         assert!(in_user_home(Path::new("/home/admin/podhello/compose.yaml")));
         assert!(in_user_home(Path::new("/root/podhello/compose.yaml")));
+        assert!(in_user_home(Path::new("/home/admin/docker/podhello/compose.yaml")));
 
         assert!(!in_user_home(Path::new("/opt/docker/podhello/compose.yaml")));
-        assert!(!in_user_home(Path::new("/home/admin/compose.yaml")));
-        assert!(!in_user_home(Path::new("/home/admin/src/podhello/compose.yaml")));
+        assert!(!in_user_home(Path::new("/srv/podhello/compose.yaml")));
+        assert!(!in_user_home(Path::new("/home/admin")));
     }
 
     /// 项目名会拼进宿主机路径（`stacks/<name>/compose.yaml`）：

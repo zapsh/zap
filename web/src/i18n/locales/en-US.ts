@@ -2815,8 +2815,9 @@ const enUS: Messages = {
       locationGlobal: 'System-wide area',
       locationUser: 'My home directory',
       locationPanel: 'Panel directory',
+      subdirPlaceholder: 'Subdirectory (optional), e.g. docker/podhello',
       locationHint:
-        'Relative paths in the compose file (e.g. ./src) resolve against the project directory — put it in your home and the project files stay next to you; put it in the system-wide area and every admin can see it.',
+        'Relative paths in the compose file (e.g. ./src) resolve against the project directory — put it in your home and the project files stay next to you; put it in the system-wide area and every admin can see it. Leave the subdirectory empty and the project directory is named after the project.',
       locationLocked: 'Project already exists: saving overwrites in place and never moves it',
       upDone: 'Project started',
       stopDone: 'Project stopped',

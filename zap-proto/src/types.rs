@@ -995,6 +995,10 @@ pub enum Request {
     /// 面板数据目录 `{ZAP_PATH}/data/stacks` 不再接受新建：早期落在那里的项目
     /// 照旧可以编辑、删除（`compose_list` 仍会扫到，标为 `panel`）。
     ///
+    /// `path` 是区域根之下的子路径（可选，默认就是项目名）：想让项目文件待在别处
+    /// （`/home/admin/docker/podhello`）就填 `docker/podhello`；只接受相对路径、
+    /// 最多 3 层、不含 `.` / `..`，因此拼出来仍在区域根内部。
+    ///
     /// 项目已存在（面板认得它的配置文件）时**就地覆盖**，不会被 location 搬家。
     /// `project` 只允许 docker 的项目名字符集，写盘前自行挡路径穿越。
     #[serde(rename = "docker.compose_save")]
@@ -1007,6 +1011,8 @@ pub enum Request {
         home: Option<String>,
         #[serde(default)]
         owner: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
     },
     /// 删除项目：先 `down` 再清理受管目录；`compose ls` 里的外部项目只 down、
     /// 不动它的文件（那些文件不归面板管）。

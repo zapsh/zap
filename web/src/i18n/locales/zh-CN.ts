@@ -2799,8 +2799,9 @@ export default {
       locationGlobal: '系统公共区域',
       locationUser: '我的目录',
       locationPanel: '面板目录',
+      subdirPlaceholder: '子目录（可选），如 docker/podhello',
       locationHint:
-        'compose 里的相对路径（如 ./src）以项目目录为基准 —— 放在自己的目录里，项目文件就和人待在一起；公共区域则对所有管理员可见。',
+        'compose 里的相对路径（如 ./src）以项目目录为基准 —— 放在自己的目录里，项目文件就和人待在一起；公共区域则对所有管理员可见。子目录留空时项目目录就叫项目名。',
       locationLocked: '项目已存在：保存会在原位置覆盖，不会被搬家',
       upDone: '项目已启动',
       stopDone: '项目已停止',

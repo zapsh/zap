@@ -339,13 +339,22 @@ export function composeFile(project: string) {
 /**
  * 新建 / 覆盖 Compose 项目的 compose.yaml。
  *
- * `location` 只在**新建**时生效：`global`（默认，`/opt/docker`）/ `user`（当前用户家目录）/
- * `panel`（面板 stacks）。项目已存在时后端就地覆盖，不会被搬到别处。
+ * `location` 只在**新建**时生效：`global`（默认，`/opt/docker`）/ `user`（当前用户家目录）。
+ * 项目已存在时后端就地覆盖，不会被搬到别处。
+ *
+ * `path` 是区域根之下的子目录（可选，留空就是项目名）：想让项目文件待在别处
+ * 就填 `docker/podhello` → `<home>/docker/podhello`、`/opt/docker/docker/podhello`。
+ * 只收相对路径，最多 3 层，不含 `.` / `..`（后端会校验）。
  */
-export function composeSave(project: string, content: string, location?: ComposeLocation) {
+export function composeSave(
+  project: string,
+  content: string,
+  location?: ComposeLocation,
+  path?: string,
+) {
   return http.post<Api<{ project: string; path: string; location: ComposeLocation }>>(
     '/docker/compose/save',
-    { project, content, location },
+    { project, content, location, path },
   )
 }
 

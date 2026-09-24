@@ -711,9 +711,14 @@ pub async fn compose_logs(
 pub struct ComposeSaveBody {
     pub project: String,
     pub content: String,
-    /// 存放位置：`global`（默认，`/opt/docker`）/ `user`（自己的目录）/ `panel`（面板目录）
+    /// 存放位置：`global`（默认，`/opt/docker`）/ `user`（自己的目录）
     #[serde(default)]
     pub location: Option<String>,
+    /// 区域根之下的子目录（可选，默认就是项目名）：`docker/podhello` →
+    /// `/home/admin/docker/podhello`、`/opt/docker/docker/podhello`。
+    /// 只接受相对路径（校验在 zapexec 侧），不用它逃出区域根。
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 /// POST /docker/compose/save —— 新建 / 覆盖 Compose 项目的 compose.yaml。
@@ -739,6 +744,13 @@ pub async fn compose_save(
     }
     // 「放到我的目录」得先知道是谁的目录：家目录与 Linux 账号都取自 user 表 ——
     // 迁移过挂载点的用户 home 不再是 `/home/<名字>`，不能在 zapexec 里硬拼。
+    // 自定义子目录：只去掉首尾空白与多余的斜杠，合法性交给 zapexec 判
+    // （那里才知道区域根在哪，也才知道能不能拼出穿越路径）
+    let path = body
+        .path
+        .as_deref()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
     let (home, owner) = if location == "user" {
         let (home, _) = super::system_file::user_private_prefixes(&claims).await;
         let (linux_user, _) = super::system_file::actor_identity(&claims).await?;
@@ -751,10 +763,13 @@ pub async fn compose_save(
         &addr,
         "docker_compose_save",
         format!(
-            "Compose 项目 {} → 保存配置（{} 字节，位置 {}）",
+            "Compose 项目 {} → 保存配置（{} 字节，位置 {}{}）",
             body.project,
             body.content.len(),
-            location
+            location,
+            path.as_deref()
+                .map(|p| format!("，子目录 {p}"))
+                .unwrap_or_default()
         ),
         Request::DockerComposeSave {
             project: body.project.clone(),
@@ -762,6 +777,7 @@ pub async fn compose_save(
             location: Some(location),
             home,
             owner,
+            path,
         },
     )
     .await

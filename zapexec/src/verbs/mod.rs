@@ -487,15 +487,15 @@ pub async fn dispatch(req: Request) -> Response {
             location,
             home,
             owner,
-        } => {
-            docker::compose_save(
-                &project,
-                &content,
-                location.as_deref(),
-                home.as_deref(),
-                owner.as_deref(),
-            )
-        }
+            path,
+        } => docker::compose_save(
+            &project,
+            &content,
+            location.as_deref(),
+            home.as_deref(),
+            owner.as_deref(),
+            path.as_deref(),
+        ),
         Request::DockerComposeRemove { project } => docker::compose_remove(&project).await,
         Request::DockerComposeLogs { project, tail } => docker::compose_logs(&project, tail).await,
         // 交互式终端与事件流都是长会话，只能走 `dispatch_stream`（StreamOpen）：
