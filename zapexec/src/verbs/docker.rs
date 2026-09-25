@@ -44,8 +44,13 @@ pub fn log_bytes(chunk: LogOutput) -> Vec<u8> {
     message.to_vec()
 }
 
-/// 默认 daemon socket；可用 `DOCKER_HOST` 覆盖（`unix://` / `tcp://`）。
+/// 默认 daemon socket（Docker）；可用 `DOCKER_HOST` 覆盖（`unix://` / `tcp://`）。
 const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
+/// Podman 的 root 服务 socket（`podman system service` 起来后才有）。
+///
+/// Podman 本身无守护进程，面板要用 Engine API 就得靠这个兼容 socket；
+/// 没有它时容器列表等 API 能力不可用（compose 走 CLI，不受影响）。
+const PODMAN_SOCKET: &str = "/run/podman/podman.sock";
 /// 查询类调用超时
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 /// 写动作超时（启停 / 删除 / 创建）
@@ -73,9 +78,15 @@ pub fn client() -> Result<&'static Docker, String> {
     } else if !host.is_empty() {
         Docker::connect_with_host(&host)
     } else {
-        Docker::connect_with_unix(DEFAULT_SOCKET, CALL_TIMEOUT.as_secs(), API_DEFAULT_VERSION)
+        Docker::connect_with_unix(&socket_path(), CALL_TIMEOUT.as_secs(), API_DEFAULT_VERSION)
     }
-    .map_err(|e| format!("连接 Docker daemon 失败: {e}"))?;
+    .map_err(|e| match runtime() {
+        Runtime::Podman => format!(
+            "连接 Podman 服务失败: {e}（Podman 无守护进程，请先启动兼容服务：\
+             podman system service --time=0 unix://{PODMAN_SOCKET}）"
+        ),
+        Runtime::Docker => format!("连接 Docker daemon 失败: {e}"),
+    })?;
     Ok(DOCKER.get_or_init(|| d))
 }
 
@@ -85,7 +96,78 @@ fn socket_path() -> String {
     if let Some(p) = host.strip_prefix("unix://") {
         return p.to_string();
     }
-    DEFAULT_SOCKET.to_string()
+    if !host.is_empty() {
+        return host;
+    }
+    runtime().socket().to_string()
+}
+
+// ── 容器运行时（Docker / Podman）───────────────────────────
+
+/// 面板当前操作哪一套容器引擎。
+///
+/// 由管理员在「运行环境」里指定（`container_runtime`）：`auto`（默认，跟随探测）/
+/// `docker` / `podman`。命令执行、daemon socket、compose 探测都按它走，
+/// 保证「面板干的」就是「管理员指定的那套」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Runtime {
+    Docker,
+    Podman,
+}
+
+impl Runtime {
+    /// CLI 程序名
+    fn bin(self) -> &'static str {
+        match self {
+            Runtime::Docker => "docker",
+            Runtime::Podman => "podman",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        self.bin()
+    }
+
+    fn socket(self) -> &'static str {
+        match self {
+            Runtime::Docker => DEFAULT_SOCKET,
+            Runtime::Podman => PODMAN_SOCKET,
+        }
+    }
+}
+
+/// 面板设置项（server_env.yaml 的 `conf.container_runtime`）。
+const CONF_RUNTIME: &str = "container_runtime";
+
+/// 当前运行时：设置优先；`auto` 时 docker 优先，没有 docker 再看 podman。
+fn runtime() -> Runtime {
+    match panel_conf(CONF_RUNTIME).as_deref() {
+        Some("podman") => Runtime::Podman,
+        Some("docker") => Runtime::Docker,
+        _ => {
+            if bin_exists("docker") {
+                Runtime::Docker
+            } else if bin_exists("podman") {
+                Runtime::Podman
+            } else {
+                Runtime::Docker
+            }
+        }
+    }
+}
+
+/// 读面板 conf 区的一个键（`{ZAP_PATH}/data/server_env.yaml`）。
+///
+/// 管理员选的运行时存在这里（与运行环境快照同一份文件），读不到就当 `auto`。
+fn panel_conf(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(super::zap_path().join("data/server_env.yaml")).ok()?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    doc.get("conf")?
+        .get(key)?
+        .get("value")?
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// 统一超时 + 错误文案：bollard 的错误里已带 daemon 给出的原始原因。
@@ -152,16 +234,23 @@ fn action_response(result: Result<String, String>) -> Response {
 
 // ── 环境探测 ──────────────────────────────────────────────
 
-/// compose 插件是否可用（`docker compose version --short`）。
+/// compose 是否可用（`docker compose version --short`）。
 ///
 /// compose 是 CLI 插件，Engine API 没有等价端点，只能这样探测。
+/// Podman 5 自带 `podman compose`；更早的版本靠 `podman-compose` 顶上。
 async fn compose_available() -> bool {
-    let Ok(out) = timeout(
-        CALL_TIMEOUT,
-        docker_cmd(["compose", "version", "--short"]).output(),
-    )
-    .await
-    else {
+    if compose_probe(&[runtime().bin(), "compose", "version", "--short"]).await {
+        return true;
+    }
+    if runtime() == Runtime::Podman {
+        return compose_probe(&["podman-compose", "version"]).await;
+    }
+    false
+}
+
+/// 跑一次 compose 版本探测，能成功退出即视为可用。
+async fn compose_probe(cmd: &[&str]) -> bool {
+    let Ok(out) = timeout(CALL_TIMEOUT, bin_cmd(cmd[0], &cmd[1..]).output()).await else {
         return false;
     };
     matches!(out, Ok(o) if o.status.success())
@@ -176,11 +265,20 @@ async fn compose_available() -> bool {
 ///
 /// 任一命中即算装过：CLI 二进制 → daemon socket → 服务单元 → 包管理器记录。
 fn installed() -> bool {
+    // Podman 的「装没装」不能用 docker 的四档去判：CLI / 单元 / 包名都不一样
+    if runtime() == Runtime::Podman {
+        return installed_from(
+            bin_exists("podman"),
+            socket_exists(),
+            unit_exists("podman"),
+            package_installed(&["podman", "podman-compose"]),
+        );
+    }
     installed_from(
         cli_exists(),
         socket_exists(),
-        unit_exists(),
-        package_installed(),
+        unit_exists("docker"),
+        package_installed(&["docker-ce", "docker.io", "docker"]),
     )
 }
 
@@ -195,37 +293,45 @@ fn socket_exists() -> bool {
     Path::new(&socket_path()).exists()
 }
 
-/// docker CLI 是否已安装：常见安装路径，再用 PATH 兜一次（nix、/opt 自编译等）。
-fn cli_exists() -> bool {
-    const CANDIDATES: &[&str] = &[
-        "/usr/bin/docker",
-        "/usr/local/bin/docker",
-        "/bin/docker",
-        "/usr/sbin/docker",
-        "/usr/local/sbin/docker",
-        "/sbin/docker",
+/// 容器 CLI 是否已安装：常见安装路径，再用 PATH 兜一次（nix、/opt 自编译等）。
+fn bin_exists(bin: &str) -> bool {
+    let dirs = [
+        "/usr/bin",
+        "/usr/local/bin",
+        "/bin",
+        "/usr/sbin",
+        "/usr/local/sbin",
+        "/sbin",
     ];
-    if CANDIDATES.iter().any(|p| Path::new(p).exists()) {
+    if dirs
+        .iter()
+        .any(|d| Path::new(d).join(bin).exists())
+    {
         return true;
     }
     super::root_cmd("/bin/sh")
-        .args(["-c", "command -v docker 2>/dev/null"])
+        .args(["-c", &format!("command -v {bin} 2>/dev/null")])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
 }
 
-/// 服务单元是否已注册（systemd，平台差异见 [`super::svc::exists`]）。
-fn unit_exists() -> bool {
-    super::svc::exists("docker")
+/// docker CLI 是否已安装（Podman 环境下由 [`installed`] 走另一条判定）。
+fn cli_exists() -> bool {
+    bin_exists("docker")
 }
 
-/// 包管理器里是否还登记着 docker。
+/// 服务单元是否已注册（systemd，平台差异见 [`super::svc::exists`]）。
+fn unit_exists(name: &str) -> bool {
+    super::svc::exists(name)
+}
+
+/// 包管理器里是否还登记着这些包。
 ///
 /// 最后一档兜底：二进制被删、装到非标准路径、单元也没注册时仍能认出来。
 /// 只查 deb / rpm 两档，查不到就当没装——容器页面还有 daemon 探测兜底。
-fn package_installed() -> bool {
+fn package_installed(pkgs: &[&str]) -> bool {
     let stdout = |prog: &str, args: &[&str]| -> String {
         super::root_cmd(prog)
             .args(args)
@@ -235,17 +341,18 @@ fn package_installed() -> bool {
             .unwrap_or_default()
     };
     // deb：docker-ce（官方源）/ docker.io（发行版源）
-    if stdout(
-        "dpkg-query",
-        &["-W", "-f=${Status}", "docker-ce", "docker.io"],
-    )
-    .lines()
-    .any(|l| l.contains("install ok installed"))
+    let mut deb = vec!["-W", "-f=${Status}"];
+    deb.extend_from_slice(pkgs);
+    if stdout("dpkg-query", &deb)
+        .lines()
+        .any(|l| l.contains("install ok installed"))
     {
         return true;
     }
-    // rpm：同上，发行版源里的包名常就是 docker
-    stdout("rpm", &["-q", "--qf", "%{NAME}\n", "docker-ce", "docker"])
+    // rpm：同上，发行版源里的包名常就是 docker / podman
+    let mut rpm = vec!["-q", "--qf", "%{NAME}\n"];
+    rpm.extend_from_slice(pkgs);
+    stdout("rpm", &rpm)
         .lines()
         .any(|l| !l.trim().is_empty() && !l.contains("not installed"))
 }
@@ -272,6 +379,7 @@ pub async fn status() -> Response {
             Some(json!({
                 "installed": true,
                 "daemon": true,
+                "runtime": runtime().name(),
                 "version": v.version,
                 "api_version": v.api_version,
                 "compose": compose_available().await,
@@ -283,6 +391,7 @@ pub async fn status() -> Response {
             Some(json!({
                 "installed": installed_flag,
                 "daemon": false,
+                "runtime": runtime().name(),
                 "version": "",
                 "api_version": "",
                 "compose": false,
@@ -1579,7 +1688,7 @@ pub async fn network_action(name: &str, action: &str, driver: Option<&str>) -> R
 
 // ── Compose（CLI 插件，Engine API 无对应端点）──────────────
 
-/// 构造一个清空环境、仅带安全 PATH 的 docker 命令。
+/// 构造一个清空环境、仅带安全 PATH 的容器命令（docker 或 podman，看运行时）。
 ///
 /// 参数写成泛型是为了让「参数需要动态拼接」的场景（如 `docker build` 的多个
 /// `--tag` / `--build-arg`）能直接传 `Vec<String>`，而固定子命令仍可传字面量数组。
@@ -1588,7 +1697,16 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let mut cmd = Command::new("docker");
+    bin_cmd(runtime().bin(), args)
+}
+
+/// 同上，但程序名自己给（`podman-compose` 这类不在运行时里的命令）。
+fn bin_cmd<I, S>(bin: &str, args: I) -> Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut cmd = Command::new(bin);
     // 清空环境：不受调用方 `DOCKER_*` / `PATH` 影响，避免被注入额外行为
     cmd.args(args).kill_on_drop(true).env_clear().env(
         "PATH",

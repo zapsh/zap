@@ -560,6 +560,8 @@ const enUS: Messages = {
     fpmSpec: 'FPM Spec',
     ssh: 'SSH',
     proxy: 'Reverse Proxy',
+    php: 'PHP Sites',
+    docker: 'Containers',
     usersCount: 'Customers',
 
     unlimited: 'Unlimited',
@@ -582,6 +584,11 @@ const enUS: Messages = {
     sshHint: 'When off, customers on this package cannot use the SSH terminal',
     proxyHint:
       'When on, customers on this package can create and edit reverse proxy sites (upstream / location)',
+    phpHint:
+      'When off, customers on this package cannot create PHP sites, and existing PHP sites can no longer be edited',
+    // Risk note: containers ≈ host root; only real on Podman
+    dockerHint:
+      'Risk: container access is close to host root (host directories can be mounted). It only takes effect when the container runtime (Environment) is Podman; on Docker it stays blocked even when enabled',
 
     empty: 'No packages yet. Click "New Package" in the top right to create one.',
     nameRequired: 'Please enter a package name',
@@ -1261,6 +1268,37 @@ const enUS: Messages = {
   },
 
   /** Server - runtime environment */
+  stream: {
+    title: 'Stream Forwarding',
+    unsupportedTitle: 'Stream forwarding is unavailable on this host',
+    noStreamModule:
+      'Nginx was built without the stream module (--with-stream). Install an Nginx build that includes it and try again',
+    noNginx: 'No Nginx installation detected',
+    add: 'New Rule',
+    edit: 'Edit Rule',
+    name: 'Name',
+    listen: 'Listen',
+    listenIp: 'Listen Address',
+    listenIpTip: 'Empty means all addresses (0.0.0.0); IP only, no hostnames',
+    listenPort: 'Listen Port',
+    protocol: 'Protocol',
+    target: 'Target',
+    targetHost: 'Target Host',
+    targetPort: 'Target Port',
+    remark: 'Remark',
+    actions: 'Actions',
+    apply: 'Reapply',
+    empty: 'No forwarding rules yet',
+    tip: 'Rules are rendered into the Nginx stream config and validated right after saving. Do not reuse ports already taken by other services.',
+    nameRequired: 'Please enter a rule name',
+    portRequired: 'Please enter a port between 1 and 65535',
+    hostRequired: 'Please enter the target host',
+    created: 'Rule added',
+    updated: 'Rule updated',
+    deleted: 'Rule deleted',
+    applied: 'Configuration reapplied',
+    deleteConfirm: 'Delete this forwarding rule?',
+  },
   serverEnv: {
     title: 'Server Runtime Environment',
     runtimeTab: 'Detected Environment',
@@ -1353,6 +1391,11 @@ const enUS: Messages = {
     mountPoint: 'Mount Point',
     homeRootTip:
       'Root directory for panel users\' home directories. Defaults to /home. When /home runs out of space, mount a new disk at e.g. /home2 and set the new mount point here; new users will then be created on it. Existing users are unaffected — to relocate them, use "Server Config → Data Migration".',
+    containerRuntimeTitle: 'Container Runtime',
+    containerRuntime: 'Active Runtime',
+    runtimeAuto: 'auto (detect: docker if present, otherwise podman)',
+    containerRuntimeTip:
+      'All container operations (containers / images / Compose) run through the engine selected here. The package "Containers" switch only takes effect for regular users on Podman — on Docker containers run as root with no user isolation, so handing them out is equivalent to giving away host root.',
     fpmDefaultsTitle: 'PHP-FPM Default Pool Spec',
     maxChildren: 'Max Children',
     maxChildrenTip:

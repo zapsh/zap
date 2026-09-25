@@ -68,6 +68,7 @@ pub mod system_job;
 pub mod system_menu;
 pub mod system_migrate;
 pub mod system_nginx;
+pub mod system_stream;
 pub mod system_role;
 pub mod system_service_conf;
 pub mod system_update;
@@ -417,6 +418,13 @@ fn api_routers() -> Router {
             "/system/nginx/stub-status",
             get(system_nginx::nginx_stub_status_get).post(system_nginx::nginx_stub_status_set),
         )
+        // 四层转发（Nginx stream，admin only）
+        .route("/system/stream/status", get(system_stream::status))
+        .route("/system/stream/list", get(system_stream::list))
+        .route("/system/stream/add", post(system_stream::add))
+        .route("/system/stream/update", post(system_stream::update))
+        .route("/system/stream/delete", post(system_stream::delete))
+        .route("/system/stream/apply", post(system_stream::apply))
         // 通用服务配置（服务配置：php / mysql / mariadb / docker，admin only）
         .route(
             "/system/service-conf/status",

@@ -235,7 +235,11 @@ async fn require_builder(claims: &ValidatedClaims) -> Result<(), ZapError> {
     if is_demo(claims) {
         return Err(ZapError::New(-1, "演示账号不支持镜像相关操作".to_string()));
     }
-    if is_admin(claims) || has_perm(claims, "docker:build").await {
+    if is_admin(claims) {
+        return Ok(());
+    }
+    require_user_docker(claims).await?;
+    if has_perm(claims, "docker:build").await {
         Ok(())
     } else {
         Err(ZapError::New(-1, "未授予镜像构建权限".to_string()))
@@ -249,11 +253,78 @@ async fn require_builder(claims: &ValidatedClaims) -> Result<(), ZapError> {
 ///
 /// 构建者不用另外勾：`docker:build` 蕴含 `docker:view`（见 `access::IMPLIED_PERMS`），
 /// 否则镜像页顶部的环境探测条会因缺 `docker:view` 而 403（显示成「未检测到 Docker」）。
+/// 面板当前使用的容器运行时（与 zapexec 同一套判定：设置优先，`auto` 时 docker 优先）。
+///
+/// 管理员在「运行环境」里指定（`server_env.yaml` 的 `container_runtime`）；
+/// 没指定时按 CLI 是否存在推断，顺序与 zapexec 的 `runtime()` 保持一致。
+fn container_runtime() -> String {
+    let conf = crate::zap::server_env::conf_get("container_runtime").unwrap_or_default();
+    match conf.as_str() {
+        "docker" | "podman" => conf,
+        _ => {
+            if bin_installed("docker") {
+                "docker".to_string()
+            } else if bin_installed("podman") {
+                "podman".to_string()
+            } else {
+                "docker".to_string()
+            }
+        }
+    }
+}
+
+/// 某个容器 CLI 是否已安装（常见安装路径，与 zapexec 的 `bin_exists` 同口径）。
+fn bin_installed(bin: &str) -> bool {
+    [
+        "/usr/bin",
+        "/usr/local/bin",
+        "/bin",
+        "/usr/sbin",
+        "/usr/local/sbin",
+        "/sbin",
+    ]
+    .iter()
+    .any(|d| Path::new(d).join(bin).exists())
+}
+
+/// 非管理员使用容器功能的**额外**两道闸：套餐开关 + 运行时必须是 Podman。
+///
+/// Docker 下容器由 root 跑、没有任何用户隔离 —— 把容器能力交给普通用户
+/// 基本等价于把宿主机 root 交出去（挂载宿主目录、`--privileged`、exec 进容器
+/// 都能绕出去）。所以套餐里的「容器」开关只在 Podman 环境生效；Docker 环境
+/// 下即使开了也不放行，并明确告诉管理员为什么。
+async fn require_user_docker(claims: &ValidatedClaims) -> Result<(), ZapError> {
+    if is_admin(claims) {
+        return Ok(());
+    }
+    let runtime = container_runtime();
+    if runtime != "podman" {
+        return Err(ZapError::New(
+            -1,
+            format!(
+                "当前容器运行时为 {runtime}：容器以 root 运行、没有用户隔离，\
+                 容器功能仅管理员可用（改用 Podman 后才能在套餐里分配给普通用户）"
+            ),
+        ));
+    }
+    match crate::routers::package::effective_package_of(claims.id as i64).await {
+        Some(p) if p.allow_docker == 1 => Ok(()),
+        _ => Err(ZapError::New(
+            -1,
+            "当前账号未开放容器功能（请联系管理员在「系统 → 套餐」中开启「容器」）".to_string(),
+        )),
+    }
+}
+
 async fn require_container_view(claims: &ValidatedClaims) -> Result<(), ZapError> {
     if is_demo(claims) {
         return Err(ZapError::New(-1, "演示账号不支持容器操作".to_string()));
     }
-    if is_admin(claims) || has_perm(claims, "docker:view").await {
+    if is_admin(claims) {
+        return Ok(());
+    }
+    require_user_docker(claims).await?;
+    if has_perm(claims, "docker:view").await {
         Ok(())
     } else {
         Err(ZapError::New(-1, "未授予容器查看权限".to_string()))
@@ -269,7 +340,11 @@ async fn require_container_manage(claims: &ValidatedClaims) -> Result<(), ZapErr
     if is_demo(claims) {
         return Err(ZapError::New(-1, "演示账号不支持容器操作".to_string()));
     }
-    if is_admin(claims) || has_perm(claims, "docker:manage").await {
+    if is_admin(claims) {
+        return Ok(());
+    }
+    require_user_docker(claims).await?;
+    if has_perm(claims, "docker:manage").await {
         Ok(())
     } else {
         Err(ZapError::New(-1, "未授予容器启停权限".to_string()))

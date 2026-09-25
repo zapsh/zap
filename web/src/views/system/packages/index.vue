@@ -94,6 +94,20 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column :label="t('packages.php')" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.allow_php ? 'success' : 'info'" size="small" effect="plain">
+              {{ row.allow_php ? t('packages.allow') : t('packages.deny') }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('packages.docker')" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.allow_docker ? 'warning' : 'info'" size="small" effect="plain">
+              {{ row.allow_docker ? t('packages.allow') : t('packages.deny') }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('packages.usersCount')" width="90" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.users_count > 0" size="small" effect="dark" type="primary">
@@ -291,6 +305,14 @@
           <el-switch v-model="form.allow_proxy" />
           <span class="form-hint">{{ t('packages.proxyHint') }}</span>
         </el-form-item>
+        <el-form-item :label="t('packages.php')">
+          <el-switch v-model="form.allow_php" />
+          <span class="form-hint">{{ t('packages.phpHint') }}</span>
+        </el-form-item>
+        <el-form-item :label="t('packages.docker')">
+          <el-switch v-model="form.allow_docker" />
+          <span class="form-hint">{{ t('packages.dockerHint') }}</span>
+        </el-form-item>
         <el-form-item :label="t('common.status')">
           <el-radio-group v-model="form.status">
             <el-radio :value="1">{{ t('common.enable') }}</el-radio>
@@ -347,6 +369,9 @@ const form = reactive({
   fpm_spec_ref: '',
   allow_ssh: false,
   allow_proxy: false,
+  // PHP 站点默认开放（建站的主要形态）；容器默认关闭
+  allow_php: true,
+  allow_docker: false,
   status: 1,
 })
 // 「不限」开关：true 时该限制项提交为 0
@@ -412,6 +437,8 @@ function resetForm() {
   form.fpm_spec_ref = ''
   form.allow_ssh = false
   form.allow_proxy = false
+  form.allow_php = true
+  form.allow_docker = false
   form.status = 1
   unlimitedDisk.value = true
   unlimitedSites.value = true
@@ -450,6 +477,8 @@ function openEdit(row: PackageItem) {
   form.fpm_spec_ref = row.fpm_spec_ref || ''
   form.allow_ssh = !!row.allow_ssh
   form.allow_proxy = !!row.allow_proxy
+  form.allow_php = row.allow_php !== false
+  form.allow_docker = !!row.allow_docker
   form.status = row.status
   dialogVisible.value = true
 }
@@ -474,6 +503,8 @@ async function submitForm() {
     fpm_spec_ref: form.fpm_spec_ref,
     allow_ssh: form.allow_ssh,
     allow_proxy: form.allow_proxy,
+    allow_php: form.allow_php,
+    allow_docker: form.allow_docker,
     status: form.status,
   }
   saving.value = true

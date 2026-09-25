@@ -1184,8 +1184,201 @@ pub async fn control(action: &str) -> Response {
     .unwrap_or_else(|e| Response::err(-1, e))
 }
 
+// ── 四层转发（stream）──────────────────────────────────────
+
+/// stream 配置文件名：放在 nginx.conf 同目录，由主配置**顶层** include。
+///
+/// 不能塞进 `sites-enabled`：那个目录被 include 在 `http { }` 里，
+/// `stream { }` 只能出现在 main context。
+const STREAM_CONF: &str = "zap-stream.conf";
+
+/// 四层转发能力状态：装没装、支不支持 stream、有没有 include。
+pub async fn stream_status() -> Response {
+    let Some((conf, bin)) = probe() else {
+        return Response::ok(
+            "ok",
+            Some(json!({
+                "installed": false,
+                "supported": false,
+                "included": false,
+                "file": "",
+                "running": false,
+                "error": "未探测到 Nginx 安装",
+            })),
+        );
+    };
+    let file = conf.parent().unwrap_or(Path::new("/")).join(STREAM_CONF);
+    let main = std::fs::read_to_string(&conf).unwrap_or_default();
+    Response::ok(
+        "ok",
+        Some(json!({
+            "installed": true,
+            "supported": stream_supported(&bin),
+            "included": main_has_include(&main),
+            "file": file.to_string_lossy(),
+            "running": site::nginx_running(),
+            "error": "",
+        })),
+    )
+}
+
+/// 应用四层转发配置：`content` 为空即撤掉（删文件 + 移除 include）。
+///
+/// 顺序固定：写盘 → 补 include → `nginx -t` → 失败回滚（主配置与 stream 配置
+/// 一起还原）→ 通过才 reload。宁可没生效，也不能留下 reload 不起来的配置。
+pub async fn stream_apply(content: &str) -> Response {
+    let Some((conf, bin)) = probe() else {
+        return Response::err(-1, "未探测到 Nginx 安装".to_string());
+    };
+    if !stream_supported(&bin) {
+        return Response::err(
+            -1,
+            "当前 Nginx 未编译 stream 模块（--with-stream），无法使用四层转发".to_string(),
+        );
+    }
+    let Some(conf_dir) = conf.parent() else {
+        return Response::err(-1, "nginx.conf 父目录无效".to_string());
+    };
+    let file = conf_dir.join(STREAM_CONF);
+    // 回滚用的两份原始内容
+    let main_backup = std::fs::read_to_string(&conf).unwrap_or_default();
+    let file_backup = std::fs::read_to_string(&file).ok();
+
+    let applied = if content.trim().is_empty() {
+        remove_stream_file(&file)
+            .and_then(|_| remove_include(&conf))
+            .and_then(|_| site::nginx_test(&bin))
+    } else {
+        std::fs::write(&file, content)
+            .map_err(|e| format!("写入 {} 失败: {e}", file.display()))
+            .and_then(|_| ensure_include(&conf))
+            .and_then(|_| site::nginx_test(&bin))
+    };
+
+    match applied {
+        Ok(()) => {
+            let reloaded = if site::nginx_running() {
+                match site::reload_nginx(&bin) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        return Response::ok(
+                            "ok",
+                            Some(json!({
+                                "applied": true,
+                                "reloaded": false,
+                                "file": file.to_string_lossy(),
+                                "warning": e,
+                            })),
+                        );
+                    }
+                }
+            } else {
+                false
+            };
+            Response::ok(
+                "ok",
+                Some(json!({
+                    "applied": true,
+                    "reloaded": reloaded,
+                    "file": file.to_string_lossy(),
+                    "warning": "",
+                })),
+            )
+        }
+        Err(e) => {
+            // 回滚到改动前，避免主配置停在坏状态
+            let _ = std::fs::write(&conf, &main_backup);
+            match file_backup {
+                Some(b) => {
+                    let _ = std::fs::write(&file, b);
+                }
+                None => {
+                    let _ = std::fs::remove_file(&file);
+                }
+            }
+            let _ = site::nginx_test(&bin);
+            Response::err(-1, format!("四层转发配置未生效（已回滚）：{e}"))
+        }
+    }
+}
+
+/// nginx 是否带 stream 模块（`nginx -V` 的输出在 stderr）。
+fn stream_supported(bin: &Path) -> bool {
+    let Ok(o) = root_cmd(super::platform::SHELL)
+        .args(["-c"])
+        .arg(format!(
+            "'{}' -V 2>&1",
+            bin.to_string_lossy().replace('\'', "'\\''")
+        ))
+        .output()
+    else {
+        return false;
+    };
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    out.contains("--with-stream")
+}
+
+/// 主配置里有没有 `include zap-stream.conf;`
+fn main_has_include(main: &str) -> bool {
+    main.lines()
+        .any(|l| l.trim_start().starts_with("include") && l.contains(STREAM_CONF))
+}
+
+/// 没有 include 就补一行到文件末尾（main context，不会落进 http 块）。
+fn ensure_include(conf: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(conf).map_err(|e| format!("读取主配置失败: {e}"))?;
+    if main_has_include(&text) {
+        return Ok(());
+    }
+    let mut next = text;
+    if !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(&format!("include {STREAM_CONF};\n"));
+    std::fs::write(conf, next).map_err(|e| format!("写入主配置失败: {e}"))
+}
+
+/// 撤掉 include 行（保留其它内容原样）。
+fn remove_include(conf: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(conf).map_err(|e| format!("读取主配置失败: {e}"))?;
+    if !main_has_include(&text) {
+        return Ok(());
+    }
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|l| !(l.trim_start().starts_with("include") && l.contains(STREAM_CONF)))
+        .collect();
+    std::fs::write(conf, kept.join("\n") + "\n")
+        .map_err(|e| format!("写入主配置失败: {e}"))
+}
+
+/// 删除 stream 配置文件（不存在也算成功，保证幂等）。
+fn remove_stream_file(file: &Path) -> Result<(), String> {
+    match std::fs::remove_file(file) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("删除 {} 失败: {e}", file.display())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// 主配置里 include 行的识别：只认 `include` 开头且指向 stream 配置的整行，
+    /// 以免把 http 块里的 `include sites-enabled/*.conf;` 也算进来。
+    #[test]
+    fn stream_include_line_is_detected() {
+        assert!(main_has_include("include zap-stream.conf;\n"));
+        assert!(main_has_include("http {\n  include sites-enabled/*.conf;\n}\ninclude zap-stream.conf;\n"));
+        assert!(!main_has_include("http {\n  include sites-enabled/*.conf;\n}\n"));
+        assert!(!main_has_include("include mime.types;\n"));
+    }
+
     #[test]
     fn version_line_parse_is_robust() {
         // nginx_version 依赖系统命令，这里只验证文本取首行逻辑不 panic

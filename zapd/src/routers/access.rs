@@ -765,6 +765,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Admin,
         Some(Perm::module("service.nginx")),
     ),
+    // 四层转发：一条规则等于「把任意端口接到任意后端」，只给管理员
+    (
+        "/system/stream",
+        Required::Admin,
+        Some(Perm::module("service.nginx")),
+    ),
     (
         "/system/service-conf",
         Required::Admin,

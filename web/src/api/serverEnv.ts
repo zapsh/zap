@@ -41,6 +41,8 @@ export interface EnvConf {
   fpm_pool_defaults: string
   /** 用户家目录默认挂载点（如 /home /home2），新建用户时 home_dir 前缀 */
   user_home_root: string
+  /** 容器运行时：auto（跟随探测）/ docker / podman */
+  container_runtime: string
 }
 
 export interface EnvData {
@@ -60,6 +62,8 @@ export interface EnvDefaultsPayload {
   database?: string
   fpm_pool_defaults?: string
   user_home_root?: string
+  /** 容器运行时：auto（跟随探测）/ docker / podman */
+  container_runtime?: string
 }
 
 export const getServerEnv = () =>

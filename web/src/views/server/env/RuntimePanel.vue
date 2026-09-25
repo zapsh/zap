@@ -27,6 +27,7 @@ const form = reactive<EnvConf>({
   database: '',
   fpm_pool_defaults: '',
   user_home_root: '/home',
+  container_runtime: 'auto',
 })
 
 /** fpm pool 默认规格 —— 数值字段 */
@@ -106,6 +107,7 @@ function openDefaultsDialog() {
   form.php_default = c?.php_default ?? ''
   form.database = c?.database ?? ''
   form.user_home_root = c?.user_home_root || '/home'
+  form.container_runtime = c?.container_runtime || 'auto'
   // 回填 fpm 默认规格（先重置再覆盖）
   resetFpmForm()
   const raw = c?.fpm_pool_defaults
@@ -151,6 +153,7 @@ async function saveDefaults() {
       database: form.database,
       fpm_pool_defaults: fpmSpecJson(),
       user_home_root: form.user_home_root.trim(),
+      container_runtime: form.container_runtime,
     })
     ElMessage.success(res.message || t('serverEnv.defaultsSaved'))
     dialogVisible.value = false
@@ -921,6 +924,18 @@ onMounted(() => {
         <el-form-item :label="t('serverEnv.mountPoint')">
           <el-input v-model="form.user_home_root" placeholder="/home" style="max-width: 360px" />
           <div class="form-tip">{{ t('serverEnv.homeRootTip') }}</div>
+        </el-form-item>
+
+        <el-divider content-position="left">
+          {{ t('serverEnv.containerRuntimeTitle') }}
+        </el-divider>
+        <el-form-item :label="t('serverEnv.containerRuntime')">
+          <el-select v-model="form.container_runtime" style="max-width: 360px">
+            <el-option :label="t('serverEnv.runtimeAuto')" value="auto" />
+            <el-option label="Docker" value="docker" />
+            <el-option label="Podman" value="podman" />
+          </el-select>
+          <div class="form-tip">{{ t('serverEnv.containerRuntimeTip') }}</div>
         </el-form-item>
 
         <el-divider content-position="left">{{ t('serverEnv.fpmDefaultsTitle') }}</el-divider>

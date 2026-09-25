@@ -48,6 +48,8 @@ pub async fn init_schema() {
     init_fpm_spec_table().await;
     // 套餐（Packages）表：创建客户时可选择的资源套餐
     init_packages_table().await;
+    // 四层转发（Nginx stream）规则表
+    init_nginx_stream_table().await;
     // 站内信（通知中心）表
     init_notice_message_table().await;
     // API Token 管理表
@@ -105,6 +107,9 @@ async fn migrate_add_columns() {
     ensure_column("user", "token_version", "INTEGER NOT NULL DEFAULT 0").await;
     // 静态 API Token 的会话版本号：同样从 0 起算，与用户当前版本号对齐
     ensure_column("api_token", "token_version", "INTEGER NOT NULL DEFAULT 0").await;
+    // 套餐能力开关：PHP 站点（默认开放）/ 容器（默认关闭，且仅 Podman 运行时生效）
+    ensure_column("packages", "allow_php", "INTEGER NOT NULL DEFAULT 1").await;
+    ensure_column("packages", "allow_docker", "INTEGER NOT NULL DEFAULT 0").await;
 }
 
 /// 菜单能力门禁赋值（**老库升级**用）。
@@ -258,7 +263,8 @@ pub async fn ensure_initial_admin() -> bool {
 /// - owner_id != 0：reseller 自建套餐，仅创建者自己可用
 /// - 限制项：磁盘配额 / 最大站点数 / 单站点域名数 / 月流量（仅记录）/ MySQL 与 MariaDB 库数 /
 ///   PostgreSQL 库数 / FTP 用户数 / FPM 规格模板 / SSH 终端开关
-/// - 能力项：allow_proxy（普通用户可用反向代理）；「自定义目录」不再作为套餐能力，
+/// - 能力项：allow_php（PHP 站点，默认开放）/ allow_proxy（普通用户可用反向代理）/
+///   allow_docker（容器，默认关闭，且**仅在运行时为 Podman 时**对普通用户生效）；
 ///   已对全部用户开放（home 目录内任意目录可选）
 /// - 数值 0 表示「不限」
 async fn init_packages_table() {
@@ -283,13 +289,47 @@ async fn init_packages_table() {
         fpm_spec_ref TEXT NOT NULL DEFAULT '',
         allow_ssh INTEGER NOT NULL DEFAULT 0,
         allow_proxy INTEGER NOT NULL DEFAULT 0,
+        -- PHP 站点能力：默认开放（普通用户建站的主要形态）
+        allow_php INTEGER NOT NULL DEFAULT 1,
+        -- 容器能力：默认关闭；且仅在容器运行时为 Podman 时才对普通用户生效
+        allow_docker INTEGER NOT NULL DEFAULT 0,
         owner_id INTEGER NOT NULL DEFAULT 0,
         status INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER,
         updated_at INTEGER
     );
-    INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, owner_id, status, created_at, updated_at)
-    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端（反向代理默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 0, 1, strftime('%s','now'), strftime('%s','now'));
+    INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, owner_id, status, created_at, updated_at)
+    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端与 PHP 站点（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 0, 1, strftime('%s','now'), strftime('%s','now'));
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+// ── nginx_stream（四层转发）────────────────────────────────
+
+/// 四层转发规则（Nginx `stream { }`）：监听端口 → 后端地址。
+///
+/// 端口组合唯一（同一 IP + 端口 + 协议只能有一条），否则 `nginx -t` 会因
+/// 重复监听失败，面板这边提前挡掉。
+async fn init_nginx_stream_table() {
+    if table_exists("nginx_stream").await {
+        return;
+    }
+    let sql = r#"
+    CREATE TABLE nginx_stream (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        name VARCHAR(64) UNIQUE NOT NULL,
+        listen_ip TEXT NOT NULL DEFAULT '0.0.0.0',
+        listen_port INTEGER NOT NULL,
+        protocol TEXT NOT NULL DEFAULT 'tcp',
+        target_host TEXT NOT NULL,
+        target_port INTEGER NOT NULL,
+        remark TEXT NOT NULL DEFAULT '',
+        status INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER,
+        updated_at INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_nginx_stream_port
+        ON nginx_stream(listen_ip, listen_port, protocol);
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }

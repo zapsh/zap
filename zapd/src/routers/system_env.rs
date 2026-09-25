@@ -180,6 +180,11 @@ pub struct EnvDefaultsPayload {
     pub fpm_pool_defaults: Option<String>,
     /// 用户家目录默认挂载点（如 /home /home2），新用户创建时的 home_dir 前缀
     pub user_home_root: Option<String>,
+    /// 容器运行时：auto（跟随探测，默认）/ docker / podman。
+    ///
+    /// 面板的容器操作全部走它；只有设为 podman 时，套餐的「容器能力」才对
+    /// 非管理员生效（Docker 下容器由 root 跑，没有隔离）。
+    pub container_runtime: Option<String>,
 }
 
 /// POST /system/env/defaults：保存全局默认配置（admin only）。
@@ -230,6 +235,16 @@ pub async fn env_defaults_save(
             ));
         }
         upserts.push(("user_home_root".to_string(), v));
+    }
+    if let Some(v) = payload.container_runtime {
+        let v = v.trim().to_lowercase();
+        if !matches!(v.as_str(), "auto" | "docker" | "podman") {
+            return Err(ZapError::New(
+                -1,
+                "容器运行时只支持 auto（跟随探测）/ docker / podman".to_string(),
+            ));
+        }
+        upserts.push(("container_runtime".to_string(), v));
     }
 
     server_env::conf_set_many(&upserts, "面板默认配置");

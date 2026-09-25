@@ -595,6 +595,8 @@ export default {
     fpmSpec: 'FPM 规格',
     ssh: 'SSH',
     proxy: '反向代理',
+    php: 'PHP 站点',
+    docker: '容器',
     usersCount: '客户数',
 
     unlimited: '不限',
@@ -616,6 +618,10 @@ export default {
     fpmSpecHint: '留空 = 使用面板默认规格',
     sshHint: '关闭后该套餐客户无法使用 SSH 终端',
     proxyHint: '开启后该套餐客户可创建 / 编辑反向代理站点（upstream / location）',
+    phpHint: '关闭后该套餐客户不能新建 PHP 站点，已有的 PHP 站点也不能再改',
+    // 风险提示：容器 ≈ 宿主机 root，只有 Podman 环境才真正对客户生效
+    dockerHint:
+      '风险：容器能力接近宿主机 root（可挂载宿主目录）。仅当「运行环境」的容器运行时为 Podman 时才对客户生效；Docker 下即使开启也不放行',
 
     empty: '暂无套餐，点击右上角「新增套餐」创建',
     nameRequired: '请输入套餐名',
@@ -1277,6 +1283,36 @@ export default {
   },
 
   /** 服务器 - 运行环境 */
+  stream: {
+    title: '四层转发',
+    unsupportedTitle: '当前环境无法使用四层转发',
+    noStreamModule: 'Nginx 未编译 stream 模块（--with-stream），需换用带该模块的 Nginx 后重试',
+    noNginx: '未探测到 Nginx 安装',
+    add: '新增规则',
+    edit: '编辑规则',
+    name: '规则名',
+    listen: '监听',
+    listenIp: '监听地址',
+    listenIpTip: '留空则监听所有地址（0.0.0.0）；只接受 IP，不接受域名',
+    listenPort: '监听端口',
+    protocol: '协议',
+    target: '后端',
+    targetHost: '后端地址',
+    targetPort: '后端端口',
+    remark: '备注',
+    actions: '操作',
+    apply: '重新应用',
+    empty: '还没有转发规则',
+    tip: '规则保存后立即渲染到 Nginx 的 stream 配置并校验生效；转发端口不要与其它服务冲突。',
+    nameRequired: '请输入规则名',
+    portRequired: '请输入 1–65535 之间的端口',
+    hostRequired: '请输入后端地址',
+    created: '规则已添加',
+    updated: '规则已更新',
+    deleted: '规则已删除',
+    applied: '配置已重新应用',
+    deleteConfirm: '删除这条转发规则？',
+  },
   serverEnv: {
     title: '服务器运行环境',
     /** nav pill 上的短标题（页面标题太长，放下太挤） */
@@ -1366,6 +1402,11 @@ export default {
     mountPoint: '挂载点',
     homeRootTip:
       '新建面板用户的家目录根目录。默认 /home；当 /home 磁盘不足时，可把新磁盘挂载到 /home2 等目录并在此设置新挂载点，此后新用户的数据即落到新挂载点；存量用户不受影响，需要搬迁时请到「服务器配置 → 数据迁移」整体迁移。',
+    containerRuntimeTitle: '容器运行时',
+    containerRuntime: '当前运行时',
+    runtimeAuto: 'auto（跟随探测：有 docker 就用 docker，否则 podman）',
+    containerRuntimeTip:
+      '面板的容器操作（容器 / 镜像 / Compose）全部走这里选的引擎。只有 Podman 时套餐里的「容器」开关才对普通用户生效 —— Docker 下容器由 root 运行、没有用户隔离，把容器能力交给普通用户等同于交出宿主机 root。',
     fpmDefaultsTitle: 'PHP-FPM 默认 pool 规格',
     maxChildren: '最大子进程数',
     maxChildrenTip: 'pm.max_children：常驻 worker 上限（建议 = 可用内存 MB ÷ 单进程约 50-100MB）',

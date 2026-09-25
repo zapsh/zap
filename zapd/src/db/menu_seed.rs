@@ -329,6 +329,19 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server")
     .icon("material-symbols:dns")
     .affix(),
+    // 四层转发：TCP / UDP 端口转发（Nginx stream），仅管理员
+    MenuSeed::new(
+        "server-stream",
+        "四层转发",
+        "menu",
+        "stream",
+        "server/stream/index",
+        R_ADMIN,
+        7,
+    )
+    .parent("server")
+    .icon("material-symbols:swap-horiz")
+    .affix(),
     // 网络配置：网络设置 + IP 设置 合到一页
     MenuSeed::new(
         "server-network",

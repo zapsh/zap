@@ -800,6 +800,17 @@ pub enum Request {
     /// enable=Some(true/false) → 开启 / 关闭状态页（托管于 127.0.0.1 本机端口）
     #[serde(rename = "nginx.stub_status")]
     NginxStubStatus { enable: Option<bool> },
+    /// 四层转发（stream）状态：是否支持 stream 模块 / 配置文件 / 是否已 include。
+    ///
+    /// 仅管理员可用：转发规则等于「把任意端口接到任意后端」，不当作普通能力开放。
+    #[serde(rename = "nginx.stream_status")]
+    NginxStreamStatus,
+    /// 应用四层转发配置：内容写盘 → `nginx -t` → 失败回滚 → 运行中则重载。
+    ///
+    /// `content` 为空表示无规则：删掉配置文件并从主配置里移除 include。
+    /// 内容由 zapd 端渲染（规则存在面板库里），exec 只负责安全地落盘与生效。
+    #[serde(rename = "nginx.stream_apply")]
+    NginxStreamApply { content: String },
     /// 通用服务配置·状态探测（服务配置页：php / mysql / mariadb / docker，未安装时 installed=false）
     #[serde(rename = "service_conf.status")]
     ServiceConfStatus { service: String },

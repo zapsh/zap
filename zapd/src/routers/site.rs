@@ -776,6 +776,36 @@ fn is_operator(claims: &jwt::Claims) -> bool {
 /// 反向代理能力门禁（「自定义目录」已全量开放，不再受套餐限制）：
 /// - admin / reseller（operator）恒开放；
 /// - 普通用户以「绑定套餐」的 allow_proxy 为准；未绑定 / 套餐停用时回退全局「默认套餐」。
+/// PHP 站点能力门禁：
+/// - admin / reseller（operator）恒开放；
+/// - 普通用户以「绑定套餐」的 allow_php 为准；未绑定 / 套餐停用时回退全局「默认套餐」。
+///
+/// 不给存量站点留例外：套餐关闭 PHP 后，已有的 PHP 站点同样改不动
+/// （一刀切，避免「老站点能改、新站点不能建」这种两套规则）。
+async fn php_allowed_for(claims: &jwt::Claims) -> bool {
+    if is_operator(claims) {
+        return true;
+    }
+    match crate::routers::package::effective_package_of(claims.id as i64).await {
+        Some(pkg) => pkg.allow_php == 1,
+        None => false,
+    }
+}
+
+/// 站点类型若用到 PHP 就走一遍 [`php_allowed_for`]，不通过直接拒绝。
+async fn require_php_allowed(claims: &jwt::Claims, site_type: &str) -> Result<(), ZapError> {
+    if site_type != "php" {
+        return Ok(());
+    }
+    if php_allowed_for(claims).await {
+        return Ok(());
+    }
+    Err(ZapError::New(
+        -1,
+        "当前账号未开放 PHP 站点（请联系管理员在「系统 → 套餐」中开启「PHP 站点」）".to_string(),
+    ))
+}
+
 async fn gates_for(claims: &jwt::Claims) -> bool {
     if is_operator(claims) {
         return true;
@@ -1837,6 +1867,7 @@ pub async fn site_add(
         let t = payload.site_type.trim().to_lowercase();
         norm_site_type(if t.is_empty() { "php" } else { &t })?
     };
+    require_php_allowed(&claims, site_type).await?;
     let pseudo_static = {
         let p = payload.pseudo_static.trim().to_lowercase();
         if p.is_empty() { "none".to_string() } else { p }
@@ -2016,6 +2047,7 @@ pub async fn site_update(
     let prof = load_profile(payload.id).await;
     let eff_type_raw = payload.site_type.clone().unwrap_or_else(|| prof.0.clone());
     let eff_type = norm_site_type(&eff_type_raw)?;
+    require_php_allowed(&claims, eff_type).await?;
     // 空预设归一为 none（老档案/空提交不再显示空字符串）
     let eff_pseudo = {
         let v = payload

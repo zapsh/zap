@@ -385,6 +385,8 @@ pub async fn dispatch(req: Request) -> Response {
         Request::NginxControl { action } => nginx::control(&action).await,
         Request::NginxDefaultVhost { enable } => nginx::default_vhost(enable).await,
         Request::NginxStubStatus { enable } => nginx::stub_status(enable).await,
+        Request::NginxStreamStatus => nginx::stream_status().await,
+        Request::NginxStreamApply { content } => nginx::stream_apply(&content).await,
         Request::ServiceConfStatus { service } => service_conf::status(&service).await,
         Request::ServiceConfList { service } => service_conf::conf_list(&service).await,
         Request::ServiceConfRead { service, path } => service_conf::conf_read(&service, path).await,
