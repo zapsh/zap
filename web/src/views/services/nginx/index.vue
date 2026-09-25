@@ -217,6 +217,29 @@
           </div>
         </el-tab-pane>
       </el-tabs>
+
+      <!-- 四层转发的 stream 全局片段：resolver / map / 公共 upstream -->
+      <el-card shadow="never" class="mt-3">
+        <template #header>
+          <div class="card-header">
+            <span>{{ t('stream.globalTitle') }}</span>
+            <el-button
+              type="primary"
+              :loading="savingStreamGlobal"
+              @click="saveStreamGlobalConf"
+            >
+              {{ t('stream.globalSave') }}
+            </el-button>
+          </div>
+        </template>
+        <el-input
+          v-model="streamGlobal"
+          type="textarea"
+          :autosize="{ minRows: 6, maxRows: 20 }"
+          :placeholder="nginxText(locale, 'globalPlaceholder')"
+        />
+        <div class="tip">{{ nginxText(locale, 'globalTip') }}</div>
+      </el-card>
     </template>
   </div>
 </template>
@@ -228,6 +251,8 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document } from '@/icons'
 import CodeEditor from '@/components/CodeEditor.vue'
+// 含 nginx 语法的提示文案不经过 vue-i18n 解析（见 utils/nginx-text.ts）
+import { nginxText } from '@/utils/nginx-text'
 import {
   controlNginx,
   getNginxStatus,
@@ -244,8 +269,9 @@ import {
   TOP_LEVEL_KEY,
   type VisualValues,
 } from '@/utils/nginxConf.ts'
+import { getStreamGlobal, saveStreamGlobal } from '@/api/stream'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const router = useRouter()
 const bootLoading = ref(true)
 const busy = ref(false)
@@ -546,8 +572,36 @@ function formatBytes(n: number): string {
   return `${n} B`
 }
 
+/* ---------- 四层转发（stream）全局片段 ---------- */
+const streamGlobal = ref('')
+const savingStreamGlobal = ref(false)
+
+async function loadStreamGlobal() {
+  try {
+    const res = await getStreamGlobal()
+    streamGlobal.value = res.data.content ?? ''
+  } catch {
+    /* interceptor */
+  }
+}
+
+async function saveStreamGlobalConf() {
+  savingStreamGlobal.value = true
+  try {
+    const res = await saveStreamGlobal(streamGlobal.value)
+    ElMessage.success(res.message || t('stream.globalSaved'))
+  } catch {
+    /* interceptor */
+  } finally {
+    savingStreamGlobal.value = false
+  }
+}
+
 initVisual()
-onMounted(refreshAll)
+onMounted(() => {
+  refreshAll()
+  loadStreamGlobal()
+})
 </script>
 
 <style scoped>
@@ -559,6 +613,16 @@ onMounted(refreshAll)
 }
 .mono {
   font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tip {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .top-row {
   display: flex;

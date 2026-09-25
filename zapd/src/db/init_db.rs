@@ -48,8 +48,9 @@ pub async fn init_schema() {
     init_fpm_spec_table().await;
     // 套餐（Packages）表：创建客户时可选择的资源套餐
     init_packages_table().await;
-    // 四层转发（Nginx stream）规则表
+    // 四层转发（Nginx stream）规则表 + 全局自定义片段
     init_nginx_stream_table().await;
+    init_nginx_stream_global_table().await;
     // 站内信（通知中心）表
     init_notice_message_table().await;
     // API Token 管理表
@@ -110,6 +111,44 @@ async fn migrate_add_columns() {
     // 套餐能力开关：PHP 站点（默认开放）/ 容器（默认关闭，且仅 Podman 运行时生效）
     ensure_column("packages", "allow_php", "INTEGER NOT NULL DEFAULT 1").await;
     ensure_column("packages", "allow_docker", "INTEGER NOT NULL DEFAULT 0").await;
+    // 四层转发高级模式：advanced 模式 + 结构化高级参数
+    ensure_column("nginx_stream", "mode", "TEXT NOT NULL DEFAULT 'basic'").await;
+    ensure_column("nginx_stream", "raw", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("nginx_stream", "targets", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("nginx_stream", "listen_opts", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column(
+        "nginx_stream",
+        "proxy_connect_timeout",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
+    ensure_column("nginx_stream", "proxy_timeout", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("nginx_stream", "proxy_responses", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("nginx_stream", "ssl_enable", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("nginx_stream", "ssl_certificate", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column(
+        "nginx_stream",
+        "ssl_certificate_key",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
+    ensure_column("nginx_stream", "ssl_protocols", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("nginx_stream", "ssl_ciphers", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column(
+        "nginx_stream",
+        "backend_mode",
+        "TEXT NOT NULL DEFAULT 'group'",
+    )
+    .await;
+    ensure_column(
+        "nginx_stream",
+        "ssl_certificate_id",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await;
+    ensure_column("nginx_stream", "ssl_preread", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("nginx_stream", "proxy_pass", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("nginx_stream", "extra", "TEXT NOT NULL DEFAULT ''").await;
 }
 
 /// 菜单能力门禁赋值（**老库升级**用）。
@@ -310,6 +349,12 @@ async fn init_packages_table() {
 ///
 /// 端口组合唯一（同一 IP + 端口 + 协议只能有一条），否则 `nginx -t` 会因
 /// 重复监听失败，面板这边提前挡掉。
+///
+/// 两种模式：
+/// - `basic`：面板按字段渲染 `upstream` + `server`（覆盖常用参数：多后端、
+///   超时、listen 参数、TLS 终止、`ssl_preread`）；
+/// - `advanced`：`raw` 里直接写 stream 块内的任意配置（`map` / 多个 `upstream`
+///   / 自定义 `server`），面板原样插入，适合 SNI 分流这类复杂写法。
 async fn init_nginx_stream_table() {
     if table_exists("nginx_stream").await {
         return;
@@ -323,6 +368,35 @@ async fn init_nginx_stream_table() {
         protocol TEXT NOT NULL DEFAULT 'tcp',
         target_host TEXT NOT NULL,
         target_port INTEGER NOT NULL,
+        -- basic / advanced：advanced 时下面的结构化字段不参与渲染，改用 raw
+        mode TEXT NOT NULL DEFAULT 'basic',
+        -- advanced：stream 块内的整段自定义配置（upstream / map / server…）
+        raw TEXT NOT NULL DEFAULT '',
+        -- basic：single = 直接 proxy_pass 到单个后端；group = 生成 upstream 负载组
+        backend_mode TEXT NOT NULL DEFAULT 'group',
+        -- basic：多后端（负载组），一行一个 `host:port[ 参数]`；
+        -- 为空则用 target_host/target_port 作为组内唯一成员
+        targets TEXT NOT NULL DEFAULT '',
+        -- basic：listen 附加参数（reuseport / ssl / backlog=1024 …）
+        listen_opts TEXT NOT NULL DEFAULT '',
+        proxy_connect_timeout TEXT NOT NULL DEFAULT '',
+        proxy_timeout TEXT NOT NULL DEFAULT '',
+        -- UDP 等无连接场景要等几个响应包；0 = 不输出该指令
+        proxy_responses INTEGER NOT NULL DEFAULT 0,
+        -- 监听侧 TLS 终止（后端走明文）
+        ssl_enable INTEGER NOT NULL DEFAULT 0,
+        ssl_certificate TEXT NOT NULL DEFAULT '',
+        ssl_certificate_key TEXT NOT NULL DEFAULT '',
+        ssl_protocols TEXT NOT NULL DEFAULT '',
+        ssl_ciphers TEXT NOT NULL DEFAULT '',
+        -- 从证书库（ssl_cert）选证书：选了就用它落盘出的文件，优先于上面的手工路径
+        ssl_certificate_id INTEGER NOT NULL DEFAULT 0,
+        -- SNI 预读：配合 map 出的变量做分流
+        ssl_preread INTEGER NOT NULL DEFAULT 0,
+        -- 自定义 proxy_pass 目标（如 `$backend`），为空则用本规则的 upstream
+        proxy_pass TEXT NOT NULL DEFAULT '',
+        -- basic：server 块内追加的自定义指令（整段原样插入）
+        extra TEXT NOT NULL DEFAULT '',
         remark TEXT NOT NULL DEFAULT '',
         status INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER,
@@ -330,6 +404,24 @@ async fn init_nginx_stream_table() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_nginx_stream_port
         ON nginx_stream(listen_ip, listen_port, protocol);
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+/// 四层转发的**全局自定义片段**：`resolver` / `map` / 自定义 `upstream` /
+/// `log_format` 这类要写在 `stream { }` 顶层、又不属于某条规则的指令。
+///
+/// 单行表（id 恒为 1），没有内容时渲染时整段跳过。
+async fn init_nginx_stream_global_table() {
+    if table_exists("nginx_stream_global").await {
+        return;
+    }
+    let sql = r#"
+    CREATE TABLE nginx_stream_global (
+        id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+        content TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER
+    );
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }

@@ -29,7 +29,8 @@
 
 - **不为旧数据做兼容**：新增列按新语义直接生效，不写回填迁移、不给存量站点/存量用户留判断分支（例如"老站点就不校验 PHP"这类分支一律不写）。
 - **不做容器隔离**：rootless、subuid/subgid、每用户 daemon、socket 代理鉴权都不在本期；本期只是"开关 + 运行时识别"，为后期 rootless Podman 留出接口。
-- stream 只做 TCP/UDP 转发，不做 TLS 终止、不做 `ssl_preread`、不做 SNI 分流。
+- stream 基础模式只做 TCP/UDP 转发；TLS 终止、`ssl_preread`（SNI 分流）、
+  `resolver` / `map` / 多后端 upstream 走**高级模式**（自定义片段），见 §6.1。
 
 ## 2. 现状（改动落点）
 
@@ -298,7 +299,15 @@ runtime = Podman  → 被授予 allow_docker 的普通用户可用
 - `zapd/src/routers/package.rs`：两个开关进 `COLS` / `row_json` / add / update。
 - `zapd/src/routers/site.rs`：`php_allowed_for` + `require_php_allowed`，在 `site_add` / `site_update` 归一化类型后拦一道（operator 恒放行）。
 - `zapd/src/routers/docker.rs`：`require_user_docker` 加在 `require_container_view` / `require_container_manage` / `require_builder` 上 —— 非 admin 需同时满足「套餐 allow_docker」+「运行时 podman」+ 原权限点。
-- `zapd/src/routers/system_stream.rs`（新）：stream 规则 CRUD + 渲染 + 下发，`/system/stream/*` 全部 `Required::Admin`。
+- `zapd/src/routers/system_stream.rs`（新）：stream 规则 CRUD + 渲染 + 下发，`/system/stream/*`  全部 `Required::Admin`。
+  支持两种模式：**basic**（后端模式 = 单后端直接 `proxy_pass` / 负载组 upstream；超时、listen 参数、
+  响应包数、监听侧 TLS 终止、`ssl_preread`+`proxy_pass` 变量、server 内附加指令都在基础表单上）
+  与 **advanced**（`raw`：stream 块内任意配置，`map` + SNI 分流这类写法直接贴）；
+  监听侧 TLS 的证书可**从证书库选**（`ssl_certificate_id`，应用时把 PEM 落盘到
+  `{data}/ssl/stream/zap-stream-{id}.crt|.key`，私钥 0600，规则停用/删除后清理），也可手工填路径；
+  另有**全局自定义片段** `nginx_stream_global`（单行表，`resolver` / `map` / 公共 `upstream`），
+  渲染时排在规则之前供其引用 —— UI 放在**服务配置 → Nginx** 页（不是四层转发页）。
+  自定义片段统一挡掉嵌套 `stream { }`，落盘前仍由 `nginx -t` 兜底回滚。
 - `zapd/src/routers/system_env.rs` + `zapexec/src/verbs/docker.rs`：`container_runtime` 设置项（`auto` / `docker` / `podman`），exec 侧 `runtime()` 决定 CLI、socket、installed 判定与 compose 探测。
 - `zapexec/src/verbs/nginx.rs`：`NginxStreamStatus` / `NginxStreamApply` —— 写盘 → `nginx -t` → 失败回滚 → reload；主配置缺 include 时自动补、撤规则时自动移除。
 - `zapd/src/db/menu_seed.rs`：服务器配置下新增「四层转发」菜单（R_ADMIN，仅新库随种子建出；存量库需手工补一条，按"不做兼容"处理）。

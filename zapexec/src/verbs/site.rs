@@ -52,22 +52,62 @@ fn render_acme_location() -> String {
 
 // ── Nginx 探测 ───────────────────────────────────────────────
 
-/// 查找已部署 Nginx 的主配置 conf/nginx.conf：
-/// 1) 环境变量 `ZAP_NGINX_PREFIX/conf/nginx.conf`（若手工部署可指定）
+/// 查找已部署 Nginx 的主配置 `conf/nginx.conf`，按优先级：
+/// 1) 环境变量 `ZAP_NGINX_CONF`（直接给主配置绝对路径）/
+///    `ZAP_NGINX_PREFIX`（给安装前缀，拼 `conf/nginx.conf`）—— 手工部署时可指定
 /// 2) 软件安装根（默认 /usr/local/apps，`ZAP_APPS_DIR` 可覆盖）下递归寻找
-///    含 `include`（sites-enabled/conf.d）的运行时配置
+/// 3) 系统常见安装路径（系统包 / OpenResty / 宝塔）
+/// 4) PATH 里 `nginx -V` 自报的 `--conf-path`
+///
+/// 多个候选时优先带 `sites-enabled` / `conf.d` include 的运行时配置；
+/// 一个都不带 hint 时**退回第一个存在的**（以前是返回 None，导致系统装的
+/// Nginx 一律「未探测到」——四层转发因此写不出 zap-stream.conf）。
 pub(super) fn find_nginx_conf_file() -> Option<PathBuf> {
-    if let Ok(prefix) = std::env::var("ZAP_NGINX_PREFIX") {
-        let p = PathBuf::from(prefix).join("conf/nginx.conf");
-        if p.is_file() {
-            return Some(p);
-        }
+    let mut cands: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("ZAP_NGINX_CONF") {
+        cands.push(PathBuf::from(p));
     }
-    let mut cands = Vec::new();
+    if let Ok(prefix) = std::env::var("ZAP_NGINX_PREFIX") {
+        cands.push(PathBuf::from(prefix).join("conf/nginx.conf"));
+    }
+    // 面板自己装的（/usr/local/apps/nginx-*/conf/nginx.conf）
     collect_nginx_confs(&super::install_root(), 0, &mut cands);
-    // 优先选择带 sites-enabled include 的运行时配置
+    for p in [
+        "/etc/nginx/nginx.conf",
+        "/usr/local/nginx/conf/nginx.conf",
+        "/usr/local/openresty/nginx/conf/nginx.conf",
+        "/www/server/nginx/conf/nginx.conf",
+        "/opt/nginx/conf/nginx.conf",
+        "/usr/local/etc/nginx/nginx.conf",
+    ] {
+        cands.push(PathBuf::from(p));
+    }
+    if let Some(p) = conf_path_from_nginx_v() {
+        cands.push(p);
+    }
+
+    let mut cands: Vec<PathBuf> = cands.into_iter().filter(|p| p.is_file()).collect();
+    cands.dedup();
+    // 优先带 sites-enabled / conf.d include 的运行时配置，没有就用第一个存在的
     cands.sort_by_key(|p| !runtime_nginx_hint(p));
-    cands.into_iter().find(|p| runtime_nginx_hint(p))
+    cands.into_iter().next()
+}
+
+/// 从 `nginx -V` 的输出里解析 `--conf-path=xxx`（PATH 里有 nginx 时可用）。
+fn conf_path_from_nginx_v() -> Option<PathBuf> {
+    let o = root_cmd(super::platform::SHELL)
+        .args(["-c"])
+        .arg("nginx -V 2>&1")
+        .output()
+        .ok()?;
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    out.split_whitespace()
+        .find_map(|tok| tok.strip_prefix("--conf-path="))
+        .map(PathBuf::from)
 }
 
 fn collect_nginx_confs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {

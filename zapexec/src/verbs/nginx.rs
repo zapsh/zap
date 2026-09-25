@@ -1202,8 +1202,10 @@ pub async fn stream_status() -> Response {
                 "supported": false,
                 "included": false,
                 "file": "",
+                "conf": "",
+                "bin": "",
                 "running": false,
-                "error": "未探测到 Nginx 安装",
+                "error": "未探测到 Nginx 安装（已查 /usr/local/apps、/etc/nginx、/usr/local/nginx 等；可用 ZAP_NGINX_CONF 指定主配置）",
             })),
         );
     };
@@ -1216,6 +1218,8 @@ pub async fn stream_status() -> Response {
             "supported": stream_supported(&bin),
             "included": main_has_include(&main),
             "file": file.to_string_lossy(),
+            "conf": conf.to_string_lossy(),
+            "bin": bin.to_string_lossy(),
             "running": site::nginx_running(),
             "error": "",
         })),

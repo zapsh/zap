@@ -425,6 +425,12 @@ fn api_routers() -> Router {
         .route("/system/stream/update", post(system_stream::update))
         .route("/system/stream/delete", post(system_stream::delete))
         .route("/system/stream/apply", post(system_stream::apply))
+        .route("/system/stream/certs", get(system_stream::certs))
+        .route("/system/stream/global", get(system_stream::global_get))
+        .route(
+            "/system/stream/global/save",
+            post(system_stream::global_save),
+        )
         // 通用服务配置（服务配置：php / mysql / mariadb / docker，admin only）
         .route(
             "/system/service-conf/status",
