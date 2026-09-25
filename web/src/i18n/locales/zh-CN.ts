@@ -1912,9 +1912,32 @@ export default {
 
   /** 服务配置页（服务器配置 → 服务配置：nav pill 切换各项服务） */
   serviceConf: {
+    overview: '总览',
     nginx: 'Nginx',
     php: 'PHP',
     mysql: 'MySQL / MariaDB',
+  },
+
+  /** 服务配置 → 总览：已装应用中带 systemd 服务的实例卡片 */
+  servicesOverview: {
+    desc: '应用商店已安装、且登记了 systemd 服务的应用实例，可在这里启停与设置开机自启',
+    autostart: '开机自启',
+    start: '启动',
+    stop: '停止',
+    restart: '重启',
+    actionOk: '操作已执行',
+    bootOk: '开机自启已更新',
+    noSystemd: '当前平台不支持 systemd，状态与开机自启需手动操作',
+    empty: '还没有安装带服务的应用，去应用商店安装 Nginx / PHP / MySQL 等',
+    unitMissing: 'unit 未注册',
+    state: {
+      running: '运行中',
+      stopped: '已停止',
+      starting: '启动中',
+      stopping: '停止中',
+      failed: '失败',
+      unknown: '未知',
+    },
   },
 
   /** 服务配置 - 通用（ServiceConfPage） */

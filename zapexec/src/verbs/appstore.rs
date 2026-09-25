@@ -788,7 +788,7 @@ fn write_meta(app_path: &Path, meta: &MetaInfo) -> std::io::Result<()> {
     std::fs::write(app_path.join("meta.yaml"), yaml)
 }
 
-fn read_meta(app_path: &Path) -> Result<MetaInfo, String> {
+pub(crate) fn read_meta(app_path: &Path) -> Result<MetaInfo, String> {
     let content = std::fs::read_to_string(app_path.join("meta.yaml"))
         .map_err(|e| format!("读取 meta.yaml 失败: {e}"))?;
     serde_yaml::from_str(&content).map_err(|e| format!("解析 meta.yaml 失败: {e}"))
@@ -2400,7 +2400,7 @@ pub async fn script_delete(path: String, username: String) -> Response {
 /// - `apps/<category>/<name>/<instance>/` —— 全局类；旧布局没有 instance 层，
 ///   meta.yaml 直接在包目录下，这里仍认，按 `default` 实例返回，老安装不会消失；
 /// - `users/<owner>/webapps/<name>/<site_id>/` —— 站点类，登记信息跟随站点账号。
-fn scan_slots() -> Vec<SlotPath> {
+pub(crate) fn scan_slots() -> Vec<SlotPath> {
     let mut out = Vec::new();
 
     // 1) 全局类
@@ -2545,7 +2545,7 @@ pub async fn installed() -> Response {
 }
 
 /// 读取安装脚本登记的实例信息 apps/<category>/<name>/info.yaml（可选文件）。
-fn read_info_yaml(app_path: &Path) -> Option<serde_yaml::Value> {
+pub(crate) fn read_info_yaml(app_path: &Path) -> Option<serde_yaml::Value> {
     let content = std::fs::read_to_string(app_path.join("info.yaml")).ok()?;
     serde_yaml::from_str(&content).ok()
 }
@@ -2576,7 +2576,7 @@ fn probe_instance_state(_app_path: &Path, info: Option<&serde_yaml::Value>) -> S
 }
 
 /// 归一化 systemctl 状态输出：running/stopped/failed/starting/stopping/unknown。
-fn normalize_state(raw: &str) -> String {
+pub(crate) fn normalize_state(raw: &str) -> String {
     match raw {
         "active" | "running" => "running",
         "inactive" | "dead" | "stopped" | "exited" => "stopped",

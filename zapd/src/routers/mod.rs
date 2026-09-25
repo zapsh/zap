@@ -71,6 +71,7 @@ pub mod system_nginx;
 pub mod system_stream;
 pub mod system_role;
 pub mod system_service_conf;
+pub mod system_services;
 pub mod system_update;
 pub mod system_user_menu;
 pub mod system_zap;
@@ -468,6 +469,10 @@ fn api_routers() -> Router {
             "/system/service-conf/default",
             post(system_service_conf::set_default),
         )
+        // 服务配置 → 总览：已装应用中带服务的实例（启停 / 开机自启）
+        .route("/system/services/overview", get(system_services::overview))
+        .route("/system/services/control", post(system_services::control))
+        .route("/system/services/boot", post(system_services::boot))
         // 数据迁移（服务器配置 → 数据迁移，admin only）
         .route(
             "/system/migrate/users",

@@ -18,6 +18,7 @@ mod process;
 mod resource;
 mod service;
 mod service_conf;
+mod services;
 mod site;
 mod ssh;
 mod ssh_key;
@@ -406,6 +407,9 @@ pub async fn dispatch(req: Request) -> Response {
         Request::ServiceConfDefault { service, enable } => {
             service_conf::set_default(&service, enable).await
         }
+        Request::ServicesOverview => services::overview().await,
+        Request::ServicesControl { svc, action } => services::control(&svc, &action).await,
+        Request::ServicesBoot { svc, enable } => services::boot(&svc, enable).await,
         Request::CredRead { service, user } => cred::read(&service, &user).await,
         Request::CronRun {
             run_id,

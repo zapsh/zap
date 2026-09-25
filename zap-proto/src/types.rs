@@ -845,6 +845,22 @@ pub enum Request {
     /// 通用服务配置·设置 / 取消某实例的「全局默认访问」（注册到 /usr/local/bin）
     #[serde(rename = "service_conf.default")]
     ServiceConfDefault { service: String, enable: bool },
+    /// 服务总览：应用商店已安装应用中「登记了 systemd 服务」的实例卡片
+    /// （名称 / 版本 / 分类 / unit 名 / 运行状态 / 开机自启）。
+    ///
+    /// 只有这类应用能在「服务配置 → 总览」里被启停和管理自启动。
+    #[serde(rename = "services.overview")]
+    ServicesOverview,
+    /// 服务启停：action 取 start / stop / restart / reload。
+    ///
+    /// `svc` 必须是 [`Request::ServicesOverview`] 扫描出来的 unit 名，
+    /// 不允许对任意 systemd unit 下发动作。
+    #[serde(rename = "services.control")]
+    ServicesControl { svc: String, action: String },
+    /// 开机自启开关：enable=true → `systemctl enable`，否则 `disable`。
+    /// 白名单同 [`Request::ServicesControl`]。
+    #[serde(rename = "services.boot")]
+    ServicesBoot { svc: String, enable: bool },
     /// 读取已加密保存的服务凭据（由 `zapctl cred gen <服务> <用户>` 生成）。
     /// zapexec 以 root 读取 `/etc/zap/credentials/{service}_{user}.cred` 并用面板主密钥解密，
     /// 用于创建数据库 / 初始化服务时取回密码。仅回传明文，不做任何写操作。

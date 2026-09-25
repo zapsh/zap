@@ -777,6 +777,11 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::module("service.conf")),
     ),
     (
+        "/system/services",
+        Required::Admin,
+        Some(Perm::module("service.conf")),
+    ),
+    (
         "/system/package",
         Required::Reseller,
         Some(Perm::module("system.package")),

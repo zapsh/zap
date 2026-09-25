@@ -1910,9 +1910,32 @@ const enUS: Messages = {
 
   /** Service config page (Server config → Service config: nav pills per service) */
   serviceConf: {
+    overview: 'Overview',
     nginx: 'Nginx',
     php: 'PHP',
     mysql: 'MySQL / MariaDB',
+  },
+
+  /** Service config → overview: installed apps that registered a systemd unit */
+  servicesOverview: {
+    desc: 'Installed apps that registered a systemd unit — start, stop and boot control here',
+    autostart: 'Start on boot',
+    start: 'Start',
+    stop: 'Stop',
+    restart: 'Restart',
+    actionOk: 'Action executed',
+    bootOk: 'Boot setting updated',
+    noSystemd: 'systemd is unavailable on this platform — manage state and boot manually',
+    empty: 'No service app installed yet — install Nginx / PHP / MySQL from the app store',
+    unitMissing: 'unit not registered',
+    state: {
+      running: 'Running',
+      stopped: 'Stopped',
+      starting: 'Starting',
+      stopping: 'Stopping',
+      failed: 'Failed',
+      unknown: 'Unknown',
+    },
   },
 
   /** Service config - shared (ServiceConfPage) */
