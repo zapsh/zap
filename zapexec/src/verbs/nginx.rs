@@ -1195,6 +1195,9 @@ const STREAM_CONF: &str = "zap-stream.conf";
 /// stream 访问日志文件名
 const STREAM_LOG: &str = "zap-stream.log";
 
+/// 日志目录：跟 nginx 自己的 access_log / error_log 放一起，便于统一轮转与查看。
+const NGINX_LOG_DIR: &str = "/var/log/nginx";
+
 /// 面板自己的 nginx 目录：stream 配置和日志都放这儿。
 ///
 /// 不再放 `nginx.conf` 同级 / 依赖 nginx 的 prefix —— 各发行版的 prefix 与
@@ -1210,7 +1213,7 @@ fn stream_conf_path() -> PathBuf {
 
 /// stream 访问日志的绝对路径（zapd 渲染时用的是同一个路径）。
 fn stream_log_path() -> PathBuf {
-    Path::new(ZAP_NGINX_DIR).join("logs").join(STREAM_LOG)
+    Path::new(NGINX_LOG_DIR).join(STREAM_LOG)
 }
 
 /// 四层转发能力状态：装没装、支不支持 stream、有没有 include。
@@ -1459,9 +1462,12 @@ mod tests {
     }
 
     #[test]
-    fn stream_paths_are_under_etc_zap() {
+    fn stream_paths_are_fixed() {
         assert!(stream_conf_path().starts_with("/etc/zap/nginx"));
-        assert!(stream_log_path().starts_with("/etc/zap/nginx"));
+        assert_eq!(
+            stream_log_path(),
+            std::path::PathBuf::from("/var/log/nginx/zap-stream.log")
+        );
         assert_eq!(
             stream_log_path().file_name().unwrap(),
             std::ffi::OsStr::new("zap-stream.log")

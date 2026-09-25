@@ -434,7 +434,8 @@ fn render_conf(rows: &[StreamRow], global: &str) -> String {
     );
     // 绝对路径：相对路径会按 nginx prefix 解析，很多机器没有 logs 目录
     // → open() 失败、配置起不来。目录由 zapexec 写配置时建好。
-    out.push_str("    access_log /etc/zap/nginx/logs/zap-stream.log zap_stream;\n");
+    // 跟 nginx 自己的日志放一起（/var/log/nginx），轮转和查看都在一起。
+    out.push_str("    access_log /var/log/nginx/zap-stream.log zap_stream;\n");
 
     if !global.is_empty() {
         out.push_str("\n    # ── 全局自定义片段 ──\n");
@@ -1469,7 +1470,7 @@ mod tests {
     fn access_log_uses_abs_path() {
         let r = row(1, "t", "", 13306, "tcp", "10.0.0.5");
         let out = render_conf(std::slice::from_ref(&r), "");
-        assert!(out.contains("access_log /etc/zap/nginx/logs/zap-stream.log zap_stream;"));
+        assert!(out.contains("access_log /var/log/nginx/zap-stream.log zap_stream;"));
         assert!(!out.contains("access_log logs/"));
     }
 
