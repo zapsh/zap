@@ -12,6 +12,8 @@ export interface StreamRule {
   target_port: number
   /** 合并展示：`10.0.1.10:3306` 或 upstream 名 */
   target: string
+  /** 负载组自动生成的 upstream 名（zap_stream_<id>），没有则为空 */
+  upstream: string
   /** basic（按字段渲染）/ advanced（整段自定义配置） */
   mode: string
   /** advanced：stream 块内的自定义配置 */
@@ -84,6 +86,8 @@ export interface StreamStatus {
   included: boolean
   /** zap-stream.conf 的绝对路径 */
   file: string
+  /** stream 访问日志绝对路径（logs/zap-stream.log） */
+  log: string
   /** nginx 主配置绝对路径（探测结果，便于排查） */
   conf: string
   /** nginx 可执行文件 */

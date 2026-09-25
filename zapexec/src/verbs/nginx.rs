@@ -1192,6 +1192,27 @@ pub async fn control(action: &str) -> Response {
 /// `stream { }` 只能出现在 main context。
 const STREAM_CONF: &str = "zap-stream.conf";
 
+/// stream 访问日志文件名
+const STREAM_LOG: &str = "zap-stream.log";
+
+/// 面板自己的 nginx 目录：stream 配置和日志都放这儿。
+///
+/// 不再放 `nginx.conf` 同级 / 依赖 nginx 的 prefix —— 各发行版的 prefix 与
+/// logs 目录位置不一（有的压根没有 logs 目录），相对路径 `logs/xxx.log`
+/// 会解析到一个不存在的目录，nginx 加载配置时 open 失败直接起不来。
+/// 这里统一用绝对路径，目录不存在就建。
+const ZAP_NGINX_DIR: &str = "/etc/zap/nginx";
+
+/// zap-stream.conf 的绝对路径（主配置里 include 的就是它）。
+fn stream_conf_path() -> PathBuf {
+    Path::new(ZAP_NGINX_DIR).join(STREAM_CONF)
+}
+
+/// stream 访问日志的绝对路径（zapd 渲染时用的是同一个路径）。
+fn stream_log_path() -> PathBuf {
+    Path::new(ZAP_NGINX_DIR).join("logs").join(STREAM_LOG)
+}
+
 /// 四层转发能力状态：装没装、支不支持 stream、有没有 include。
 pub async fn stream_status() -> Response {
     let Some((conf, bin)) = probe() else {
@@ -1209,7 +1230,7 @@ pub async fn stream_status() -> Response {
             })),
         );
     };
-    let file = conf.parent().unwrap_or(Path::new("/")).join(STREAM_CONF);
+    let file = stream_conf_path();
     let main = std::fs::read_to_string(&conf).unwrap_or_default();
     Response::ok(
         "ok",
@@ -1218,6 +1239,7 @@ pub async fn stream_status() -> Response {
             "supported": stream_supported(&bin),
             "included": main_has_include(&main),
             "file": file.to_string_lossy(),
+            "log": stream_log_path().to_string_lossy(),
             "conf": conf.to_string_lossy(),
             "bin": bin.to_string_lossy(),
             "running": site::nginx_running(),
@@ -1240,10 +1262,12 @@ pub async fn stream_apply(content: &str) -> Response {
             "当前 Nginx 未编译 stream 模块（--with-stream），无法使用四层转发".to_string(),
         );
     }
-    let Some(conf_dir) = conf.parent() else {
-        return Response::err(-1, "nginx.conf 父目录无效".to_string());
-    };
-    let file = conf_dir.join(STREAM_CONF);
+    let file = stream_conf_path();
+    if let Some(dir) = file.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            return Response::err(-1, format!("创建目录 {} 失败: {e}", dir.display()));
+        }
+    }
     // 回滚用的两份原始内容
     let main_backup = std::fs::read_to_string(&conf).unwrap_or_default();
     let file_backup = std::fs::read_to_string(&file).ok();
@@ -1253,8 +1277,17 @@ pub async fn stream_apply(content: &str) -> Response {
             .and_then(|_| remove_include(&conf))
             .and_then(|_| site::nginx_test(&bin))
     } else {
+        // access_log 用相对路径 logs/zap-stream.log，nginx 在 `nginx -t` 阶段
+        // 就会 open 它；目录或文件不存在直接 [emerg] → 先建出来
+        let log = ensure_stream_log();
+        let _ = remove_legacy_file(&conf);
         std::fs::write(&file, content)
             .map_err(|e| format!("写入 {} 失败: {e}", file.display()))
+            .and_then(|_| {
+                log.as_ref()
+                    .map(|_| ())
+                    .map_err(|e| format!("准备日志文件失败: {e}"))
+            })
             .and_then(|_| ensure_include(&conf))
             .and_then(|_| site::nginx_test(&bin))
     };
@@ -1271,6 +1304,7 @@ pub async fn stream_apply(content: &str) -> Response {
                                 "applied": true,
                                 "reloaded": false,
                                 "file": file.to_string_lossy(),
+                                "log": stream_log_path().to_string_lossy(),
                                 "warning": e,
                             })),
                         );
@@ -1285,6 +1319,7 @@ pub async fn stream_apply(content: &str) -> Response {
                     "applied": true,
                     "reloaded": reloaded,
                     "file": file.to_string_lossy(),
+                    "log": stream_log_path().to_string_lossy(),
                     "warning": "",
                 })),
             )
@@ -1304,6 +1339,35 @@ pub async fn stream_apply(content: &str) -> Response {
             Response::err(-1, format!("四层转发配置未生效（已回滚）：{e}"))
         }
     }
+}
+
+/// 建好日志目录并 touch 日志文件：nginx 加载配置时就会 open access_log，
+/// 目录或文件不存在会 `[emerg] open() ... failed`，配置直接起不来。
+fn ensure_stream_log() -> Result<PathBuf, String> {
+    let file = stream_log_path();
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("创建日志目录 {} 失败: {e}", dir.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .map_err(|e| format!("创建日志文件 {} 失败: {e}", file.display()))?;
+    Ok(file)
+}
+
+/// 删掉迁移前留在 nginx.conf 同级的旧 zap-stream.conf（不删主配置，只删文件；
+/// include 行由 ensure/remove_include 统一处理）。
+fn remove_legacy_file(conf: &Path) -> Result<(), String> {
+    let old = conf
+        .parent()
+        .unwrap_or(Path::new("/"))
+        .join(STREAM_CONF);
+    if old == stream_conf_path() {
+        return Ok(());
+    }
+    remove_stream_file(&old)
 }
 
 /// nginx 是否带 stream 模块（`nginx -V` 的输出在 stderr）。
@@ -1328,8 +1392,9 @@ fn stream_supported(bin: &Path) -> bool {
 
 /// 主配置里有没有 `include zap-stream.conf;`
 fn main_has_include(main: &str) -> bool {
+    let want = stream_conf_path().to_string_lossy().to_string();
     main.lines()
-        .any(|l| l.trim_start().starts_with("include") && l.contains(STREAM_CONF))
+        .any(|l| l.trim_start().starts_with("include") && l.contains(&want))
 }
 
 /// 没有 include 就补一行到文件末尾（main context，不会落进 http 块）。
@@ -1338,11 +1403,16 @@ fn ensure_include(conf: &Path) -> Result<(), String> {
     if main_has_include(&text) {
         return Ok(());
     }
-    let mut next = text;
+    // 清掉旧写法（相对路径 include），否则会指向已经迁走的旧文件
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|l| !(l.trim_start().starts_with("include") && l.contains(STREAM_CONF)))
+        .collect();
+    let mut next = kept.join("\n");
     if !next.ends_with('\n') {
         next.push('\n');
     }
-    next.push_str(&format!("include {STREAM_CONF};\n"));
+    next.push_str(&format!("include {};\n", stream_conf_path().display()));
     std::fs::write(conf, next).map_err(|e| format!("写入主配置失败: {e}"))
 }
 
@@ -1375,12 +1445,27 @@ mod tests {
 
     /// 主配置里 include 行的识别：只认 `include` 开头且指向 stream 配置的整行，
     /// 以免把 http 块里的 `include sites-enabled/*.conf;` 也算进来。
+    /// 迁移后只认绝对路径（相对路径是旧写法，会被 ensure_include 替换掉）。
     #[test]
     fn stream_include_line_is_detected() {
-        assert!(main_has_include("include zap-stream.conf;\n"));
-        assert!(main_has_include("http {\n  include sites-enabled/*.conf;\n}\ninclude zap-stream.conf;\n"));
+        let abs = format!("include {};\n", stream_conf_path().display());
+        assert!(main_has_include(&abs));
+        assert!(main_has_include(&format!(
+            "http {{\n  include sites-enabled/*.conf;\n}}\n{abs}"
+        )));
+        assert!(!main_has_include("include zap-stream.conf;\n"));
         assert!(!main_has_include("http {\n  include sites-enabled/*.conf;\n}\n"));
         assert!(!main_has_include("include mime.types;\n"));
+    }
+
+    #[test]
+    fn stream_paths_are_under_etc_zap() {
+        assert!(stream_conf_path().starts_with("/etc/zap/nginx"));
+        assert!(stream_log_path().starts_with("/etc/zap/nginx"));
+        assert_eq!(
+            stream_log_path().file_name().unwrap(),
+            std::ffi::OsStr::new("zap-stream.log")
+        );
     }
 
     #[test]

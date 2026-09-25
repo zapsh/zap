@@ -70,6 +70,9 @@ const rules: FormRules = {
   listen_port: [{ required: true, message: t('stream.portRequired'), trigger: 'blur' }],
 }
 
+/** 负载组自动生成的 upstream 名：新建时还没 ID，提示保存后生成 */
+const upstreamName = computed(() => (editingId.value ? `zap_stream_${editingId.value}` : ''))
+
 /** 模式切换：只认 advanced，其它脏值一律当基础，保证界面与保存值一致 */
 function onModeChange(v: string | number | boolean | undefined) {
   form.mode = v === 'advanced' ? 'advanced' : 'basic'
@@ -200,6 +203,11 @@ async function submitForm() {
   }
   if (isAdvanced.value && !form.raw.trim()) {
     ElMessage.warning(t('stream.advancedRequired'))
+    return
+  }
+  // 负载组没填服务器列表、又没有单后端兜底时，proxy_pass 会指向空 upstream
+  if (!isAdvanced.value && isGroup.value && !form.targets.trim() && !form.target.trim()) {
+    ElMessage.warning(t('stream.targetsRequired'))
     return
   }
   // 基础模式才要求后端地址（高级模式自己写配置，后端地址只是展示）
@@ -362,6 +370,7 @@ onMounted(async () => {
         <el-table-column :label="t('stream.target')" min-width="180">
           <template #default="{ row }">
             {{ row.target }}
+            <div v-if="row.upstream" class="cell-sub">{{ row.upstream }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="t('stream.remark')" prop="remark" min-width="160" show-overflow-tooltip />
@@ -390,6 +399,7 @@ onMounted(async () => {
         {{ t('stream.confFile') }}：{{ status.file }}
         <span v-if="status.conf">（{{ status.conf }}）</span>
       </div>
+      <div v-if="status?.log" class="tip">{{ t('stream.logFile') }}：{{ status.log }}</div>
     </el-card>
 
     <el-dialog
@@ -462,12 +472,21 @@ onMounted(async () => {
               :placeholder="t('stream.targetsPlaceholder')"
             />
             <div class="form-tip">{{ t('stream.targetsTip') }}</div>
+            <div class="form-tip">
+              {{ t('stream.upstreamName') }}：<b>{{ upstreamName || 'zap_stream_&lt;id&gt;' }}</b>
+            </div>
+            <div class="form-tip">{{ t('stream.upstreamNameTip') }}</div>
           </el-form-item>
         </template>
 
         <!-- 不挂 prop：高级模式下非必填，改在提交时手动校验
              （prop 与 rules 对不上时 Element Plus 校验会抛错） -->
-        <el-form-item :label="t('stream.targetHost')">
+        <!-- 负载组走 upstream，后端地址不再显示；
+             只有「还没填服务器列表」的老规则才露出来，方便继续维护 -->
+        <el-form-item
+          v-if="!isGroup || (editingId && !form.targets.trim())"
+          :label="t('stream.targetHost')"
+        >
           <el-input v-model="form.target" placeholder="10.0.1.10:3306" />
           <div class="form-tip">{{ t('stream.targetTip') }}</div>
         </el-form-item>
@@ -578,6 +597,10 @@ onMounted(async () => {
 .card-header > div {
   display: flex;
   gap: 8px;
+}
+.cell-sub {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .mode-row {
   display: flex;

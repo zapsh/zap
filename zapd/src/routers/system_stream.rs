@@ -101,6 +101,8 @@ fn row_json(r: &StreamRow) -> Value {
         "target_port": r.target_port,
         // 合并展示/回填用：`10.0.1.10:3306` 或 upstream 名
         "target": backend_target(r),
+        // 负载组自动生成的 upstream 名（填了 proxy_pass 变量 / 高级模式时没有）
+        "upstream": upstream_name(r),
         "mode": r.mode,
         "raw": r.raw,
         "backend_mode": r.backend_mode,
@@ -430,7 +432,9 @@ fn render_conf(rows: &[StreamRow], global: &str) -> String {
         "    log_format zap_stream '$remote_addr [$time_local] $protocol $status '\n    \
          '\"$bytes_sent\" \"$bytes_received\" $session_time $upstream_addr';\n",
     );
-    out.push_str("    access_log logs/zap-stream.log zap_stream;\n");
+    // 绝对路径：相对路径会按 nginx prefix 解析，很多机器没有 logs 目录
+    // → open() 失败、配置起不来。目录由 zapexec 写配置时建好。
+    out.push_str("    access_log /etc/zap/nginx/logs/zap-stream.log zap_stream;\n");
 
     if !global.is_empty() {
         out.push_str("\n    # ── 全局自定义片段 ──\n");
@@ -470,7 +474,7 @@ fn render_rule(r: &StreamRow) -> String {
     let custom_pass = !r.proxy_pass.trim().is_empty();
     let group = r.is_group();
     if group && !custom_pass {
-        out.push_str(&format!("    upstream zap_stream_{} {{\n", r.id));
+        out.push_str(&format!("    upstream {} {{\n", upstream_name(r)));
         let servers = backend_servers(r);
         for s in servers {
             out.push_str(&format!("        server {s};\n"));
@@ -590,6 +594,15 @@ fn split_target(raw: &str) -> Result<(String, i64), ZapError> {
         }
     }
     Ok((validate_host(v)?, 0))
+}
+
+/// 负载组自动生成的 upstream 名：`zap_stream_{规则ID}`。
+/// 高级模式（自己写配置）或填了 `proxy_pass` 变量时不生成，返回空串。
+fn upstream_name(r: &StreamRow) -> String {
+    if r.is_advanced() || !r.is_group() || !r.proxy_pass.trim().is_empty() {
+        return String::new();
+    }
+    format!("zap_stream_{}", r.id)
 }
 
 /// 单后端的 `proxy_pass` 目标。支持三种写法：
@@ -1450,6 +1463,16 @@ mod tests {
     }
 
     #[test]
+    /// access_log 必须是绝对路径：相对路径按 nginx prefix 解析，很多机器没有
+    /// logs 目录，nginx 加载配置时 open 失败会直接起不来。
+    #[test]
+    fn access_log_uses_abs_path() {
+        let r = row(1, "t", "", 13306, "tcp", "10.0.0.5");
+        let out = render_conf(std::slice::from_ref(&r), "");
+        assert!(out.contains("access_log /etc/zap/nginx/logs/zap-stream.log zap_stream;"));
+        assert!(!out.contains("access_log logs/"));
+    }
+
     fn render_skips_disabled_and_empty() {
         let mut r = row(1, "mysql", "0.0.0.0", 13306, "tcp", "10.0.0.5");
         assert!(render_conf(&[r.clone()], "").contains("listen 0.0.0.0:13306;"));
