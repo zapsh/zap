@@ -51,6 +51,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Create placeholder for commercial module
+        run: |
+          mkdir -p "${{ github.workspace }}/zappro/src"
+          printf '// placeholder\n' > "${{ github.workspace }}/zappro/src/mod.rs"
+
       - name: Check formatting
         run: cargo fmt --all --check
 
