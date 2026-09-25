@@ -1,0 +1,65 @@
+# PHP 服务定义（服务配置 → PHP）
+#
+# 面板内置的服务描述文件：新增/调整一个服务的关键项与配置路径，改这里即可，
+# 不用改代码。同名文件放到 /etc/zap/services/ 会整体覆盖这份（ZAP_SERVICE_CONF_DIR 可换目录）。
+#
+# 字段说明：
+#   unit_candidates    systemd unit 候选（依次取第一个存在的）
+#   bin_candidates     探测可执行文件的名字候选
+#   version_args       取版本时追加的参数（空数组 = --version）
+#   main_candidates    主配置文件候选，可含一个 `*` 通配版本目录
+#   exts               可编辑文件的扩展名白名单
+#   format             ini | json
+#   fields             关键项表单（kind: text | number | select | bool | list）
+
+key: php
+label: PHP
+unit_candidates: [php-fpm]
+bin_candidates: [php-fpm, php]
+version_args: ["-v"]
+version_in_stderr: false
+# 覆盖常见布局：Debian/Ubuntu（/etc/php/<ver>/fpm/php.ini）、Remi 源、源码安装、RHEL 系统包
+main_candidates:
+  - /etc/php/*/fpm/php.ini
+  - /etc/php/*/cli/php.ini
+  - /etc/opt/remi/*/php.ini
+  - /etc/php.ini
+  - /usr/local/etc/php/php.ini
+exts: [ini]
+format: ini
+ini_comment: ";"
+fields:
+  - key: memory_limit
+    label: memory_limit
+    kind: text
+    help: 单个 PHP 进程可用内存上限，如 128M / 256M / 512M
+  - key: upload_max_filesize
+    label: upload_max_filesize
+    kind: text
+    help: 上传文件大小上限，如 20M / 50M（需同时放大 post_max_size）
+  - key: post_max_size
+    label: post_max_size
+    kind: text
+    help: POST 数据大小上限，建议略大于 upload_max_filesize
+  - key: max_execution_time
+    label: max_execution_time
+    kind: number
+    help: 单个脚本最大执行时间（秒），CLI 默认不受限
+  - key: max_input_time
+    label: max_input_time
+    kind: number
+    help: 解析输入数据的最长时间（秒）
+  - key: date.timezone
+    label: date.timezone
+    kind: text
+    help: 时区，如 Asia/Shanghai
+  - key: display_errors
+    label: display_errors
+    kind: select
+    help: 是否把错误输出到页面（生产环境建议 Off）
+    options: [Off, On]
+  - key: opcache.enable
+    label: opcache.enable
+    kind: select
+    help: 是否启用 opcache（PHP >= 5.5 内置）
+    options: ["1", "0"]

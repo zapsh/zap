@@ -43,13 +43,57 @@ async fn exec(req: Request) -> Result<Json<serde_json::Value>, ZapError> {
     ))
 }
 
-fn validate_service(service: &str) -> Result<String, ZapError> {
-    let known = matches!(service, "php" | "mysql" | "docker");
+/// yaml 注册的服务 key 缓存：新增一份服务定义后重启 zapd 生效。
+///
+/// 服务定义在 zapexec 侧（内置 yaml + /etc/zap/services 覆盖），zapd 只能通过
+/// 一次 exec 拿到清单；这里进程内缓存一次，避免每次读写配置都多打一次 exec。
+static SERVICE_KEYS: tokio::sync::OnceCell<Vec<String>> = tokio::sync::OnceCell::const_new();
+
+/// 取 exec 侧注册的服务 key 列表（失败时回退内置三项，不至于整页不可用）。
+async fn registered_services() -> &'static Vec<String> {
+    SERVICE_KEYS
+        .get_or_init(|| async {
+            match crate::zapexec::call(Request::ServiceConfDefs).await {
+                Ok(resp) if resp.code == 0 => resp
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("items"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|it| it.get("key").and_then(|k| k.as_str()))
+                            .map(|k| k.to_string())
+                            .collect()
+                    })
+                    .unwrap_or_else(|| fallback_keys()),
+                _ => fallback_keys(),
+            }
+        })
+        .await
+}
+
+fn fallback_keys() -> Vec<String> {
+    vec![
+        "php".to_string(),
+        "mysql".to_string(),
+        "docker".to_string(),
+    ]
+}
+
+/// 校验服务名：必须在 exec 侧 yaml 注册的服务里（PHP 版本实例额外放行）。
+///
+/// 服务清单来自 yaml 注册，这里是异步的（第一次调用拉一次 exec 并缓存）。
+async fn validate_service(service: &str) -> Result<String, ZapError> {
+    // 服务名会拼进 shell 命令与文件路径，字符先收紧
+    let well_formed = !service.is_empty()
+        && service.len() <= 32
+        && service
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
     // PHP 多版本实例 svc：php74 / php81 …（zapexec 按实例定位配置/unit）
-    let php_inst = service
-        .strip_prefix("php")
-        .is_some_and(|r| !r.is_empty() && r.len() <= 3 && r.chars().all(|c| c.is_ascii_digit()));
-    if known || php_inst {
+    let php_inst = is_php_instance_svc(service);
+    let known = registered_services().await.iter().any(|k| k == service);
+    if well_formed && (known || php_inst) {
         Ok(service.to_string())
     } else {
         Err(ZapError::New(-1, "不支持的服务类型".to_string()))
@@ -71,7 +115,7 @@ pub struct ServiceQuery {
 /// GET /system/service-conf/instances
 pub async fn instances(claims: ValidatedClaims, Query(q): Query<ServiceQuery>) -> ZapJsonResult {
     require_admin(&claims)?;
-    let service = validate_service(&q.service)?;
+    let service = validate_service(&q.service).await?;
     exec(Request::ServiceConfInstances { service }).await
 }
 
@@ -88,7 +132,7 @@ pub async fn set_default(
     Json(body): Json<ServiceDefaultBody>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
-    let service = validate_service(&body.service)?;
+    let service = validate_service(&body.service).await?;
     if !is_php_instance_svc(&service) {
         return Err(ZapError::New(
             -1,
@@ -117,17 +161,23 @@ pub async fn set_default(
     result
 }
 
+/// GET /system/service-conf/defs：yaml 注册的服务定义清单（前端动态生成入口用）
+pub async fn defs_list(claims: ValidatedClaims) -> ZapJsonResult {
+    require_admin(&claims)?;
+    exec(Request::ServiceConfDefs).await
+}
+
 /// GET /system/service-conf/status
 pub async fn status(claims: ValidatedClaims, Query(q): Query<ServiceQuery>) -> ZapJsonResult {
     require_admin(&claims)?;
-    let service = validate_service(&q.service)?;
+    let service = validate_service(&q.service).await?;
     exec(Request::ServiceConfStatus { service }).await
 }
 
 /// GET /system/service-conf/list
 pub async fn conf_list(claims: ValidatedClaims, Query(q): Query<ServiceQuery>) -> ZapJsonResult {
     require_admin(&claims)?;
-    let service = validate_service(&q.service)?;
+    let service = validate_service(&q.service).await?;
     exec(Request::ServiceConfList { service }).await
 }
 
@@ -143,7 +193,7 @@ pub async fn conf_read(
     Query(q): Query<ServiceReadQuery>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
-    let service = validate_service(&q.service)?;
+    let service = validate_service(&q.service).await?;
     exec(Request::ServiceConfRead {
         service,
         path: q.path,
@@ -165,7 +215,7 @@ pub async fn conf_save(
     Json(body): Json<ServiceSaveBody>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
-    let service = validate_service(&body.service)?;
+    let service = validate_service(&body.service).await?;
     let result = exec(Request::ServiceConfSave {
         service,
         path: body.path.clone(),
@@ -188,7 +238,7 @@ pub async fn conf_save(
 /// GET /system/service-conf/keys
 pub async fn keys_get(claims: ValidatedClaims, Query(q): Query<ServiceQuery>) -> ZapJsonResult {
     require_admin(&claims)?;
-    let service = validate_service(&q.service)?;
+    let service = validate_service(&q.service).await?;
     exec(Request::ServiceConfKeys { service }).await
 }
 
@@ -206,7 +256,7 @@ pub async fn keys_save(
     Json(body): Json<ServiceKeysSaveBody>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
-    let service = validate_service(&body.service)?;
+    let service = validate_service(&body.service).await?;
     let result = exec(Request::ServiceConfKeysSave {
         service,
         keys: body.keys.clone(),
@@ -238,7 +288,7 @@ pub async fn control(
     Json(body): Json<ServiceControlBody>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
-    let service = validate_service(&body.service)?;
+    let service = validate_service(&body.service).await?;
     if !matches!(
         body.action.as_str(),
         "start" | "stop" | "restart" | "reload"

@@ -404,6 +404,7 @@ pub async fn dispatch(req: Request) -> Response {
             service_conf::control(&service, &action).await
         }
         Request::ServiceConfInstances { service } => service_conf::instances(&service).await,
+        Request::ServiceConfDefs => service_conf::defs_list().await,
         Request::ServiceConfDefault { service, enable } => {
             service_conf::set_default(&service, enable).await
         }

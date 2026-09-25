@@ -159,6 +159,22 @@ export interface ServiceConfDefaultResult {
   removed?: string[]
 }
 
+/** 服务定义清单：来自 yaml（内置 + /etc/zap/services 覆盖），新增服务丢一份 yaml 即可 */
+export interface ServiceConfDef {
+  key: string
+  label: string
+  /** ini | json */
+  format: string
+  exts: string[]
+  fields: number
+}
+
+export function getServiceConfDefs() {
+  return http.get<{ code: number; message: string; data: { items: ServiceConfDef[] } }>(
+    '/system/service-conf/defs',
+  )
+}
+
 /** 设置 / 取消某实例的「全局默认访问」（注册到 /usr/local/bin） */
 export function setServiceConfDefault(service: string, enable: boolean) {
   return http.post<{ code: number; message: string; data: ServiceConfDefaultResult }>(

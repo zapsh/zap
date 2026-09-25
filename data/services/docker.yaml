@@ -1,0 +1,85 @@
+# Docker 服务定义（服务配置 → 其它服务 / Docker）
+
+key: docker
+label: Docker
+unit_candidates: [docker]
+bin_candidates: [dockerd, docker]
+version_args: ["--version"]
+version_in_stderr: false
+main_candidates:
+  - /etc/docker/daemon.json
+exts: [json]
+format: json
+ini_comment: "#"
+fields:
+  - key: registry_mirrors
+    label: 镜像加速器
+    kind: list
+    help: 清空保存即删除该配置。保存后需重启 Docker 生效
+    jpath: [registry-mirrors]
+  - key: insecure_registries
+    label: 私有仓库
+    kind: list
+    help: 每行一个不走 HTTPS / 自签证书的仓库地址（insecure-registries），如 192.168.1.10:5000
+    jpath: [insecure-registries]
+  - key: log_driver
+    label: 日志驱动
+    kind: select
+    help: 容器日志驱动（logging driver）
+    jpath: [log-driver]
+    options: [json-file, local, journald, none, syslog]
+  - key: log_max_size
+    label: 单容器日志上限
+    kind: text
+    help: json-file/local 驱动的单文件大小上限，如 20m / 100m
+    jpath: [log-opts, max-size]
+  - key: log_max_file
+    label: 日志保留份数
+    kind: number
+    help: 单个容器保留的日志文件个数（max-file），与上限配合做轮转，如 3
+    jpath: [log-opts, max-file]
+  - key: storage_driver
+    label: 存储驱动
+    kind: select
+    help: 存储驱动，一般保持 overlay2 即可（改动后已有镜像/容器不可见）
+    jpath: [storage-driver]
+    options: [overlay2, overlay, btrfs, zfs, vfs]
+  - key: data_root
+    label: 数据目录
+    kind: text
+    help: Docker 数据根目录（默认 /var/lib/docker），修改需迁移数据
+    jpath: [data-root]
+  - key: dns
+    label: 容器 DNS
+    kind: list
+    help: 每行一个 DNS 服务器地址，仅对新创建的容器生效，如 223.5.5.5 / 8.8.8.8
+    jpath: [dns]
+  - key: exec_opts
+    label: 运行时参数
+    kind: list
+    help: 每行一条 dockerd 运行参数（exec-opts），如 native.cgroupdriver=systemd
+    jpath: [exec-opts]
+  - key: live_restore
+    label: 守护进程热升级
+    kind: bool
+    help: dockerd 重启或升级时保持容器继续运行（live-restore），未设置则跟随 Docker 默认
+    jpath: [live-restore]
+    options: ["true", "false"]
+  - key: userland_proxy
+    label: 用户态代理
+    kind: bool
+    help: 端口映射是否走 docker-proxy，高并发场景可关闭以减少开销
+    jpath: [userland-proxy]
+    options: ["true", "false"]
+  - key: debug
+    label: 调试日志
+    kind: bool
+    help: 是否开启 dockerd 调试日志
+    jpath: [debug]
+    options: ["true", "false"]
+  - key: icc
+    label: 容器间互联 icc
+    kind: bool
+    help: 默认 bridge 网络上容器是否可互相通信
+    jpath: [icc]
+    options: ["true", "false"]

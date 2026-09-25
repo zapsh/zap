@@ -1,0 +1,49 @@
+# MySQL / MariaDB 服务定义（服务配置 → MySQL / MariaDB）
+#
+# 两者合一：应用商店同时只允许安装其中一个，都软链 /usr/local/mysql、共用
+# /etc/mysql/my.cnf 与 mysql.service unit，引擎由 status 按登记/版本自动识别。
+
+key: mysql
+label: MySQL / MariaDB
+unit_candidates: [mysql, mysqld]
+bin_candidates: [mysqld, mysql]
+version_args: ["--version"]
+version_in_stderr: false
+main_candidates:
+  - /etc/mysql/my.cnf
+  - /etc/my.cnf
+exts: [cnf, conf]
+format: ini
+ini_comment: "#"
+fields:
+  - key: port
+    label: port
+    kind: number
+    help: 监听端口，默认 3306
+    section: mysqld
+  - key: bind-address
+    label: bind-address
+    kind: text
+    help: 监听地址：127.0.0.1 仅本机；0.0.0.0 对外（请配合防火墙）
+    section: mysqld
+  - key: max_connections
+    label: max_connections
+    kind: number
+    help: 最大并发连接数，建议 200-2000
+    section: mysqld
+  - key: character-set-server
+    label: character-set-server
+    kind: select
+    help: 默认字符集
+    section: mysqld
+    options: [utf8mb4, utf8, latin1]
+  - key: collation-server
+    label: collation-server
+    kind: text
+    help: 默认排序规则，utf8mb4 建议 utf8mb4_unicode_ci
+    section: mysqld
+  - key: innodb_buffer_pool_size
+    label: innodb_buffer_pool_size
+    kind: text
+    help: InnoDB 缓冲池大小，约为内存的 50%-70%，如 1G / 4G
+    section: mysqld

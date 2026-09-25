@@ -845,6 +845,10 @@ pub enum Request {
     /// 通用服务配置·设置 / 取消某实例的「全局默认访问」（注册到 /usr/local/bin）
     #[serde(rename = "service_conf.default")]
     ServiceConfDefault { service: String, enable: bool },
+    /// 通用服务配置·列出 yaml 里注册的服务定义（内置 + /etc/zap/services 覆盖）。
+    /// 新增一个服务 = 丢一份 yaml，前端据此自动生成配置页入口。
+    #[serde(rename = "service_conf.defs")]
+    ServiceConfDefs,
     /// 服务总览：应用商店已安装应用中「登记了 systemd 服务」的实例卡片
     /// （名称 / 版本 / 分类 / unit 名 / 运行状态 / 开机自启）。
     ///

@@ -37,7 +37,8 @@ const MAX_ITEM_LEN: usize = 512;
 
 // ── 服务定义 ─────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum ConfFormat {
     /// ini 风格：key = value（php.ini 无 section / my.cnf 有 [section]）
     Ini,
@@ -45,7 +46,8 @@ enum ConfFormat {
     Json,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum FieldKind {
     Text,
     Number,
@@ -55,315 +57,128 @@ enum FieldKind {
     List,
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
 struct FieldDef {
-    key: &'static str,
-    label: &'static str,
+    key: String,
+    label: String,
     kind: FieldKind,
-    help: &'static str,
+    #[serde(default)]
+    help: String,
     /// ini：写入的 section（None = 文件层/无 section）
-    section: Option<&'static str>,
+    #[serde(default)]
+    section: Option<String>,
     /// json：逐级键路径（如 ["log-driver"] / ["log-opts","max-size"]）
-    jpath: &'static [&'static str],
-    options: &'static [&'static str],
+    #[serde(default)]
+    jpath: Vec<String>,
+    #[serde(default)]
+    options: Vec<String>,
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
 struct ServiceDef {
-    key: &'static str,
-    label: &'static str,
+    key: String,
+    label: String,
     /// systemd unit 名候选（依次取第一个存在的）
-    unit_candidates: &'static [&'static str],
+    #[serde(default)]
+    unit_candidates: Vec<String>,
     /// 探测二进制的可执行文件名候选
-    bin_candidates: &'static [&'static str],
+    #[serde(default)]
+    bin_candidates: Vec<String>,
     /// 取版本时二进制后追加的参数（留空 = `--version`）
-    version_args: &'static [&'static str],
+    #[serde(default)]
+    version_args: Vec<String>,
     /// 版本输出落在 stderr（如 nginx -v；本模块服务多为 stdout）
+    #[serde(default)]
     version_in_stderr: bool,
     /// 主配置文件候选（可含一个 `*`，用于版本目录），依次取第一个存在的；
     /// 全部不存在但服务已安装时取首个不含通配的候选（允许从 UI 新建）
-    main_candidates: &'static [&'static str],
+    #[serde(default)]
+    main_candidates: Vec<String>,
     /// 可编辑文件的扩展名白名单（不含点）
-    exts: &'static [&'static str],
+    #[serde(default)]
+    exts: Vec<String>,
     format: ConfFormat,
     /// ini 注释符（my.cnf 用 #，php.ini 用 ;）
-    ini_comment: &'static str,
-    fields: &'static [FieldDef],
+    #[serde(default)]
+    ini_comment: String,
+    #[serde(default)]
+    fields: Vec<FieldDef>,
 }
 
-const PHP_FIELDS: &[FieldDef] = &[
-    FieldDef {
-        key: "memory_limit",
-        label: "memory_limit",
-        kind: FieldKind::Text,
-        help: "单个 PHP 进程可用内存上限，如 128M / 256M / 512M",
-        section: None,
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "upload_max_filesize",
-        label: "upload_max_filesize",
-        kind: FieldKind::Text,
-        help: "上传文件大小上限，如 20M / 50M（需同时放大 post_max_size）",
-        section: None,
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "post_max_size",
-        label: "post_max_size",
-        kind: FieldKind::Text,
-        help: "POST 数据大小上限，建议略大于 upload_max_filesize",
-        section: None,
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "max_execution_time",
-        label: "max_execution_time",
-        kind: FieldKind::Number,
-        help: "单个脚本最大执行时间（秒），CLI 默认不受限",
-        section: None,
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "max_input_time",
-        label: "max_input_time",
-        kind: FieldKind::Number,
-        help: "解析输入数据的最长时间（秒）",
-        section: None,
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "date.timezone",
-        label: "date.timezone",
-        kind: FieldKind::Text,
-        help: "时区，如 Asia/Shanghai",
-        section: None,
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "display_errors",
-        label: "display_errors",
-        kind: FieldKind::Select,
-        help: "是否把错误输出到页面（生产环境建议 Off）",
-        section: None,
-        jpath: &[],
-        options: &["Off", "On"],
-    },
-    FieldDef {
-        key: "opcache.enable",
-        label: "opcache.enable",
-        kind: FieldKind::Select,
-        help: "是否启用 opcache（PHP >= 5.5 内置）",
-        section: None,
-        jpath: &[],
-        options: &["1", "0"],
-    },
+// ── 服务定义加载 ──────────────────────────────────────────────
+//
+// 服务不再写死在代码里：内置定义随包发布（`data/services/*.yaml`，编译进
+// 二进制），运行时 `/etc/zap/services/*.yaml` 按 key 覆盖或追加（新增服务
+// 丢一个文件进去就有「配置读写 / 关键项 / 启停」三件套）。目录可用
+// ZAP_SERVICE_CONF_DIR 覆盖。解析失败的文件跳过并打日志，不影响其它服务。
+
+/// 内置定义（编译期嵌入，随包发布）
+const BUILTIN_DEFS: &[&str] = &[
+    include_str!("../../../data/services/php.yaml"),
+    include_str!("../../../data/services/mysql.yaml"),
+    include_str!("../../../data/services/docker.yaml"),
 ];
 
-const MYSQL_FIELDS: &[FieldDef] = &[
-    FieldDef {
-        key: "port",
-        label: "port",
-        kind: FieldKind::Number,
-        help: "监听端口，默认 3306",
-        section: Some("mysqld"),
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "bind-address",
-        label: "bind-address",
-        kind: FieldKind::Text,
-        help: "监听地址：127.0.0.1 仅本机；0.0.0.0 对外（请配合防火墙）",
-        section: Some("mysqld"),
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "max_connections",
-        label: "max_connections",
-        kind: FieldKind::Number,
-        help: "最大并发连接数，建议 200-2000",
-        section: Some("mysqld"),
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "character-set-server",
-        label: "character-set-server",
-        kind: FieldKind::Select,
-        help: "默认字符集",
-        section: Some("mysqld"),
-        jpath: &[],
-        options: &["utf8mb4", "utf8", "latin1"],
-    },
-    FieldDef {
-        key: "collation-server",
-        label: "collation-server",
-        kind: FieldKind::Text,
-        help: "默认排序规则，utf8mb4 建议 utf8mb4_unicode_ci",
-        section: Some("mysqld"),
-        jpath: &[],
-        options: &[],
-    },
-    FieldDef {
-        key: "innodb_buffer_pool_size",
-        label: "innodb_buffer_pool_size",
-        kind: FieldKind::Text,
-        help: "InnoDB 缓冲池大小，约为内存的 50%-70%，如 1G / 4G",
-        section: Some("mysqld"),
-        jpath: &[],
-        options: &[],
-    },
-];
+/// 运行时覆盖目录
+const OVERRIDE_DIR: &str = "/etc/zap/services";
 
-const DOCKER_FIELDS: &[FieldDef] = &[
-    FieldDef {
-        key: "registry_mirrors",
-        label: "镜像加速器",
-        kind: FieldKind::List,
-        help: "清空保存即删除该配置。保存后需重启 Docker 生效",
-        section: None,
-        jpath: &["registry-mirrors"],
-        options: &[],
-    },
-    FieldDef {
-        key: "insecure_registries",
-        label: "私有仓库",
-        kind: FieldKind::List,
-        help: "每行一个不走 HTTPS / 自签证书的仓库地址（insecure-registries），如 192.168.1.10:5000",
-        section: None,
-        jpath: &["insecure-registries"],
-        options: &[],
-    },
-    FieldDef {
-        key: "log_driver",
-        label: "日志驱动",
-        kind: FieldKind::Select,
-        help: "容器日志驱动（logging driver）",
-        section: None,
-        jpath: &["log-driver"],
-        options: &["json-file", "local", "journald", "none", "syslog"],
-    },
-    FieldDef {
-        key: "log_max_size",
-        label: "单容器日志上限",
-        kind: FieldKind::Text,
-        help: "json-file/local 驱动的单文件大小上限，如 20m / 100m",
-        section: None,
-        jpath: &["log-opts", "max-size"],
-        options: &[],
-    },
-    FieldDef {
-        key: "log_max_file",
-        label: "日志保留份数",
-        kind: FieldKind::Number,
-        help: "单个容器保留的日志文件个数（max-file），与上限配合做轮转，如 3",
-        section: None,
-        jpath: &["log-opts", "max-file"],
-        options: &[],
-    },
-    FieldDef {
-        key: "storage_driver",
-        label: "存储驱动",
-        kind: FieldKind::Select,
-        help: "存储驱动，一般保持 overlay2 即可（改动后已有镜像/容器不可见）",
-        section: None,
-        jpath: &["storage-driver"],
-        options: &["overlay2", "overlay", "btrfs", "zfs", "vfs"],
-    },
-    FieldDef {
-        key: "data_root",
-        label: "数据目录",
-        kind: FieldKind::Text,
-        help: "Docker 数据根目录（默认 /var/lib/docker），修改需迁移数据",
-        section: None,
-        jpath: &["data-root"],
-        options: &[],
-    },
-    FieldDef {
-        key: "dns",
-        label: "容器 DNS",
-        kind: FieldKind::List,
-        help: "每行一个 DNS 服务器地址，仅对新创建的容器生效，如 223.5.5.5 / 8.8.8.8",
-        section: None,
-        jpath: &["dns"],
-        options: &[],
-    },
-    FieldDef {
-        key: "exec_opts",
-        label: "运行时参数",
-        kind: FieldKind::List,
-        help: "每行一条 dockerd 运行参数（exec-opts），如 native.cgroupdriver=systemd",
-        section: None,
-        jpath: &["exec-opts"],
-        options: &[],
-    },
-    FieldDef {
-        key: "live_restore",
-        label: "守护进程热升级",
-        kind: FieldKind::Bool,
-        help: "dockerd 重启或升级时保持容器继续运行（live-restore），未设置则跟随 Docker 默认",
-        section: None,
-        jpath: &["live-restore"],
-        options: &["true", "false"],
-    },
-    FieldDef {
-        key: "userland_proxy",
-        label: "用户态代理",
-        kind: FieldKind::Bool,
-        help: "端口映射是否走 docker-proxy，高并发场景可关闭以减少开销",
-        section: None,
-        jpath: &["userland-proxy"],
-        options: &["true", "false"],
-    },
-    FieldDef {
-        key: "debug",
-        label: "调试日志",
-        kind: FieldKind::Bool,
-        help: "是否开启 dockerd 调试日志",
-        section: None,
-        jpath: &["debug"],
-        options: &["true", "false"],
-    },
-    FieldDef {
-        key: "icc",
-        label: "容器间互联 icc",
-        kind: FieldKind::Bool,
-        help: "默认 bridge 网络上容器是否可互相通信",
-        section: None,
-        jpath: &["icc"],
-        options: &["true", "false"],
-    },
-];
+static DEFS: std::sync::OnceLock<Vec<ServiceDef>> = std::sync::OnceLock::new();
 
-/// PHP 类型服务的静态定义（type 级 "php"，面向系统包安装）。
-const PHP_DEF: ServiceDef = ServiceDef {
-    key: "php",
-    label: "PHP",
-    unit_candidates: &["php-fpm"],
-    bin_candidates: &["php-fpm", "php"],
-    version_args: &["-v"],
-    version_in_stderr: false,
-    // 覆盖常见布局：Debian/Ubuntu（/etc/php/<ver>/fpm/php.ini）、
-    // Remi 源（/etc/opt/remi/php<ver>/php.ini）、源码安装（/usr/local/etc/php）、
-    // RHEL/CentOS 系统包（/etc/php.ini）。实例安装（php-85 目录）由 php_inst 单独定位。
-    main_candidates: &[
-        "/etc/php/*/fpm/php.ini",
-        "/etc/php/*/cli/php.ini",
-        "/etc/opt/remi/*/php.ini",
-        "/etc/php.ini",
-        "/usr/local/etc/php/php.ini",
-    ],
-    exts: &["ini"],
-    format: ConfFormat::Ini,
-    ini_comment: ";",
-    fields: PHP_FIELDS,
-};
+/// 全部服务定义（内置 + 运行时覆盖），进程内只加载一次。
+fn defs() -> &'static Vec<ServiceDef> {
+    DEFS.get_or_init(load_defs)
+}
+
+fn load_defs() -> Vec<ServiceDef> {
+    let mut out: Vec<ServiceDef> = Vec::new();
+    for raw in BUILTIN_DEFS {
+        push_def(&mut out, raw, "内置");
+    }
+    let dir = std::env::var("ZAP_SERVICE_CONF_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(OVERRIDE_DIR));
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e == "yaml" || e == "yml")
+            })
+            .collect();
+        files.sort();
+        for f in files {
+            if let Ok(raw) = std::fs::read_to_string(&f) {
+                push_def(&mut out, &raw, &f.display().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// 解析一份定义：同 key 覆盖，新 key 追加；坏文件跳过（不拖垮其它服务）。
+fn push_def(out: &mut Vec<ServiceDef>, raw: &str, origin: &str) {
+    match serde_yaml::from_str::<ServiceDef>(raw) {
+        Ok(def) => match out.iter_mut().find(|d| d.key == def.key) {
+            Some(existing) => *existing = def,
+            None => out.push(def),
+        },
+        Err(e) => eprintln!("[service-conf] 服务定义（{origin}）解析失败，已跳过: {e}"),
+    }
+}
+
+/// 服务注册表：内置定义 + `/etc/zap/services/*.yaml`。
+/// php<版本号>（php74 / php81 …）作为 PHP 实例 svc 一并识别，复用 php 定义的
+/// 字段 / 白名单 / 关键项，探测与路径在 `php_inst` / `installed_info` 覆写。
+fn supported(key: &str) -> Option<&'static ServiceDef> {
+    let target = if php_inst_svc(key).is_some() {
+        "php"
+    } else {
+        key
+    };
+    defs().iter().find(|d| d.key == target)
+}
 
 /// PHP 实例短名识别：svc = "php" + 版本号数字（php74 / php81 …，
 /// 对应应用商店实例安装目录 `{ZAP_APPS_DIR}/php-74` 与 unit
@@ -377,47 +192,6 @@ fn php_inst_svc(svc: &str) -> Option<String> {
     Some(rest.to_string())
 }
 
-/// 服务注册表：新增服务在此追加即可（key 需与前端菜单/API 一致）。
-/// php<版本号>（php74 / php81 …）作为 PHP 实例 svc 一并识别，复用 PHP_DEF
-/// 的字段 / 白名单 / 关键项，探测与路径在 `php_inst` / `installed_info` 覆写。
-fn supported(key: &str) -> Option<&'static ServiceDef> {
-    if php_inst_svc(key).is_some() {
-        return Some(&PHP_DEF);
-    }
-    Some(match key {
-        "php" => &PHP_DEF,
-        // MySQL / MariaDB 合一（svc=mysql）：应用商店同时只允许安装其中一个
-        // （mysql 或 mariadb 应用），两者都软链 /usr/local/mysql、共用
-        // /etc/mysql/my.cnf 与 mysql.service unit；引擎由 status 按登记/版本自动识别。
-        "mysql" => &ServiceDef {
-            key: "mysql",
-            label: "MySQL / MariaDB",
-            unit_candidates: &["mysql", "mysqld"],
-            bin_candidates: &["mysqld", "mysql"],
-            version_args: &["--version"],
-            version_in_stderr: false,
-            main_candidates: &["/etc/mysql/my.cnf", "/etc/my.cnf"],
-            exts: &["cnf", "conf"],
-            format: ConfFormat::Ini,
-            ini_comment: "#",
-            fields: MYSQL_FIELDS,
-        },
-        "docker" => &ServiceDef {
-            key: "docker",
-            label: "Docker",
-            unit_candidates: &["docker"],
-            bin_candidates: &["dockerd", "docker"],
-            version_args: &["--version"],
-            version_in_stderr: false,
-            main_candidates: &["/etc/docker/daemon.json"],
-            exts: &["json"],
-            format: ConfFormat::Json,
-            ini_comment: "#",
-            fields: DOCKER_FIELDS,
-        },
-        _ => return None,
-    })
-}
 
 // ── 探测工具 ─────────────────────────────────────────────────
 
@@ -450,17 +224,17 @@ fn which(name: &str) -> Option<PathBuf> {
 
 /// 依次探测二进制：PATH 内 → 常见安装前缀（覆盖 /usr/local/apps 型安装）。
 fn find_bin(d: &ServiceDef) -> Option<PathBuf> {
-    for name in d.bin_candidates {
+    for name in &d.bin_candidates {
         if let Some(p) = which(name) {
             return Some(p);
         }
     }
     // 安装根（默认 /usr/local/apps，ZAP_APPS_DIR 可覆盖）下常见位置
     let install_root = super::install_root();
-    for name in d.bin_candidates {
+    for name in &d.bin_candidates {
         for prefix in [
             install_root.clone(),
-            install_root.join(d.key),
+            install_root.join(&d.key),
             PathBuf::from(format!("/usr/local/{}", d.key)),
         ] {
             for sub in ["bin", "sbin"] {
@@ -480,7 +254,7 @@ fn detect_version(d: &ServiceDef, bin: &Path) -> String {
         bin.to_str()
             .unwrap_or(bin.file_name().and_then(|n| n.to_str()).unwrap_or("")),
     );
-    for a in d.version_args {
+    for a in &d.version_args {
         cmd.arg(a);
     }
     if d.version_args.is_empty() {
@@ -505,7 +279,7 @@ fn detect_version(d: &ServiceDef, bin: &Path) -> String {
 /// 否则取第一个存在的文件；全部不存在时回退首个普通候选（允许从 UI 新建）。
 fn probe_main(d: &ServiceDef) -> Option<(PathBuf, PathBuf, bool)> {
     let mut first_plain: Option<&str> = None;
-    for cand in d.main_candidates {
+    for cand in &d.main_candidates {
         if cand.contains('*') {
             if let Some(p) = glob_first(cand) {
                 return Some((
@@ -627,15 +401,15 @@ const SYSTEM_CONF_DIRS: &[&str] = &["/", "/etc", "/usr/local/etc", "/etc/opt"];
 /// - 应用商店实例（`/usr/local/apps/php-74/etc`）或版本目录（`/etc/php/8.1/fpm`）：
 ///   放通 `php-fpm.conf` 与 `php-fpm.d/*.conf`（FPM 池配置确实需要改）；
 /// - 主配置直接在 /etc 等系统目录（`/etc/php.ini`）：仅 `.ini`。
-fn service_exts(d: &ServiceDef, root: &Path) -> &'static [&'static str] {
+fn service_exts<'a>(d: &'a ServiceDef, root: &Path) -> Vec<&'a str> {
     if d.key != "php" {
-        return d.exts;
+        return d.exts.iter().map(|s| s.as_str()).collect();
     }
     let p = root.to_string_lossy().to_string();
     if SYSTEM_CONF_DIRS.iter().any(|x| p == *x) {
-        &["ini"]
+        vec!["ini"]
     } else {
-        &["ini", "conf"]
+        vec!["ini", "conf"]
     }
 }
 
@@ -1053,7 +827,9 @@ fn ini_read_values(
         }
     }
     for f in fields {
-        let v = in_block_values.get(f.key).or_else(|| fallback.get(f.key));
+        let v = in_block_values
+            .get(f.key.as_str())
+            .or_else(|| fallback.get(f.key.as_str()));
         values.insert(
             f.key.to_string(),
             v.cloned().map_or(Value::Null, Value::String),
@@ -1089,8 +865,8 @@ fn json_read_values(
     for f in fields {
         let mut cur = &parsed;
         let mut found = true;
-        for seg in f.jpath {
-            match cur.get(*seg) {
+        for seg in &f.jpath {
+            match cur.get(seg.as_str()) {
                 Some(v) => cur = v,
                 None => {
                     found = false;
@@ -1343,7 +1119,7 @@ pub async fn status(svc: &str) -> Response {
         let conf_candidates: Option<Vec<&str>> = if php_inst(&svc).is_some() {
             None
         } else {
-            Some(d.main_candidates.to_vec())
+            Some(d.main_candidates.iter().map(|s| s.as_str()).collect())
         };
         Ok(Response::ok(
             "ok",
@@ -1430,7 +1206,7 @@ pub async fn conf_list(svc: &str) -> Response {
         };
         let scanned = if root.is_dir() {
             let mut scanned: Vec<Value> = Vec::new();
-            collect_files(service_exts(d, &root), &root, &mut scanned);
+            collect_files(&service_exts(d, &root), &root, &mut scanned);
             scanned
         } else {
             Vec::new()
@@ -1460,7 +1236,8 @@ pub async fn conf_read(svc: &str, path: String) -> Response {
         let (_, _, Some((main, root, _))) = installed_info(d, &svc) else {
             return Err(format!("{} 未安装或未探测到配置，请先在应用商店安装", d.label));
         };
-        let (canon, is_main) = validate_path(d, service_exts(d, &root), &main, &root, &path)?;
+        let (canon, is_main) =
+            validate_path(d, &service_exts(d, &root), &main, &root, &path)?;
         if !canon.exists() {
             return Ok(Response::ok(
                 "ok",
@@ -1506,7 +1283,8 @@ pub async fn conf_save(svc: &str, path: String, content: String) -> Response {
         let (_, _, Some((main, root, _))) = installed_info(d, &svc) else {
             return Err(format!("{} 未安装或未探测到配置", d.label));
         };
-        let (canon, is_main) = validate_path(d, service_exts(d, &root), &main, &root, &path)?;
+        let (canon, is_main) =
+            validate_path(d, &service_exts(d, &root), &main, &root, &path)?;
         if d.format == ConfFormat::Json && !content.trim().is_empty() {
             serde_json::from_str::<Value>(&content)
                 .map_err(|e| format!("JSON 语法错误，未保存：{e}"))?;
@@ -1533,6 +1311,25 @@ pub async fn conf_save(svc: &str, path: String, content: String) -> Response {
         ))
     })
     .await
+}
+
+/// service_conf.defs：yaml 里注册的服务定义清单。
+///
+/// 前端据此生成「其它服务」入口：新增服务只要丢一份 yaml 进去，不需要改代码。
+pub async fn defs_list() -> Response {
+    let items: Vec<Value> = defs()
+        .iter()
+        .map(|d| {
+            json!({
+                "key": d.key,
+                "label": d.label,
+                "format": if d.format == ConfFormat::Json { "json" } else { "ini" },
+                "exts": d.exts,
+                "fields": d.fields.len(),
+            })
+        })
+        .collect();
+    Response::ok("ok", Some(json!({ "items": items })))
 }
 
 /// service_conf.keys：关键项表单定义 + 当前值。
@@ -1578,8 +1375,8 @@ pub async fn keys_get(svc: &str) -> Response {
             Some((m, _, exists)) => {
                 let content = std::fs::read_to_string(m).unwrap_or_default();
                 let values = match d.format {
-                    ConfFormat::Ini => ini_read_values(&content, d.ini_comment, &svc, d.fields),
-                    ConfFormat::Json => json_read_values(&content, d.fields),
+                    ConfFormat::Ini => ini_read_values(&content, &d.ini_comment, &svc, &d.fields),
+                    ConfFormat::Json => json_read_values(&content, &d.fields),
                 };
                 (values, Some(m.display().to_string()), *exists)
             }
@@ -1620,24 +1417,28 @@ pub async fn keys_save(svc: &str, keys: std::collections::BTreeMap<String, Strin
         let patched = match d.format {
             ConfFormat::Ini => {
                 // 仅接收注册过的 key，且非空才写入（空 = 从托管区移除该键）
-                let cleaned = strip_managed_block(&old, d.ini_comment, &svc);
+                let cleaned = strip_managed_block(&old, &d.ini_comment, &svc);
                 // 托管块内部为行式 key = value
                 let entries: Vec<(&str, String)> = d
                     .fields
                     .iter()
                     .filter_map(|f| {
-                        let v = keys.get(f.key)?.trim().to_string();
+                        let v = keys.get(f.key.as_str())?.trim().to_string();
                         if v.is_empty() {
                             return None;
                         }
-                        Some((f.key, v))
+                        Some((f.key.as_str(), v))
                     })
                     .collect();
                 if entries.is_empty() {
                     cleaned
                 } else {
-                    let block = block_lines(d.ini_comment, &svc, &entries);
-                    insert_block(&cleaned, d.fields.first().and_then(|f| f.section), &block)
+                    let block = block_lines(&d.ini_comment, &svc, &entries);
+                    insert_block(
+                        &cleaned,
+                        d.fields.first().and_then(|f| f.section.as_deref()),
+                        &block,
+                    )
                 }
             }
             ConfFormat::Json => {
@@ -1646,15 +1447,16 @@ pub async fn keys_save(svc: &str, keys: std::collections::BTreeMap<String, Strin
                 } else {
                     serde_json::from_str(&old).unwrap_or_else(|_| json!({}))
                 };
-                for f in d.fields {
-                    if let Some(raw) = keys.get(f.key) {
+                for f in &d.fields {
+                    let jpath: Vec<&str> = f.jpath.iter().map(|s| s.as_str()).collect();
+                    if let Some(raw) = keys.get(f.key.as_str()) {
                         let raw = raw.trim();
                         if raw.is_empty() {
                             // 表单每次都提交全部字段，所以列表留空是用户主动清空
                             // （registry-mirrors 之类必须真删掉，留个空数组 dockerd 一样不认）；
                             // 其余类型留空 = 保持原文件中的既有键不动（不写入托管值）
                             if matches!(f.kind, FieldKind::List) {
-                                remove_json_path(&mut obj, f.jpath);
+                                remove_json_path(&mut obj, &jpath);
                             }
                             continue;
                         }
@@ -1675,7 +1477,7 @@ pub async fn keys_save(svc: &str, keys: std::collections::BTreeMap<String, Strin
                                 .unwrap_or_else(|_| Value::String(raw.to_string())),
                             _ => Value::String(raw.to_string()),
                         };
-                        set_json_path(&mut obj, f.jpath, v);
+                        set_json_path(&mut obj, &jpath, v);
                     }
                 }
                 serde_json::to_string_pretty(&obj).map_err(|e| format!("序列化 JSON 失败: {e}"))?
@@ -2097,11 +1899,57 @@ mod tests {
         assert_eq!(inst_dir_names("74"), ["php-74", "php74"]);
     }
 
+    /// 服务定义来自 yaml（内置 + /etc/zap/services 覆盖），内置三件套必须能解析出来
     #[test]
-    fn php_def_covers_common_layouts() {
-        assert!(PHP_DEF.main_candidates.contains(&"/etc/php/*/fpm/php.ini"));
-        assert!(PHP_DEF.main_candidates.contains(&"/etc/php.ini"));
-        assert!(PHP_DEF.main_candidates.contains(&"/etc/opt/remi/*/php.ini"));
+    fn yaml_defs_are_loaded() {
+        let keys: Vec<&str> = defs().iter().map(|d| d.key.as_str()).collect();
+        for k in ["php", "mysql", "docker"] {
+            assert!(keys.contains(&k), "内置定义缺少 {k}");
+        }
+        let php = supported("php").expect("php 定义");
+        assert!(php.main_candidates.iter().any(|c| c == "/etc/php/*/fpm/php.ini"));
+        assert!(php.main_candidates.iter().any(|c| c == "/etc/php.ini"));
+        assert!(php.main_candidates.iter().any(|c| c == "/etc/opt/remi/*/php.ini"));
+        assert_eq!(php.format, ConfFormat::Ini);
+        assert_eq!(php.ini_comment, ";");
+        assert_eq!(php.fields.len(), 8);
+
+        let mysql = supported("mysql").expect("mysql 定义");
+        assert_eq!(mysql.ini_comment, "#");
+        assert!(mysql.fields.iter().all(|f| f.section.as_deref() == Some("mysqld")));
+        assert_eq!(mysql.fields.len(), 6);
+
+        let docker = supported("docker").expect("docker 定义");
+        assert_eq!(docker.format, ConfFormat::Json);
+        assert_eq!(docker.fields.len(), 13);
+        assert!(docker
+            .fields
+            .iter()
+            .any(|f| f.kind == FieldKind::List && f.jpath == vec!["registry-mirrors"]));
+
+        // php 多实例 svc 复用 php 定义；未知服务不在注册表里
+        assert!(supported("php74").is_some());
+        assert!(supported("redis").is_none());
+    }
+
+    /// 一份合法 yaml + 一份坏 yaml：好的覆盖内置，坏的跳过且不拖垮其它服务
+    #[test]
+    fn yaml_override_and_bad_file() {
+        let mut out: Vec<ServiceDef> = Vec::new();
+        push_def(
+            &mut out,
+            "key: php\nlabel: PHP 覆盖\nformat: ini\nini_comment: \";\"\n",
+            "测试",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].label, "PHP 覆盖");
+        // 同 key 再推一次 = 覆盖
+        push_def(&mut out, "key: php\nlabel: 再覆盖\nformat: ini\n", "测试");
+        assert_eq!(out.len(), 1, "同 key 应覆盖而不是追加");
+        assert_eq!(out[0].label, "再覆盖");
+        // 坏文件：跳过
+        push_def(&mut out, "key: [broken\n", "测试");
+        assert_eq!(out.len(), 1, "坏定义应被跳过");
     }
 
     /// 列表字段（镜像源）在表单里是文本框，换行和逗号都得认，空行要丢掉

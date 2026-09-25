@@ -469,6 +469,10 @@ fn api_routers() -> Router {
             "/system/service-conf/default",
             post(system_service_conf::set_default),
         )
+        .route(
+            "/system/service-conf/defs",
+            get(system_service_conf::defs_list),
+        )
         // 服务配置 → 总览：已装应用中带服务的实例（启停 / 开机自启）
         .route("/system/services/overview", get(system_services::overview))
         .route("/system/services/control", post(system_services::control))
