@@ -329,7 +329,8 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server")
     .icon("material-symbols:dns")
     .affix(),
-    // 四层转发：TCP / UDP 端口转发（Nginx stream），仅管理员
+    // 四层转发：TCP / UDP 端口转发（Nginx stream），仅管理员。
+    // 菜单隐藏：入口已并入「服务配置 → Nginx → 四层转发」，避免两处维护。
     MenuSeed::new(
         "server-stream",
         "四层转发",
@@ -341,7 +342,8 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     )
     .parent("server")
     .icon("material-symbols:swap-horiz")
-    .affix(),
+    .affix()
+    .hidden(),
     // 网络配置：网络设置 + IP 设置 合到一页
     MenuSeed::new(
         "server-network",

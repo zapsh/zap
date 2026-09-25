@@ -1940,7 +1940,7 @@ export default {
     },
   },
 
-  /** 服务配置 - 通用（ServiceConfPage） */
+  /** 服务配置 - 通用文案（各服务独立页面共用这组通用词，页面本身不共用组件） */
   servicesCommon: {
     running: '运行中',
     notRunning: '未运行',
@@ -1948,6 +1948,7 @@ export default {
     reload: '重载',
     restart: '重启',
     start: '启动',
+    stop: '停止',
     separator: '；',
     nameSeparator: '、',
     notInstalledTitle: '{label} 未安装',
@@ -2030,6 +2031,9 @@ export default {
 
   /** 服务配置 - MySQL / MariaDB */
   servicesMysql: {
+    notInstalledTitle: 'MySQL / MariaDB 未安装',
+    notInstalledSub:
+      '通过应用商店安装 MySQL 或 MariaDB 应用（二选一）后，本页将自动识别当前引擎，并显示版本、运行状态与 my.cnf 编辑入口。',
     desc: 'MySQL 与 MariaDB 二合一的数据库服务配置：两者一次只能安装其一（共用 /usr/local/mysql 软链与 mysql.service），页面根据实际安装的引擎自动识别；关键项写入 [mysqld] 托管区。安装目录 / 主配置 / systemd 单元见下方详情。',
     installHint:
       '通过应用商店安装 MySQL 或 MariaDB 应用（二选一）后，本页将自动识别当前引擎，并显示版本、运行状态与 my.cnf 编辑入口。',
@@ -2104,6 +2108,8 @@ export default {
     visualTip:
       '以下项写入主配置文件，字段统一收敛到带注释标记的托管区；「跟随默认」表示不写入（继承 Nginx 默认）。保存会自动执行 nginx -t 校验，失败自动回滚。',
     topLevel: '顶层',
+    pageConf: 'Nginx 配置',
+    pageStream: '四层转发',
     followDefaultPlaceholder: '跟随默认（留空不写入）',
     followDefault: '跟随默认',
     optionOn: '开启',

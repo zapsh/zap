@@ -1,5 +1,27 @@
 <template>
-  <div v-loading="bootLoading" class="nginx-config">
+  <div class="nginx-page">
+    <!-- 四层转发（stream{}）是 nginx 的能力，入口收在这里，不再单独占一个菜单 -->
+    <nav class="nginx-pills">
+      <button
+        type="button"
+        class="nginx-pill"
+        :class="{ 'is-active': page === 'conf' }"
+        @click="page = 'conf'"
+      >
+        {{ t('servicesNginx.pageConf') }}
+      </button>
+      <button
+        type="button"
+        class="nginx-pill"
+        :class="{ 'is-active': page === 'stream' }"
+        @click="page = 'stream'"
+      >
+        {{ t('servicesNginx.pageStream') }}
+      </button>
+    </nav>
+
+    <!-- v-show：切回来时编辑器里没保存的内容还在 -->
+    <div v-show="page === 'conf'" v-loading="bootLoading" class="nginx-config">
     <!-- 顶部信息与操作 -->
     <el-card shadow="never" class="top-card">
       <div class="top-row">
@@ -218,29 +240,10 @@
         </el-tab-pane>
       </el-tabs>
 
-      <!-- 四层转发的 stream 全局片段：resolver / map / 公共 upstream -->
-      <el-card shadow="never" class="mt-3">
-        <template #header>
-          <div class="card-header">
-            <span>{{ t('stream.globalTitle') }}</span>
-            <el-button
-              type="primary"
-              :loading="savingStreamGlobal"
-              @click="saveStreamGlobalConf"
-            >
-              {{ t('stream.globalSave') }}
-            </el-button>
-          </div>
-        </template>
-        <el-input
-          v-model="streamGlobal"
-          type="textarea"
-          :autosize="{ minRows: 6, maxRows: 20 }"
-          :placeholder="nginxText(locale, 'globalPlaceholder')"
-        />
-        <div class="tip">{{ nginxText(locale, 'globalTip') }}</div>
-      </el-card>
     </template>
+    </div>
+
+    <StreamConf v-if="page === 'stream'" />
   </div>
 </template>
 
@@ -251,8 +254,6 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document } from '@/icons'
 import CodeEditor from '@/components/CodeEditor.vue'
-// 含 nginx 语法的提示文案不经过 vue-i18n 解析（见 utils/nginx-text.ts）
-import { nginxText } from '@/utils/nginx-text'
 import {
   controlNginx,
   getNginxStatus,
@@ -269,15 +270,17 @@ import {
   TOP_LEVEL_KEY,
   type VisualValues,
 } from '@/utils/nginxConf.ts'
-import { getStreamGlobal, saveStreamGlobal } from '@/api/stream'
+import StreamConf from './stream.vue'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const router = useRouter()
 const bootLoading = ref(true)
 const busy = ref(false)
 const acting = ref('')
 const installed = ref<boolean | null>(null)
 const status = ref<NginxStatus>({})
+/** conf = nginx 自身配置；stream = 四层转发规则（原独立菜单已收进来） */
+const page = ref<'conf' | 'stream'>('conf')
 const mode = ref('visual')
 
 const running = computed(() => !!status.value.running)
@@ -572,39 +575,38 @@ function formatBytes(n: number): string {
   return `${n} B`
 }
 
-/* ---------- 四层转发（stream）全局片段 ---------- */
-const streamGlobal = ref('')
-const savingStreamGlobal = ref(false)
-
-async function loadStreamGlobal() {
-  try {
-    const res = await getStreamGlobal()
-    streamGlobal.value = res.data.content ?? ''
-  } catch {
-    /* interceptor */
-  }
-}
-
-async function saveStreamGlobalConf() {
-  savingStreamGlobal.value = true
-  try {
-    const res = await saveStreamGlobal(streamGlobal.value)
-    ElMessage.success(res.message || t('stream.globalSaved'))
-  } catch {
-    /* interceptor */
-  } finally {
-    savingStreamGlobal.value = false
-  }
-}
-
 initVisual()
-onMounted(() => {
-  refreshAll()
-  loadStreamGlobal()
-})
+onMounted(refreshAll)
 </script>
 
 <style scoped>
+.nginx-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 10px;
+}
+.nginx-pill {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.nginx-pill:hover {
+  color: var(--el-color-primary);
+}
+.nginx-pill.is-active {
+  background: var(--el-color-primary);
+  color: #fff;
+  font-weight: 500;
+}
 .nginx-config {
   min-height: 60vh;
 }

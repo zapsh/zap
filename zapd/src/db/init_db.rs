@@ -161,7 +161,16 @@ async fn migrate_add_columns() {
 ///              WHERE name IN ('docker', 'docker-index') AND feature <> 'docker'")
 ///     .execute(pool).await;
 /// ```
-async fn sync_menu_features() {}
+async fn sync_menu_features() {
+    // 四层转发收进「服务配置 → Nginx」页内（原独立菜单隐藏），老库升级时同步
+    let pool = get_db_pool().await;
+    let _ = sqlx::query(
+        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now') \
+         WHERE name = 'server-stream' AND hidden = 0",
+    )
+    .execute(pool)
+    .await;
+}
 
 // ── user ───────────────────────────────────────────────────
 

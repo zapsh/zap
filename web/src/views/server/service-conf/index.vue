@@ -25,9 +25,9 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Overview from './overview.vue'
-import NginxConf from '@/views/services/nginx/index.vue'
-import PhpConf from '@/views/services/php/index.vue'
-import MysqlConf from '@/views/services/mysql/index.vue'
+import NginxConf from './nginx.vue'
+import PhpConf from './php.vue'
+import MysqlConf from './mysql.vue'
 
 const { t } = useI18n()
 

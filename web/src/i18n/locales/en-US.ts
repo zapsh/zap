@@ -1938,7 +1938,7 @@ const enUS: Messages = {
     },
   },
 
-  /** Service config - shared (ServiceConfPage) */
+  /** Service config - shared wording (pages are independent, only these strings are shared) */
   servicesCommon: {
     running: 'Running',
     notRunning: 'Not running',
@@ -1946,6 +1946,7 @@ const enUS: Messages = {
     reload: 'Reload',
     restart: 'Restart',
     start: 'Start',
+    stop: 'Stop',
     separator: '; ',
     nameSeparator: ', ',
     notInstalledTitle: '{label} is not installed',
@@ -2034,6 +2035,9 @@ const enUS: Messages = {
 
   /** Service config - MySQL / MariaDB */
   servicesMysql: {
+    notInstalledTitle: 'MySQL / MariaDB is not installed',
+    notInstalledSub:
+      'Install MySQL or MariaDB from the app store (only one at a time). This page then detects the engine and shows version, state and my.cnf editing.',
     desc: 'Two-in-one MySQL and MariaDB service configuration: only one of them can be installed at a time (they share the /usr/local/mysql symlink and mysql.service), and the page detects the actually installed engine automatically. Key settings are written into the [mysqld] managed section. See the details below for the install dir / main config / systemd unit.',
     installHint:
       'After installing the MySQL or MariaDB app (one of the two) from the App Store, this page will detect the current engine and show its version, run state and a my.cnf editor.',
@@ -2109,6 +2113,8 @@ const enUS: Messages = {
     visualTip:
       'The items below are written to the main config file, with all fields collected into a comment-marked managed section; "Follow default" means not written (inherit the Nginx default). Saving runs an nginx -t check and rolls back automatically on failure.',
     topLevel: 'Top level',
+    pageConf: 'Nginx config',
+    pageStream: 'Stream (L4)',
     followDefaultPlaceholder: 'Follow default (empty = not written)',
     followDefault: 'Follow default',
     optionOn: 'On',

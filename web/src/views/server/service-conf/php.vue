@@ -58,7 +58,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import InstancePanel from './InstancePanel.vue'
+import InstancePanel from './php-instance.vue'
 import { getServiceConfInstances, type ServiceConfInstance } from '@/api/servicesConf.ts'
 
 const { t } = useI18n()
