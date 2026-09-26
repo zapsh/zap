@@ -132,6 +132,29 @@ interface LocationSpec {
   cache: string
   cache_valid: string
   no_buffering: boolean
+  // ── location 级限速 / 限并发（0 = 不限）──
+  /** 请求限速速率 r/s */
+  limit_req_rate: number
+  /** 突发放行数 */
+  limit_req_burst: number
+  /** 突发策略：nodelay（立即放行）/ delay（排队） */
+  limit_req_mode: string
+  /** 限速命中响应码（0 = nginx 默认 429） */
+  limit_req_status: number
+  /** 单 IP 并发上限 */
+  limit_conn_num: number
+  /** 并发超限响应码（0 = nginx 默认 503） */
+  limit_conn_status: number
+  /** 下载速率上限 KB/s */
+  limit_rate: number
+  /** 前 N MB 不限速 */
+  limit_rate_after: number
+  /** 限速 / 并发命中时的响应体（HTML，空 = nginx 默认页） */
+  limit_body: string
+  /** 本 location 关闭 WAF */
+  no_waf: boolean
+  /** 本 location 限速干跑：命中只记日志不拦 */
+  limit_dry_run: boolean
   /** 仅本地 UI 使用：高级参数展开（不入 payload） */
   adv?: boolean
 }
@@ -574,6 +597,8 @@ function blankSec(): SiteSecurity {
     waf_mode: 1,
     waf_rules: '',
     waf_audit: true,
+    whitelist: '',
+    limit_dry_run: false,
     limit_req_enable: false,
     limit_req_rate: 10,
     limit_req_burst: 20,
@@ -761,6 +786,17 @@ function blankLocation(path = '/'): LocationSpec {
     cache: '',
     cache_valid: '',
     no_buffering: false,
+    limit_req_rate: 0,
+    limit_req_burst: 0,
+    limit_req_mode: 'nodelay',
+    limit_req_status: 0,
+    limit_conn_num: 0,
+    limit_conn_status: 0,
+    limit_rate: 0,
+    limit_rate_after: 0,
+    limit_body: '',
+    no_waf: false,
+    limit_dry_run: false,
     adv: false,
   }
 }
@@ -1029,6 +1065,17 @@ function openEdit(row: SiteItem) {
     cache: l.cache || '',
     cache_valid: l.cache_valid || '',
     no_buffering: !!l.no_buffering,
+    limit_req_rate: l.limit_req_rate || 0,
+    limit_req_burst: l.limit_req_burst || 0,
+    limit_req_mode: l.limit_req_mode || 'nodelay',
+    limit_req_status: l.limit_req_status || 0,
+    limit_conn_num: l.limit_conn_num || 0,
+    limit_conn_status: l.limit_conn_status || 0,
+    limit_rate: l.limit_rate || 0,
+    limit_rate_after: l.limit_rate_after || 0,
+    limit_body: l.limit_body || '',
+    no_waf: !!l.no_waf,
+    limit_dry_run: !!l.limit_dry_run,
     adv: false,
   }))
   if (form.site_type === 'proxy' && !form.locations.length) {
@@ -1197,6 +1244,17 @@ async function submitForm() {
         cache: l.kind === 'proxy' && l.cache === 'zap_cache' ? 'zap_cache' : '',
         cache_valid: l.kind === 'proxy' ? (l.cache_valid || '').trim() : '',
         no_buffering: l.kind === 'proxy' ? !!l.no_buffering : false,
+        limit_req_rate: l.limit_req_rate || 0,
+        limit_req_burst: l.limit_req_rate > 0 ? l.limit_req_burst || 0 : 0,
+        limit_req_mode: l.limit_req_mode === 'delay' ? 'delay' : 'nodelay',
+        limit_req_status: l.limit_req_status || 0,
+        limit_conn_num: l.limit_conn_num || 0,
+        limit_conn_status: l.limit_conn_status || 0,
+        limit_rate: l.limit_rate || 0,
+        limit_rate_after: l.limit_rate > 0 ? l.limit_rate_after || 0 : 0,
+        limit_body: l.limit_body || '',
+        no_waf: !!l.no_waf,
+        limit_dry_run: !!l.limit_dry_run,
       })),
   }
   if (canManageAll.value) payload.user_id = form.user_id
@@ -2222,6 +2280,20 @@ onMounted(() => {
                 <span class="form-hint">{{ t('site.secReqBurstHint') }}</span>
               </el-form-item>
             </template>
+            <el-form-item v-if="sec.limit_req_enable" :label="t('site.secDryRun')">
+              <el-switch v-model="sec.limit_dry_run" />
+              <span class="form-hint">{{ t('site.secDryRunHint') }}</span>
+            </el-form-item>
+            <el-form-item :label="t('site.secWhitelist')">
+              <el-input
+                v-model="sec.whitelist"
+                type="textarea"
+                :rows="2"
+                :placeholder="t('site.secWhitelistPh')"
+                style="width: 100%"
+              />
+              <div class="form-tip">{{ t('site.secWhitelistHint') }}</div>
+            </el-form-item>
             <el-form-item :label="t('site.secLimitConn')">
               <el-switch v-model="sec.limit_conn_enable" />
               <span class="form-hint">{{ t('site.secLimitConnHint') }}</span>
@@ -2538,6 +2610,116 @@ onMounted(() => {
                         <span class="form-tip" style="margin-left: 8px">{{
                           t('site.streamingTip')
                         }}</span>
+                      </div>
+                      <!-- 限速 / 限并发（只作用于本 location） -->
+                      <div class="adv-row">
+                        <span class="adv-label">{{ t('site.locLimitReq') }}</span>
+                        <el-input-number
+                          v-model="loc.limit_req_rate"
+                          :min="0"
+                          :max="100000"
+                          size="small"
+                        />
+                        <span class="form-tip" style="margin-left: 8px">{{
+                          t('site.locLimitReqTip')
+                        }}</span>
+                        <template v-if="loc.limit_req_rate > 0">
+                          <el-input-number
+                            v-model="loc.limit_req_burst"
+                            :min="0"
+                            :max="100000"
+                            size="small"
+                          />
+                          <span class="form-tip" style="margin-left: 8px">{{
+                            t('site.locLimitBurstTip')
+                          }}</span>
+                          <el-select
+                            v-if="loc.limit_req_burst > 0"
+                            v-model="loc.limit_req_mode"
+                            size="small"
+                            style="width: 140px"
+                          >
+                            <el-option :label="t('site.locLimitNodelay')" value="nodelay" />
+                            <el-option :label="t('site.locLimitDelay')" value="delay" />
+                          </el-select>
+                          <el-input-number
+                            v-model="loc.limit_req_status"
+                            :min="0"
+                            :max="599"
+                            size="small"
+                          />
+                          <span class="form-tip" style="margin-left: 8px">{{
+                            t('site.locLimitStatusTip')
+                          }}</span>
+                          <el-switch v-model="loc.limit_dry_run" />
+                          <span class="form-tip" style="margin-left: 8px">{{
+                            t('site.locDryRun')
+                          }}</span>
+                        </template>
+                      </div>
+                      <div class="adv-row">
+                        <span class="adv-label">{{ t('site.locLimitConn') }}</span>
+                        <el-input-number
+                          v-model="loc.limit_conn_num"
+                          :min="0"
+                          :max="100000"
+                          size="small"
+                        />
+                        <span class="form-tip" style="margin-left: 8px">{{
+                          t('site.locLimitConnTip')
+                        }}</span>
+                        <el-input-number
+                          v-if="loc.limit_conn_num > 0"
+                          v-model="loc.limit_conn_status"
+                          :min="0"
+                          :max="599"
+                          size="small"
+                        />
+                        <span v-if="loc.limit_conn_num > 0" class="form-tip" style="margin-left: 8px">{{
+                          t('site.locLimitConnStatusTip')
+                        }}</span>
+                      </div>
+                      <div class="adv-row">
+                        <span class="adv-label">{{ t('site.locLimitRate') }}</span>
+                        <el-input-number
+                          v-model="loc.limit_rate"
+                          :min="0"
+                          :max="1000000"
+                          size="small"
+                        />
+                        <span class="form-tip" style="margin-left: 8px">{{
+                          t('site.locLimitRateTip')
+                        }}</span>
+                        <el-input-number
+                          v-if="loc.limit_rate > 0"
+                          v-model="loc.limit_rate_after"
+                          :min="0"
+                          :max="10000"
+                          size="small"
+                        />
+                        <span v-if="loc.limit_rate > 0" class="form-tip" style="margin-left: 8px">{{
+                          t('site.locLimitRateAfterTip')
+                        }}</span>
+                      </div>
+                      <div class="adv-row">
+                        <span class="adv-label">{{ t('site.locNoWaf') }}</span>
+                        <el-switch v-model="loc.no_waf" />
+                        <span class="form-tip" style="margin-left: 8px">{{
+                          t('site.locNoWafTip')
+                        }}</span>
+                      </div>
+                      <div
+                        v-if="loc.limit_req_rate > 0 || loc.limit_conn_num > 0"
+                        class="adv-row"
+                      >
+                        <span class="adv-label">{{ t('site.locLimitBody') }}</span>
+                        <el-input
+                          v-model="loc.limit_body"
+                          type="textarea"
+                          :rows="2"
+                          :placeholder="t('site.locLimitBodyTip')"
+                          class="adv-long"
+                        />
                       </div>
                     </div>
                   </div>

@@ -96,6 +96,10 @@ export interface SiteSecurity {
   waf_rules: string
   /** 开启站点独立 WAF 审计日志（写入站点日志目录 waf.log） */
   waf_audit: boolean
+  /** 限速 / WAF 白名单：IP 或 CIDR，逗号或换行分隔（管理组维护） */
+  whitelist: string
+  /** 限速干跑：命中只记日志不拦截（需 nginx ≥ 1.17.1） */
+  limit_dry_run: boolean
   /** 请求限速 */
   limit_req_enable: boolean
   /** 每秒请求数上限 */

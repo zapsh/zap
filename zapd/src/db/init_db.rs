@@ -118,6 +118,8 @@ async fn migrate_add_columns() {
     ensure_column("site_sec", "waf_mode", "INTEGER NOT NULL DEFAULT 1").await;
     ensure_column("site_sec", "waf_rules", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("site_sec", "waf_audit", "INTEGER NOT NULL DEFAULT 1").await;
+    ensure_column("site_sec", "whitelist", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_sec", "limit_dry_run", "INTEGER NOT NULL DEFAULT 0").await;
     // 四层转发高级模式：advanced 模式 + 结构化高级参数
     ensure_column("nginx_stream", "mode", "TEXT NOT NULL DEFAULT 'basic'").await;
     ensure_column("nginx_stream", "raw", "TEXT NOT NULL DEFAULT ''").await;
@@ -1099,6 +1101,10 @@ async fn init_site_sec_table() {
         waf_rules TEXT NOT NULL DEFAULT '',
         -- 站点独立 WAF 审计日志（写入站点日志目录下的 waf.log）
         waf_audit INTEGER NOT NULL DEFAULT 1,
+        -- 限速 / WAF 白名单（IP 或 CIDR，逗号分隔；管理组维护）
+        whitelist TEXT NOT NULL DEFAULT '',
+        -- 限速干跑：命中只记日志不拦截
+        limit_dry_run INTEGER NOT NULL DEFAULT 0,
         limit_req_enable INTEGER NOT NULL DEFAULT 0,
         limit_req_rate INTEGER NOT NULL DEFAULT 10,
         limit_req_burst INTEGER NOT NULL DEFAULT 20,

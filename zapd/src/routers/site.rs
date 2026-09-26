@@ -1882,6 +1882,7 @@ pub async fn site_add(
     let sec = payload.sec.clone().map(norm_sec);
     if let Some(s) = &sec {
         validate_sec(&claims, s).await?;
+        require_admin_for_sec_fields(&claims, 0, s).await?;
     }
     let pseudo_static = {
         let p = payload.pseudo_static.trim().to_lowercase();
@@ -2346,6 +2347,7 @@ pub async fn site_update(
     // 安全配置（可选）：与站点编辑同一次提交，随后由前端触发的 vhost 同步生效
     if let Some(s) = payload.sec.map(norm_sec) {
         validate_sec(&claims, &s).await?;
+        require_admin_for_sec_fields(&claims, payload.id, &s).await?;
         save_site_sec(payload.id, &s).await?;
     }
 
@@ -2923,6 +2925,10 @@ pub struct SiteSecurity {
     pub waf_rules: String,
     /// 开启站点独立 WAF 审计日志（写入站点日志目录下的 waf.log）
     pub waf_audit: bool,
+    /// 限速 / WAF 白名单：IP 或 CIDR，逗号或换行分隔（管理组维护）
+    pub whitelist: String,
+    /// 限速干跑：命中只记日志不拦（需 nginx ≥ 1.17.1）
+    pub limit_dry_run: bool,
     pub limit_req_enable: bool,
     /// 每秒请求数上限
     pub limit_req_rate: u32,
@@ -2940,6 +2946,8 @@ impl Default for SiteSecurity {
             waf_mode: 1,
             waf_rules: String::new(),
             waf_audit: true,
+            whitelist: String::new(),
+            limit_dry_run: false,
             limit_req_enable: false,
             limit_req_rate: 10,
             limit_req_burst: 20,
@@ -2952,9 +2960,11 @@ impl Default for SiteSecurity {
 /// 读取站点安全配置；老站点（无记录）返回默认值
 async fn load_site_sec(site_id: i64) -> SiteSecurity {
     let pool = db::get_db_pool().await;
-    let row: Option<(i64, i64, i64, i64, i64, i64, i64, String, i64)> = sqlx::query_as(
-        "SELECT waf_enable, limit_req_enable, limit_req_rate, limit_req_burst, \
-                limit_conn_enable, limit_conn_num, waf_mode, waf_rules, waf_audit \
+    let row: Option<(i64, i64, i64, i64, i64, i64, i64, String, i64, String, i64)> =
+        sqlx::query_as(
+            "SELECT waf_enable, limit_req_enable, limit_req_rate, limit_req_burst, \
+                limit_conn_enable, limit_conn_num, waf_mode, waf_rules, waf_audit, \
+                whitelist, limit_dry_run \
          FROM site_sec WHERE site_id = ?",
     )
     .bind(site_id)
@@ -2962,7 +2972,7 @@ async fn load_site_sec(site_id: i64) -> SiteSecurity {
     .await
     .ok()
     .flatten();
-    let Some((w, lr, rate, burst, lc, num, mode, rules, audit)) = row else {
+    let Some((w, lr, rate, burst, lc, num, mode, rules, audit, wl, dry)) = row else {
         return SiteSecurity::default();
     };
     SiteSecurity {
@@ -2970,6 +2980,8 @@ async fn load_site_sec(site_id: i64) -> SiteSecurity {
         waf_mode: mode.clamp(0, 2) as u8,
         waf_rules: rules,
         waf_audit: audit != 0,
+        whitelist: wl,
+        limit_dry_run: dry != 0,
         limit_req_enable: lr != 0,
         limit_req_rate: rate.clamp(1, 100_000) as u32,
         limit_req_burst: burst.clamp(0, 100_000) as u32,
@@ -2983,12 +2995,14 @@ async fn save_site_sec(site_id: i64, sec: &SiteSecurity) -> Result<(), ZapError>
     let now = chrono::Local::now().timestamp();
     sqlx::query(
         "INSERT INTO site_sec (site_id, waf_enable, waf_mode, waf_rules, waf_audit, \
+                whitelist, limit_dry_run, \
                 limit_req_enable, limit_req_rate, limit_req_burst, \
                 limit_conn_enable, limit_conn_num, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(site_id) DO UPDATE SET \
            waf_enable = excluded.waf_enable, waf_mode = excluded.waf_mode, \
            waf_rules = excluded.waf_rules, waf_audit = excluded.waf_audit, \
+           whitelist = excluded.whitelist, limit_dry_run = excluded.limit_dry_run, \
            limit_req_enable = excluded.limit_req_enable, \
            limit_req_rate = excluded.limit_req_rate, limit_req_burst = excluded.limit_req_burst, \
            limit_conn_enable = excluded.limit_conn_enable, limit_conn_num = excluded.limit_conn_num, \
@@ -2999,6 +3013,8 @@ async fn save_site_sec(site_id: i64, sec: &SiteSecurity) -> Result<(), ZapError>
     .bind(i64::from(sec.waf_mode))
     .bind(sec.waf_rules.as_str())
     .bind(i64::from(sec.waf_audit))
+    .bind(sec.whitelist.as_str())
+    .bind(i64::from(sec.limit_dry_run))
     .bind(i64::from(sec.limit_req_enable))
     .bind(sec.limit_req_rate as i64)
     .bind(sec.limit_req_burst as i64)
@@ -3013,8 +3029,10 @@ async fn save_site_sec(site_id: i64, sec: &SiteSecurity) -> Result<(), ZapError>
 /// 入库前收敛取值范围：0 或越界值会让执行端渲染出 Nginx 不接受的指令
 fn norm_sec(mut s: SiteSecurity) -> SiteSecurity {
     s.waf_mode = s.waf_mode.min(2);
-    // 规则体去首尾空白：避免渲染出空行指令
+    // 规则体只允许一行条指令：去掉首尾空行，避免渲染出空行指令
     s.waf_rules = s.waf_rules.trim().to_string();
+    // 白名单只留 IP / CIDR（执行端渲染时还会再校验一次，这里先收紧）
+    s.whitelist = s.whitelist.trim().to_string();
     s.limit_req_rate = s.limit_req_rate.clamp(1, 100_000);
     s.limit_req_burst = s.limit_req_burst.clamp(0, 100_000);
     s.limit_conn_num = s.limit_conn_num.clamp(1, 100_000);
@@ -3027,6 +3045,8 @@ fn sec_to_proto(s: SiteSecurity) -> SiteSecuritySpec {
         waf_mode: s.waf_mode,
         waf_rules: s.waf_rules,
         waf_audit: s.waf_audit,
+        whitelist: s.whitelist,
+        limit_dry_run: s.limit_dry_run,
         limit_req_enable: s.limit_req_enable,
         limit_req_rate: s.limit_req_rate,
         limit_req_burst: s.limit_req_burst,
@@ -3058,9 +3078,26 @@ async fn validate_sec(claims: &jwt::Claims, s: &SiteSecurity) -> Result<(), ZapE
             ));
         }
     }
-    // 自定义 WAF 规则属管理组能力
-    if !jwt::is_admin(claims) && !s.waf_rules.is_empty() {
-        return Err(ZapError::New(-1, "自定义 WAF 规则仅管理员可修改".to_string()));
+    Ok(())
+}
+
+/// 管理组专属字段：**WAF 白名单与自定义规则**能直接让防护失效，非管理员不能
+/// 新增 / 修改 / 清空。三条入口（建站 / 编辑 / 安全页保存）共用同一判定。
+/// 新建时 site_id=0，`load_site_sec` 返回默认值，等价于「非管理员不能填」。
+async fn require_admin_for_sec_fields(
+    claims: &jwt::Claims,
+    site_id: i64,
+    s: &SiteSecurity,
+) -> Result<(), ZapError> {
+    if jwt::is_admin(claims) {
+        return Ok(());
+    }
+    let old = load_site_sec(site_id).await;
+    if s.whitelist != old.whitelist || s.waf_rules != old.waf_rules {
+        return Err(ZapError::New(
+            -1,
+            "WAF 白名单与自定义规则仅管理员可修改".to_string(),
+        ));
     }
     Ok(())
 }
@@ -3174,6 +3211,7 @@ pub async fn site_security_save(
     site_in_scope(&claims, payload.id).await?;
     let sec = norm_sec(payload.sec);
     validate_sec(&claims, &sec).await?;
+    require_admin_for_sec_fields(&claims, payload.id, &sec).await?;
     save_site_sec(payload.id, &sec).await?;
     let (msg, _data, name, _status) = sync_one_site(payload.id).await?;
     let _ = audit::log(

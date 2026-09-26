@@ -353,7 +353,13 @@ fn pseudo_location_body(kind: &str, custom: &str) -> Option<String> {
 
 /// 渲染自定义 location 的指令体（含 8 空格缩进、结尾换行）；
 /// 非法/空项返回空串（入参在同步前已整体校验，这里只是渲染兜底）。
-fn render_location_body(l: &LocationSpec) -> String {
+fn render_location_body(
+    l: &LocationSpec,
+    idx: usize,
+    site_id: i64,
+    waf_ready: bool,
+    dry_run_ok: bool,
+) -> String {
     let mut b = String::new();
     match l.kind.trim().to_lowercase().as_str() {
         "proxy" => {
@@ -449,6 +455,69 @@ fn render_location_body(l: &LocationSpec) -> String {
         }
         _ => {}
     }
+    // ── 本 location 的限速 / 限并发 / 下载限速（zone 见 ensure_limit_zones）──
+    if l.limit_req_rate > 0 {
+        let burst = if l.limit_req_burst > 0 {
+            format!(" burst={}", l.limit_req_burst)
+        } else {
+            String::new()
+        };
+        let mode = if l.limit_req_burst > 0 {
+            match l.limit_req_mode.trim().to_lowercase().as_str() {
+                // 超出速率的请求排队（最多 burst 个），不立即 429
+                "delay" => format!(" delay={}", l.limit_req_burst),
+                _ => " nodelay".to_string(),
+            }
+        } else {
+            String::new()
+        };
+        b.push_str(&format!(
+            "        limit_req zone=zap_req_{site_id}_{idx}{burst}{mode};\n"
+        ));
+        if l.limit_req_status > 0 {
+            b.push_str(&format!("        limit_req_status {};\n", l.limit_req_status));
+        }
+        if l.limit_dry_run && dry_run_ok {
+            b.push_str("        limit_req_dry_run on;\n");
+        }
+    }
+    if l.limit_conn_num > 0 {
+        b.push_str(&format!(
+            "        limit_conn zap_conn_{site_id}_{idx} {};\n",
+            l.limit_conn_num
+        ));
+        if l.limit_conn_status > 0 {
+            b.push_str(&format!("        limit_conn_status {};\n", l.limit_conn_status));
+        }
+    }
+    // 下载限速：先给 limit_rate_after（前 N MB 不限速），再给 limit_rate
+    if l.limit_rate > 0 {
+        if l.limit_rate_after > 0 {
+            b.push_str(&format!("        limit_rate_after {}m;\n", l.limit_rate_after));
+        }
+        b.push_str(&format!("        limit_rate {}k;\n", l.limit_rate));
+    }
+    // 该 location 关掉 WAF（上传接口 / 管理后台等误拦场景）
+    if l.no_waf && waf_ready {
+        b.push_str("        modsecurity off;\n");
+    }
+    // 自定义限速响应：跳到 server 内的 named location（见调用处）
+    if loc_limited(l) && !l.limit_body.trim().is_empty() {
+        let mut codes: Vec<u16> = Vec::new();
+        if l.limit_req_rate > 0 {
+            codes.push(if l.limit_req_status > 0 { l.limit_req_status } else { 429 });
+        }
+        if l.limit_conn_num > 0 {
+            codes.push(if l.limit_conn_status > 0 { l.limit_conn_status } else { 503 });
+        }
+        codes.sort_unstable();
+        codes.dedup();
+        let codes: Vec<String> = codes.iter().map(|c| c.to_string()).collect();
+        b.push_str(&format!(
+            "        error_page {} = @zap_limit_{site_id}_{idx};\n",
+            codes.join(" ")
+        ));
+    }
     b
 }
 
@@ -495,25 +564,36 @@ fn sanitize_ciphers(raw: &str) -> String {
 
 /// nginx ≥ 1.25.1 起 `listen ... http2` 参数被移除，改为 server 内 `http2 on;`。
 /// 探测版本以决定指令写法；版本未知时按新语法（面板分发的 Nginx 均为新版本）。
-fn nginx_http2_on_syntax(bin: &std::path::Path) -> bool {
-    let Ok(out) = std::process::Command::new(bin).arg("-v").output() else {
-        return true;
-    };
+/// 解析 `nginx -v` 输出里的主次版本号
+fn nginx_version(bin: &std::path::Path) -> Option<(u32, u32)> {
+    let out = std::process::Command::new(bin).arg("-v").output().ok()?;
     let raw = if out.stderr.is_empty() {
         String::from_utf8_lossy(&out.stdout).into_owned()
     } else {
         String::from_utf8_lossy(&out.stderr).into_owned()
     };
-    let Some(idx) = raw.rfind('/') else {
-        return true;
-    };
+    let idx = raw.rfind('/')?;
     let ver: String = raw[idx + 1..]
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect();
     let nums: Vec<u32> = ver.split('.').filter_map(|p| p.parse().ok()).collect();
     match nums.as_slice() {
-        [maj, min, ..] => (*maj, *min) >= (1, 25),
+        [maj, min, ..] => Some((*maj, *min)),
+        _ => None,
+    }
+}
+
+/// `limit_req_dry_run` 需要 nginx ≥ 1.17.1：老版本渲染出来会让 `nginx -t` 直接失败，
+/// 进而整站配置回滚，所以版本不够就跳过这条指令（降级为「照常拦截」）。
+fn nginx_dry_run_ok(bin: &std::path::Path) -> bool {
+    nginx_version(bin).is_some_and(|(maj, min)| (maj, min) >= (1, 17))
+}
+
+fn nginx_http2_on_syntax(bin: &std::path::Path) -> bool {
+    match nginx_version(bin) {
+        Some((maj, min)) => (maj, min) >= (1, 25),
+        // 取不到版本时按新语法处理（与历史行为一致）
         _ => true,
     }
 }
@@ -536,6 +616,8 @@ struct VhostRenderSpec<'a> {
     error_log: Option<&'a str>,
     /// 站点独立 WAF 审计日志路径（None = 未规划日志目录，不渲染 SecAuditLog）
     waf_log: Option<&'a str>,
+    /// nginx ≥ 1.17.1：支持 `limit_req_dry_run`（老版本不渲染该指令）
+    dry_run_ok: bool,
     site_type: &'a str,
     pseudo_static: &'a str,
     pseudo_custom: &'a str,
@@ -575,14 +657,126 @@ fn listen_directive(ipv4: &str, ipv6: &str, port: u16, suffix: &str) -> String {
 /// `zone=` / `burst=` / `nodelay|delay=`，多写一个 rate 就是
 /// `invalid number of arguments`。所以每个站点一份 zone，rate 跟着站点走。
 /// 站点停用后残留一份未被引用的 zone 定义无害。
-fn ensure_limit_zones(site_id: i64, rate: u32) -> Result<(), String> {
+/// 白名单解析：只保留合法的单 IP / CIDR（其余丢弃）。
+/// 允许逗号、空格、换行分隔；逐项做字符与数值校验，避免把用户输入直接写进配置。
+fn norm_ip_list(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in s.split(|c: char| c == ',' || c.is_whitespace()) {
+        let p = part.trim();
+        if p.is_empty() || !p.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '/') {
+            continue;
+        }
+        let (ip, mask) = match p.split_once('/') {
+            Some((a, b)) => (a, b),
+            None => (p, ""),
+        };
+        // 每段 0-255；掩码 0-32
+        if !ip.split('.').all(|o| o.parse::<u8>().is_ok()) {
+            continue;
+        }
+        if !mask.is_empty() && mask.parse::<u8>().map(|n| n > 32).unwrap_or(true) {
+            continue;
+        }
+        if !out.iter().any(|x| x == p) {
+            out.push(p.to_string());
+        }
+    }
+    out
+}
+
+/// 白名单生效后的限速 key：命中白名单 → 空串（nginx 对空 key 不计数，等于不限速）
+fn limit_key_of(site_id: i64, wl: &[String]) -> String {
+    if wl.is_empty() {
+        "$binary_remote_addr".to_string()
+    } else {
+        format!("$zap_key_{site_id}")
+    }
+}
+
+/// 发布站点限速 / 限并发的共享 zone（http 上下文）。
+///
+/// `rate` 只能写在 `limit_req_zone` 上（`limit_req` 指令没有 rate 参数），所以
+/// **站点级与每个 location 级各用一条 zone**：站点级 `zap_req_<site>`，第 i 个
+/// location 用 `zap_req_<site>_<i>`，location 才能有自己的速率。
+fn ensure_limit_zones(
+    site_id: i64,
+    sec: Option<&SiteSecuritySpec>,
+    locations: &[LocationSpec],
+) -> Result<(), String> {
+    let wl = sec.map(|s| norm_ip_list(&s.whitelist)).unwrap_or_default();
+    let key = limit_key_of(site_id, &wl);
+    let mut zones = String::new();
+    if let Some(s) = sec {
+        if s.limit_req_enable {
+            zones.push_str(&format!(
+                "limit_req_zone {key} zone=zap_req_{site_id}:1m rate={}r/s;\n",
+                s.limit_req_rate.max(1)
+            ));
+        }
+        if s.limit_conn_enable {
+            zones.push_str(&format!(
+                "limit_conn_zone {key} zone=zap_conn_{site_id}:1m;\n"
+            ));
+        }
+    }
+    for (i, l) in locations.iter().enumerate() {
+        if l.limit_req_rate > 0 {
+            zones.push_str(&format!(
+                "limit_req_zone {key} zone=zap_req_{site_id}_{i}:1m rate={}r/s;\n",
+                l.limit_req_rate
+            ));
+        }
+        if l.limit_conn_num > 0 {
+            zones.push_str(&format!(
+                "limit_conn_zone {key} zone=zap_conn_{site_id}_{i}:1m;\n"
+            ));
+        }
+    }
+    if zones.is_empty() {
+        return Ok(());
+    }
+    // 白名单：命中则 key 为空串（不计数），未命中才是真实 IP
+    let wl_block = if wl.is_empty() {
+        String::new()
+    } else {
+        let mut g = format!(
+            "# 白名单：命中后限速 key 置空（不计数）\n\
+geo $binary_remote_addr $zap_wl_{site_id} {{\n    default 0;\n"
+        );
+        for ip in &wl {
+            g.push_str(&format!("    {ip} 1;\n"));
+        }
+        g.push_str("}\n");
+        g.push_str(&format!(
+            "map $zap_wl_{site_id} $zap_key_{site_id} {{\n    default $binary_remote_addr;\n    1 \"\";\n}}\n"
+        ));
+        g
+    };
     let content = format!(
-        "# Generated by Zap Panel — 站点 #{site_id} 限速 / 限并发共享 zone — DO NOT EDIT\n\
-limit_req_zone $binary_remote_addr zone=zap_req_{site_id}:1m rate={rate}r/s;\n\
-limit_conn_zone $binary_remote_addr zone=zap_conn_{site_id}:1m;\n"
+        "# Generated by Zap Panel — 站点 #{site_id} 限速 / 限并发共享 zone — DO NOT EDIT\n{wl_block}{zones}"
     );
     super::webconf::publish_named("nginx", &format!("00-zap-limits-{site_id}.conf"), &content)
         .map(|_| ())
+}
+
+/// 该 location 是否启用了限速 / 限并发（决定要不要建 zone、要不要输出 error_page）
+fn loc_limited(l: &LocationSpec) -> bool {
+    l.limit_req_rate > 0 || l.limit_conn_num > 0
+}
+
+/// location 限速命中时的响应码（限速优先，其次并发；0 用 nginx 默认值）
+fn loc_limit_status(l: &LocationSpec) -> u16 {
+    if l.limit_req_rate > 0 {
+        if l.limit_req_status > 0 {
+            l.limit_req_status
+        } else {
+            429
+        }
+    } else if l.limit_conn_status > 0 {
+        l.limit_conn_status
+    } else {
+        503
+    }
 }
 
 /// nginx 单引号字符串转义：规则体里出现 `'` 会提前闭合字符串（进而让 `nginx -t`
@@ -602,6 +796,7 @@ fn render_security(
     sec: Option<&SiteSecuritySpec>,
     waf_ready: bool,
     log_dir: Option<&str>,
+    dry_run_ok: bool,
 ) -> String {
     let Some(s) = sec else {
         return String::new();
@@ -613,6 +808,14 @@ fn render_security(
         // 引擎不写死在全局：站点可单独选「拦截 / 仅检测 / 跟随全局」，
         // 自定义规则（管理组维护）追加在引擎指令之后。
         let mut rules = String::new();
+        // 白名单：命中的请求直接关掉引擎（内网 / 健康检查 / 搜索引擎）
+        let wl = norm_ip_list(&s.whitelist);
+        if !wl.is_empty() {
+            rules.push_str(&format!(
+                "SecRule REMOTE_ADDR \"@ipMatch {}\" \"id:9000100,phase:1,pass,nolog,ctl:ruleEngine=Off\"\n",
+                wl.join(",")
+            ));
+        }
         match s.waf_mode {
             1 => rules.push_str("SecRuleEngine On\n"),
             2 => rules.push_str("SecRuleEngine DetectionOnly\n"),
@@ -648,6 +851,10 @@ fn render_security(
             "    limit_req zone=zap_req_{site_id} burst={burst} nodelay;\n\
     limit_req_status 429;\n"
         ));
+        // 干跑：命中只记日志不拦，先观察一段时间再正式启用
+        if s.limit_dry_run && dry_run_ok {
+            out.push_str("    limit_req_dry_run on;\n");
+        }
     }
     if s.limit_conn_enable {
         out.push_str(&format!(
@@ -672,6 +879,7 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         access_log,
         error_log,
         waf_log,
+        dry_run_ok,
         site_type,
         pseudo_static,
         pseudo_custom,
@@ -791,16 +999,27 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         }
     }
     // 自定义 locations（proxy 必须提供，php/static 用于扩展覆盖）
-    for l in locations {
+    for (i, l) in locations.iter().enumerate() {
         let path = l.path.trim();
         if !path.starts_with('/') {
             continue;
         }
-        let body = render_location_body(l);
+        let body = render_location_body(l, i, site_id, super::waf::waf_ready(), dry_run_ok);
         if body.is_empty() {
             continue;
         }
         core.push_str(&format!("\n    location {path} {{\n{body}    }}\n"));
+        // 自定义限速响应体：server 级 named location，供上面的 error_page 跳转
+        if loc_limited(l) && !l.limit_body.trim().is_empty() {
+            core.push_str(&format!(
+                "\n    location @zap_limit_{site_id}_{i} {{\n\
+                   default_type text/html;\n\
+                   return {} '{}';\n\
+                 }}\n",
+                loc_limit_status(l),
+                nginx_single_quoted(l.limit_body.trim())
+            ));
+        }
     }
 
     // SSL/TLS：绑定证书后才监听 443；允许 HTTP 跳转时 80 只保留 301
@@ -843,6 +1062,7 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
                 security,
                 super::waf::waf_ready(),
                 waf_log,
+                dry_run_ok,
             ));
             out.push_str("    return 301 https://$host$request_uri;\n");
             out.push_str("}\n\n");
@@ -854,6 +1074,7 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
                 security,
                 super::waf::waf_ready(),
                 waf_log,
+                dry_run_ok,
             ));
             out.push_str(sd);
             out.push_str(&core);
@@ -868,6 +1089,7 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
                 security,
                 super::waf::waf_ready(),
                 waf_log,
+                dry_run_ok,
             ));
             out.push_str(&core);
             out.push_str("}\n");
@@ -880,6 +1102,7 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
                 security,
                 super::waf::waf_ready(),
                 waf_log,
+                dry_run_ok,
             ));
                 out.push_str(sd);
                 out.push_str(&core);
@@ -1766,6 +1989,7 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         access_log: access_log.as_deref(),
         error_log: error_log.as_deref(),
         waf_log: waf_log.as_deref(),
+        dry_run_ok: nginx_dry_run_ok(&bin),
         site_type: &site_type,
         pseudo_static: &pseudo_static,
         pseudo_custom: &pseudo_custom,
@@ -1814,10 +2038,14 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         return Err(e);
     }
 
-    // 站点安全：启用限速/限并发时先幂等发布共享 zone（http 上下文，所有站点复用）
-    if let Some(sec) = security.as_ref()
-        && (sec.limit_req_enable || sec.limit_conn_enable)
-        && let Err(e) = ensure_limit_zones(site_id, sec.limit_req_rate.max(1))
+    // 站点安全：启用限速/限并发时先幂等发布共享 zone（http 上下文，所有站点复用）。
+    // location 级限速也要各自一条 zone（速率只能写在 zone 上）。
+    let need_zones = security
+        .as_ref()
+        .is_some_and(|s| s.limit_req_enable || s.limit_conn_enable)
+        || locations.iter().any(loc_limited);
+    if need_zones
+        && let Err(e) = ensure_limit_zones(site_id, security.as_ref(), &locations)
     {
         if injected {
             super::webconf::restore_include(&conf_file);
@@ -2047,8 +2275,8 @@ mod tests {
     #[test]
     fn security_off_renders_nothing() {
         let sec = SiteSecuritySpec::default();
-        assert_eq!(render_security(7, Some(&sec), true, None), "");
-        assert_eq!(render_security(7, None, true, None), "");
+        assert_eq!(render_security(7, Some(&sec), true, None, true), "");
+        assert_eq!(render_security(7, None, true, None, true), "");
     }
 
     /// 限速 / 限并发：按配置渲染，超额统一回 429
@@ -2062,7 +2290,7 @@ mod tests {
             limit_conn_num: 50,
             ..Default::default()
         };
-        let s = render_security(7, Some(&sec), false, None);
+        let s = render_security(7, Some(&sec), false, None, true);
         // rate 只能写在 zone 定义里，使用处只保留 zone / burst / nodelay
         assert!(s.contains("limit_req zone=zap_req_7 burst=20 nodelay;"), "{s}");
         assert!(!s.contains("rate="), "{s}");
@@ -2080,10 +2308,87 @@ mod tests {
             waf_rules: "SecRule ARGS \"@rx attack\" \"id:1001,deny,status:403\"".into(),
             ..Default::default()
         };
-        let s = render_security(7, Some(&sec), true, None);
+        let s = render_security(7, Some(&sec), true, None, true);
         assert!(s.contains("modsecurity on;"), "{s}");
         assert!(s.contains("modsecurity_rules 'SecRuleEngine On"), "{s}");
         assert!(s.contains("id:1001,deny,status:403"), "{s}");
+    }
+
+    /// 白名单：非法项被丢弃，只留下合法 IP / CIDR
+    #[test]
+    fn whitelist_drops_invalid() {
+        let wl = norm_ip_list("10.0.0.0/8, 1.2.3.4, not-an-ip, 999.1.1.1, $(id), 10.0.0.0/99");
+        assert_eq!(wl, vec!["10.0.0.0/8".to_string(), "1.2.3.4".to_string()]);
+    }
+
+    /// 干跑：命中只记日志不拦（nginx ≥ 1.17.1 才渲染）
+    #[test]
+    fn limit_dry_run_rendered_when_supported() {
+        let mut sec = SiteSecuritySpec {
+            limit_req_enable: true,
+            limit_dry_run: true,
+            ..Default::default()
+        };
+        assert!(render_security(7, Some(&sec), false, None, true).contains("limit_req_dry_run on;"));
+        // 老 nginx：不渲染，避免 nginx -t 失败导致整站回滚
+        assert!(!render_security(7, Some(&sec), false, None, false).contains("dry_run"));
+        sec.limit_dry_run = false;
+        assert!(!render_security(7, Some(&sec), false, None, true).contains("dry_run"));
+    }
+
+    /// location 级限速：专属 zone + burst/nodelay + 下载限速 + 自定义响应
+    #[test]
+    fn location_limit_renders_per_location() {
+        let l = LocationSpec {
+            path: "/dl".into(),
+            kind: "alias".into(),
+            target: "/data".into(),
+            limit_req_rate: 5,
+            limit_req_burst: 10,
+            limit_req_mode: "nodelay".into(),
+            limit_req_status: 429,
+            limit_conn_num: 4,
+            limit_rate: 500,
+            limit_rate_after: 10,
+            limit_body: "<html>slow down</html>".into(),
+            ..Default::default()
+        };
+        let b = render_location_body(&l, 2, 7, false, true);
+        assert!(b.contains("limit_req zone=zap_req_7_2 burst=10 nodelay;"), "{b}");
+        assert!(b.contains("limit_conn zap_conn_7_2 4;"), "{b}");
+        assert!(b.contains("limit_rate_after 10m;"), "{b}");
+        assert!(b.contains("limit_rate 500k;"), "{b}");
+        assert!(b.contains("error_page 429 503 = @zap_limit_7_2;"), "{b}");
+    }
+
+    /// delay 模式：突发请求排队而不是直接 429
+    #[test]
+    fn location_limit_delay_mode() {
+        let l = LocationSpec {
+            path: "/api".into(),
+            kind: "proxy".into(),
+            target: "http://127.0.0.1:8080".into(),
+            limit_req_rate: 2,
+            limit_req_burst: 6,
+            limit_req_mode: "delay".into(),
+            ..Default::default()
+        };
+        let b = render_location_body(&l, 0, 3, false, true);
+        assert!(b.contains("limit_req zone=zap_req_3_0 burst=6 delay=6;"), "{b}");
+    }
+
+    /// location 可单独关闭 WAF（仅全局 WAF 可用时才输出）
+    #[test]
+    fn location_can_disable_waf() {
+        let l = LocationSpec {
+            path: "/upload".into(),
+            kind: "alias".into(),
+            target: "/data/up".into(),
+            no_waf: true,
+            ..Default::default()
+        };
+        assert!(render_location_body(&l, 0, 1, true, true).contains("modsecurity off;"));
+        assert!(!render_location_body(&l, 0, 1, false, true).contains("modsecurity"));
     }
 
     /// 站点独立审计日志：有 log_root 时渲染 SecAuditLog 到 <log_root>/waf.log
@@ -2093,11 +2398,11 @@ mod tests {
             waf_enable: true,
             ..Default::default()
         };
-        let s = render_security(7, Some(&sec), true, Some("/home/u/logs/site1"));
+        let s = render_security(7, Some(&sec), true, Some("/home/u/logs/site1"), true);
         assert!(s.contains("SecAuditEngine RelevantOnly"), "{s}");
         assert!(s.contains("SecAuditLog /home/u/logs/site1/waf.log"), "{s}");
         // 没有站点日志目录（未规划 log_root）时不落审计日志，避免写到不可控路径
-        let s2 = render_security(7, Some(&sec), true, None);
+        let s2 = render_security(7, Some(&sec), true, None, true);
         assert!(!s2.contains("SecAuditLog"), "{s2}");
     }
 
@@ -2109,7 +2414,7 @@ mod tests {
             waf_mode: 0,
             ..Default::default()
         };
-        let s = render_security(7, Some(&sec), true, None);
+        let s = render_security(7, Some(&sec), true, None, true);
         assert!(s.contains("modsecurity on;"), "{s}");
         assert!(!s.contains("modsecurity_rules"), "{s}");
     }
@@ -2122,7 +2427,7 @@ mod tests {
             waf_rules: "SecRule ARGS \"@rx '\" \"id:1,deny\"".into(),
             ..Default::default()
         };
-        let s = render_security(7, Some(&sec), true, None);
+        let s = render_security(7, Some(&sec), true, None, true);
         assert!(s.contains("\\'"), "{s}");
     }
 
@@ -2130,8 +2435,8 @@ mod tests {
     #[test]
     fn security_waf_requires_global_ready() {
         let sec = SiteSecuritySpec { waf_enable: true, ..Default::default() };
-        assert!(render_security(7, Some(&sec), true, None).contains("modsecurity on;"));
-        assert!(!render_security(7, Some(&sec), false, None).contains("modsecurity"));
+        assert!(render_security(7, Some(&sec), true, None, true).contains("modsecurity on;"));
+        assert!(!render_security(7, Some(&sec), false, None, true).contains("modsecurity"));
     }
 
     /// 0 值兜底：rate / burst / conn 为 0 时 Nginx 不接受，渲染前抬到 1
@@ -2145,7 +2450,7 @@ mod tests {
             limit_conn_num: 0,
             ..Default::default()
         };
-        let s = render_security(7, Some(&sec), false, None);
+        let s = render_security(7, Some(&sec), false, None, true);
         assert!(s.contains("burst=1"), "{s}");
         assert!(s.contains("limit_conn zap_conn_7 1;"), "{s}");
     }
@@ -2164,6 +2469,7 @@ mod tests {
             access_log: None,
             error_log: None,
             waf_log: None,
+            dry_run_ok: true,
             site_type: "php",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2194,6 +2500,7 @@ mod tests {
             access_log: None,
             error_log: None,
             waf_log: None,
+            dry_run_ok: true,
             site_type: "php",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2295,6 +2602,7 @@ mod tests {
             access_log,
             error_log,
             waf_log: None,
+            dry_run_ok: true,
             site_type: "php",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2425,6 +2733,7 @@ mod tests {
             access_log: None,
             error_log: None,
             waf_log: None,
+            dry_run_ok: true,
             site_type: "static",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2453,6 +2762,7 @@ mod tests {
             access_log: None,
             error_log: None,
             waf_log: None,
+            dry_run_ok: true,
             site_type: "php",
             pseudo_static: "thinkphp",
             pseudo_custom: "",
@@ -2479,6 +2789,7 @@ mod tests {
             access_log: None,
             error_log: None,
             waf_log: None,
+            dry_run_ok: true,
             site_type: "php",
             pseudo_static: "laravel",
             pseudo_custom: "",
@@ -2540,6 +2851,7 @@ mod tests {
             access_log: None,
             error_log: None,
             waf_log: None,
+            dry_run_ok: true,
             site_type: "proxy",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2622,6 +2934,7 @@ mod tests {
                 access_log: None,
                 error_log: None,
                 waf_log: None,
+            dry_run_ok: true,
                 site_type: "proxy",
                 pseudo_static: "none",
                 pseudo_custom: "",
@@ -2816,6 +3129,7 @@ mod tests {
             access_log: None,
             error_log: None,
             waf_log: None,
+            dry_run_ok: true,
             site_type: "php",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2855,6 +3169,7 @@ mod tests {
             access_log: None,
             error_log: None,
             waf_log: None,
+            dry_run_ok: true,
             site_type: "static",
             pseudo_static: "none",
             pseudo_custom: "",

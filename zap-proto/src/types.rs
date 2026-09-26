@@ -105,6 +105,13 @@ pub struct SiteSecuritySpec {
     /// 非 0 时渲染进 `modsecurity_rules 'SecRuleEngine ...';`，站点可覆盖全局形态。
     #[serde(default = "default_waf_mode")]
     pub waf_mode: u8,
+    /// 限速 / WAF 白名单：IP 或 CIDR，逗号或换行分隔（如 `10.0.0.0/8, 1.2.3.4`）。
+    /// 命中后：限速 key 置空（不计数）+ WAF 关引擎（`ctl:ruleEngine=Off`）。
+    #[serde(default)]
+    pub whitelist: String,
+    /// 限速「干跑」：命中只写日志不拦截（`limit_req_dry_run on`，需 nginx ≥ 1.17.1）
+    #[serde(default)]
+    pub limit_dry_run: bool,
     /// 该站点启用独立 WAF 审计日志：写到站点日志目录下的 `waf.log`（面板可查看/轮转）
     #[serde(default = "default_true")]
     pub waf_audit: bool,
@@ -134,6 +141,8 @@ impl Default for SiteSecuritySpec {
             // 与反序列化缺省保持一致：新站点 WAF 形态默认「拦截」
             waf_mode: default_waf_mode(),
             waf_audit: default_true(),
+            whitelist: String::new(),
+            limit_dry_run: false,
             waf_rules: String::new(),
             limit_req_enable: false,
             limit_req_rate: 0,
@@ -189,6 +198,40 @@ pub struct LocationSpec {
     /// 关闭代理缓冲（proxy_buffering off，SSE / 流式输出场景）
     #[serde(default)]
     pub no_buffering: bool,
+    // ── location 级限速 / 限并发（0 = 不限；会为该 location 生成专属 zone）──
+    /// 请求限速速率（r/s）：写在 zone 上，故每个 location 用独立 zone
+    #[serde(default)]
+    pub limit_req_rate: u32,
+    /// 突发放行数（0 = 不允许突发）
+    #[serde(default)]
+    pub limit_req_burst: u32,
+    /// 突发策略：nodelay（默认，立即放行）/ delay（超出部分排队）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub limit_req_mode: String,
+    /// 限速命中响应码（0 = nginx 默认 429）
+    #[serde(default)]
+    pub limit_req_status: u16,
+    /// 单 IP 并发上限
+    #[serde(default)]
+    pub limit_conn_num: u32,
+    /// 并发超限响应码（0 = nginx 默认 503）
+    #[serde(default)]
+    pub limit_conn_status: u16,
+    /// 下载速率上限（KB/s；0 = 不限）→ `limit_rate Nk`
+    #[serde(default)]
+    pub limit_rate: u32,
+    /// 前 N MB 不限速（0 = 不限）→ `limit_rate_after Nm`
+    #[serde(default)]
+    pub limit_rate_after: u32,
+    /// 限速 / 并发命中时的响应体（HTML；空 = nginx 默认页）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub limit_body: String,
+    /// 该 location 关闭 WAF（modsecurity off；如上传接口、管理后台）
+    #[serde(default)]
+    pub no_waf: bool,
+    /// 本 location 限速「干跑」：命中只记日志不拦（`limit_req_dry_run on`）
+    #[serde(default)]
+    pub limit_dry_run: bool,
 }
 
 /// `zapd` -> `zapexec` 的请求。只有白名单动词，刻意不提供任意 shell 执行。
