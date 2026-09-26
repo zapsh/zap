@@ -128,10 +128,10 @@ pub async fn dispatch(req: Request) -> Response {
         Request::FileUpload {
             path,
             name,
-            content,
+            tmp,
             as_user,
             skip_owner_check,
-        } => file::upload(path, name, content, as_user, skip_owner_check).await,
+        } => file::upload(path, name, tmp, as_user, skip_owner_check).await,
         Request::FileInfo { path } => file::info(path).await,
         Request::FileChmod {
             path,

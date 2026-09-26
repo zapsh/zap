@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 
 use crate::db;
 use crate::zap::{
@@ -126,6 +127,14 @@ fn sanitize_relative(name: &str) -> String {
     } else {
         clean
     }
+}
+
+/// 上传临时文件目录（面板数据盘）：大文件边收边落盘，收完由 zapexec 搬走。
+fn upload_tmp_dir() -> Result<PathBuf, ZapError> {
+    let dir = crate::zap::appstore::data_dir().join("tmp").join("upload");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| ZapError::New(-1, format!("创建上传临时目录失败: {}", e)))?;
+    Ok(dir)
 }
 
 /// 非管理员可访问的私有目录前缀（自己的 home 与私有临时目录）。
@@ -761,30 +770,82 @@ pub async fn file_upload(
     let (as_user, skip_owner_check) = actor_identity(&claims).await?;
     let mut uploaded: Vec<String> = Vec::new();
 
-    while let Ok(Some(field)) = multipart.next_field().await {
+    // 边收边写盘：早先是 `field.bytes()` 把整个文件读进内存再 base64 放大 1.33 倍，
+    // 大文件会把 zapd 撑爆。落盘目录放在面板数据盘（不是 /tmp，避免大文件撑满内存盘）。
+    let run_dir = upload_tmp_dir()?.join(format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        rand::random::<u32>()
+    ));
+    tokio::fs::create_dir_all(&run_dir)
+        .await
+        .map_err(|e| ZapError::New(-1, format!("创建上传临时目录失败: {}", e)))?;
+
+    let mut seq = 0u32;
+    loop {
+        let mut field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            // 请求体超限（未放开 DefaultBodyLimit 时 axum 默认只收 2MB）、连接中断
+            // 都会走到这里。以前是 `while let Ok(Some(..))` 直接吞掉，表现为
+            // 「点了上传没反应 / 报没有上传文件」，真实原因被藏起来了。
+            Err(e) => {
+                let _ = tokio::fs::remove_dir_all(&run_dir).await;
+                return Err(ZapError::New(-1, format!("上传中断：{}", e)));
+            }
+        };
         let file_name = field.file_name().unwrap_or("unnamed").to_string();
         // 目录上传时浏览器把相对路径放进 filename（`dir/sub/a.txt`），
         // 清洗后交给 zapexec 逐级建目录；越界段由 sanitize_relative 过滤。
         let rel_name = sanitize_relative(&file_name);
 
-        let data = field
-            .bytes()
+        seq += 1;
+        let tmp_path = run_dir.join(format!("{seq}.part"));
+        let mut out = tokio::fs::File::create(&tmp_path)
             .await
-            .map_err(|e| ZapError::New(-1, format!("上传失败: {}", e)))?;
+            .map_err(|e| ZapError::New(-1, format!("创建临时文件失败: {}", e)))?;
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    if let Err(e) = out.write_all(&chunk).await {
+                        let _ = tokio::fs::remove_dir_all(&run_dir).await;
+                        return Err(ZapError::New(-1, format!("写入临时文件失败: {}", e)));
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = tokio::fs::remove_dir_all(&run_dir).await;
+                    return Err(ZapError::New(-1, format!("接收文件「{}」失败：{}", rel_name, e)));
+                }
+            }
+        }
+        if let Err(e) = out.flush().await {
+            let _ = tokio::fs::remove_dir_all(&run_dir).await;
+            return Err(ZapError::New(-1, format!("写入临时文件失败: {}", e)));
+        }
+        drop(out);
 
         let resp = crate::zapexec::call(Request::FileUpload {
             path: resolved_dir.to_string_lossy().to_string(),
             name: rel_name.clone(),
-            content: zap_proto::b64_encode(&data),
+            tmp: tmp_path.to_string_lossy().to_string(),
             as_user: as_user.clone(),
             skip_owner_check,
         })
-        .await?;
+        .await;
+        // 成功时 exec 已把临时文件搬走/删除；失败时这里兜底清理，不留半截文件
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        let resp = resp?;
         if resp.code != 0 {
+            let _ = tokio::fs::remove_dir_all(&run_dir).await;
             return Err(ZapError::New(resp.code, resp.message));
         }
         uploaded.push(rel_name);
     }
+    let _ = tokio::fs::remove_dir(&run_dir).await;
 
     if uploaded.is_empty() {
         return Err(ZapError::New(-1, "没有上传文件".to_string()));

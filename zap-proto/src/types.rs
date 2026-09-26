@@ -279,12 +279,17 @@ pub enum Request {
     /// 下载（base64 字节）
     #[serde(rename = "file.download")]
     FileDownload { path: String },
-    /// 上传（base64 字节）
+    /// 上传：把 zapd 已落盘的临时文件搬到目标目录。
+    ///
+    /// 早先这里传的是 base64 全文，等于把整个文件塞进 zapd 内存再放大 1.33 倍；
+    /// 现在 zapd 边收边写临时文件（`{data}/tmp/upload/`），exec 侧只负责搬移与
+    /// 归属处理，大文件不再受内存约束。
     #[serde(rename = "file.upload")]
     FileUpload {
         path: String,
         name: String,
-        content: String,
+        /// zapd 侧已完整写入的临时文件绝对路径（搬完由 exec 删除）
+        tmp: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_user: Option<String>,
         #[serde(default)]

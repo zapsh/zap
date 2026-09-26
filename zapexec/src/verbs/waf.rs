@@ -79,10 +79,13 @@ fn nginx_v(bin: &Path) -> (String, String) {
     } else {
         text
     };
+    // `nginx -V` 首行形如 "nginx version: nginx/1.31.5"，剥掉前缀与 `-v` 输出保持一致
     let version = text
         .lines()
         .next()
         .unwrap_or("")
+        .trim()
+        .trim_start_matches("nginx version:")
         .trim()
         .to_string();
     let args = text
@@ -225,7 +228,8 @@ fn waf_env(info: &NginxInfo) -> WafEnv {
     let main_conf = [rules_dir.join("modsecurity.conf"), PathBuf::from("/etc/modsecurity/modsecurity.conf")]
         .into_iter()
         .find(|p| p.is_file());
-    let installed = lib && so.is_some() && main_conf.is_some();
+    // 模块 .so 在盘上不等于生效：主配置里没 load_module，nginx 根本不会加载它
+    let installed = lib && so.is_some() && main_conf.is_some() && conf_loads_module(&info.conf);
     let engine = main_conf.as_ref().map(|p| engine_of(p)).unwrap_or_default();
     let audit_log = main_conf.as_ref().and_then(|p| audit_log_of(p));
     WafEnv {
@@ -254,6 +258,14 @@ fn blockers(info: &NginxInfo, env: &WafEnv) -> Vec<String> {
     }
     if !has_cmd("tar") {
         out.push("缺少 tar".to_string());
+    }
+    // 已编出模块但没挂上：不用重装，手工加一行 load_module 即可
+    if env.module_so.is_some() && !conf_loads_module(&info.conf) {
+        out.push(
+            "模块已编译，但 nginx.conf 顶部缺少 load_module：\
+             加一行 `load_module modules/ngx_http_modsecurity_module.so;` 即可生效"
+                .to_string(),
+        );
     }
     // 动态模块的硬门槛：nginx 必须带 --with-compat，否则模块签名不匹配加载失败
     if !info.args.contains("--with-compat") {
@@ -742,6 +754,39 @@ mod tests {
         let inside = env.rules_dir.join("zap-test.conf").display().to_string();
         assert!(validate_rule_path(&env, &inside).is_ok());
         let _ = std::fs::remove_dir_all(&env.rules_dir);
+    }
+
+    #[test]
+    fn module_without_load_module_is_not_installed() {
+        // 编出 .so 但主配置没 load_module = 没生效，且应给出可操作指引（而非要求重装）
+        let dir = std::env::temp_dir().join("zap-waf-mod-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("modsecurity.conf");
+        std::fs::write(&main, "SecRuleEngine DetectionOnly\n").unwrap();
+        let info = NginxInfo {
+            bin: PathBuf::from("/usr/local/apps/nginx/sbin/nginx"),
+            conf: PathBuf::from("/usr/local/apps/nginx/conf/nginx.conf"),
+            version: "nginx/1.31.5".to_string(),
+            args: "--prefix=/usr/local/apps/nginx --with-compat".to_string(),
+        };
+        let env = WafEnv {
+            installed: false,
+            module_so: Some(PathBuf::from(
+                "/usr/local/apps/nginx/modules/ngx_http_modsecurity_module.so",
+            )),
+            libmodsecurity: true,
+            rules_dir: dir.clone(),
+            main_conf: Some(main),
+            crs: false,
+            engine: "DetectionOnly".to_string(),
+            audit_log: None,
+        };
+        let b = blockers(&info, &env);
+        assert!(
+            b.iter().any(|x| x.contains("load_module")),
+            "应提示补 load_module 而不是要求重装：{b:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

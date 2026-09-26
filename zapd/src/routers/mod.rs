@@ -93,6 +93,13 @@ static INDEX_HTML: &str = "index.html";
 /// 挡住明显异常的请求（axum 默认上限是 2 MB，对云存储来说太小）。
 const CLOUD_UPLOAD_LIMIT: usize = 4 * 1024 * 1024 * 1024;
 
+/// 本地文件管理器上传的请求体上限（同云存储，4 GiB）。
+///
+/// 这里是**必须**显式放开的：axum 默认上限只有 2 MB，而 `/system/files/upload`
+/// 不设 layer 就走默认值，任何超过 2 MB 的文件都会被拒 —— 上传却报「没有收到
+/// 上传文件」，真实原因被吞掉。本地上传同样是流式落盘，故可以放到与云端一致。
+const LOCAL_UPLOAD_LIMIT: usize = 4 * 1024 * 1024 * 1024;
+
 async fn index_html() -> Response {
     match Assets::get(INDEX_HTML) {
         Some(content) => {
@@ -668,7 +675,11 @@ fn api_routers() -> Router {
         .route("/system/files/copy", post(system_file::file_copy))
         .route("/system/files/archive", post(system_file::file_archive))
         .route("/system/files/download", get(system_file::file_download))
-        .route("/system/files/upload", post(system_file::file_upload))
+        // 放开请求体上限：不放就是 axum 默认的 2 MB，稍大一点的文件都传不上来
+        .route(
+            "/system/files/upload",
+            post(system_file::file_upload).layer(DefaultBodyLimit::max(LOCAL_UPLOAD_LIMIT)),
+        )
         .route("/system/files/info", get(system_file::file_info))
         // 云存储（多套配置 + 对象浏览/传输）
         .route("/system/cloud/stores", get(cloud::store_list))

@@ -14,7 +14,7 @@ use std::time::UNIX_EPOCH;
 use serde_json::json;
 use zip::{ZipWriter, write::FileOptions};
 
-use zap_proto::{Response, b64_decode, b64_encode};
+use zap_proto::{Response, b64_encode};
 
 #[derive(serde::Serialize)]
 struct FileInfo {
@@ -557,7 +557,7 @@ pub async fn download(path: String) -> Response {
 pub async fn upload(
     path: String,
     name: String,
-    content: String,
+    tmp: String,
     as_user: Option<String>,
     skip_owner_check: bool,
 ) -> Response {
@@ -585,38 +585,40 @@ pub async fn upload(
             Some(r) => r,
             None => return Response::err(-1, "非法的文件名"),
         };
-        let bytes = match b64_decode(&content) {
-            Ok(b) => b,
-            Err(e) => return Response::err(-1, format!("内容解码失败: {e}")),
-        };
+        // 临时文件由 zapd 流式写入（边收边落盘），这里只搬移 —— 大文件不进内存
+        let tmp_path = PathBuf::from(&tmp);
+        if !tmp_path.is_file() {
+            return Response::err(-1, format!("上传临时文件不存在: {}", tmp_path.display()));
+        }
         let dest = dir.join(&rel);
         if let Some(parent) = dest.parent()
             && !parent.exists()
             && let Err(e) = create_dirs_owned(actor, parent)
         {
+            let _ = std::fs::remove_file(&tmp_path);
             return Response::err(-1, e);
         }
         // 覆盖同名文件仅限本人文件；新上传的文件归操作者所有
         let existed = dest.exists();
         if existed && let Err(e) = ensure_owner(actor, &dest) {
+            let _ = std::fs::remove_file(&tmp_path);
             return Response::err(-1, e);
         }
-        match std::fs::write(&dest, &bytes) {
-            Ok(_) => {
-                // 与 write 同一规则：只有新建的才归操作者，覆盖已有文件时保持原属主
-                let owner = if existed {
-                    Ok(())
-                } else {
-                    apply_owner(actor, &dest)
-                };
-                match owner {
-                    Ok(_) => {
-                        Response::ok("上传成功", Some(json!({ "name": rel.to_string_lossy() })))
-                    }
-                    Err(e) => Response::err(-1, e),
-                }
+        // 同设备用 rename（原子、无需额外空间）；跨设备（/data 与 /home 分盘）退回复制
+        if std::fs::rename(&tmp_path, &dest).is_err() {
+            if let Err(e) = std::fs::copy(&tmp_path, &dest) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Response::err(-1, format!("写入文件失败: {e}"));
             }
-            Err(e) => Response::err(-1, format!("上传失败: {e}")),
+        }
+        // rename 已消耗源文件；复制分支才需要删。两种都调一次，不存在时静默
+        let _ = std::fs::remove_file(&tmp_path);
+        // 与早先 `std::fs::write` 的落盘权限对齐，避免临时文件把 0600 带进目标
+        let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644));
+        // 与 write 同一规则：只有新建的才归操作者，覆盖已有文件时保持原属主
+        match if existed { Ok(()) } else { apply_owner(actor, &dest) } {
+            Ok(_) => Response::ok("上传成功", Some(json!({ "name": rel.to_string_lossy() }))),
+            Err(e) => Response::err(-1, e),
         }
     })
     .await
@@ -1006,6 +1008,67 @@ pub async fn archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 上传把 zapd 落好的临时文件搬到目标位置：内容一致、临时文件清掉，
+    /// 且 `dir/sub/a.txt` 这种目录结构要逐级补建（浏览器上传目录时会带上）。
+    #[tokio::test]
+    async fn upload_moves_tmp_into_place() {
+        let root = std::env::temp_dir().join("zap-upload-move-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let target = root.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let tmp = root.join("1.part");
+        std::fs::write(&tmp, b"hello zap").unwrap();
+        let resp = upload(
+            target.display().to_string(),
+            "a.txt".to_string(),
+            tmp.display().to_string(),
+            None,
+            true,
+        )
+        .await;
+        assert_eq!(resp.code, 0, "{}", resp.message);
+        assert_eq!(std::fs::read(target.join("a.txt")).unwrap(), b"hello zap");
+        assert!(!tmp.exists(), "搬完必须清掉临时文件");
+
+        // 目录上传：name 带子目录，应在目标下还原结构
+        let tmp2 = root.join("2.part");
+        std::fs::write(&tmp2, b"nested").unwrap();
+        let resp = upload(
+            target.display().to_string(),
+            "sub/dir/b.txt".to_string(),
+            tmp2.display().to_string(),
+            None,
+            true,
+        )
+        .await;
+        assert_eq!(resp.code, 0, "{}", resp.message);
+        assert_eq!(
+            std::fs::read(target.join("sub/dir/b.txt")).unwrap(),
+            b"nested"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 临时文件不在（zapd 写盘失败 / 已被清理）时必须报错，不能写出空文件。
+    #[tokio::test]
+    async fn upload_rejects_missing_tmp() {
+        let root = std::env::temp_dir().join("zap-upload-missing-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let resp = upload(
+            root.display().to_string(),
+            "a.txt".to_string(),
+            root.join("nope.part").display().to_string(),
+            None,
+            true,
+        )
+        .await;
+        assert_ne!(resp.code, 0);
+        assert!(!root.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// 缓存必须能感知文件变化：常驻进程里新建用户后应立刻显示用户名，
     /// 而不是一直回退成数字 uid。
