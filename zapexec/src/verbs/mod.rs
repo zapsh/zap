@@ -28,6 +28,7 @@ mod svc;
 mod time;
 mod upgrade;
 mod user;
+mod waf;
 mod webconf;
 
 use std::path::{Path, PathBuf};
@@ -426,6 +427,13 @@ pub async fn dispatch(req: Request) -> Response {
             name,
             log_path,
         } => php_ext::remove(&service, &name, &log_path).await,
+        // ModSecurity（WAF）：可选能力，未安装时除 status 外一律拒绝
+        Request::WafStatus => waf::status().await,
+        Request::WafInstall { log_path } => waf::install(&log_path).await,
+        Request::WafConfList => waf::conf_list().await,
+        Request::WafConfRead { path } => waf::conf_read(&path).await,
+        Request::WafConfSave { path, content } => waf::conf_save(&path, &content).await,
+        Request::WafAudit { lines } => waf::audit(lines).await,
         Request::ServicesOverview => services::overview().await,
         Request::ServicesControl { svc, action } => services::control(&svc, &action).await,
         Request::ServicesBoot { svc, enable } => services::boot(&svc, enable).await,
@@ -578,6 +586,49 @@ pub(crate) fn bash_bin() -> String {
         }
     }
     "bash".to_string()
+}
+
+/// 长任务日志：追加一行（PHP 扩展编译、WAF 安装等分钟级任务共用）。
+///
+/// 每一步都即时落盘，前端 WebSocket 才能边跑边看；任务收尾靠 [`finish_log`]。
+pub(crate) fn log_line(path: &str, text: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{text}");
+    }
+}
+
+/// 跑一步 shell：输出实时追加到日志，返回退出码。
+///
+/// 退出码由 bash 自己 echo 出来（而非 Rust 侧判断），这样脚本里出现 `exit`
+/// 之外的失败路径也能拿到真实结果。日志与命令输出都走 `>>`，不进内存。
+pub(crate) fn run_step(log: &str, title: &str, script: &str) -> i32 {
+    log_line(log, &format!("── {title} ──"));
+    let out = root_cmd(crate::verbs::platform::SHELL)
+        .args(["-c"])
+        .arg(format!(
+            "{{ {script}; }} >> {log} 2>&1; echo \"__ZAP_STEP__$?\""
+        ))
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .rsplit("__ZAP_STEP__")
+            .next()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(-1),
+        Err(_) => -1,
+    }
+}
+
+/// 写完成标记与退出码文件：`.ret` 是权威来源，日志里的 `__ZAP_DONE__` 只是展示协议。
+pub(crate) fn finish_log(log: &str, code: i32) {
+    log_line(log, &format!("__ZAP_DONE__ {code}"));
+    let ret = std::path::Path::new(log).with_extension("ret");
+    let _ = std::fs::write(ret, code.to_string());
 }
 
 /// 构造一个清空环境、仅带安全 PATH 的 root 子进程命令。

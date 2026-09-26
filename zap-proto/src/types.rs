@@ -874,6 +874,31 @@ pub enum Request {
         name: String,
         log_path: String,
     },
+    /// ModSecurity（WAF）能力探测。
+    ///
+    /// WAF 是**可选能力**：面板不会为它重编 / 替换 nginx。这里如实回答三件事：
+    /// 装没装、缺什么、能不能自动装。未安装时其余 WAF 动词一律拒绝。
+    #[serde(rename = "waf.status")]
+    WafStatus,
+    /// WAF 安装（长任务，日志约定同 [`Request::PhpExtInstall`]）。
+    ///
+    /// 仅在 [`Request::WafStatus`] 判定"可安装"时才允许启动：编译 libmodsecurity
+    /// → 编 nginx 动态模块（要求 nginx 以 --with-compat 编译）→ 部署 OWASP CRS。
+    /// 规则引擎默认停在 DetectionOnly（只记录不拦截），避免装完就误杀业务请求。
+    #[serde(rename = "waf.install")]
+    WafInstall { log_path: String },
+    /// WAF 规则文件清单（modsecurity.d 下的 .conf / .data）。
+    #[serde(rename = "waf.conf_list")]
+    WafConfList,
+    /// 读取一个 WAF 规则文件（路径必须在规则目录内）。
+    #[serde(rename = "waf.conf_read")]
+    WafConfRead { path: String },
+    /// 保存一个 WAF 规则文件：写前备份，`nginx -t` 不过就回滚。
+    #[serde(rename = "waf.conf_save")]
+    WafConfSave { path: String, content: String },
+    /// WAF 审计日志尾部（`SecAuditLog` 指向的文件）。
+    #[serde(rename = "waf.audit")]
+    WafAudit { lines: u32 },
     /// 服务总览：应用商店已安装应用中「登记了 systemd 服务」的实例卡片
     /// （名称 / 版本 / 分类 / unit 名 / 运行状态 / 开机自启）。
     ///

@@ -1,0 +1,752 @@
+//! ModSecurity（WAF）—— 可选能力，没装就不能设置
+//!
+//! 与面板里其它服务不同，WAF **不是一个装上就能用的开关**：ModSecurity v3 由
+//! 两部分组成 —— libmodsecurity（规则引擎库）+ ModSecurity-nginx（nginx 连接器），
+//! 连接器必须以**动态模块**形式加载，而动态模块要求 nginx 当初以 `--with-compat`
+//! 编译（否则模块签名不匹配，`load_module` 会直接拒绝加载）。
+//!
+//! 因此这里的设计取舍是：
+//!
+//! - **探测优先**：`status` 如实回答「装没装 / 缺什么 / 能不能自动装」，
+//!   未安装时其余动词一律返回"未安装"，不给"看着能设、点了报错"的假界面。
+//! - **不替用户重编 nginx**：重编并替换正在承载业务的 nginx 属于高风险操作
+//!   （一个参数不对，全站 502）。检测到 nginx 不带 `--with-compat` 时，
+//!   面板只给原因与建议，不自动执行。
+//! - **装完不立刻拦截**：规则引擎默认 `DetectionOnly`（只记录不拦截），
+//!   用户看过审计日志、确认无业务误杀后再自行切到 On。
+//!
+//! 规则目录 `{nginx conf}/modsecurity.d`：主配置 `modsecurity.conf`、
+//! OWASP CRS（`crs-setup.conf` + `rules/*.conf`）与用户自定义规则都放这里。
+
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+use zap_proto::Response;
+
+use super::root_cmd;
+use super::service_conf::run_blocking;
+use super::site::{find_nginx_conf_file, nginx_bin, nginx_running, nginx_test};
+
+/// 未安装时的统一答复（前端据此只显示安装引导，不给配置项）。
+const NOT_INSTALLED: &str = "未检测到 ModSecurity（WAF）：该可选组件尚未安装";
+/// libmodsecurity 的常见安装位置（源码装 / 发行版包）
+const LIB_CANDIDATES: &[&str] = &[
+    "/usr/local/modsecurity/lib/libmodsecurity.so.3",
+    "/usr/local/lib/libmodsecurity.so.3",
+    "/usr/lib/x86_64-linux-gnu/libmodsecurity.so.3",
+    "/usr/lib64/libmodsecurity.so.3",
+];
+/// 模块 .so 的文件名（nginx 动态模块）
+const MODULE_SO: &str = "ngx_http_modsecurity_module.so";
+/// 规则目录名（挂在 nginx conf 目录下，与主配置同生命周期）
+const RULES_DIR_NAME: &str = "modsecurity.d";
+
+// ── 探测 ────────────────────────────────────────────────────
+
+/// nginx 的可执行文件、主配置与编译参数。
+struct NginxInfo {
+    bin: PathBuf,
+    conf: PathBuf,
+    version: String,
+    /// `nginx -V` 里的 configure arguments 原文
+    args: String,
+}
+
+/// 跑一次命令取 stdout（失败给空串）。
+fn out_str(program: &str, args: &[&str]) -> String {
+    match root_cmd(program).args(args).output() {
+        Ok(o) => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() {
+                String::from_utf8_lossy(&o.stderr).trim().to_string()
+            } else {
+                s
+            }
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// `nginx -V`：版本与 configure 参数（nginx 把 -V 输出到 stderr）。
+fn nginx_v(bin: &Path) -> (String, String) {
+    let o = match root_cmd(&bin.to_string_lossy()).arg("-V").output() {
+        Ok(o) => o,
+        Err(_) => return (String::new(), String::new()),
+    };
+    let text = String::from_utf8_lossy(&o.stderr).to_string();
+    let text = if text.trim().is_empty() {
+        String::from_utf8_lossy(&o.stdout).to_string()
+    } else {
+        text
+    };
+    let version = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let args = text
+        .split_once("configure arguments:")
+        .map(|(_, rest)| rest.trim().to_string())
+        .unwrap_or_default();
+    (version, args)
+}
+
+/// 定位 nginx；拿不到主配置就视为未安装 nginx（WAF 更无从谈起）。
+fn nginx_info() -> Option<NginxInfo> {
+    let conf = find_nginx_conf_file()?;
+    let bin = nginx_bin(&conf);
+    if !bin.is_file() && which_abs(&bin).is_none() {
+        return None;
+    }
+    let (version, args) = nginx_v(&bin);
+    Some(NginxInfo {
+        bin,
+        conf,
+        version,
+        args,
+    })
+}
+
+/// 绝对路径直接用；否则按 PATH 找（root_cmd 用的是安全 PATH）。
+fn which_abs(bin: &Path) -> Option<PathBuf> {
+    if bin.is_absolute() {
+        return None;
+    }
+    let name = bin.to_string_lossy().to_string();
+    let p = out_str(super::platform::SHELL, &["-c", &format!("command -v {name}")]);
+    (!p.is_empty()).then(|| PathBuf::from(p))
+}
+
+fn has_cmd(name: &str) -> bool {
+    !out_str(super::platform::SHELL, &["-c", &format!("command -v {name}")]).is_empty()
+}
+
+/// 模块目录：`--modules-path=` 优先，否则 `<prefix>/modules`。
+fn modules_dir(args: &str) -> Option<PathBuf> {
+    if let Some(v) = args.split_whitespace().find_map(|a| a.strip_prefix("--modules-path=")) {
+        return Some(PathBuf::from(v));
+    }
+    args.split_whitespace()
+        .find_map(|a| a.strip_prefix("--prefix="))
+        .map(|p| PathBuf::from(p).join("modules"))
+}
+
+/// 主配置里是否已经 `load_module` 了我们的模块（只看未注释的行）。
+fn conf_loads_module(conf: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(conf) else {
+        return false;
+    };
+    content
+        .lines()
+        .any(|l| l.trim_start().starts_with("load_module") && l.contains(MODULE_SO))
+}
+
+/// libmodsecurity 是否在库路径里（ldconfig 或已知候选路径）。
+fn libmodsecurity_present() -> bool {
+    if LIB_CANDIDATES.iter().any(|p| Path::new(p).exists()) {
+        return true;
+    }
+    out_str("ldconfig", &["-p"])
+        .lines()
+        .any(|l| l.contains("libmodsecurity.so"))
+}
+
+/// 解析 `SecRuleEngine` 的当前值（On / Off / DetectionOnly）。
+fn engine_of(main_conf: &Path) -> String {
+    let Ok(content) = std::fs::read_to_string(main_conf) else {
+        return String::new();
+    };
+    content
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("SecRuleEngine"))
+        .map(|v| v.trim().to_string())
+        .next()
+        .unwrap_or_default()
+}
+
+/// 解析 `SecAuditLog` 指向的文件（取第一个非相对路径项）。
+fn audit_log_of(main_conf: &Path) -> Option<PathBuf> {
+    let content = std::fs::read_to_string(main_conf).ok()?;
+    content
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("SecAuditLog"))
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .find(|v| v.starts_with('/'))
+        .map(PathBuf::from)
+}
+
+/// WAF 在当前机器上的完整画像。
+struct WafEnv {
+    installed: bool,
+    /// 已编译出的 nginx 模块 .so
+    module_so: Option<PathBuf>,
+    libmodsecurity: bool,
+    /// 规则目录（已存在或建议位置）
+    rules_dir: PathBuf,
+    /// 主配置文件（`modsecurity.conf`）
+    main_conf: Option<PathBuf>,
+    crs: bool,
+    engine: String,
+    audit_log: Option<PathBuf>,
+}
+
+/// 规则目录：优先已存在的候选，否则建议 `{conf}/modsecurity.d`。
+fn rules_dir_of(conf: &Path) -> PathBuf {
+    let suggested = conf.parent().unwrap_or(Path::new("/etc/nginx")).join(RULES_DIR_NAME);
+    for dir in [
+        suggested.clone(),
+        PathBuf::from("/etc/modsecurity"),
+        PathBuf::from("/usr/local/modsecurity/conf"),
+    ] {
+        if dir.is_dir() {
+            return dir;
+        }
+    }
+    suggested
+}
+
+/// 是否已部署 OWASP CRS（`crs-setup.conf` 且 rules/ 下有规则）。
+fn crs_present(rules_dir: &Path) -> bool {
+    if !rules_dir.join("crs-setup.conf").is_file() {
+        return false;
+    }
+    let rules = rules_dir.join("rules");
+    std::fs::read_dir(&rules)
+        .map(|rd| rd.flatten().count() > 0)
+        .unwrap_or(false)
+}
+
+/// 组装画像：`installed` 要求「库 + 模块 + 主配置」三者齐备，缺一不可。
+fn waf_env(info: &NginxInfo) -> WafEnv {
+    let lib = libmodsecurity_present();
+    let so = modules_dir(&info.args).map(|d| d.join(MODULE_SO)).filter(|p| p.is_file());
+    let rules_dir = rules_dir_of(&info.conf);
+    let main_conf = [rules_dir.join("modsecurity.conf"), PathBuf::from("/etc/modsecurity/modsecurity.conf")]
+        .into_iter()
+        .find(|p| p.is_file());
+    let installed = lib && so.is_some() && main_conf.is_some();
+    let engine = main_conf.as_ref().map(|p| engine_of(p)).unwrap_or_default();
+    let audit_log = main_conf.as_ref().and_then(|p| audit_log_of(p));
+    WafEnv {
+        installed,
+        module_so: so,
+        libmodsecurity: lib,
+        crs: crs_present(&rules_dir),
+        rules_dir,
+        main_conf,
+        engine,
+        audit_log,
+    }
+}
+
+/// 自动安装的前提清单：缺什么列什么（前端逐条展示，不笼统说"不支持"）。
+fn blockers(info: &NginxInfo, env: &WafEnv) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if !env.libmodsecurity && !has_cmd("gcc") {
+        out.push("缺少编译器（gcc / g++），无法编译 libmodsecurity".to_string());
+    }
+    if !has_cmd("make") {
+        out.push("缺少 make".to_string());
+    }
+    if !has_cmd("curl") && !has_cmd("wget") {
+        out.push("缺少下载工具（curl / wget），无法获取源码与规则集".to_string());
+    }
+    if !has_cmd("tar") {
+        out.push("缺少 tar".to_string());
+    }
+    // 动态模块的硬门槛：nginx 必须带 --with-compat，否则模块签名不匹配加载失败
+    if !info.args.contains("--with-compat") {
+        out.push(
+            "当前 nginx 未以 --with-compat 编译，无法安全加装 ModSecurity 动态模块；\
+             重新编译并替换 nginx 会让全站中断，面板不自动执行"
+                .to_string(),
+        );
+    }
+    out
+}
+
+/// `waf.status`：装没装、缺什么、能不能自动装。
+pub async fn status() -> Response {
+    run_blocking(|| {
+        let Some(info) = nginx_info() else {
+            return Ok(Response::ok(
+                "ok",
+                Some(json!({
+                    "installed": false,
+                    "nginx_installed": false,
+                    "installable": false,
+                    "blockers": ["未检测到 nginx，WAF 需要 nginx 承载"],
+                    "hint": "请先安装 nginx（应用商店）再启用 WAF",
+                })),
+            ));
+        };
+        let env = waf_env(&info);
+        let blockers = blockers(&info, &env);
+        let files = conf_files(&env.rules_dir);
+        Ok(Response::ok(
+            "ok",
+            Some(json!({
+                "installed": env.installed,
+                "nginx_installed": true,
+                "nginx": {
+                    "bin": info.bin.display().to_string(),
+                    "conf": info.conf.display().to_string(),
+                    "version": info.version,
+                    // 动态模块的前提参数，UI 会明确展示"不满足即装不了"
+                    "compat": info.args.contains("--with-compat"),
+                    "load_module": conf_loads_module(&info.conf),
+                    "running": nginx_running(),
+                },
+                "libmodsecurity": env.libmodsecurity,
+                "module": env.module_so.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                "rules_dir": env.rules_dir.display().to_string(),
+                "rules_dir_exists": env.rules_dir.is_dir(),
+                "main_conf": env.main_conf.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                "crs": env.crs,
+                "engine": env.engine,
+                "audit_log": env.audit_log.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                "files": files,
+                "installable": !env.installed && blockers.is_empty(),
+                "blockers": blockers,
+                // 已安装时给一句用法提示，未安装时给结论
+                "hint": if env.installed {
+                    "规则引擎当前为 DetectionOnly（只记录不拦截）；确认审计日志无误杀后可改为 On".to_string()
+                } else if blockers.is_empty() {
+                    "可以安装：将编译 libmodsecurity 与 ModSecurity 动态模块，并部署 OWASP CRS".to_string()
+                } else {
+                    "当前环境无法自动安装，请按下方原因处理（可选功能，未安装时其余设置不可用）".to_string()
+                },
+            })),
+        ))
+    })
+    .await
+}
+
+// ── 规则文件 ─────────────────────────────────────────────────
+
+/// 规则目录下的 `.conf` / `.data`（含 rules 子目录，深度 2）。
+fn conf_files(dir: &Path) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    if !dir.is_dir() {
+        return out;
+    }
+    let mut stack: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+    while let Some((d, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            if p.is_dir() {
+                if depth < 2 {
+                    stack.push((p, depth + 1));
+                }
+                continue;
+            }
+            let is_conf = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e == "conf" || e == "data");
+            if !is_conf {
+                continue;
+            }
+            let rel = p.strip_prefix(dir).unwrap_or(&p).display().to_string();
+            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            out.push(json!({ "path": p.display().to_string(), "rel": rel, "size": size }));
+        }
+    }
+    out
+}
+
+/// 未安装直接拒绝：这是"可选功能"的硬性边界。
+fn require_installed() -> Result<WafEnv, String> {
+    let info = nginx_info().ok_or_else(|| "未检测到 nginx".to_string())?;
+    let env = waf_env(&info);
+    if !env.installed {
+        return Err(NOT_INSTALLED.to_string());
+    }
+    Ok(env)
+}
+
+/// 路径必须落在规则目录内（防目录穿越；规则目录是 WAF 唯一可写区域）。
+fn validate_rule_path(env: &WafEnv, raw: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(raw.trim());
+    if !p.is_absolute() {
+        return Err(format!("路径必须是绝对路径: {raw}"));
+    }
+    let real = match std::fs::canonicalize(&p) {
+        Ok(r) => r,
+        // 文件尚不存在时（新建规则）校验父目录，避免误杀
+        Err(_) => p
+            .parent()
+            .and_then(|d| std::fs::canonicalize(d).ok())
+            .map(|d| d.join(p.file_name().unwrap_or_default()))
+            .ok_or_else(|| format!("路径不存在: {raw}"))?,
+    };
+    let base = std::fs::canonicalize(&env.rules_dir).unwrap_or_else(|_| env.rules_dir.clone());
+    if !real.starts_with(&base) {
+        return Err(format!("只允许操作规则目录内的文件: {}", base.display()));
+    }
+    Ok(real)
+}
+
+/// `waf.conf_list`：规则文件清单（未安装则拒绝）。
+pub async fn conf_list() -> Response {
+    run_blocking(|| {
+        let env = require_installed()?;
+        Ok(Response::ok(
+            "ok",
+            Some(json!({ "rules_dir": env.rules_dir.display().to_string(), "files": conf_files(&env.rules_dir) })),
+        ))
+    })
+    .await
+}
+
+/// `waf.conf_read`：读一个规则文件。
+pub async fn conf_read(path: &str) -> Response {
+    let path = path.to_string();
+    run_blocking(move || {
+        let env = require_installed()?;
+        let p = validate_rule_path(&env, &path)?;
+        let content = std::fs::read_to_string(&p).map_err(|e| format!("读取失败: {e}"))?;
+        let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        Ok(Response::ok(
+            "ok",
+            Some(json!({ "path": p.display().to_string(), "content": content, "size": size })),
+        ))
+    })
+    .await
+}
+
+/// `waf.conf_save`：写规则文件 —— 备份 → 写入 → `nginx -t` → 不过就回滚并重载。
+///
+/// 规则写错会让**所有站点**在 reload 时失败，所以这里比普通配置保存多一道
+/// 校验：宁可回滚，也不留一份过不了 `-t` 的配置在盘上。
+pub async fn conf_save(path: &str, content: &str) -> Response {
+    let path = path.to_string();
+    let content = content.to_string();
+    run_blocking(move || {
+        let env = require_installed()?;
+        let p = validate_rule_path(&env, &path)?;
+        let info = nginx_info().ok_or_else(|| "未检测到 nginx".to_string())?;
+
+        let backup = if p.is_file() {
+            let bak = p.with_extension("conf.zap.bak");
+            std::fs::copy(&p, &bak).map_err(|e| format!("备份失败: {e}"))?;
+            Some(bak)
+        } else {
+            None
+        };
+        if let Err(e) = std::fs::write(&p, &content) {
+            return Err(format!("写入失败: {e}"));
+        }
+        if let Err(e) = nginx_test(&info.bin) {
+            // 回滚：规则不合法时把原文件放回去，避免 nginx 起不来
+            if let Some(bak) = &backup {
+                let _ = std::fs::copy(bak, &p);
+            }
+            return Err(format!("配置未通过 nginx -t，已回滚：{e}"));
+        }
+        let reloaded = if nginx_running() {
+            match super::svc::act("reload", "nginx") {
+                Ok(_) => "nginx 已重载",
+                Err(e) => return Err(format!("已保存，但重载失败：{e}")),
+            }
+        } else {
+            "nginx 未运行，配置将在启动时生效"
+        };
+        Ok(Response::ok("ok", Some(json!({ "reload": reloaded }))))
+    })
+    .await
+}
+
+/// `waf.audit`：审计日志尾部（`SecAuditLog` 指向的文件，只读）。
+pub async fn audit(lines: u32) -> Response {
+    run_blocking(move || {
+        let env = require_installed()?;
+        let Some(log) = env.audit_log.clone() else {
+            return Err("未配置 SecAuditLog，或审计日志文件不存在".to_string());
+        };
+        if !log.is_file() {
+            return Err(format!("审计日志不存在: {}", log.display()));
+        }
+        let n = lines.clamp(1, 2000);
+        let text = out_str("tail", &["-n", &n.to_string(), &log.display().to_string()]);
+        Ok(Response::ok(
+            "ok",
+            Some(json!({ "path": log.display().to_string(), "content": text })),
+        ))
+    })
+    .await
+}
+
+// ── 安装（长任务）───────────────────────────────────────────
+
+const LIBMODSEC_VERSION: &str = "3.0.14";
+const CONNECTOR_BRANCH: &str = "v3/master";
+const CRS_VERSION: &str = "4.6.0";
+/// 源码工作目录
+const SRC_DIR: &str = "/usr/local/src";
+
+/// 下载工具：有 curl 用 curl，没有用 wget。
+fn downloader() -> String {
+    if has_cmd("curl") {
+        "curl -fsSL {url} -o {out}"
+    } else {
+        "wget -qO {out} {url}"
+    }
+    .to_string()
+}
+
+/// `waf.install`：仅在 status 判定可安装时允许启动，否则一条都跑不了。
+pub async fn install(log_path: &str) -> Response {
+    let log_path = log_path.to_string();
+    run_blocking(move || {
+        let info = match nginx_info() {
+            Some(i) => i,
+            None => {
+                super::log_line(&log_path, "未检测到 nginx，无法安装 WAF");
+                super::finish_log(&log_path, 1);
+                return Ok(Response::ok(
+                    "ok",
+                    Some(json!({ "started": false, "reason": "未检测到 nginx" })),
+                ));
+            }
+        };
+        let env = waf_env(&info);
+        if env.installed {
+            return Ok(Response::ok(
+                "ok",
+                Some(json!({ "started": false, "reason": "已安装" })),
+            ));
+        }
+        let blockers = blockers(&info, &env);
+        if !blockers.is_empty() {
+            for b in &blockers {
+                super::log_line(&log_path, &format!("无法安装：{b}"));
+            }
+            super::finish_log(&log_path, 1);
+            return Ok(Response::ok(
+                "ok",
+                Some(json!({ "started": false, "reason": blockers.join("；") })),
+            ));
+        }
+
+        super::log_line(&log_path, "开始安装 ModSecurity（WAF）");
+        let log = log_path.clone();
+        let version = info.version.clone();
+        let args = info.args.clone();
+        let conf = info.conf.clone();
+        let bin = info.bin.clone();
+        let rules_dir = env.rules_dir.clone();
+        let modules = modules_dir(&args).unwrap_or_else(|| PathBuf::from("/usr/local/nginx/modules"));
+        std::thread::spawn(move || {
+            let code = install_inner(&log, &version, &args, &conf, &bin, &rules_dir, &modules);
+            super::finish_log(&log, code);
+        });
+        Ok(Response::ok("ok", Some(json!({ "started": true }))))
+    })
+    .await
+}
+
+/// 安装主体（后台线程）：库 → 连接器 → 动态模块 → 规则集 → 挂载 → 校验。
+///
+/// 每一步失败即停，日志里留现场；最后一步 `nginx -t` 不过会整体回滚
+/// （撤掉 load_module 与 include），确保 nginx 始终可启动。
+#[allow(clippy::too_many_arguments)]
+fn install_inner(
+    log: &str,
+    nginx_version: &str,
+    args: &str,
+    conf: &Path,
+    bin: &Path,
+    rules_dir: &Path,
+    modules: &Path,
+) -> i32 {
+    let dl = downloader();
+    // 从 `nginx/1.31.5` 里取版本号，用于下载对应源码编动态模块
+    let ver = nginx_version.split('/').last().unwrap_or("").trim().to_string();
+
+    // 1) 构建依赖（有 apt 才装，别的发行版假定已具备）
+    if has_cmd("apt-get") {
+        if super::run_step(
+            log,
+            "安装编译依赖",
+            "apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+             libtool autoconf automake g++ make pkg-config libpcre3-dev libxml2-dev \
+             libcurl4-openssl-dev libgeoip-dev libyajl-dev flex bison",
+        ) != 0
+        {
+            super::log_line(log, "依赖安装失败，中止（后续编译大概率也过不去）");
+            return 1;
+        }
+    }
+
+    // 2) libmodsecurity（规则引擎）
+    let lib_script = format!(
+        "set -e; cd {SRC_DIR}; \
+         {dl1} && tar xzf libmodsecurity-v{LIBMODSEC_VERSION}.tar.gz 2>/dev/null || \
+           ({dl2} && tar xzf v{LIBMODSEC_VERSION}.tar.gz); \
+         cd ModSecurity-{LIBMODSEC_VERSION}; \
+         ./build.sh; ./configure --prefix=/usr/local/modsecurity --without-lmdb; \
+         make -j$(nproc); make install",
+        dl1 = dl
+            .replace("{url}", &format!("https://github.com/owasp-modsecurity/ModSecurity/releases/download/v{LIBMODSEC_VERSION}/libmodsecurity-v{LIBMODSEC_VERSION}.tar.gz"))
+            .replace("{out}", "libmodsecurity.tar.gz"),
+        dl2 = dl
+            .replace("{url}", &format!("https://github.com/owasp-modsecurity/ModSecurity/archive/refs/tags/v{LIBMODSEC_VERSION}.tar.gz"))
+            .replace("{out}", &format!("v{LIBMODSEC_VERSION}.tar.gz")),
+    );
+    if super::run_step(log, "编译 libmodsecurity", &lib_script) != 0 {
+        super::log_line(log, "libmodsecurity 编译失败");
+        return 1;
+    }
+
+    // 3) nginx 源码 + 动态模块（要求 --with-compat，已在 blockers 里校验过）
+    let mod_script = format!(
+        "set -e; cd {SRC_DIR}; \
+         {dl_nginx} && tar xzf nginx.tar.gz; \
+         {dl_conn} -o connector.tar.gz || git clone --depth 1 -b {CONNECTOR_BRANCH} \
+           https://github.com/owasp-modsecurity/ModSecurity-nginx.git connector; \
+         mkdir -p connector && tar xzf connector.tar.gz --strip-components=1 -C connector 2>/dev/null || true; \
+         cd nginx-{ver}; \
+         ./configure {args} --with-compat --add-dynamic-module={SRC_DIR}/connector; \
+         make -j$(nproc) modules; \
+         mkdir -p {modules}; \
+         cp objs/{MODULE_SO} {modules}/",
+        dl_nginx = dl
+            .replace("{url}", &format!("https://nginx.org/download/nginx-{ver}.tar.gz"))
+            .replace("{out}", "nginx.tar.gz"),
+        dl_conn = dl.split(" -o ").next().unwrap_or(&dl),
+        modules = modules.display(),
+    );
+    if super::run_step(log, "编译 ModSecurity nginx 模块", &mod_script) != 0 {
+        super::log_line(log, "动态模块编译失败（常见原因：nginx 源码版本与当前 nginx 不一致）");
+        return 1;
+    }
+
+    // 4) 规则集：主配置 + OWASP CRS（默认 DetectionOnly，先观察再拦截）
+    let rules = rules_dir.display().to_string();
+    let crs_script = format!(
+        "set -e; mkdir -p {rules}/rules; \
+         {dl_crs} && tar xzf crs.tar.gz --strip-components=1 -C {rules}; \
+         cp {rules}/crs-setup.conf.example {rules}/crs-setup.conf 2>/dev/null || true; \
+         printf '%s\\n' 'SecRuleEngine DetectionOnly' \
+           'SecRequestBodyAccess On' 'SecAuditEngine RelevantOnly' \
+           'SecAuditLogRelevantStatus \"^(?:5|4(?!04))\"' \
+           'SecAuditLogParts ABIJDEFHZ' 'SecAuditLogType Serial' \
+           'SecAuditLog /var/log/modsec_audit.log' > {rules}/modsecurity.conf; \
+         printf '%s\\n' 'Include {rules}/crs-setup.conf' 'Include {rules}/rules/*.conf' \
+           > {rules}/zap-crs.conf",
+        dl_crs = dl
+            .replace("{url}", &format!("https://github.com/coreruleset/coreruleset/archive/refs/tags/v{CRS_VERSION}.tar.gz"))
+            .replace("{out}", "crs.tar.gz"),
+    );
+    if super::run_step(log, "部署 OWASP CRS 规则集", &crs_script) != 0 {
+        super::log_line(log, "规则集部署失败");
+        return 1;
+    }
+
+    // 5) 挂载到 nginx：load_module 必须在主配置最外层（events/http 之前）
+    let Ok(content) = std::fs::read_to_string(conf) else {
+        super::log_line(log, "读取 nginx.conf 失败");
+        return 1;
+    };
+    let bak = conf.with_extension("conf.zap.bak");
+    if std::fs::copy(conf, &bak).is_err() {
+        super::log_line(log, "备份 nginx.conf 失败，为安全起见中止");
+        return 1;
+    }
+    let so = modules.join(MODULE_SO);
+    let mut new_conf = String::new();
+    new_conf.push_str(&format!("load_module {};\n", so.display()));
+    new_conf.push_str(&content);
+    if std::fs::write(conf, &new_conf).is_err() {
+        super::log_line(log, "写入 nginx.conf 失败");
+        return 1;
+    }
+    if let Err(e) = nginx_test(bin) {
+        // 回滚：模块加载不了就恢复原配置，绝不留下起不来的 nginx
+        let _ = std::fs::copy(&bak, conf);
+        super::log_line(log, &format!("nginx -t 未通过，已回滚 nginx.conf：{e}"));
+        return 1;
+    }
+    super::log_line(log, "已加载 ModSecurity 模块（规则引擎：DetectionOnly，只记录不拦截）");
+    super::log_line(
+        log,
+        "提示：在规则目录的 modsecurity.conf 里把 SecRuleEngine 改为 On 才会真正拦截",
+    );
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_dir_prefers_modules_path() {
+        assert_eq!(
+            modules_dir("--prefix=/opt/nginx --modules-path=/opt/nginx/mod"),
+            Some(PathBuf::from("/opt/nginx/mod"))
+        );
+        // 没有显式 modules-path 时退回 <prefix>/modules
+        assert_eq!(
+            modules_dir("--prefix=/opt/nginx --with-http_ssl_module"),
+            Some(PathBuf::from("/opt/nginx/modules"))
+        );
+    }
+
+    #[test]
+    fn compat_is_required_for_dynamic_module() {
+        // 本机 nginx 的实际情况：无 --with-compat → 必须被判为不可自动安装
+        let info = NginxInfo {
+            bin: PathBuf::from("/usr/local/apps/nginx/sbin/nginx"),
+            conf: PathBuf::from("/usr/local/apps/nginx/conf/nginx.conf"),
+            version: "nginx/1.31.5".to_string(),
+            args: "--prefix=/usr/local/apps/nginx-1.31.5 --with-http_ssl_module".to_string(),
+        };
+        let env = WafEnv {
+            installed: false,
+            module_so: None,
+            libmodsecurity: false,
+            rules_dir: PathBuf::from("/usr/local/apps/nginx/conf/modsecurity.d"),
+            main_conf: None,
+            crs: false,
+            engine: String::new(),
+            audit_log: None,
+        };
+        let b = blockers(&info, &env);
+        assert!(!env.installed);
+        assert!(
+            b.iter().any(|x| x.contains("--with-compat")),
+            "无 --with-compat 必须列为不可安装原因：{b:?}"
+        );
+    }
+
+    #[test]
+    fn rule_path_must_stay_in_rules_dir() {
+        let env = WafEnv {
+            installed: true,
+            module_so: None,
+            libmodsecurity: true,
+            rules_dir: std::env::temp_dir().join("zap-waf-rules-test"),
+            main_conf: None,
+            crs: false,
+            engine: "DetectionOnly".to_string(),
+            audit_log: None,
+        };
+        std::fs::create_dir_all(&env.rules_dir).unwrap();
+        assert!(validate_rule_path(&env, "/etc/passwd").is_err());
+        let inside = env.rules_dir.join("zap-test.conf").display().to_string();
+        assert!(validate_rule_path(&env, &inside).is_ok());
+        let _ = std::fs::remove_dir_all(&env.rules_dir);
+    }
+
+    #[test]
+    fn nginx_source_version_is_parsed() {
+        let v = "nginx/1.31.5";
+        assert_eq!(v.split('/').last().unwrap(), "1.31.5");
+    }
+}

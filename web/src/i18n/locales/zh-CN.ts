@@ -2040,6 +2040,33 @@ export default {
   },
 
   /** 服务配置 - PHP */
+  /** nginx - ModSecurity（WAF）：可选能力，未安装时除状态外不可设置 */
+  waf: {
+    tab: 'WAF（ModSecurity）',
+    notInstalledTitle: '未检测到 ModSecurity（WAF）',
+    install: '安装 WAF',
+    cannotInstall: '当前环境无法自动安装',
+    installTitle: '安装 ModSecurity（WAF）',
+    engine: '规则引擎',
+    crs: 'OWASP CRS',
+    deployed: '已部署',
+    missing: '未部署',
+    module: 'nginx 模块',
+    rulesDir: '规则目录',
+    auditLog: '审计日志',
+    viewAudit: '查看',
+    auditTitle: 'WAF 审计日志（最近 200 行）',
+    auditEmpty: '暂无审计记录',
+    ruleFile: '规则文件',
+    colOp: '操作',
+    edit: '编辑',
+    save: '保存',
+    ruleTip: '保存前会备份原文件，并通过 nginx -t 校验；校验不过会自动回滚，不会留下起不来的配置。',
+    saveTip:
+      '规则引擎默认 DetectionOnly（只记录不拦截）。改为 On 前请先看审计日志，确认正常业务请求没有被误判。',
+    detectionOnlyTip: '只记录不拦截',
+  },
+
   /** 服务配置 - PHP 扩展管理（PIE / pecl / 源码编译） */
   servicesPhpExt: {
     tab: '扩展',

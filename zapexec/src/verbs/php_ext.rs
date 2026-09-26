@@ -27,8 +27,6 @@ use super::root_cmd;
 use super::service_conf::php_inst;
 use super::svc;
 
-/// 日志里的完成标记（zapd 的 task 盯守认它，详见 zapd/zap/task.rs）。
-const DONE_MARKER: &str = "__ZAP_DONE__";
 /// PIE 自身要求 PHP >= 8.1（低于此版本的实例直接走 pecl / 源码）。
 const PIE_MIN_MAJOR: u32 = 8;
 const PIE_MIN_MINOR: u32 = 1;
@@ -473,49 +471,6 @@ pub async fn toggle(svc: &str, name: &str, enable: bool) -> Response {
 
 // ── 长任务：安装 / 卸载 ──────────────────────────────────────
 
-/// 往日志追加一段（长任务的每一步都实时落盘，前端 WebSocket 才能流式看到）。
-fn log_line(path: &str, text: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(f, "{text}");
-    }
-}
-
-/// 跑一步 shell：输出实时追加到日志，返回退出码。
-///
-/// 退出码由 bash 自己 echo 出来（而非 Rust 侧判断），这样即便脚本里出现
-/// `exit` 之外的失败路径也能拿到真实结果。
-fn run_step(log: &str, title: &str, script: &str) -> i32 {
-    log_line(log, &format!("── {title} ──"));
-    let out = root_cmd(super::platform::SHELL)
-        .args(["-c"])
-        .arg(format!(
-            "{{ {script}; }} >> {log} 2>&1; echo \"__ZAP_STEP__$?\""
-        ))
-        .output();
-    match out {
-        Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            s.rsplit("__ZAP_STEP__")
-                .next()
-                .and_then(|v| v.trim().parse().ok())
-                .unwrap_or(-1)
-        }
-        Err(_) => -1,
-    }
-}
-
-/// 收尾：写完成标记 + 退出码文件（`.ret` 是权威来源，日志标记只是展示协议）。
-fn finish_log(log: &str, code: i32) {
-    log_line(log, &format!("{DONE_MARKER} {code}"));
-    let ret = Path::new(log).with_extension("ret");
-    let _ = std::fs::write(ret, code.to_string());
-}
-
 /// 安装命令脚本：按 PIE → pecl → 源码选路。
 ///
 /// `pkg` 已校验；`php_config` 用于让 pie / configure 对准**本实例**的 php
@@ -598,8 +553,8 @@ pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) ->
     let c = match ctx(&svc) {
         Ok(c) => c,
         Err(e) => {
-            log_line(&log_path, &e);
-            finish_log(&log_path, 1);
+            super::log_line(&log_path, &e);
+            super::finish_log(&log_path, 1);
             return Response::ok("ok", Some(json!({ "started": false, "reason": e })));
         }
     };
@@ -614,11 +569,11 @@ pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) ->
         || which("phpize").is_some();
     if !pie && !pecl && !phpize_ok {
         let e = "该实例没有 pie / pecl / phpize，无法编译安装扩展";
-        log_line(&log_path, e);
-        finish_log(&log_path, 1);
+        super::log_line(&log_path, e);
+        super::finish_log(&log_path, 1);
         return Response::ok("ok", Some(json!({ "started": false, "reason": e })));
     }
-    log_line(
+    super::log_line(
         &log_path,
         &format!(
             "安装 PHP 扩展 {}（PHP {}，方式：{}）",
@@ -629,7 +584,7 @@ pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) ->
     );
     std::thread::spawn(move || {
         let code = install_inner(&c, &package, &version, &log_path, pie, pecl);
-        finish_log(&log_path, code);
+        super::finish_log(&log_path, code);
     });
     Response::ok("ok", Some(json!({ "started": true })))
 }
@@ -646,14 +601,14 @@ fn install_inner(
     // 短名：PIE 的 `vendor/pkg` 取末段（redis / imagick），pecl 与源码都用短名
     let short = package.rsplit('/').next().unwrap_or(package).to_string();
     let script = install_script(c, package, version, pie, pecl);
-    if run_step(log, "编译安装", &script) != 0 {
-        log_line(log, "安装失败：见上方输出");
+    if super::run_step(log, "编译安装", &script) != 0 {
+        super::log_line(log, "安装失败：见上方输出");
         return 1;
     }
     // 装完的 .so 落在扩展目录（pecl / 源码都会 make install 到这里）
     let so = c.ext_dir.join(format!("{short}.so"));
     if !so.is_file() && which("php").is_some() {
-        log_line(
+        super::log_line(
             log,
             &format!("未能在 {} 找到 {short}.so，尝试按 php -m 复核", c.ext_dir.display()),
         );
@@ -662,12 +617,12 @@ fn install_inner(
     let path = match managed_ini(c, &short) {
         Ok(p) => p,
         Err(e) => {
-            log_line(log, &e);
+            super::log_line(log, &e);
             return 1;
         }
     };
     if let Err(e) = write_atomic(&path, &decl_line(&short)) {
-        log_line(log, &e);
+        super::log_line(log, &e);
         return 1;
     }
     // zend / 普通声明二选一：以 php -m 是否真的加载为准
@@ -682,16 +637,16 @@ fn install_inner(
         };
         let _ = write_atomic(&path, &alt);
     }
-    log_line(log, &format!("已写入 {}", path.display()));
-    log_line(log, &reload(c));
+    super::log_line(log, &format!("已写入 {}", path.display()));
+    super::log_line(log, &reload(c));
     if enabled_exts(&c.bin)
         .iter()
         .any(|e| e.eq_ignore_ascii_case(&short))
     {
-        log_line(log, &format!("{short} 已启用"));
+        super::log_line(log, &format!("{short} 已启用"));
         0
     } else {
-        log_line(log, &format!("{short} 未出现在 php -m 中，请检查上方输出"));
+        super::log_line(log, &format!("{short} 未出现在 php -m 中，请检查上方输出"));
         1
     }
 }
@@ -707,8 +662,8 @@ pub async fn remove(svc: &str, name: &str, log_path: &str) -> Response {
     let c = match ctx(&svc) {
         Ok(c) => c,
         Err(e) => {
-            log_line(&log_path, &e);
-            finish_log(&log_path, 1);
+            super::log_line(&log_path, &e);
+            super::finish_log(&log_path, 1);
             return Response::ok("ok", Some(json!({ "started": false, "reason": e })));
         }
     };
@@ -718,14 +673,14 @@ pub async fn remove(svc: &str, name: &str, log_path: &str) -> Response {
             .any(|e| e.eq_ignore_ascii_case(&name));
     if !installed {
         let e = format!("{name} 未安装");
-        log_line(&log_path, &e);
-        finish_log(&log_path, 1);
+        super::log_line(&log_path, &e);
+        super::finish_log(&log_path, 1);
         return Response::ok("ok", Some(json!({ "started": false, "reason": e })));
     }
-    log_line(&log_path, &format!("卸载 PHP 扩展 {name}"));
+    super::log_line(&log_path, &format!("卸载 PHP 扩展 {name}"));
     std::thread::spawn(move || {
         let code = remove_inner(&c, &name, &log_path);
-        finish_log(&log_path, code);
+        super::finish_log(&log_path, code);
     });
     Response::ok("ok", Some(json!({ "started": true })))
 }
@@ -813,7 +768,7 @@ fn remove_inner(c: &PhpCtx, name: &str, log: &str) -> i32 {
         && p.is_file()
     {
         let _ = std::fs::remove_file(&p);
-        log_line(log, &format!("已删除 {}", p.display()));
+        super::log_line(log, &format!("已删除 {}", p.display()));
     }
     if let Some(ini) = &c.ini
         && let Ok(content) = std::fs::read_to_string(ini)
@@ -835,29 +790,29 @@ fn remove_inner(c: &PhpCtx, name: &str, log: &str) -> i32 {
             }
         }
         if touched && write_atomic(ini, &out).is_ok() {
-            log_line(log, &format!("已注释 {ini} 中的 {name} 声明", ini = ini.display()));
+            super::log_line(log, &format!("已注释 {ini} 中的 {name} 声明", ini = ini.display()));
         }
     }
     if which("pecl").is_some() {
-        let _ = run_step(log, "pecl uninstall", &format!("pecl uninstall {name}"));
+        let _ = super::run_step(log, "pecl uninstall", &format!("pecl uninstall {name}"));
     }
     let so = c.ext_dir.join(format!("{name}.so"));
     if so.is_file() {
         if std::fs::remove_file(&so).is_ok() {
-            log_line(log, &format!("已删除 {}", so.display()));
+            super::log_line(log, &format!("已删除 {}", so.display()));
         } else {
-            log_line(log, &format!("删除 {} 失败", so.display()));
+            super::log_line(log, &format!("删除 {} 失败", so.display()));
         }
     }
-    log_line(log, &reload(c));
+    super::log_line(log, &reload(c));
     if enabled_exts(&c.bin)
         .iter()
         .any(|e| e.eq_ignore_ascii_case(name))
     {
-        log_line(log, &format!("{name} 仍在 php -m 中，请检查上方输出"));
+        super::log_line(log, &format!("{name} 仍在 php -m 中，请检查上方输出"));
         1
     } else {
-        log_line(log, &format!("{name} 已卸载"));
+        super::log_line(log, &format!("{name} 已卸载"));
         0
     }
 }

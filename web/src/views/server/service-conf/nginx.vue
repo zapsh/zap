@@ -238,9 +238,123 @@
             </div>
           </div>
         </el-tab-pane>
+
+        <!-- WAF（ModSecurity）：可选能力，未安装时只给安装引导 -->
+        <el-tab-pane :label="t('waf.tab')" name="waf">
+          <div v-loading="wafLoading">
+            <!-- 未安装：说明缺什么，能装才给按钮 -->
+            <el-result
+              v-if="waf && !waf.installed"
+              icon="warning"
+              :title="t('waf.notInstalledTitle')"
+              :sub-title="waf.hint"
+            >
+              <template #extra>
+                <div class="waf-blockers">
+                  <div v-for="b in waf.blockers" :key="b" class="waf-blocker">· {{ b }}</div>
+                </div>
+                <el-button
+                  type="primary"
+                  :disabled="!waf.installable"
+                  :loading="wafInstalling"
+                  @click="doInstallWaf"
+                >
+                  {{ waf.installable ? t('waf.install') : t('waf.cannotInstall') }}
+                </el-button>
+              </template>
+            </el-result>
+
+            <template v-if="waf?.installed">
+              <el-descriptions :column="2" border size="small" class="waf-desc">
+                <el-descriptions-item :label="t('waf.engine')">
+                  <el-tag
+                    size="small"
+                    :type="waf.engine === 'On' ? 'success' : 'warning'"
+                  >
+                    {{ waf.engine || '-' }}
+                  </el-tag>
+                  <span v-if="waf.engine !== 'On'" class="waf-inline-tip">
+                    {{ t('waf.detectionOnlyTip') }}
+                  </span>
+                </el-descriptions-item>
+                <el-descriptions-item :label="t('waf.crs')">
+                  <el-tag size="small" :type="waf.crs ? 'success' : 'info'">
+                    {{ waf.crs ? t('waf.deployed') : t('waf.missing') }}
+                  </el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item :label="t('waf.module')">
+                  <span class="mono">{{ waf.module || '-' }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item :label="t('waf.rulesDir')">
+                  <span class="mono">{{ waf.rules_dir }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item :label="t('waf.auditLog')">
+                  <span class="mono">{{ waf.audit_log || '-' }}</span>
+                  <el-button
+                    size="small"
+                    class="waf-inline-btn"
+                    :disabled="!waf.audit_log"
+                    @click="openAudit"
+                  >
+                    {{ t('waf.viewAudit') }}
+                  </el-button>
+                </el-descriptions-item>
+              </el-descriptions>
+
+              <el-alert
+                type="warning"
+                :closable="false"
+                show-icon
+                class="mt-3"
+                :title="t('waf.saveTip')"
+              />
+
+              <el-table :data="waf.files" size="small" stripe class="mt-3">
+                <el-table-column prop="rel" :label="t('waf.ruleFile')" min-width="240">
+                  <template #default="{ row }">
+                    <span class="mono">{{ row.rel }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column :label="t('waf.colOp')" width="120" align="right">
+                  <template #default="{ row }">
+                    <el-button size="small" @click="openRule(row.path)">
+                      {{ t('waf.edit') }}
+                    </el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </template>
+          </div>
+        </el-tab-pane>
       </el-tabs>
 
     </template>
+
+    <!-- WAF：规则编辑 / 审计日志 / 安装日志（未安装时不会走到这里） -->
+    <el-dialog v-model="ruleVisible" :title="rulePath" width="70%" top="6vh" append-to-body>
+      <div v-loading="ruleLoading" class="waf-rule-editor">
+        <CodeEditor v-model="ruleContent" :path="rulePath" />
+      </div>
+      <div class="waf-rule-tip">{{ t('waf.ruleTip') }}</div>
+      <template #footer>
+        <el-button @click="ruleVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="ruleSaving" @click="saveRule">
+          {{ t('waf.save') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="auditVisible"
+      :title="t('waf.auditTitle')"
+      width="70%"
+      top="6vh"
+      append-to-body
+    >
+      <pre class="waf-audit mono">{{ auditText || t('waf.auditEmpty') }}</pre>
+    </el-dialog>
+
+    <AppStoreLogDrawer ref="logDrawer" />
     </div>
 
     <StreamConf v-if="page === 'stream'" />
@@ -248,7 +362,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -271,6 +385,16 @@ import {
   type VisualValues,
 } from '@/utils/nginxConf.ts'
 import StreamConf from './stream.vue'
+import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
+import { getTask } from '@/api/task.ts'
+import {
+  getWafAudit,
+  getWafConfRead,
+  getWafStatus,
+  installWaf,
+  saveWafConf,
+  type WafStatus,
+} from '@/api/waf.ts'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -569,6 +693,107 @@ async function doControl(action: 'reload' | 'restart' | 'start' | 'stop') {
   }
 }
 
+/* ---------- WAF（ModSecurity）：可选能力，未安装即只显示安装引导 ---------- */
+const waf = ref<WafStatus | null>(null)
+const wafLoading = ref(false)
+const wafInstalling = ref(false)
+const logDrawer = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
+const ruleVisible = ref(false)
+const rulePath = ref('')
+const ruleContent = ref('')
+const ruleLoading = ref(false)
+const ruleSaving = ref(false)
+const auditVisible = ref(false)
+const auditText = ref('')
+/** 安装任务轮询（编译分钟级），完成后刷新状态 */
+let wafTimer: number | undefined
+
+async function loadWaf() {
+  wafLoading.value = true
+  try {
+    const res = await getWafStatus()
+    waf.value = res.data
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    wafLoading.value = false
+  }
+}
+
+/** 盯安装任务到终态：编译期间日志在抽屉里流式输出 */
+function watchWafTask(runId: string) {
+  logDrawer.value?.openDrawer(runId, t('waf.installTitle'))
+  if (wafTimer) window.clearInterval(wafTimer)
+  wafTimer = window.setInterval(async () => {
+    try {
+      const res = await getTask(runId)
+      const st = res.data?.status || res.data?.task?.status
+      if (st === 'success' || st === 'failed' || st === 'canceled') {
+        window.clearInterval(wafTimer)
+        wafTimer = undefined
+        await loadWaf()
+      }
+    } catch {
+      if (wafTimer) window.clearInterval(wafTimer)
+      wafTimer = undefined
+    }
+  }, 3000)
+}
+
+async function doInstallWaf() {
+  wafInstalling.value = true
+  try {
+    const res = await installWaf()
+    if (res.data?.run_id) {
+      watchWafTask(res.data.run_id)
+    } else {
+      await loadWaf()
+    }
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    wafInstalling.value = false
+  }
+}
+
+async function openRule(path: string) {
+  rulePath.value = path
+  ruleVisible.value = true
+  ruleLoading.value = true
+  try {
+    const res = await getWafConfRead(path)
+    ruleContent.value = res.data.content
+  } catch {
+    ruleVisible.value = false
+  } finally {
+    ruleLoading.value = false
+  }
+}
+
+async function saveRule() {
+  ruleSaving.value = true
+  try {
+    const res = await saveWafConf(rulePath.value, ruleContent.value)
+    ElMessage.success(res.data?.reload || res.message || t('servicesCommon.opSuccess'))
+    ruleVisible.value = false
+  } catch {
+    /* 规则不合法时后端已回滚并给出 nginx -t 的报错 */
+  } finally {
+    ruleSaving.value = false
+  }
+}
+
+async function openAudit() {
+  auditVisible.value = true
+  auditText.value = ''
+  try {
+    const res = await getWafAudit(200)
+    auditText.value = res.data.content
+  } catch {
+    /* interceptor 已提示 */
+  }
+}
+
 function formatBytes(n: number): string {
   if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
   if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -576,7 +801,14 @@ function formatBytes(n: number): string {
 }
 
 initVisual()
-onMounted(refreshAll)
+onMounted(async () => {
+  await refreshAll()
+  // WAF 与 nginx 之间是"可选"关系：nginx 装了也未必有 WAF，状态各自独立
+  loadWaf()
+})
+onUnmounted(() => {
+  if (wafTimer) window.clearInterval(wafTimer)
+})
 </script>
 
 <style scoped>
@@ -780,6 +1012,49 @@ onMounted(refreshAll)
 .editor-host {
   flex: 1;
   min-height: 460px;
+}
+.waf-blockers {
+  max-width: 620px;
+  margin: 0 auto 12px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+  line-height: 1.9;
+}
+.waf-blocker {
+  padding-left: 4px;
+}
+.waf-desc {
+  margin-bottom: 4px;
+}
+.waf-inline-tip {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.waf-inline-btn {
+  margin-left: 8px;
+}
+.waf-rule-editor {
+  height: 52vh;
+}
+.waf-rule-tip {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.7;
+}
+.waf-audit {
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .editor-tip {
   padding: 6px 10px;

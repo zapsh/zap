@@ -776,6 +776,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Admin,
         Some(Perm::module("service.conf")),
     ),
+    // WAF（ModSecurity）：可选能力，操作面小但都是写 nginx 配置的动作
+    (
+        "/system/waf",
+        Required::Admin,
+        Some(Perm::module("service.waf")),
+    ),
     (
         "/system/services",
         Required::Admin,
@@ -991,6 +997,7 @@ const NS_LABELS: &[(&str, &str)] = &[
     ("system.job", "全局任务"),
     ("service.nginx", "Nginx 服务"),
     ("service.conf", "服务配置"),
+    ("service.waf", "WAF（ModSecurity）"),
     ("system.ip", "IP 池"),
     ("database", "数据库管理"),
     ("docker", "容器管理"),

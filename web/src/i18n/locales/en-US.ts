@@ -2044,6 +2044,34 @@ const enUS: Messages = {
   },
 
   /** Service config - PHP */
+  /** nginx - ModSecurity (WAF): optional capability, nothing but status when absent */
+  waf: {
+    tab: 'WAF (ModSecurity)',
+    notInstalledTitle: 'ModSecurity (WAF) not detected',
+    install: 'Install WAF',
+    cannotInstall: 'Cannot be installed here',
+    installTitle: 'Install ModSecurity (WAF)',
+    engine: 'Rule engine',
+    crs: 'OWASP CRS',
+    deployed: 'Deployed',
+    missing: 'Not deployed',
+    module: 'nginx module',
+    rulesDir: 'Rules dir',
+    auditLog: 'Audit log',
+    viewAudit: 'View',
+    auditTitle: 'WAF audit log (last 200 lines)',
+    auditEmpty: 'No audit records yet',
+    ruleFile: 'Rule file',
+    colOp: 'Actions',
+    edit: 'Edit',
+    save: 'Save',
+    ruleTip:
+      'The file is backed up before writing and validated with nginx -t; a failed check rolls back automatically so nginx always stays startable.',
+    saveTip:
+      'The engine defaults to DetectionOnly (log, do not block). Check the audit log for false positives before switching to On.',
+    detectionOnlyTip: 'log only, not blocking',
+  },
+
   /** Service config - PHP extension management (PIE / pecl / source build) */
   servicesPhpExt: {
     tab: 'Extensions',

@@ -72,6 +72,7 @@ pub mod system_stream;
 pub mod system_role;
 pub mod system_service_conf;
 pub mod system_services;
+pub mod system_waf;
 pub mod system_update;
 pub mod system_user_menu;
 pub mod system_zap;
@@ -494,6 +495,13 @@ fn api_routers() -> Router {
         .route("/system/services/overview", get(system_services::overview))
         .route("/system/services/control", post(system_services::control))
         .route("/system/services/boot", post(system_services::boot))
+        // ModSecurity（WAF，可选能力：未安装时除 status 外一律拒绝）
+        .route("/system/waf/status", get(system_waf::status))
+        .route("/system/waf/install", post(system_waf::install))
+        .route("/system/waf/conf/list", get(system_waf::conf_list))
+        .route("/system/waf/conf/read", get(system_waf::conf_read))
+        .route("/system/waf/conf/save", post(system_waf::conf_save))
+        .route("/system/waf/audit", get(system_waf::audit_log))
         // 数据迁移（服务器配置 → 数据迁移，admin only）
         .route(
             "/system/migrate/users",
