@@ -30,6 +30,8 @@ export interface WafStatus {
   audit_log: string
   files: { path: string; rel: string; size: number }[]
   installable: boolean
+  /** 组件已在盘上、只差挂到 nginx：可一键开启（不必重装） */
+  enable_ready: boolean
   /** 不能自动安装的具体原因（逐条展示给用户） */
   blockers: string[]
   hint: string
@@ -44,6 +46,13 @@ export interface WafTaskResult {
 
 export function getWafStatus() {
   return http.get<{ code: number; message: string; data: WafStatus }>('/system/waf/status')
+}
+
+/** 一键开启：补 load_module + conf.d 启用文件并重载 */
+export function enableWaf() {
+  return http.post<{ code: number; message: string; data: { enabled: string; reload: string } }>(
+    '/system/waf/enable',
+  )
 }
 
 export function installWaf() {

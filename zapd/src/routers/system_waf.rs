@@ -165,6 +165,26 @@ pub async fn conf_save(
     result
 }
 
+/// POST /system/waf/enable：组件已装好但没挂上时，一键补 load_module + 启用文件并重载。
+pub async fn enable(
+    claims: ValidatedClaims,
+    Extension(addr): Extension<SocketAddr>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let result = exec(Request::WafEnable).await;
+    if result.is_ok() {
+        audit::log(
+            Some(&claims),
+            Some(addr.ip().to_string().as_str()),
+            "waf_enable",
+            "waf",
+            "一键开启 WAF",
+        )
+        .await;
+    }
+    result
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EngineBody {
     pub mode: String,

@@ -2075,6 +2075,10 @@ const enUS: Messages = {
     engineTip:
       'DetectionOnly logs without blocking. Check the audit log for false positives before switching to Block.',
     engineSaved: 'Switched',
+    enable: 'Enable now',
+    enableHint:
+      'WAF components are already built but not wired into nginx. One click adds load_module and the enable file; a failed config check rolls back automatically.',
+    enableDone: 'Enabled',
   },
 
   /** Service config - PHP extension management (PIE / pecl / source build) */

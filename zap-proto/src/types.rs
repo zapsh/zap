@@ -904,6 +904,10 @@ pub enum Request {
     /// WAF 审计日志尾部（`SecAuditLog` 指向的文件）。
     #[serde(rename = "waf.audit")]
     WafAudit { lines: u32 },
+    /// 一键开启 WAF：组件（libmodsecurity + 模块 .so）已在盘上、只是没挂到 nginx 上时，
+    /// 补齐 `load_module` 与 conf.d 启用文件并重载。缺组件则拒绝（那属于安装）。
+    #[serde(rename = "waf.enable")]
+    WafEnable,
     /// 切换 WAF 规则引擎形态：`On`（拦截）/ `DetectionOnly`（只记录不拦截）/ `Off`。
     ///
     /// 装完默认停在 `DetectionOnly`：先看审计日志确认没有正常业务被误判，再切 On。

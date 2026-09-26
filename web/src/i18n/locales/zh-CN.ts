@@ -2070,6 +2070,10 @@ export default {
     engineTip:
       'DetectionOnly 只记录不拦截；切到「拦截」前先看审计日志，确认正常请求没有被误判。',
     engineSaved: '已切换',
+    enable: '一键开启',
+    enableHint:
+      '检测到已编译的 WAF 组件，只是还没挂到 nginx 上：一键补上 load_module 与启用配置，配置校验不过会自动回滚。',
+    enableDone: '已开启',
   },
 
   /** 服务配置 - PHP 扩展管理（PIE / pecl / 源码编译） */

@@ -254,6 +254,15 @@
                   <div v-for="b in waf.blockers" :key="b" class="waf-blocker">· {{ b }}</div>
                 </div>
                 <el-button
+                  v-if="waf.enable_ready"
+                  type="success"
+                  :loading="wafEnabling"
+                  @click="doEnableWaf"
+                >
+                  {{ t('waf.enable') }}
+                </el-button>
+                <el-button
+                  v-else
                   type="primary"
                   :disabled="!waf.installable"
                   :loading="wafInstalling"
@@ -261,6 +270,9 @@
                 >
                   {{ waf.installable ? t('waf.install') : t('waf.cannotInstall') }}
                 </el-button>
+                <div v-if="waf.enable_ready" class="waf-blocker">
+                  {{ t('waf.enableHint') }}
+                </div>
               </template>
             </el-result>
 
@@ -400,6 +412,7 @@ import {
   getWafConfRead,
   getWafStatus,
   setWafEngine,
+  enableWaf,
   installWaf,
   saveWafConf,
   type WafStatus,
@@ -707,6 +720,7 @@ const waf = ref<WafStatus | null>(null)
 const wafLoading = ref(false)
 const wafInstalling = ref(false)
 const wafEngineSwitching = ref(false)
+const wafEnabling = ref(false)
 const logDrawer = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
 const ruleVisible = ref(false)
 const rulePath = ref('')
@@ -748,6 +762,20 @@ function watchWafTask(runId: string) {
       wafTimer = undefined
     }
   }, 3000)
+}
+
+/** 一键开启：组件已在盘上、只差挂到 nginx（补 load_module + 启用文件 + 重载） */
+async function doEnableWaf() {
+  wafEnabling.value = true
+  try {
+    const res = await enableWaf()
+    ElMessage.success(res.data?.reload || t('waf.enableDone'))
+    await loadWaf()
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    wafEnabling.value = false
+  }
 }
 
 /** 拦截开关：On = 拦截，DetectionOnly = 只记录（装完默认） */

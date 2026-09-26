@@ -435,6 +435,7 @@ pub async fn dispatch(req: Request) -> Response {
         Request::WafConfSave { path, content } => waf::conf_save(&path, &content).await,
         Request::WafAudit { lines } => waf::audit(lines).await,
         Request::WafSetEngine { mode } => waf::set_engine(&mode).await,
+        Request::WafEnable => waf::enable().await,
         Request::ServicesOverview => services::overview().await,
         Request::ServicesControl { svc, action } => services::control(&svc, &action).await,
         Request::ServicesBoot { svc, enable } => services::boot(&svc, enable).await,
