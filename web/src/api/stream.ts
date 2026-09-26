@@ -86,7 +86,7 @@ export interface StreamStatus {
   included: boolean
   /** zap-stream.conf 的绝对路径 */
   file: string
-  /** stream 访问日志绝对路径（logs/zap-stream.log） */
+  /** stream 访问日志绝对路径（/var/log/nginx/zap-stream.log） */
   log: string
   /** nginx 主配置绝对路径（探测结果，便于排查） */
   conf: string

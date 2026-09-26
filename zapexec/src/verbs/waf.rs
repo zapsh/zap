@@ -15,8 +15,10 @@
 //! - **装完不立刻拦截**：规则引擎默认 `DetectionOnly`（只记录不拦截），
 //!   用户看过审计日志、确认无业务误杀后再自行切到 On。
 //!
-//! 规则目录 `{nginx conf}/modsecurity.d`：主配置 `modsecurity.conf`、
-//! OWASP CRS（`crs-setup.conf` + `rules/*.conf`）与用户自定义规则都放这里。
+//! 规则目录 `/etc/zap/nginx/modsecurity`（与四层转发的 `zap-stream.conf` 同级）：
+//! 主配置 `modsecurity.conf`、OWASP CRS（`crs-setup.conf` + `rules/*.conf`）
+//! 与用户自定义规则都放这里 —— 挂在面板自有的 nginx 目录下，重装 / 升级
+//! nginx 都不会把规则带走。
 
 use std::path::{Path, PathBuf};
 
@@ -38,8 +40,9 @@ const LIB_CANDIDATES: &[&str] = &[
 ];
 /// 模块 .so 的文件名（nginx 动态模块）
 const MODULE_SO: &str = "ngx_http_modsecurity_module.so";
-/// 规则目录名（挂在 nginx conf 目录下，与主配置同生命周期）
-const RULES_DIR_NAME: &str = "modsecurity.d";
+/// 规则目录名：挂在面板自有的 nginx 目录（`/etc/zap/nginx`）下，
+/// 与四层转发的 `zap-stream.conf` 同级。
+const RULES_DIR_NAME: &str = "modsecurity";
 
 // ── 探测 ────────────────────────────────────────────────────
 
@@ -189,16 +192,24 @@ struct WafEnv {
     rules_dir: PathBuf,
     /// 主配置文件（`modsecurity.conf`）
     main_conf: Option<PathBuf>,
+    /// http 上下文的启用文件（缺它则模块不会被任何请求用到）
+    enabled: Option<PathBuf>,
     crs: bool,
     engine: String,
     audit_log: Option<PathBuf>,
 }
 
-/// 规则目录：优先已存在的候选，否则建议 `{conf}/modsecurity.d`。
+/// 规则目录：面板自有目录 `/etc/zap/nginx/modsecurity` 优先；为了兼容早年
+/// 按 `{nginx conf}/modsecurity.d` 或发行版默认位置装过的机器，再依次回看。
 fn rules_dir_of(conf: &Path) -> PathBuf {
-    let suggested = conf.parent().unwrap_or(Path::new("/etc/nginx")).join(RULES_DIR_NAME);
+    let suggested = Path::new(super::nginx::ZAP_NGINX_DIR).join(RULES_DIR_NAME);
+    let legacy = conf
+        .parent()
+        .unwrap_or(Path::new("/etc/nginx"))
+        .join("modsecurity.d");
     for dir in [
         suggested.clone(),
+        legacy,
         PathBuf::from("/etc/modsecurity"),
         PathBuf::from("/usr/local/modsecurity/conf"),
     ] {
@@ -220,7 +231,21 @@ fn crs_present(rules_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 组装画像：`installed` 要求「库 + 模块 + 主配置」三者齐备，缺一不可。
+/// 启用文件：http 上下文的 `modsecurity on; modsecurity_rules_file …`。
+///
+/// 只认 conf.d 下约定俗成的那一个文件（主配置模板已 `include conf.d/*.conf`）——
+/// 不去猜用户把指令手写进了哪个站点配置文件，猜错就会让状态与事实不符。
+fn enabled_conf(conf: &Path) -> Option<PathBuf> {
+    let path = conf.parent()?.join("conf.d").join("modsecurity.conf");
+    let text = std::fs::read_to_string(&path).ok()?;
+    text.contains("modsecurity_rules_file").then_some(path)
+}
+
+/// 组装画像：`installed` 要求「库 + 模块 + 主配置 + 已启用」四项齐备。
+///
+/// 少了「已启用」这一项就会出假阳性：模块 .so 编出来了、规则也铺好了，但
+/// http 上下文里没有 `modsecurity on;` —— nginx 照样不处理任何请求，面板却
+/// 显示"已安装"，用户改规则改了半天空转。
 fn waf_env(info: &NginxInfo) -> WafEnv {
     let lib = libmodsecurity_present();
     let so = modules_dir(&info.args).map(|d| d.join(MODULE_SO)).filter(|p| p.is_file());
@@ -228,8 +253,13 @@ fn waf_env(info: &NginxInfo) -> WafEnv {
     let main_conf = [rules_dir.join("modsecurity.conf"), PathBuf::from("/etc/modsecurity/modsecurity.conf")]
         .into_iter()
         .find(|p| p.is_file());
+    let enabled = enabled_conf(&info.conf);
     // 模块 .so 在盘上不等于生效：主配置里没 load_module，nginx 根本不会加载它
-    let installed = lib && so.is_some() && main_conf.is_some() && conf_loads_module(&info.conf);
+    let installed = lib
+        && so.is_some()
+        && main_conf.is_some()
+        && conf_loads_module(&info.conf)
+        && enabled.is_some();
     let engine = main_conf.as_ref().map(|p| engine_of(p)).unwrap_or_default();
     let audit_log = main_conf.as_ref().and_then(|p| audit_log_of(p));
     WafEnv {
@@ -239,6 +269,7 @@ fn waf_env(info: &NginxInfo) -> WafEnv {
         crs: crs_present(&rules_dir),
         rules_dir,
         main_conf,
+        enabled,
         engine,
         audit_log,
     }
@@ -264,6 +295,14 @@ fn blockers(info: &NginxInfo, env: &WafEnv) -> Vec<String> {
         out.push(
             "模块已编译，但 nginx.conf 顶部缺少 load_module：\
              加一行 `load_module modules/ngx_http_modsecurity_module.so;` 即可生效"
+                .to_string(),
+        );
+    }
+    // 模块挂了但 http 上下文没启用：等同没装，给出可照做的一步
+    if env.module_so.is_some() && env.enabled.is_none() {
+        out.push(
+            "模块已加载，但 http 上下文未启用：在 nginx 的 conf.d/ 下建一个 .conf，\
+             写入 `modsecurity on;` 与 `modsecurity_rules_file <规则目录>/modsecurity.conf;`"
                 .to_string(),
         );
     }
@@ -315,6 +354,7 @@ pub async fn status() -> Response {
                 "rules_dir": env.rules_dir.display().to_string(),
                 "rules_dir_exists": env.rules_dir.is_dir(),
                 "main_conf": env.main_conf.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                "enabled": env.enabled.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
                 "crs": env.crs,
                 "engine": env.engine,
                 "audit_log": env.audit_log.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
@@ -496,9 +536,11 @@ pub async fn audit(lines: u32) -> Response {
 
 // ── 安装（长任务）───────────────────────────────────────────
 
-const LIBMODSEC_VERSION: &str = "3.0.14";
-const CONNECTOR_BRANCH: &str = "v3/master";
-const CRS_VERSION: &str = "4.6.0";
+const LIBMODSEC_VERSION: &str = "3.0.16";
+/// ModSecurity-nginx 连接器版本（v1.x 对应 libmodsecurity v3）
+const CONNECTOR_VERSION: &str = "1.0.4";
+/// OWASP CRS 版本（下载源上提供的是 minimal 包）
+const CRS_VERSION: &str = "4.29.0";
 /// 源码工作目录
 const SRC_DIR: &str = "/usr/local/src";
 
@@ -510,6 +552,94 @@ fn downloader() -> String {
         "wget -qO {out} {url}"
     }
     .to_string()
+}
+
+/// 包下载源（与 appstore 安装脚本同源）：面板「系统设置 → 下载源」写入
+/// `{data}/mirror.yaml`，没配就退回内置默认源。
+///
+/// WAF 的三个包（libmodsecurity / 连接器 / CRS）都从 `<源>/modsecurity/` 取，
+/// **不访问 GitHub** —— 与 install.sh 保持一致的取包约定。
+fn pkg_mirror() -> String {
+    super::appstore::pkg_mirror_from_conf()
+        .unwrap_or_else(|| "https://mirrors.zap.cn/pkg".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// 从下载源的某个子目录取包：逐个试候选文件名（各镜像命名习惯不同），
+/// 命中即下载到 `dest`；一个都没有就写清"去哪儿放包"，而不是甩一句下载失败。
+fn fetch_from_mirror(mirror: &str, subdir: &str, dest: &str, candidates: &[String]) -> String {
+    let list: Vec<String> = candidates.iter().map(|c| format!("'{c}'")).collect();
+    let list = list.join(" ");
+    let plain = candidates.join(" ");
+    // 离线源（本地目录 / file://）：直接判文件是否存在并 cp，不发任何网络请求
+    if mirror.starts_with('/') || mirror.starts_with("file://") {
+        let base = mirror.strip_prefix("file://").unwrap_or(mirror);
+        return format!(
+            "ok=0; for n in {list}; do \
+               if [ -f {base}/{subdir}/$n ]; then \
+                 echo \"取包(本地源): {base}/{subdir}/$n\"; \
+                 cp -f {base}/{subdir}/$n {dest} && ok=1 && break; \
+               fi; \
+             done; \
+             if [ \"$ok\" != 1 ]; then \
+               echo \"本地源 {base}/{subdir}/ 下没有可用的包（已试: {plain}）\"; \
+               echo \"请把对应源码包放进该目录\"; exit 1; \
+             fi"
+        );
+    }
+    let get = downloader()
+        .replace("{url}", &format!("{mirror}/{subdir}/$n"))
+        .replace("{out}", dest);
+    format!(
+        "ok=0; for n in {list}; do \
+           if curl -sfI -m 10 {mirror}/{subdir}/$n >/dev/null 2>&1 \
+              || wget -q --spider -T 10 {mirror}/{subdir}/$n >/dev/null 2>&1; then \
+             echo \"取包: {mirror}/{subdir}/$n\"; {get} && ok=1 && break; \
+           fi; \
+         done; \
+         if [ \"$ok\" != 1 ]; then \
+           echo \"下载源 {mirror}/{subdir}/ 下没有可用的包（已试: {plain}）\"; \
+           echo \"请把对应源码包放进该目录\"; exit 1; \
+         fi"
+    )
+}
+
+/// libmodsecurity 的候选包名（镜像里叫什么都有可能，逐个探测）
+fn lib_candidates() -> Vec<String> {
+    vec![
+        // 下载源里的实际命名排前面，其余是别的镜像可能用的写法
+        format!("modsecurity-v{LIBMODSEC_VERSION}.tar.gz"),
+        format!("libmodsecurity-v{LIBMODSEC_VERSION}.tar.gz"),
+        format!("libmodsecurity-{LIBMODSEC_VERSION}.tar.gz"),
+        format!("ModSecurity-{LIBMODSEC_VERSION}.tar.gz"),
+        format!("ModSecurity-v{LIBMODSEC_VERSION}.tar.gz"),
+        format!("modsecurity-v{LIBMODSEC_VERSION}.tar.gz"),
+        format!("modsecurity-{LIBMODSEC_VERSION}.tar.gz"),
+    ]
+}
+
+fn connector_candidates() -> Vec<String> {
+    vec![
+        format!("ModSecurity-nginx-v{CONNECTOR_VERSION}.tar.gz"),
+        "ModSecurity-nginx.tar.gz".to_string(),
+        "ModSecurity-nginx-v3-master.tar.gz".to_string(),
+        "ModSecurity-nginx-master.tar.gz".to_string(),
+        "modsecurity-nginx.tar.gz".to_string(),
+        "ngx_http_modsecurity.tar.gz".to_string(),
+    ]
+}
+
+fn crs_candidates() -> Vec<String> {
+    vec![
+        // 下载源给的是 minimal 包（不含 tests/ 之类的冗余内容）
+        format!("coreruleset-{CRS_VERSION}-minimal.tar.gz"),
+        format!("coreruleset-{CRS_VERSION}.tar.gz"),
+        format!("coreruleset-v{CRS_VERSION}.tar.gz"),
+        format!("OWASP-CRS-{CRS_VERSION}.tar.gz"),
+        format!("owasp-crs-{CRS_VERSION}.tar.gz"),
+        format!("crs-{CRS_VERSION}.tar.gz"),
+    ]
 }
 
 /// `waf.install`：仅在 status 判定可安装时允许启动，否则一条都跑不了。
@@ -577,7 +707,7 @@ fn install_inner(
     rules_dir: &Path,
     modules: &Path,
 ) -> i32 {
-    let dl = downloader();
+    let mirror = pkg_mirror();
     // 从 `nginx/1.31.5` 里取版本号，用于下载对应源码编动态模块
     let ver = nginx_version.split('/').last().unwrap_or("").trim().to_string();
 
@@ -596,20 +726,16 @@ fn install_inner(
         }
     }
 
-    // 2) libmodsecurity（规则引擎）
+    // 2) libmodsecurity（规则引擎）—— 从下载源 pkg/modsecurity/ 取，不碰 GitHub
     let lib_script = format!(
         "set -e; cd {SRC_DIR}; \
-         {dl1} && tar xzf libmodsecurity-v{LIBMODSEC_VERSION}.tar.gz 2>/dev/null || \
-           ({dl2} && tar xzf v{LIBMODSEC_VERSION}.tar.gz); \
-         cd ModSecurity-{LIBMODSEC_VERSION}; \
+         {fetch}; \
+         src=$(tar -tzf libmodsecurity.tar.gz | head -1 | cut -d/ -f1); \
+         tar xzf libmodsecurity.tar.gz; \
+         cd \"$src\"; \
          ./build.sh; ./configure --prefix=/usr/local/modsecurity --without-lmdb; \
          make -j$(nproc); make install",
-        dl1 = dl
-            .replace("{url}", &format!("https://github.com/owasp-modsecurity/ModSecurity/releases/download/v{LIBMODSEC_VERSION}/libmodsecurity-v{LIBMODSEC_VERSION}.tar.gz"))
-            .replace("{out}", "libmodsecurity.tar.gz"),
-        dl2 = dl
-            .replace("{url}", &format!("https://github.com/owasp-modsecurity/ModSecurity/archive/refs/tags/v{LIBMODSEC_VERSION}.tar.gz"))
-            .replace("{out}", &format!("v{LIBMODSEC_VERSION}.tar.gz")),
+        fetch = fetch_from_mirror(&mirror, "modsecurity", "libmodsecurity.tar.gz", &lib_candidates()),
     );
     if super::run_step(log, "编译 libmodsecurity", &lib_script) != 0 {
         super::log_line(log, "libmodsecurity 编译失败");
@@ -619,19 +745,27 @@ fn install_inner(
     // 3) nginx 源码 + 动态模块（要求 --with-compat，已在 blockers 里校验过）
     let mod_script = format!(
         "set -e; cd {SRC_DIR}; \
-         {dl_nginx} && tar xzf nginx.tar.gz; \
-         {dl_conn} -o connector.tar.gz || git clone --depth 1 -b {CONNECTOR_BRANCH} \
-           https://github.com/owasp-modsecurity/ModSecurity-nginx.git connector; \
-         mkdir -p connector && tar xzf connector.tar.gz --strip-components=1 -C connector 2>/dev/null || true; \
+         {fetch_nginx}; tar xzf nginx.tar.gz; \
+         {fetch_conn}; mkdir -p connector; \
+         tar xzf connector.tar.gz --strip-components=1 -C connector; \
          cd nginx-{ver}; \
          ./configure {args} --with-compat --add-dynamic-module={SRC_DIR}/connector; \
          make -j$(nproc) modules; \
          mkdir -p {modules}; \
          cp objs/{MODULE_SO} {modules}/",
-        dl_nginx = dl
-            .replace("{url}", &format!("https://nginx.org/download/nginx-{ver}.tar.gz"))
-            .replace("{out}", "nginx.tar.gz"),
-        dl_conn = dl.split(" -o ").next().unwrap_or(&dl),
+        // nginx 源码与安装脚本同源：源的 nginx/ 目录
+        fetch_nginx = fetch_from_mirror(
+            &mirror,
+            "nginx",
+            "nginx.tar.gz",
+            &[format!("nginx-{ver}.tar.gz")]
+        ),
+        fetch_conn = fetch_from_mirror(
+            &mirror,
+            "modsecurity",
+            "connector.tar.gz",
+            &connector_candidates()
+        ),
         modules = modules.display(),
     );
     if super::run_step(log, "编译 ModSecurity nginx 模块", &mod_script) != 0 {
@@ -642,19 +776,17 @@ fn install_inner(
     // 4) 规则集：主配置 + OWASP CRS（默认 DetectionOnly，先观察再拦截）
     let rules = rules_dir.display().to_string();
     let crs_script = format!(
-        "set -e; mkdir -p {rules}/rules; \
-         {dl_crs} && tar xzf crs.tar.gz --strip-components=1 -C {rules}; \
-         cp {rules}/crs-setup.conf.example {rules}/crs-setup.conf 2>/dev/null || true; \
-         printf '%s\\n' 'SecRuleEngine DetectionOnly' \
-           'SecRequestBodyAccess On' 'SecAuditEngine RelevantOnly' \
-           'SecAuditLogRelevantStatus \"^(?:5|4(?!04))\"' \
-           'SecAuditLogParts ABIJDEFHZ' 'SecAuditLogType Serial' \
-           'SecAuditLog /var/log/modsec_audit.log' > {rules}/modsecurity.conf; \
-         printf '%s\\n' 'Include {rules}/crs-setup.conf' 'Include {rules}/rules/*.conf' \
-           > {rules}/zap-crs.conf",
-        dl_crs = dl
-            .replace("{url}", &format!("https://github.com/coreruleset/coreruleset/archive/refs/tags/v{CRS_VERSION}.tar.gz"))
-            .replace("{out}", "crs.tar.gz"),
+        // 一行一条语句（用 \n 分隔），避免 shell 续行反斜杠与 Rust 转义互相纠缠
+        "set -e\nmkdir -p {rules}/rules\ncd {SRC_DIR}\n{fetch_crs}\n\
+         tar xzf crs.tar.gz --strip-components=1 -C {rules}\n\
+         if [ ! -f {rules}/crs-setup.conf ] && [ -f {rules}/crs-setup.conf.example ]; then cp {rules}/crs-setup.conf.example {rules}/crs-setup.conf; fi\n\
+         printf '%s\\n' 'SecRuleEngine DetectionOnly' 'SecRequestBodyAccess On' \
+         'SecAuditEngine RelevantOnly' 'SecAuditLogRelevantStatus \"^(?:5|4(?!04))\"' \
+         'SecAuditLogParts ABIJDEFHZ' 'SecAuditLogType Serial' \
+         'SecAuditLog /var/log/modsec_audit.log' > {rules}/modsecurity.conf\n\
+         if [ -f {rules}/crs-setup.conf ]; then echo 'Include {rules}/crs-setup.conf' >> {rules}/modsecurity.conf; fi\n\
+         if [ -d {rules}/rules ]; then echo 'Include {rules}/rules/*.conf' >> {rules}/modsecurity.conf; fi",
+        fetch_crs = fetch_from_mirror(&mirror, "modsecurity", "crs.tar.gz", &crs_candidates()),
     );
     if super::run_step(log, "部署 OWASP CRS 规则集", &crs_script) != 0 {
         super::log_line(log, "规则集部署失败");
@@ -671,6 +803,25 @@ fn install_inner(
         super::log_line(log, "备份 nginx.conf 失败，为安全起见中止");
         return 1;
     }
+    // 启用：http 上下文指令必须落在 http 块内。主配置模板已 include conf.d/*.conf，
+    // 单独成文件即可，不用去动模板结构。
+    let conf_d = conf
+        .parent()
+        .map(|p| p.join("conf.d"))
+        .unwrap_or_else(|| PathBuf::from("/etc/nginx/conf.d"));
+    if std::fs::create_dir_all(&conf_d).is_err() {
+        super::log_line(log, &format!("创建 {} 失败", conf_d.display()));
+        return 1;
+    }
+    let enabled = conf_d.join("modsecurity.conf");
+    let enabled_text = format!(
+        "# zap 生成：WAF 启用（http 上下文）\nmodsecurity on;\nmodsecurity_rules_file {rules}/modsecurity.conf;\n"
+    );
+    if std::fs::write(&enabled, enabled_text).is_err() {
+        super::log_line(log, &format!("写入 {} 失败", enabled.display()));
+        return 1;
+    }
+
     let so = modules.join(MODULE_SO);
     let mut new_conf = String::new();
     new_conf.push_str(&format!("load_module {};\n", so.display()));
@@ -682,6 +833,7 @@ fn install_inner(
     if let Err(e) = nginx_test(bin) {
         // 回滚：模块加载不了就恢复原配置，绝不留下起不来的 nginx
         let _ = std::fs::copy(&bak, conf);
+        let _ = std::fs::remove_file(&enabled);
         super::log_line(log, &format!("nginx -t 未通过，已回滚 nginx.conf：{e}"));
         return 1;
     }
@@ -727,6 +879,7 @@ mod tests {
             main_conf: None,
             crs: false,
             engine: String::new(),
+            enabled: None,
             audit_log: None,
         };
         let b = blockers(&info, &env);
@@ -747,6 +900,7 @@ mod tests {
             main_conf: None,
             crs: false,
             engine: "DetectionOnly".to_string(),
+            enabled: None,
             audit_log: None,
         };
         std::fs::create_dir_all(&env.rules_dir).unwrap();
@@ -779,6 +933,7 @@ mod tests {
             main_conf: Some(main),
             crs: false,
             engine: "DetectionOnly".to_string(),
+            enabled: None,
             audit_log: None,
         };
         let b = blockers(&info, &env);
@@ -787,6 +942,93 @@ mod tests {
             "应提示补 load_module 而不是要求重装：{b:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 下载源 pkg/modsecurity/ 里的实际文件名必须落在候选里：版本号一改就失配，
+    /// 失配的后果是安装直接报"源里没有可用的包"，所以钉死这条。
+    #[test]
+    fn mirror_candidates_cover_source_layout() {
+        for (name, cands) in [
+            (
+                format!("modsecurity-v{LIBMODSEC_VERSION}.tar.gz"),
+                lib_candidates(),
+            ),
+            (
+                format!("ModSecurity-nginx-v{CONNECTOR_VERSION}.tar.gz"),
+                connector_candidates(),
+            ),
+            (
+                format!("coreruleset-{CRS_VERSION}-minimal.tar.gz"),
+                crs_candidates(),
+            ),
+        ] {
+            assert!(cands.contains(&name), "候选里缺少 {name}：{cands:?}");
+        }
+    }
+
+    /// 规则目录跟面板自有的 nginx 目录走（与 zap-stream.conf 同级）
+    #[test]
+    fn rules_dir_lives_in_panel_nginx_dir() {
+        let suggested = Path::new(super::super::nginx::ZAP_NGINX_DIR).join(RULES_DIR_NAME);
+        assert_eq!(suggested, PathBuf::from("/etc/zap/nginx/modsecurity"));
+    }
+
+    #[test]
+    fn mirror_fetch_scripts_are_valid_shell() {
+        // 生成的脚本直接喂给 bash 执行，语法错了会在安装时才炸；这里提前挡住
+        for script in [
+            fetch_from_mirror(
+                "https://mirrors.example.com/pkg",
+                "modsecurity",
+                "x.tar.gz",
+                &lib_candidates(),
+            ),
+            fetch_from_mirror("/opt/local-mirror", "modsecurity", "x.tar.gz", &crs_candidates()),
+        ] {
+            let out = std::process::Command::new("bash")
+                .args(["-n", "-c", &script])
+                .output()
+                .expect("bash 可用");
+            assert!(
+                out.status.success(),
+                "取包脚本语法错误: {}\n{}",
+                script,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    /// 本地目录源要真的能把包取出来（离线环境没有网络，靠 cp）。
+    #[test]
+    fn local_mirror_picks_existing_package() {
+        let root = std::env::temp_dir().join("zap-waf-mirror-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("modsecurity");
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = &crs_candidates()[1]; // 故意放第二个候选：验证是"逐个试"而非只认第一个
+        std::fs::write(dir.join(name), b"packet").unwrap();
+        std::fs::create_dir_all(root.join("work")).unwrap();
+
+        let script = format!(
+            "cd {}; {}; test -s crs.tar.gz",
+            root.join("work").display(),
+            fetch_from_mirror(
+                &root.display().to_string(),
+                "modsecurity",
+                "crs.tar.gz",
+                &crs_candidates()
+            )
+        );
+        let out = std::process::Command::new("bash")
+            .args(["-c", &script])
+            .output()
+            .expect("bash 可用");
+        assert!(
+            out.status.success(),
+            "本地源取包失败: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

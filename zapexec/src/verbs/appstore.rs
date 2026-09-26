@@ -1305,7 +1305,7 @@ fn base_env() -> Vec<(String, String)> {
 ///
 /// 只取一个键，不引入完整反序列化：这里要的是「有没有配、配成什么」，
 /// 文件坏了（手工编辑出错）就当没配，让脚本回落到默认镜像，而不是让安装失败。
-fn pkg_mirror_from_conf() -> Option<String> {
+pub(crate) fn pkg_mirror_from_conf() -> Option<String> {
     let text = std::fs::read_to_string(data_dir().join("mirror.yaml")).ok()?;
     for line in text.lines() {
         let line = line.trim();

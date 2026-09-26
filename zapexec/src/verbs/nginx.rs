@@ -1198,13 +1198,14 @@ const STREAM_LOG: &str = "zap-stream.log";
 /// 日志目录：跟 nginx 自己的 access_log / error_log 放一起，便于统一轮转与查看。
 const NGINX_LOG_DIR: &str = "/var/log/nginx";
 
-/// 面板自己的 nginx 目录：stream 配置和日志都放这儿。
+/// 面板自己的 nginx 目录：只放 stream 配置（`zap-stream.conf`），不放大日志。
 ///
-/// 不再放 `nginx.conf` 同级 / 依赖 nginx 的 prefix —— 各发行版的 prefix 与
-/// logs 目录位置不一（有的压根没有 logs 目录），相对路径 `logs/xxx.log`
-/// 会解析到一个不存在的目录，nginx 加载配置时 open 失败直接起不来。
-/// 这里统一用绝对路径，目录不存在就建。
-const ZAP_NGINX_DIR: &str = "/etc/zap/nginx";
+/// 日志跟 nginx 自己的 access_log / error_log 一起放 `/var/log/nginx`，
+/// 轮转与查看都在一起。早年版本把日志写在 `nginx.conf` 同级、还用相对路径
+/// `logs/xxx.log` —— 各发行版的 prefix 与 logs 目录位置不一（有的压根没有
+/// logs 目录），相对路径会解析到不存在的目录，nginx 加载配置时 open 失败
+/// 直接起不来。现在统一绝对路径，目录不存在就建。
+pub(crate) const ZAP_NGINX_DIR: &str = "/etc/zap/nginx";
 
 /// zap-stream.conf 的绝对路径（主配置里 include 的就是它）。
 fn stream_conf_path() -> PathBuf {
@@ -1280,10 +1281,12 @@ pub async fn stream_apply(content: &str) -> Response {
             .and_then(|_| remove_include(&conf))
             .and_then(|_| site::nginx_test(&bin))
     } else {
-        // access_log 用相对路径 logs/zap-stream.log，nginx 在 `nginx -t` 阶段
-        // 就会 open 它；目录或文件不存在直接 [emerg] → 先建出来
+        // access_log 是绝对路径 /var/log/nginx/zap-stream.log，nginx 在
+        // `nginx -t` 阶段就会 open 它；目录或文件不存在直接 [emerg] → 先建出来
         let log = ensure_stream_log();
         let _ = remove_legacy_file(&conf);
+        // 早年把日志写在 /etc/zap/nginx/logs/ 下，迁走后把那个空壳目录收掉
+        remove_legacy_log_dir(&Path::new(ZAP_NGINX_DIR).join("logs"));
         std::fs::write(&file, content)
             .map_err(|e| format!("写入 {} 失败: {e}", file.display()))
             .and_then(|_| {
@@ -1373,6 +1376,40 @@ fn remove_legacy_file(conf: &Path) -> Result<(), String> {
     remove_stream_file(&old)
 }
 
+/// 收掉早年在 `/etc/zap/nginx/logs/` 留下的 stream 日志目录。
+///
+/// 只删**空**的 `zap-stream.log*` + 随之变空的目录：有内容的旧日志是历史数据，
+/// 留着不删 —— 面板不替用户做"删日志"这个决定。目录里若有别的东西也整个跳过。
+fn remove_legacy_log_dir(dir: &Path) {
+    // 万一以后又把日志放回老位置，绝不能把自己刚写好日志的目录删了
+    if dir == stream_log_path().parent().unwrap_or(Path::new("/")) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut only_mine_and_empty = true;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let mine = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with(STREAM_LOG))
+            .unwrap_or(false);
+        let empty = std::fs::metadata(&path)
+            .map(|m| m.is_file() && m.len() == 0)
+            .unwrap_or(false);
+        if mine && empty {
+            let _ = std::fs::remove_file(&path);
+        } else {
+            only_mine_and_empty = false;
+        }
+    }
+    if only_mine_and_empty {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
 /// nginx 是否带 stream 模块（`nginx -V` 的输出在 stderr）。
 fn stream_supported(bin: &Path) -> bool {
     let Ok(o) = root_cmd(super::platform::SHELL)
@@ -1459,6 +1496,43 @@ mod tests {
         assert!(!main_has_include("include zap-stream.conf;\n"));
         assert!(!main_has_include("http {\n  include sites-enabled/*.conf;\n}\n"));
         assert!(!main_has_include("include mime.types;\n"));
+    }
+
+
+    /// 日志不跟配置混在一个目录：配置在 /etc/zap/nginx，日志在 /var/log/nginx
+    #[test]
+    fn stream_log_is_not_next_to_conf() {
+        let conf_dir = stream_conf_path().parent().unwrap().to_path_buf();
+        let log_dir = stream_log_path().parent().unwrap().to_path_buf();
+        assert_ne!(conf_dir, log_dir);
+        assert!(!stream_log_path().starts_with(ZAP_NGINX_DIR));
+    }
+
+    #[test]
+    fn legacy_log_dir_cleanup_removes_only_empty_logs() {
+        let base = std::env::temp_dir().join("zap-stream-legacy-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.join("logs");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 空的旧日志 → 连目录一起收掉
+        std::fs::write(dir.join("zap-stream.log"), "").unwrap();
+        remove_legacy_log_dir(&dir);
+        assert!(!dir.exists(), "空壳日志目录应被清理");
+
+        // 有内容的旧日志 → 必须留着（历史数据不替用户删）
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("zap-stream.log"), "1.2.3.4 [x] TCP 200\n").unwrap();
+        remove_legacy_log_dir(&dir);
+        assert!(dir.join("zap-stream.log").exists(), "有内容的旧日志不能删");
+
+        // 目录里有别的东西 → 整个目录都不动
+        std::fs::write(dir.join("keepme.txt"), "x").unwrap();
+        std::fs::write(dir.join("zap-stream.log"), "").unwrap();
+        remove_legacy_log_dir(&dir);
+        assert!(dir.join("keepme.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

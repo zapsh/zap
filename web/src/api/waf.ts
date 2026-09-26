@@ -21,6 +21,8 @@ export interface WafStatus {
   rules_dir: string
   rules_dir_exists: boolean
   main_conf: string
+  /** http 上下文启用文件（`modsecurity on;` 落在哪个文件里；空串表示未启用） */
+  enabled: string
   /** 是否已部署 OWASP CRS */
   crs: boolean
   /** SecRuleEngine：On / Off / DetectionOnly */

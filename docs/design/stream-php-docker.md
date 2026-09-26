@@ -194,7 +194,7 @@ async fn docker_usable_by(claims: &jwt::Claims) -> bool {
 stream {
     log_format zap_stream '$remote_addr [$time_local] $protocol $status '
                           '$bytes_sent $bytes_received $session_time $upstream_addr';
-    access_log logs/zap-stream.log zap_stream;
+    access_log /var/log/nginx/zap-stream.log zap_stream;
 
     # rule: mysql-forward (id=3)
     upstream zap_stream_3 {
