@@ -112,6 +112,8 @@ async fn migrate_add_columns() {
     // 套餐能力开关：PHP 站点（默认开放）/ 容器（默认关闭，且仅 Podman 运行时生效）
     ensure_column("packages", "allow_php", "INTEGER NOT NULL DEFAULT 1").await;
     ensure_column("packages", "allow_docker", "INTEGER NOT NULL DEFAULT 0").await;
+    // 套餐 WAF 能力：允许为站点开启 WAF / 限速 / 限并发（仍需全局 ModSecurity 已启用）
+    ensure_column("packages", "allow_waf", "INTEGER NOT NULL DEFAULT 0").await;
     // 四层转发高级模式：advanced 模式 + 结构化高级参数
     ensure_column("nginx_stream", "mode", "TEXT NOT NULL DEFAULT 'basic'").await;
     ensure_column("nginx_stream", "raw", "TEXT NOT NULL DEFAULT ''").await;
@@ -350,7 +352,7 @@ async fn init_packages_table() {
         updated_at INTEGER
     );
     INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, owner_id, status, created_at, updated_at)
-    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端与 PHP 站点（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 0, 0, 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端、PHP 站点与站点 WAF（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 1, 0, 1, strftime('%s','now'), strftime('%s','now'));
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }

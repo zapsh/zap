@@ -17,7 +17,7 @@ import { http } from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 import type { InstalledApp } from '@/api/appstore'
 import { getInstalledApps } from '@/api/appstore'
-import { getSiteSecurity, saveSiteSecurity } from '@/api/site'
+import { getSiteSecurity, getSecurityCaps, saveSiteSecurity } from '@/api/site'
 import type { SiteSecurity } from '@/api/site'
 import { getCertList } from '@/api/ssl'
 import type { SslCertItem } from '@/api/ssl'
@@ -562,6 +562,9 @@ const blankForm = (): SiteForm => ({
 const sec = reactive<SiteSecurity>(blankSec())
 const wafReady = ref(false)
 const wafAllowed = ref(false)
+const secLoaded = ref(false)
+/** waf_ready=false 时执行端给出的逐项原因 */
+const capsBlockers = ref<string[]>([])
 const secSaving = ref(false)
 
 function blankSec(): SiteSecurity {
@@ -580,14 +583,29 @@ async function loadSecurity() {
   Object.assign(sec, blankSec())
   wafReady.value = false
   wafAllowed.value = false
-  if (!form.id) return
+  secLoaded.value = false
+  if (!form.id) {
+    // 新建：还没有站点 id，只取能力位（WAF 能不能开），配置随主表单一起保存
+    try {
+      const res = await getSecurityCaps()
+      wafReady.value = !!res.data?.waf_ready
+      wafAllowed.value = !!res.data?.waf_allowed
+      capsBlockers.value = res.data?.blockers || []
+      secLoaded.value = true
+    } catch {
+      /* interceptor 已提示 */
+    }
+    return
+  }
   try {
     const res = await getSiteSecurity(form.id)
     if (res.data?.sec) Object.assign(sec, res.data.sec)
     wafReady.value = !!res.data?.waf_ready
     wafAllowed.value = !!res.data?.waf_allowed
+    capsBlockers.value = res.data?.blockers || []
+    secLoaded.value = true
   } catch {
-    /* interceptor 已提示 */
+    /* interceptor 已提示，这里只留状态：加载失败时不允许保存，避免覆盖成默认值 */
   }
 }
 
@@ -1191,7 +1209,12 @@ async function submitForm() {
       })),
   }
   if (canManageAll.value) payload.user_id = form.user_id
-  if (isEdit.value) payload.id = form.id
+  if (isEdit.value) {
+    payload.id = form.id
+  } else {
+    // 新建：安全配置随站点一起提交（保存后由自动同步渲染进 vhost）
+    payload.sec = { ...sec }
+  }
   formLoading.value = true
   try {
     const res = await http.post<{ code: number; message: string; data?: { id?: number } }>(
@@ -2127,16 +2150,43 @@ onMounted(() => {
           </el-tab-pane>
 
           <!-- 安全：WAF / 限速 / 限并发 -->
-          <el-tab-pane :label="t('site.tabSecurity')" name="security" :disabled="!form.id">
+          <el-tab-pane :label="t('site.tabSecurity')" name="security">
+            <el-alert
+              v-if="!form.id"
+              type="info"
+              :closable="false"
+              :title="t('site.secSaveWithSite')"
+              style="margin-bottom: 12px"
+            />
+            <el-alert
+              v-else-if="!secLoaded"
+              type="warning"
+              :closable="false"
+              :title="t('site.secLoadFailed')"
+              style="margin-bottom: 12px"
+            />
+            <el-alert
+              v-else-if="!wafReady"
+              type="warning"
+              :closable="false"
+              :title="t('site.secWafNotReady')"
+              :description="capsBlockers.join('；')"
+              style="margin-bottom: 12px"
+            />
             <el-form-item :label="t('site.secWaf')">
-              <el-switch v-model="sec.waf_enable" :disabled="!wafReady || !wafAllowed" />
+              <el-switch
+                v-model="sec.waf_enable"
+                :disabled="!form.id || !secLoaded || !wafReady || !wafAllowed"
+              />
               <span class="form-hint">
                 {{
-                  !wafReady
-                    ? t('site.secWafNotReady')
-                    : !wafAllowed
-                      ? t('site.secWafNotAllowed')
-                      : t('site.secWafHint')
+                  !secLoaded
+                    ? t('site.secLoadFailed')
+                    : !wafReady
+                      ? t('site.secWafNotReady')
+                      : !wafAllowed
+                        ? t('site.secWafNotAllowed')
+                        : t('site.secWafHint')
                 }}
               </span>
             </el-form-item>
@@ -2163,10 +2213,17 @@ onMounted(() => {
               <span class="form-hint">{{ t('site.secConnNumHint') }}</span>
             </el-form-item>
             <el-form-item>
-              <el-button type="primary" :loading="secSaving" @click="saveSecurity">
+              <el-button
+                type="primary"
+                :loading="secSaving"
+                :disabled="!form.id || !secLoaded"
+                @click="saveSecurity"
+              >
                 {{ t('site.secSave') }}
               </el-button>
-              <span class="form-hint">{{ t('site.secSaveHint') }}</span>
+              <span class="form-hint">
+                {{ !form.id ? t('site.secSaveWithSite') : t('site.secSaveHint') }}
+              </span>
             </el-form-item>
           </el-tab-pane>
 

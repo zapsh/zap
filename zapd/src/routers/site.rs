@@ -141,6 +141,10 @@ pub struct SiteAddPayload {
     /// 启用 HTTP/2
     #[serde(default = "default_true")]
     pub ssl_http2: bool,
+    /// 随站点一并提交的安全配置（WAF / 限速 / 限并发）；不传 = 全部关闭。
+    /// 建站接口只落库，渲染由随后的 vhost 同步负责（sync 时读 site_sec）。
+    #[serde(default)]
+    pub sec: Option<SiteSecurity>,
 }
 fn default_true() -> bool {
     true
@@ -1870,6 +1874,20 @@ pub async fn site_add(
         norm_site_type(if t.is_empty() { "php" } else { &t })?
     };
     require_php_allowed(&claims, site_type).await?;
+    // 安全配置（可随建站一起提交）：开 WAF 同样要过「套餐允许 + 全局已启用」两道，
+    // 在建站前就拦下，避免站点建好了才发现 WAF 不生效
+    let sec = payload.sec.clone().map(norm_sec);
+    if let Some(s) = &sec {
+        if s.waf_enable {
+            require_waf_allowed(&claims).await?;
+            if !waf_global_ready().await {
+                return Err(ZapError::New(
+                    -1,
+                    "全局 WAF 尚未启用：请先在「服务配置 → Nginx → WAF」安装并开启 ModSecurity".to_string(),
+                ));
+            }
+        }
+    }
     let pseudo_static = {
         let p = payload.pseudo_static.trim().to_lowercase();
         if p.is_empty() { "none".to_string() } else { p }
@@ -1995,13 +2013,20 @@ pub async fn site_add(
         warn!("save site_profile failed (id={}): {}", id, e);
     }
 
+    // 安全配置随建站落库：随后的 vhost 同步（前端建站后调用的 /site/sync）会读它渲染
+    if let Some(s) = &sec {
+        if let Err(e) = save_site_sec(id, s).await {
+            warn!("save site_sec failed (id={}): {}", id, e);
+        }
+    }
+
     audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "site_create",
         &format!("id={}", id),
         &format!(
-            "user_id={} name={} domains={} ips={} php_instance={} site_type={} pseudo={} web_root_custom={}",
+            "user_id={} name={} domains={} ips={} php_instance={} site_type={} pseudo={} web_root_custom={} waf={} req={} conn={}",
             owner,
             name,
             domains.join(","),
@@ -2009,7 +2034,10 @@ pub async fn site_add(
             php_instance,
             site_type,
             pseudo_static,
-            payload.web_root_custom
+            payload.web_root_custom,
+            sec.as_ref().map(|s| s.waf_enable).unwrap_or(false),
+            sec.as_ref().map(|s| s.limit_req_enable).unwrap_or(false),
+            sec.as_ref().map(|s| s.limit_conn_enable).unwrap_or(false)
         ),
     )
     .await;
@@ -3003,18 +3031,39 @@ async fn require_waf_allowed(claims: &jwt::Claims) -> Result<(), ZapError> {
     ))
 }
 
-/// 全局 WAF 是否可用：现问执行端，不用缓存 —— 面板这边说"可用"而机器上没装，
+/// 全局 WAF 状态：现问执行端，不用缓存 —— 面板这边说"可用"而机器上没装，
 /// 站点就会渲染出 `modsecurity on;` 然后卡在 `nginx -t`。
-async fn waf_global_ready() -> bool {
-    match crate::zapexec::call(Request::WafStatus).await {
-        Ok(resp) if resp.code == 0 => resp
-            .data
-            .as_ref()
-            .and_then(|d| d.get("installed"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        _ => false,
+///
+/// 返回 `(是否可用, 未就绪原因明细)`：原因直接来自执行端逐项检查的结果，
+/// 前端原样展示，避免用户看到一句"未启用"却不知道缺什么。
+async fn waf_global_status() -> (bool, Vec<String>) {
+    let Ok(resp) = crate::zapexec::call(Request::WafStatus).await else {
+        return (false, vec!["执行端 zapexec 未响应（未运行或权限不足）".to_string()]);
+    };
+    if resp.code != 0 {
+        return (false, vec![format!("执行端返回错误：{}", resp.message)]);
     }
+    let Some(data) = resp.data.as_ref() else {
+        return (false, vec!["执行端未返回状态数据".to_string()]);
+    };
+    let installed = data
+        .get("installed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let blockers = data
+        .get("blockers")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (installed, blockers)
+}
+
+async fn waf_global_ready() -> bool {
+    waf_global_status().await.0
 }
 
 #[derive(Debug, Deserialize)]
@@ -3050,6 +3099,23 @@ pub async fn site_security(
             },
             "waf_allowed": waf_allowed_for(&claims).await,
             "waf_ready": waf_global_ready().await,
+            "blockers": waf_global_status().await.1,
+        }
+    })))
+}
+
+/// GET /site/security/caps：新建站点（还没有 id）时也要知道 WAF 能不能开 ——
+/// 能力位只取决于「套餐 + 全局 ModSecurity」，与具体站点无关。
+pub async fn site_security_caps(claims: ValidatedClaims) -> ZapJsonResult {
+    require_manageable(&claims)?;
+    let (ready, blockers) = waf_global_status().await;
+    Ok(Json(json!({
+        "code": 0,
+        "message": "OK",
+        "data": {
+            "waf_ready": ready,
+            "waf_allowed": waf_allowed_for(&claims).await,
+            "blockers": blockers,
         }
     })))
 }

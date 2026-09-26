@@ -87,7 +87,7 @@ pub struct HeaderSpec {
 /// 站点安全配置（渲染进 vhost 的 server 上下文）：WAF 开关 + 请求限速 + 并发限制。
 ///
 /// 三个能力彼此独立，可单独开启；限速/限并发依赖 http 上下文的共享 zone
-/// （由执行端幂等发布 `00-zap-limits.conf`，见 `site::ensure_limit_zones`）。
+/// （由执行端按站点幂等发布 `00-zap-limits-<site_id>.conf`，见 `site::ensure_limit_zones`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SiteSecuritySpec {
     /// 该站点启用 WAF：仅当全局 WAF 可用时才真正渲染 `modsecurity on;`

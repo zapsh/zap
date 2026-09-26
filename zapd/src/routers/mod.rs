@@ -749,6 +749,7 @@ fn api_routers() -> Router {
         .route("/site/sync_all", post(site::site_sync_all))
         .route("/site/security", get(site::site_security))
         .route("/site/security/save", post(site::site_security_save))
+        .route("/site/security/caps", get(site::site_security_caps))
         // 站点日志（查看 / 归档 / 清空 / 轮转）与流量分析
         .route("/site/logs", get(site::site_logs))
         .route("/site/logs/archives", get(site::site_logs_archives))

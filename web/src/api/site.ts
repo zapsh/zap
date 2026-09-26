@@ -108,11 +108,25 @@ export interface SiteSecurityData {
   waf_allowed: boolean
   /** 全局 WAF 是否已安装并启用 */
   waf_ready: boolean
+  /** waf_ready=false 时的逐项原因（来自执行端检查） */
+  blockers: string[]
 }
 
 /** 站点安全配置（含两项能力判定，供 UI 决定开关可用性） */
 export async function getSiteSecurity(id: number) {
   return http.get<ApiResponse<SiteSecurityData>>('/site/security', { params: { id } })
+}
+
+export interface SecurityCaps {
+  waf_allowed: boolean
+  waf_ready: boolean
+  /** waf_ready=false 时的逐项原因（来自执行端检查） */
+  blockers: string[]
+}
+
+/** 安全能力判定（不依赖站点 id）：新建站点时用它决定 WAF 开关能否打开 */
+export async function getSecurityCaps() {
+  return http.get<ApiResponse<SecurityCaps>>('/site/security/caps')
 }
 
 /** 保存站点安全配置：后端保存后立即同步该站点 vhost */
