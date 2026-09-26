@@ -114,6 +114,10 @@ async fn migrate_add_columns() {
     ensure_column("packages", "allow_docker", "INTEGER NOT NULL DEFAULT 0").await;
     // 套餐 WAF 能力：允许为站点开启 WAF / 限速 / 限并发（仍需全局 ModSecurity 已启用）
     ensure_column("packages", "allow_waf", "INTEGER NOT NULL DEFAULT 0").await;
+    // 站点安全：WAF 站点级引擎模式与自定义规则（存量库补列）
+    ensure_column("site_sec", "waf_mode", "INTEGER NOT NULL DEFAULT 1").await;
+    ensure_column("site_sec", "waf_rules", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_sec", "waf_audit", "INTEGER NOT NULL DEFAULT 1").await;
     // 四层转发高级模式：advanced 模式 + 结构化高级参数
     ensure_column("nginx_stream", "mode", "TEXT NOT NULL DEFAULT 'basic'").await;
     ensure_column("nginx_stream", "raw", "TEXT NOT NULL DEFAULT ''").await;
@@ -1089,6 +1093,12 @@ async fn init_site_sec_table() {
     CREATE TABLE IF NOT EXISTS site_sec (
         site_id INTEGER NOT NULL PRIMARY KEY,
         waf_enable INTEGER NOT NULL DEFAULT 0,
+        -- 站点级 WAF 引擎：0=跟随全局 1=On(拦截) 2=DetectionOnly(仅检测)
+        waf_mode INTEGER NOT NULL DEFAULT 1,
+        -- 站点自定义 ModSecurity 规则（管理组维护）
+        waf_rules TEXT NOT NULL DEFAULT '',
+        -- 站点独立 WAF 审计日志（写入站点日志目录下的 waf.log）
+        waf_audit INTEGER NOT NULL DEFAULT 1,
         limit_req_enable INTEGER NOT NULL DEFAULT 0,
         limit_req_rate INTEGER NOT NULL DEFAULT 10,
         limit_req_burst INTEGER NOT NULL DEFAULT 20,

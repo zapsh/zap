@@ -88,11 +88,30 @@ pub struct HeaderSpec {
 ///
 /// 三个能力彼此独立，可单独开启；限速/限并发依赖 http 上下文的共享 zone
 /// （由执行端按站点幂等发布 `00-zap-limits-<site_id>.conf`，见 `site::ensure_limit_zones`）。
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+fn default_true() -> bool {
+    true
+}
+
+fn default_waf_mode() -> u8 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SiteSecuritySpec {
     /// 该站点启用 WAF：仅当全局 WAF 可用时才真正渲染 `modsecurity on;`
     #[serde(default)]
     pub waf_enable: bool,
+    /// 站点级引擎：0 = 跟随全局 / 1 = On（拦截，默认）/ 2 = DetectionOnly（只记录不拦截）。
+    /// 非 0 时渲染进 `modsecurity_rules 'SecRuleEngine ...';`，站点可覆盖全局形态。
+    #[serde(default = "default_waf_mode")]
+    pub waf_mode: u8,
+    /// 该站点启用独立 WAF 审计日志：写到站点日志目录下的 `waf.log`（面板可查看/轮转）
+    #[serde(default = "default_true")]
+    pub waf_audit: bool,
+    /// 站点自定义 ModSecurity 规则（与引擎指令一起渲染进 `modsecurity_rules`）。
+    /// 属管理组能力：非管理员提交修改会被拒绝。
+    #[serde(default)]
+    pub waf_rules: String,
     #[serde(default)]
     pub limit_req_enable: bool,
     /// 限速速率（每秒请求数，渲染为 `rate={n}r/s`）
@@ -106,6 +125,23 @@ pub struct SiteSecuritySpec {
     /// 单 IP 并发连接上限
     #[serde(default)]
     pub limit_conn_num: u32,
+}
+
+impl Default for SiteSecuritySpec {
+    fn default() -> Self {
+        Self {
+            waf_enable: false,
+            // 与反序列化缺省保持一致：新站点 WAF 形态默认「拦截」
+            waf_mode: default_waf_mode(),
+            waf_audit: default_true(),
+            waf_rules: String::new(),
+            limit_req_enable: false,
+            limit_req_rate: 0,
+            limit_req_burst: 0,
+            limit_conn_enable: false,
+            limit_conn_num: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

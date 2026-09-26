@@ -238,6 +238,8 @@ const canManageAll = computed(
 )
 // 只读账号（或演示账号）：写操作直接禁用，避免点了才收到后端的拒绝提示
 const readonly = computed(() => userStore.readOnly || userStore.roles.includes('demo'))
+// 管理员：站点自定义 WAF 规则只对管理组开放（后端同样校验）
+const isAdmin = computed(() => userStore.roles.includes('admin'))
 // 归属用户（普通用户新增/编辑时固定为当前登录用户）
 const currentUserName = computed(
   () => `${userStore.userInfo.nickname}（${userStore.userInfo.username}）`,
@@ -570,6 +572,9 @@ const secSaving = ref(false)
 function blankSec(): SiteSecurity {
   return {
     waf_enable: false,
+    waf_mode: 1,
+    waf_rules: '',
+    waf_audit: true,
     limit_req_enable: false,
     limit_req_rate: 10,
     limit_req_burst: 20,
@@ -967,6 +972,8 @@ function openAdd() {
   loadPhpOptions()
   loadCerts()
   loadFeature()
+  // 新建态也要拉安全能力位（WAF 能不能开），否则安全 tab 一直显示"接口不可用"
+  loadSecurity()
   formVisible.value = true
 }
 
@@ -2176,7 +2183,7 @@ onMounted(() => {
             <el-form-item :label="t('site.secWaf')">
               <el-switch
                 v-model="sec.waf_enable"
-                :disabled="!form.id || !secLoaded || !wafReady || !wafAllowed"
+                :disabled="!secLoaded || !wafReady || !wafAllowed"
               />
               <span class="form-hint">
                 {{
@@ -2190,6 +2197,33 @@ onMounted(() => {
                 }}
               </span>
             </el-form-item>
+            <template v-if="sec.waf_enable">
+              <el-form-item :label="t('site.secWafMode')">
+                <el-select v-model="sec.waf_mode" style="width: 260px">
+                  <el-option :label="t('site.secWafModeOn')" :value="1" />
+                  <el-option :label="t('site.secWafModeDetect')" :value="2" />
+                  <el-option :label="t('site.secWafModeGlobal')" :value="0" />
+                </el-select>
+                <span class="form-hint">{{ t('site.secWafModeHint') }}</span>
+              </el-form-item>
+              <el-form-item :label="t('site.secWafAudit')">
+                <el-switch v-model="sec.waf_audit" />
+                <span class="form-hint">{{ t('site.secWafAuditHint') }}</span>
+              </el-form-item>
+              <el-form-item :label="t('site.secWafRules')">
+                <el-input
+                  v-model="sec.waf_rules"
+                  type="textarea"
+                  :rows="6"
+                  :disabled="!isAdmin"
+                  :placeholder="t('site.secWafRulesHint')"
+                  style="width: 100%"
+                />
+                <span class="form-hint">
+                  {{ isAdmin ? t('site.secWafRulesHint') : t('site.secWafRulesAdminOnly') }}
+                </span>
+              </el-form-item>
+            </template>
             <el-form-item :label="t('site.secLimitReq')">
               <el-switch v-model="sec.limit_req_enable" />
               <span class="form-hint">{{ t('site.secLimitReqHint') }}</span>

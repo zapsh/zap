@@ -90,6 +90,12 @@ export async function getSiteTraffic(id: number, days = 30) {
 export interface SiteSecurity {
   /** 站点启用 WAF（仍需全局已安装并启用 ModSecurity） */
   waf_enable: boolean
+  /** WAF 模式：0=跟随全局 1=拦截(SecRuleEngine On) 2=仅检测(DetectionOnly) */
+  waf_mode: number
+  /** 站点自定义 ModSecurity 规则（管理组维护） */
+  waf_rules: string
+  /** 开启站点独立 WAF 审计日志（写入站点日志目录 waf.log） */
+  waf_audit: boolean
   /** 请求限速 */
   limit_req_enable: boolean
   /** 每秒请求数上限 */

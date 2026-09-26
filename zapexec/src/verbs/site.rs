@@ -534,6 +534,8 @@ struct VhostRenderSpec<'a> {
     php_socket: Option<&'a str>,
     access_log: Option<&'a str>,
     error_log: Option<&'a str>,
+    /// 站点独立 WAF 审计日志路径（None = 未规划日志目录，不渲染 SecAuditLog）
+    waf_log: Option<&'a str>,
     site_type: &'a str,
     pseudo_static: &'a str,
     pseudo_custom: &'a str,
@@ -583,31 +585,74 @@ limit_conn_zone $binary_remote_addr zone=zap_conn_{site_id}:1m;\n"
         .map(|_| ())
 }
 
+/// nginx 单引号字符串转义：规则体里出现 `'` 会提前闭合字符串（进而让 `nginx -t`
+/// 失败并回滚整站配置），反斜杠也要先转义，避免把 `\'` 再解释回去。
+fn nginx_single_quoted(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 /// 站点安全片段（server 上下文）：WAF + 请求限速 + 并发限制。
 ///
 /// 两条硬约束：
 /// - `modsecurity` 只在全局 WAF 真的可用时才输出 —— 否则模块没加载，`nginx -t`
 ///   会因未知指令直接失败，把整个站点拖成"配置发布失败"；
 /// - 限速/限并发引用的共享 zone 由 [`ensure_limit_zones`] 负责发布，这里只引用。
-fn render_security(site_id: i64, sec: Option<&SiteSecuritySpec>, waf_ready: bool) -> String {
+fn render_security(
+    site_id: i64,
+    sec: Option<&SiteSecuritySpec>,
+    waf_ready: bool,
+    log_dir: Option<&str>,
+) -> String {
     let Some(s) = sec else {
         return String::new();
     };
     let mut out = String::new();
     if s.waf_enable && waf_ready {
         out.push_str("    modsecurity on;\n");
+        // 站点级引擎 + 自定义规则：一并渲染进 modsecurity_rules。
+        // 引擎不写死在全局：站点可单独选「拦截 / 仅检测 / 跟随全局」，
+        // 自定义规则（管理组维护）追加在引擎指令之后。
+        let mut rules = String::new();
+        match s.waf_mode {
+            1 => rules.push_str("SecRuleEngine On\n"),
+            2 => rules.push_str("SecRuleEngine DetectionOnly\n"),
+            // 0 / 其它：跟随全局 modsecurity.conf 的形态，不输出引擎指令
+            _ => {}
+        }
+        // 站点独立审计日志：落到站点日志目录下的 waf.log，纳入面板轮转/查看/清空
+        // （kind = "waf"）。只审计「相关」请求，避免高流量站点被日志拖垮。
+        if s.waf_audit {
+            if let Some(dir) = log_dir.map(str::trim).filter(|d| !d.is_empty()) {
+                rules.push_str("SecAuditEngine RelevantOnly\n");
+                rules.push_str("SecAuditLogRelevantStatus \"^(?:5|4(?!04))\"\n");
+                rules.push_str("SecAuditLogType Serial\n");
+                rules.push_str("SecAuditLogParts ABIJDEFHZ\n");
+                rules.push_str(&format!("SecAuditLog {}/waf.log\n", dir.trim_end_matches('/')));
+            }
+        }
+        let custom = s.waf_rules.trim();
+        if !custom.is_empty() {
+            rules.push_str(custom);
+            rules.push('\n');
+        }
+        if !rules.is_empty() {
+            out.push_str(&format!(
+                "    modsecurity_rules '{}';\n",
+                nginx_single_quoted(&rules)
+            ));
+        }
     }
     if s.limit_req_enable {
         let burst = s.limit_req_burst.max(1);
         out.push_str(&format!(
             "    limit_req zone=zap_req_{site_id} burst={burst} nodelay;\n\
-             limit_req_status 429;\n"
+    limit_req_status 429;\n"
         ));
     }
     if s.limit_conn_enable {
         out.push_str(&format!(
             "    limit_conn zap_conn_{site_id} {};\n\
-             limit_conn_status 429;\n",
+    limit_conn_status 429;\n",
             s.limit_conn_num.max(1)
         ));
     }
@@ -626,6 +671,7 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         php_socket,
         access_log,
         error_log,
+        waf_log,
         site_type,
         pseudo_static,
         pseudo_custom,
@@ -792,13 +838,23 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
             out.push_str("server {\n");
             out.push_str(&listen_80);
             out.push_str(&format!("    server_name {server_name};\n"));
-            out.push_str(&render_security(site_id, security, super::waf::waf_ready()));
+            out.push_str(&render_security(
+                site_id,
+                security,
+                super::waf::waf_ready(),
+                waf_log,
+            ));
             out.push_str("    return 301 https://$host$request_uri;\n");
             out.push_str("}\n\n");
             out.push_str("server {\n");
             out.push_str(&listen_443);
             out.push_str(&format!("    server_name {server_name};\n"));
-            out.push_str(&render_security(site_id, security, super::waf::waf_ready()));
+            out.push_str(&render_security(
+                site_id,
+                security,
+                super::waf::waf_ready(),
+                waf_log,
+            ));
             out.push_str(sd);
             out.push_str(&core);
             out.push_str("}\n");
@@ -807,14 +863,24 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
             out.push_str("server {\n");
             out.push_str(&listen_80);
             out.push_str(&format!("    server_name {server_name};\n"));
-            out.push_str(&render_security(site_id, security, super::waf::waf_ready()));
+            out.push_str(&render_security(
+                site_id,
+                security,
+                super::waf::waf_ready(),
+                waf_log,
+            ));
             out.push_str(&core);
             out.push_str("}\n");
             if let Some(sd) = &ssl_directives {
                 out.push_str("server {\n");
                 out.push_str(&listen_443);
                 out.push_str(&format!("    server_name {server_name};\n"));
-            out.push_str(&render_security(site_id, security, super::waf::waf_ready()));
+            out.push_str(&render_security(
+                site_id,
+                security,
+                super::waf::waf_ready(),
+                waf_log,
+            ));
                 out.push_str(sd);
                 out.push_str(&core);
                 out.push_str("}\n");
@@ -1649,7 +1715,7 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
     }
 
     // 日志：面板规划了 log_root（{home}/logs/{site}）时生成独立 access/error 日志
-    let (mut access_log, mut error_log) = (None, None);
+    let (mut access_log, mut error_log, mut waf_log) = (None, None, None);
     if let Some(lr) = log_root.as_deref() {
         let lr = lr.trim();
         if !lr.is_empty() {
@@ -1661,6 +1727,8 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
             fix_tree_owner(&ldir, "www", true)?;
             access_log = Some(ldir.join("access.log").to_string_lossy().to_string());
             error_log = Some(ldir.join("error.log").to_string_lossy().to_string());
+            // WAF 独立审计日志：与 access/error 同目录，纳入面板轮转与查看
+            waf_log = Some(ldir.join("waf.log").to_string_lossy().to_string());
         }
     }
 
@@ -1697,6 +1765,7 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         php_socket: php_socket.as_deref(),
         access_log: access_log.as_deref(),
         error_log: error_log.as_deref(),
+        waf_log: waf_log.as_deref(),
         site_type: &site_type,
         pseudo_static: &pseudo_static,
         pseudo_custom: &pseudo_custom,
@@ -1978,8 +2047,8 @@ mod tests {
     #[test]
     fn security_off_renders_nothing() {
         let sec = SiteSecuritySpec::default();
-        assert_eq!(render_security(7, Some(&sec), true), "");
-        assert_eq!(render_security(7, None, true), "");
+        assert_eq!(render_security(7, Some(&sec), true, None), "");
+        assert_eq!(render_security(7, None, true, None), "");
     }
 
     /// 限速 / 限并发：按配置渲染，超额统一回 429
@@ -1993,7 +2062,7 @@ mod tests {
             limit_conn_num: 50,
             ..Default::default()
         };
-        let s = render_security(7, Some(&sec), false);
+        let s = render_security(7, Some(&sec), false, None);
         // rate 只能写在 zone 定义里，使用处只保留 zone / burst / nodelay
         assert!(s.contains("limit_req zone=zap_req_7 burst=20 nodelay;"), "{s}");
         assert!(!s.contains("rate="), "{s}");
@@ -2003,12 +2072,66 @@ mod tests {
         assert!(!s.contains("modsecurity"), "{s}");
     }
 
+    /// 站点 WAF 默认渲染 `SecRuleEngine On`，自定义规则一并进 modsecurity_rules
+    #[test]
+    fn waf_site_engine_and_custom_rules() {
+        let sec = SiteSecuritySpec {
+            waf_enable: true,
+            waf_rules: "SecRule ARGS \"@rx attack\" \"id:1001,deny,status:403\"".into(),
+            ..Default::default()
+        };
+        let s = render_security(7, Some(&sec), true, None);
+        assert!(s.contains("modsecurity on;"), "{s}");
+        assert!(s.contains("modsecurity_rules 'SecRuleEngine On"), "{s}");
+        assert!(s.contains("id:1001,deny,status:403"), "{s}");
+    }
+
+    /// 站点独立审计日志：有 log_root 时渲染 SecAuditLog 到 <log_root>/waf.log
+    #[test]
+    fn waf_audit_log_is_per_site() {
+        let sec = SiteSecuritySpec {
+            waf_enable: true,
+            ..Default::default()
+        };
+        let s = render_security(7, Some(&sec), true, Some("/home/u/logs/site1"));
+        assert!(s.contains("SecAuditEngine RelevantOnly"), "{s}");
+        assert!(s.contains("SecAuditLog /home/u/logs/site1/waf.log"), "{s}");
+        // 没有站点日志目录（未规划 log_root）时不落审计日志，避免写到不可控路径
+        let s2 = render_security(7, Some(&sec), true, None);
+        assert!(!s2.contains("SecAuditLog"), "{s2}");
+    }
+
+    /// 「跟随全局」（mode=0）且无自定义规则时不输出 modsecurity_rules
+    #[test]
+    fn waf_global_mode_emits_no_rules() {
+        let sec = SiteSecuritySpec {
+            waf_enable: true,
+            waf_mode: 0,
+            ..Default::default()
+        };
+        let s = render_security(7, Some(&sec), true, None);
+        assert!(s.contains("modsecurity on;"), "{s}");
+        assert!(!s.contains("modsecurity_rules"), "{s}");
+    }
+
+    /// 规则里的单引号必须转义，否则会提前闭合 nginx 字符串
+    #[test]
+    fn waf_rules_quote_is_escaped() {
+        let sec = SiteSecuritySpec {
+            waf_enable: true,
+            waf_rules: "SecRule ARGS \"@rx '\" \"id:1,deny\"".into(),
+            ..Default::default()
+        };
+        let s = render_security(7, Some(&sec), true, None);
+        assert!(s.contains("\\'"), "{s}");
+    }
+
     /// WAF：开关开了还得全局真的可用 —— 否则 nginx -t 会因模块缺失直接失败
     #[test]
     fn security_waf_requires_global_ready() {
         let sec = SiteSecuritySpec { waf_enable: true, ..Default::default() };
-        assert!(render_security(7, Some(&sec), true).contains("modsecurity on;"));
-        assert!(!render_security(7, Some(&sec), false).contains("modsecurity"));
+        assert!(render_security(7, Some(&sec), true, None).contains("modsecurity on;"));
+        assert!(!render_security(7, Some(&sec), false, None).contains("modsecurity"));
     }
 
     /// 0 值兜底：rate / burst / conn 为 0 时 Nginx 不接受，渲染前抬到 1
@@ -2022,7 +2145,7 @@ mod tests {
             limit_conn_num: 0,
             ..Default::default()
         };
-        let s = render_security(7, Some(&sec), false);
+        let s = render_security(7, Some(&sec), false, None);
         assert!(s.contains("burst=1"), "{s}");
         assert!(s.contains("limit_conn zap_conn_7 1;"), "{s}");
     }
@@ -2040,6 +2163,7 @@ mod tests {
             php_socket: None,
             access_log: None,
             error_log: None,
+            waf_log: None,
             site_type: "php",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2069,6 +2193,7 @@ mod tests {
             php_socket: None,
             access_log: None,
             error_log: None,
+            waf_log: None,
             site_type: "php",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2169,6 +2294,7 @@ mod tests {
             php_socket,
             access_log,
             error_log,
+            waf_log: None,
             site_type: "php",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2298,6 +2424,7 @@ mod tests {
             php_socket: None,
             access_log: None,
             error_log: None,
+            waf_log: None,
             site_type: "static",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2325,6 +2452,7 @@ mod tests {
             php_socket: Some("unix:/run/php.sock"),
             access_log: None,
             error_log: None,
+            waf_log: None,
             site_type: "php",
             pseudo_static: "thinkphp",
             pseudo_custom: "",
@@ -2350,6 +2478,7 @@ mod tests {
             php_socket: Some("unix:/run/php.sock"),
             access_log: None,
             error_log: None,
+            waf_log: None,
             site_type: "php",
             pseudo_static: "laravel",
             pseudo_custom: "",
@@ -2410,6 +2539,7 @@ mod tests {
             php_socket: None,
             access_log: None,
             error_log: None,
+            waf_log: None,
             site_type: "proxy",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2442,6 +2572,8 @@ mod tests {
     /// 否则 HTTP-01 验证请求会被代理到后端而永远拿不到 token 文件。
     #[test]
     fn acme_location_rendered_for_every_site_type() {
+        // 断言与渲染都读全局 ZAP_PATH，需与改它的 appstore 用例互斥
+        let _env_guard = crate::verbs::appstore::ENV_GUARD.lock().unwrap();
         let expect = |s: &str, kind: &str| {
             let root = acme_webroot();
             assert!(
@@ -2489,6 +2621,7 @@ mod tests {
                 php_socket: None,
                 access_log: None,
                 error_log: None,
+                waf_log: None,
                 site_type: "proxy",
                 pseudo_static: "none",
                 pseudo_custom: "",
@@ -2682,6 +2815,7 @@ mod tests {
             php_socket: None,
             access_log: None,
             error_log: None,
+            waf_log: None,
             site_type: "php",
             pseudo_static: "none",
             pseudo_custom: "",
@@ -2720,6 +2854,7 @@ mod tests {
             php_socket: None,
             access_log: None,
             error_log: None,
+            waf_log: None,
             site_type: "static",
             pseudo_static: "none",
             pseudo_custom: "",

@@ -2667,11 +2667,14 @@ pub async fn instance_action(
     .unwrap_or_else(|e| Response::err(-1, e))
 }
 
+/// `ZAP_PATH` 是进程级全局量：改它的测试必须串行，否则会污染并行中的其它测试
+/// （历史上表现为 site 的 ACME 用例偶发失败）。跨模块共享同一把锁。
+#[cfg(test)]
+pub(crate) static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// 建立独立 ZAP_PATH，返回 (guard, zap_root)。
     fn with_zap_root() -> (std::sync::MutexGuard<'static, ()>, PathBuf) {

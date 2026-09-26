@@ -11,6 +11,7 @@
       <el-radio-group v-model="kind" @change="onKindChange">
         <el-radio-button value="access">{{ t('site.logAccess') }}</el-radio-button>
         <el-radio-button value="error">{{ t('site.logError') }}</el-radio-button>
+        <el-radio-button value="waf">{{ t('site.logWaf') }}</el-radio-button>
       </el-radio-group>
 
       <el-select v-model="archive" style="width: 220px" @change="loadLogs">

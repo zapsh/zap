@@ -43,8 +43,12 @@ fn safe_log_root(raw: &str) -> Result<PathBuf, String> {
 
 /// 归一化日志类型：error | access
 fn kind_of(kind: &str) -> &'static str {
-    if kind.trim().eq_ignore_ascii_case("error") {
+    let k = kind.trim();
+    if k.eq_ignore_ascii_case("error") {
         "error"
+    } else if k.eq_ignore_ascii_case("waf") {
+        // WAF 独立审计日志：开启站点 WAF 审计时由 ModSecurity 写入
+        "waf"
     } else {
         "access"
     }
@@ -244,7 +248,7 @@ pub async fn rotate(log_roots: Vec<String>, keep_days: u32) -> Response {
             if !dir.is_dir() {
                 continue;
             }
-            for kind in ["access", "error"] {
+            for kind in ["access", "error", "waf"] {
                 let cur = current_log(&dir, kind);
                 let Ok(meta) = std::fs::metadata(&cur) else {
                     continue;
@@ -303,7 +307,7 @@ pub async fn list(log_root: String) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let dir = safe_log_root(&log_root)?;
         let mut current: Vec<serde_json::Value> = Vec::new();
-        for kind in ["access", "error"] {
+        for kind in ["access", "error", "waf"] {
             let p = current_log(&dir, kind);
             if std::fs::metadata(&p).is_ok() {
                 current.push(file_json(&p, kind, "current", ""));
@@ -323,6 +327,8 @@ pub async fn list(log_root: String) -> Response {
                 };
                 let kind = if name.starts_with("error.log-") {
                     "error"
+                } else if name.starts_with("waf.log-") {
+                    "waf"
                 } else {
                     "access"
                 };
@@ -405,7 +411,7 @@ pub async fn clear(log_root: String, kind: String) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let dir = safe_log_root(&log_root)?;
         let kinds: Vec<&str> = if kind.trim().is_empty() {
-            vec!["access", "error"]
+            vec!["access", "error", "waf"]
         } else {
             vec![kind_of(&kind)]
         };
