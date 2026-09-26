@@ -84,6 +84,30 @@ pub struct HeaderSpec {
 /// 自定义 location：反代（proxy）/ 跳转（redirect）/ 拒绝（deny）/
 /// 站点内目录（alias）/ 自由指令体（raw）。
 /// 新增字段均带默认值，旧 site_profile JSON 反序列化不受影响。
+/// 站点安全配置（渲染进 vhost 的 server 上下文）：WAF 开关 + 请求限速 + 并发限制。
+///
+/// 三个能力彼此独立，可单独开启；限速/限并发依赖 http 上下文的共享 zone
+/// （由执行端幂等发布 `00-zap-limits.conf`，见 `site::ensure_limit_zones`）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SiteSecuritySpec {
+    /// 该站点启用 WAF：仅当全局 WAF 可用时才真正渲染 `modsecurity on;`
+    #[serde(default)]
+    pub waf_enable: bool,
+    #[serde(default)]
+    pub limit_req_enable: bool,
+    /// 限速速率（每秒请求数，渲染为 `rate={n}r/s`）
+    #[serde(default)]
+    pub limit_req_rate: u32,
+    /// 突发放行数（渲染为 `burst={n} nodelay`）
+    #[serde(default)]
+    pub limit_req_burst: u32,
+    #[serde(default)]
+    pub limit_conn_enable: bool,
+    /// 单 IP 并发连接上限
+    #[serde(default)]
+    pub limit_conn_num: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LocationSpec {
     /// location 匹配路径，必须以 `/` 开头（如 `/`、`/api`）；不支持正则前缀
@@ -593,6 +617,9 @@ pub enum Request {
         /// 空 = 沿用 `listen [::]:80`。
         #[serde(default, skip_serializing_if = "String::is_empty")]
         listen_ipv6: String,
+        /// 站点安全配置（WAF / 限速 / 限并发）；None = 不渲染安全片段（兼容老版本 zapd）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        security: Option<SiteSecuritySpec>,
     },
     /// 列出目录下的子目录（root 特权）：供面板站点「选择已有站点目录」浏览。
     /// 仅返回目录名（不含点目录），路径必须为绝对路径且存在。
@@ -1456,6 +1483,7 @@ mod tests {
                 ssl_http2: false,
                 listen_ipv4: String::new(),
                 listen_ipv6: String::new(),
+                security: None,
             })
             .unwrap(),
             r#"{"verb":"site.vhost_sync","site_id":1,"name":"blog","domains":["a.com","b.com"],"enabled":true,"php_socket":"unix:/var/run/php-fpm-8.3.sock","site_type":"php","pseudo_static":"none","pseudo_custom":"","web_root_custom":false,"force_https":false}"#
@@ -1508,6 +1536,7 @@ mod tests {
             ssl_http2: false,
             listen_ipv4: String::new(),
             listen_ipv6: String::new(),
+            security: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(

@@ -17,6 +17,8 @@ import { http } from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 import type { InstalledApp } from '@/api/appstore'
 import { getInstalledApps } from '@/api/appstore'
+import { getSiteSecurity, saveSiteSecurity } from '@/api/site'
+import type { SiteSecurity } from '@/api/site'
 import { getCertList } from '@/api/ssl'
 import type { SslCertItem } from '@/api/ssl'
 import { formatBytes } from '@/utils/fmt'
@@ -556,6 +558,55 @@ const blankForm = (): SiteForm => ({
   ssl_prefer_server_ciphers: true,
   ssl_http2: true,
 })
+// ── 站点安全（WAF / 限速 / 限并发）：独立于站点主表单，保存即同步 vhost ──
+const sec = reactive<SiteSecurity>(blankSec())
+const wafReady = ref(false)
+const wafAllowed = ref(false)
+const secSaving = ref(false)
+
+function blankSec(): SiteSecurity {
+  return {
+    waf_enable: false,
+    limit_req_enable: false,
+    limit_req_rate: 10,
+    limit_req_burst: 20,
+    limit_conn_enable: false,
+    limit_conn_num: 50,
+  }
+}
+
+/** 打开编辑时拉取：开关可用性由「套餐 + 全局 WAF」共同决定 */
+async function loadSecurity() {
+  Object.assign(sec, blankSec())
+  wafReady.value = false
+  wafAllowed.value = false
+  if (!form.id) return
+  try {
+    const res = await getSiteSecurity(form.id)
+    if (res.data?.sec) Object.assign(sec, res.data.sec)
+    wafReady.value = !!res.data?.waf_ready
+    wafAllowed.value = !!res.data?.waf_allowed
+  } catch {
+    /* interceptor 已提示 */
+  }
+}
+
+async function saveSecurity() {
+  if (!form.id) {
+    ElMessage.warning(t('site.secNeedSavedSite'))
+    return
+  }
+  secSaving.value = true
+  try {
+    const res = await saveSiteSecurity(form.id, { ...sec })
+    ElMessage.success(res.message || t('site.secSaved'))
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    secSaving.value = false
+  }
+}
+
 const form = reactive<SiteForm>(blankForm())
 
 // TLS 密码套件预设（值即 nginx ssl_ciphers 内容；空串 = 不指定，跟随系统默认）
@@ -884,6 +935,8 @@ function formAbsDir(): string {
 function openAdd() {
   formMode.value = 'add'
   Object.assign(form, blankForm())
+  // 新建站点没有 id，安全配置无从加载：重置，避免残留上一个站点的开关
+  Object.assign(sec, blankSec())
   lastAutoDir.value = ''
   legacyDocRoot.value = ''
   activeTab.value = 'base'
@@ -934,6 +987,7 @@ function openEdit(row: SiteItem) {
   }
   lastAutoDir.value = form.web_root_sub
   activeTab.value = 'base'
+  loadSecurity()
   proxyPresetModel.value = ''
   // upstream：一律以表单化 servers_ext 行加载；无任何 server 行时补一个空行待填
   form.upstreams = (row.upstreams || []).map((u) => ({
@@ -2070,6 +2124,50 @@ onMounted(() => {
                 </div>
               </el-form-item>
             </template>
+          </el-tab-pane>
+
+          <!-- 安全：WAF / 限速 / 限并发 -->
+          <el-tab-pane :label="t('site.tabSecurity')" name="security" :disabled="!form.id">
+            <el-form-item :label="t('site.secWaf')">
+              <el-switch v-model="sec.waf_enable" :disabled="!wafReady || !wafAllowed" />
+              <span class="form-hint">
+                {{
+                  !wafReady
+                    ? t('site.secWafNotReady')
+                    : !wafAllowed
+                      ? t('site.secWafNotAllowed')
+                      : t('site.secWafHint')
+                }}
+              </span>
+            </el-form-item>
+            <el-form-item :label="t('site.secLimitReq')">
+              <el-switch v-model="sec.limit_req_enable" />
+              <span class="form-hint">{{ t('site.secLimitReqHint') }}</span>
+            </el-form-item>
+            <template v-if="sec.limit_req_enable">
+              <el-form-item :label="t('site.secReqRate')">
+                <el-input-number v-model="sec.limit_req_rate" :min="1" :max="100000" />
+                <span class="form-hint">{{ t('site.secReqRateHint') }}</span>
+              </el-form-item>
+              <el-form-item :label="t('site.secReqBurst')">
+                <el-input-number v-model="sec.limit_req_burst" :min="0" :max="100000" />
+                <span class="form-hint">{{ t('site.secReqBurstHint') }}</span>
+              </el-form-item>
+            </template>
+            <el-form-item :label="t('site.secLimitConn')">
+              <el-switch v-model="sec.limit_conn_enable" />
+              <span class="form-hint">{{ t('site.secLimitConnHint') }}</span>
+            </el-form-item>
+            <el-form-item v-if="sec.limit_conn_enable" :label="t('site.secConnNum')">
+              <el-input-number v-model="sec.limit_conn_num" :min="1" :max="100000" />
+              <span class="form-hint">{{ t('site.secConnNumHint') }}</span>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="secSaving" @click="saveSecurity">
+                {{ t('site.secSave') }}
+              </el-button>
+              <span class="form-hint">{{ t('site.secSaveHint') }}</span>
+            </el-form-item>
           </el-tab-pane>
 
           <!-- 反代 / 高级 -->

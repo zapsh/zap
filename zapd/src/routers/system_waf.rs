@@ -212,6 +212,15 @@ pub async fn engine(
             &format!("切换 WAF 规则引擎为 {}", body.mode),
         )
         .await;
+        // 全局关闭后必须刷一遍站点配置：站点 vhost 里的 `modsecurity on;` 要撤掉，
+        // 否则配置与事实不符（模块一旦卸载，nginx -t 更是直接失败）。
+        // 后台执行，不阻塞本次响应。
+        if body.mode.trim().eq_ignore_ascii_case("off") {
+            tokio::spawn(async {
+                let summary = crate::routers::site::sync_all_sites_summary().await;
+                tracing::info!("WAF 全局关闭后全站重同步：{}", summary);
+            });
+        }
     }
     result
 }

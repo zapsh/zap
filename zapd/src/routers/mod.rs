@@ -747,6 +747,8 @@ fn api_routers() -> Router {
         // 站点启停 / 维护三态切换（running / stopped / maintenance）
         .route("/site/state", post(site::site_state))
         .route("/site/sync_all", post(site::site_sync_all))
+        .route("/site/security", get(site::site_security))
+        .route("/site/security/save", post(site::site_security_save))
         // 站点日志（查看 / 归档 / 清空 / 轮转）与流量分析
         .route("/site/logs", get(site::site_logs))
         .route("/site/logs/archives", get(site::site_logs_archives))

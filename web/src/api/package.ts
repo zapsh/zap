@@ -27,6 +27,8 @@ export interface PackageItem {
   allow_proxy: boolean
   /** 是否允许客户建 PHP 站点（默认 true） */
   allow_php: boolean
+  /** 是否允许客户为站点开启 WAF / 限速 / 限并发（默认 false，另需全局 WAF 已启用） */
+  allow_waf: boolean
   /** 是否允许客户使用容器功能（默认 false；且仅 Podman 运行时对非管理员生效） */
   allow_docker: boolean
   /** 归属：0 = 全局套餐（admin 维护）；其余为 reseller 自建 */
@@ -59,6 +61,8 @@ export interface PackagePayload {
   allow_proxy?: boolean
   /** 允许客户建 PHP 站点；不传时后端取默认（新建=开放） */
   allow_php?: boolean
+  /** 允许客户开启站点 WAF / 限速 / 限并发；不传时后端取默认（新建=关闭） */
+  allow_waf?: boolean
   /** 允许客户使用容器功能；不传时后端取默认（新建=关闭） */
   allow_docker?: boolean
   status?: number

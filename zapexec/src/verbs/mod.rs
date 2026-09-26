@@ -290,6 +290,7 @@ pub async fn dispatch(req: Request) -> Response {
             ssl_http2,
             listen_ipv4,
             listen_ipv6,
+            security,
         } => {
             site::vhost_sync(site::SiteConfig {
                 site_id,
@@ -316,6 +317,7 @@ pub async fn dispatch(req: Request) -> Response {
                 ssl_http2,
                 listen_ipv4,
                 listen_ipv6,
+                security,
             })
             .await
         }

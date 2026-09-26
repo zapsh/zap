@@ -19,7 +19,8 @@ pub const DEFAULT_EXEC_SOCKET: &str = "/run/zap/exec.sock";
 
 pub use types::{
     AcmeChallengeEntry, DockerBuildArg, HeaderSpec, LocationSpec, Message, Request, Response,
-    UpstreamServer, UpstreamSpec, docker_namespace, linux_username, normalize_image_tag,
+    SiteSecuritySpec, UpstreamServer, UpstreamSpec, docker_namespace, linux_username,
+    normalize_image_tag,
     sanitize_site_name, valid_image_ref,
 };
 

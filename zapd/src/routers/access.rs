@@ -157,6 +157,16 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Reseller,
         Some(Perm::action("site", "sync")),
     ),
+    (
+        "/site/security",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
+    (
+        "/site/security/save",
+        Required::User,
+        Some(Perm::action("site", "update")),
+    ),
     // ── 站点日志与流量分析 ────────────────────────────────
     (
         "/site/logs",

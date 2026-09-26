@@ -84,3 +84,38 @@ export interface SiteTrafficData {
 export async function getSiteTraffic(id: number, days = 30) {
   return http.get<ApiResponse<SiteTrafficData>>('/site/traffic', { params: { id, days } })
 }
+
+// ── 站点安全（WAF / 限速 / 限并发）────────────────────────────
+
+export interface SiteSecurity {
+  /** 站点启用 WAF（仍需全局已安装并启用 ModSecurity） */
+  waf_enable: boolean
+  /** 请求限速 */
+  limit_req_enable: boolean
+  /** 每秒请求数上限 */
+  limit_req_rate: number
+  /** 突发放行数 */
+  limit_req_burst: number
+  /** 并发连接限制 */
+  limit_conn_enable: boolean
+  /** 单 IP 并发上限 */
+  limit_conn_num: number
+}
+
+export interface SiteSecurityData {
+  sec: SiteSecurity
+  /** 套餐是否开放站点 WAF */
+  waf_allowed: boolean
+  /** 全局 WAF 是否已安装并启用 */
+  waf_ready: boolean
+}
+
+/** 站点安全配置（含两项能力判定，供 UI 决定开关可用性） */
+export async function getSiteSecurity(id: number) {
+  return http.get<ApiResponse<SiteSecurityData>>('/site/security', { params: { id } })
+}
+
+/** 保存站点安全配置：后端保存后立即同步该站点 vhost */
+export async function saveSiteSecurity(id: number, sec: SiteSecurity) {
+  return http.post<ApiResponse>('/site/security/save', { id, sec })
+}

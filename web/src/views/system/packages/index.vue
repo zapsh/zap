@@ -101,6 +101,13 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column :label="t('packages.waf')" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.allow_waf ? 'success' : 'info'" size="small" effect="plain">
+              {{ row.allow_waf ? t('packages.allow') : t('packages.deny') }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('packages.docker')" width="110" align="center">
           <template #default="{ row }">
             <el-tag :type="row.allow_docker ? 'warning' : 'info'" size="small" effect="plain">
@@ -309,6 +316,10 @@
           <el-switch v-model="form.allow_php" />
           <span class="form-hint">{{ t('packages.phpHint') }}</span>
         </el-form-item>
+        <el-form-item :label="t('packages.waf')">
+          <el-switch v-model="form.allow_waf" />
+          <span class="form-hint">{{ t('packages.wafHint') }}</span>
+        </el-form-item>
         <el-form-item :label="t('packages.docker')">
           <el-switch v-model="form.allow_docker" />
           <span class="form-hint">{{ t('packages.dockerHint') }}</span>
@@ -371,6 +382,7 @@ const form = reactive({
   allow_proxy: false,
   // PHP 站点默认开放（建站的主要形态）；容器默认关闭
   allow_php: true,
+  allow_waf: false,
   allow_docker: false,
   status: 1,
 })
@@ -438,6 +450,7 @@ function resetForm() {
   form.allow_ssh = false
   form.allow_proxy = false
   form.allow_php = true
+  form.allow_waf = false
   form.allow_docker = false
   form.status = 1
   unlimitedDisk.value = true
@@ -478,6 +491,7 @@ function openEdit(row: PackageItem) {
   form.allow_ssh = !!row.allow_ssh
   form.allow_proxy = !!row.allow_proxy
   form.allow_php = row.allow_php !== false
+  form.allow_waf = !!row.allow_waf
   form.allow_docker = !!row.allow_docker
   form.status = row.status
   dialogVisible.value = true
@@ -504,6 +518,7 @@ async function submitForm() {
     allow_ssh: form.allow_ssh,
     allow_proxy: form.allow_proxy,
     allow_php: form.allow_php,
+    allow_waf: form.allow_waf,
     allow_docker: form.allow_docker,
     status: form.status,
   }

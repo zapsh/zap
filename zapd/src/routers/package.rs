@@ -14,6 +14,8 @@
 //! - `allow_ssh`         是否允许使用 SSH 终端
 //! - `allow_proxy`       是否允许普通用户创建/编辑「反向代理」站点（upstream / location）
 //! - `allow_php`         是否允许该套餐的用户建 PHP 站点（默认开放；admin/reseller 恒可）
+//! - `allow_waf`         是否允许该套餐的用户为站点开启 WAF / 限速 / 限并发
+//!                       （默认关闭，且仍要求全局 ModSecurity 已安装并启用）
 //! - `allow_docker`      是否允许该套餐的用户使用容器功能（默认关闭），
 //!                       且**仅当容器运行时为 Podman 时**才对非管理员生效
 //!   「自定义目录」不再作为套餐能力：home 目录内任意目录已全量开放。
@@ -65,6 +67,8 @@ pub struct PackageRow {
     /// 允许该套餐的用户使用容器功能；**仅在容器运行时为 Podman 时生效**
     /// （Docker 下容器由 root 跑、没有隔离，一律不对非管理员开放）
     pub allow_docker: i32,
+    /// 允许该套餐的用户为站点开启 WAF / 限速 / 限并发（仍要求全局 WAF 已安装并启用）
+    pub allow_waf: i32,
     pub owner_id: i64,
     pub status: i32,
     pub created_at: i64,
@@ -73,7 +77,7 @@ pub struct PackageRow {
 
 const COLS: &str = "id, name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, \
                     max_mysql_dbs, max_pgsql_dbs, max_ftp_users, \
-                    fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, \
+                    fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, \
                     owner_id, status, \
                     created_at, updated_at";
 
@@ -136,6 +140,7 @@ fn row_json(r: &PackageRow, users_count: i64) -> Value {
         "allow_proxy": r.allow_proxy == 1,
         "allow_php": r.allow_php == 1,
         "allow_docker": r.allow_docker == 1,
+        "allow_waf": r.allow_waf == 1,
         "owner_id": r.owner_id,
         "status": r.status,
         "users_count": users_count,
@@ -262,6 +267,7 @@ pub struct PackageAddPayload {
     pub allow_php: Option<bool>,
     /// 是否允许使用容器功能（默认 false；且仅 Podman 运行时对非管理员生效）
     pub allow_docker: Option<bool>,
+    pub allow_waf: Option<bool>,
     pub status: Option<i32>,
 }
 
@@ -296,6 +302,8 @@ pub async fn package_add(
     // PHP 默认开放；容器默认关闭（容器还要求运行时是 Podman，见 routers::docker 门禁）
     let allow_php = i32::from(payload.allow_php.unwrap_or(true));
     let allow_docker = i32::from(payload.allow_docker.unwrap_or(false));
+    // WAF 默认关闭：全局未装 ModSecurity 时站点不该渲染 modsecurity 指令
+    let allow_waf = i32::from(payload.allow_waf.unwrap_or(false));
     let status = payload.status.unwrap_or(1).clamp(0, 1);
     // admin 建全局套餐；reseller 建自己名下套餐
     let owner_id: i64 = if is_admin { 0 } else { claims.id as i64 };
@@ -305,7 +313,7 @@ pub async fn package_add(
     let result = sqlx::query(
         "INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, \
          max_mysql_dbs, max_pgsql_dbs, max_ftp_users, \
-         fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, \
+         fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, \
          owner_id, status, created_at, updated_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -323,6 +331,7 @@ pub async fn package_add(
     .bind(allow_proxy)
     .bind(allow_php)
     .bind(allow_docker)
+    .bind(allow_waf)
     .bind(owner_id)
     .bind(status)
     .bind(now)
@@ -377,6 +386,7 @@ pub struct PackageUpdatePayload {
     pub allow_php: Option<bool>,
     /// 是否允许使用容器功能；未传则保持不变
     pub allow_docker: Option<bool>,
+    pub allow_waf: Option<bool>,
     pub status: Option<i32>,
 }
 
@@ -522,6 +532,15 @@ pub async fn package_update(
     }
     if let Some(v) = payload.allow_docker {
         sqlx::query("UPDATE packages SET allow_docker = ?, updated_at = ? WHERE id = ?")
+            .bind(i32::from(v))
+            .bind(now)
+            .bind(payload.id)
+            .execute(pool)
+            .await?;
+    }
+
+    if let Some(v) = payload.allow_waf {
+        sqlx::query("UPDATE packages SET allow_waf = ?, updated_at = ? WHERE id = ?")
             .bind(i32::from(v))
             .bind(now)
             .bind(payload.id)

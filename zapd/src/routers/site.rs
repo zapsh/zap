@@ -17,7 +17,7 @@ use crate::{
         server_env,
     },
 };
-use zap_proto::{LocationSpec, Request, UpstreamSpec};
+use zap_proto::{LocationSpec, Request, UpstreamSpec, SiteSecuritySpec};
 
 use super::system_basic::{K_IPV4 as K_DEFAULT_IPV4, K_IPV6 as K_DEFAULT_IPV6};
 use super::user::USER_KIND_MEMBER;
@@ -1747,6 +1747,8 @@ pub async fn site_feature(claims: ValidatedClaims) -> ZapJsonResult {
             "is_admin": jwt::is_admin(&claims),
             "gates": {
                 "proxy": g_proxy,
+                // WAF：套餐能力（全局是否装好由 /system/waf/status 单独给，避免此处多一次 exec）
+                "waf": waf_allowed_for(&claims).await,
                 // 自定义目录已全量开放（保留字段兼容旧前端）
                 "custom_dir": true,
             },
@@ -2833,6 +2835,9 @@ async fn sync_one_site_inner(
     let listen_ipv4 = server_env::conf_get(K_DEFAULT_IPV4).unwrap_or_default();
     let listen_ipv6 = server_env::conf_get(K_DEFAULT_IPV6).unwrap_or_default();
 
+    // 站点安全配置（WAF / 限速 / 限并发）：渲染进 vhost 的 server 上下文
+    let security = Some(sec_to_proto(load_site_sec(id).await));
+
     let resp = crate::zapexec::call(Request::SiteVhostSync {
         site_id: id,
         name: name.clone(),
@@ -2858,6 +2863,7 @@ async fn sync_one_site_inner(
         ssl_http2: prof.11,
         listen_ipv4,
         listen_ipv6,
+        security,
     })
     .await?;
 
@@ -2873,6 +2879,211 @@ async fn sync_one_site_inner(
         id, status, run_state
     );
     Ok((resp.message, resp.data, name, status))
+}
+
+// ── 站点安全配置（site_sec）：WAF / 限速 / 限并发 ────────────
+
+/// 站点安全配置（与 site_sec 列一一对应）
+#[derive(Debug, Clone, Deserialize)]
+pub struct SiteSecurity {
+    /// 该站点启用 WAF（仍需全局 ModSecurity 已安装并启用）
+    pub waf_enable: bool,
+    pub limit_req_enable: bool,
+    /// 每秒请求数上限
+    pub limit_req_rate: u32,
+    /// 突发放行数
+    pub limit_req_burst: u32,
+    pub limit_conn_enable: bool,
+    /// 单 IP 并发连接上限
+    pub limit_conn_num: u32,
+}
+
+impl Default for SiteSecurity {
+    fn default() -> Self {
+        Self {
+            waf_enable: false,
+            limit_req_enable: false,
+            limit_req_rate: 10,
+            limit_req_burst: 20,
+            limit_conn_enable: false,
+            limit_conn_num: 50,
+        }
+    }
+}
+
+/// 读取站点安全配置；老站点（无记录）返回默认值
+async fn load_site_sec(site_id: i64) -> SiteSecurity {
+    let pool = db::get_db_pool().await;
+    let row: Option<(i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT waf_enable, limit_req_enable, limit_req_rate, limit_req_burst, \
+                limit_conn_enable, limit_conn_num \
+         FROM site_sec WHERE site_id = ?",
+    )
+    .bind(site_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let Some((w, lr, rate, burst, lc, num)) = row else {
+        return SiteSecurity::default();
+    };
+    SiteSecurity {
+        waf_enable: w != 0,
+        limit_req_enable: lr != 0,
+        limit_req_rate: rate.clamp(1, 100_000) as u32,
+        limit_req_burst: burst.clamp(0, 100_000) as u32,
+        limit_conn_enable: lc != 0,
+        limit_conn_num: num.clamp(1, 100_000) as u32,
+    }
+}
+
+async fn save_site_sec(site_id: i64, sec: &SiteSecurity) -> Result<(), ZapError> {
+    let pool = db::get_db_pool().await;
+    let now = chrono::Local::now().timestamp();
+    sqlx::query(
+        "INSERT INTO site_sec (site_id, waf_enable, limit_req_enable, limit_req_rate, \
+                limit_req_burst, limit_conn_enable, limit_conn_num, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(site_id) DO UPDATE SET \
+           waf_enable = excluded.waf_enable, limit_req_enable = excluded.limit_req_enable, \
+           limit_req_rate = excluded.limit_req_rate, limit_req_burst = excluded.limit_req_burst, \
+           limit_conn_enable = excluded.limit_conn_enable, limit_conn_num = excluded.limit_conn_num, \
+           updated_at = excluded.updated_at",
+    )
+    .bind(site_id)
+    .bind(i64::from(sec.waf_enable))
+    .bind(i64::from(sec.limit_req_enable))
+    .bind(sec.limit_req_rate as i64)
+    .bind(sec.limit_req_burst as i64)
+    .bind(i64::from(sec.limit_conn_enable))
+    .bind(sec.limit_conn_num as i64)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 入库前收敛取值范围：0 或越界值会让执行端渲染出 Nginx 不接受的指令
+fn norm_sec(mut s: SiteSecurity) -> SiteSecurity {
+    s.limit_req_rate = s.limit_req_rate.clamp(1, 100_000);
+    s.limit_req_burst = s.limit_req_burst.clamp(0, 100_000);
+    s.limit_conn_num = s.limit_conn_num.clamp(1, 100_000);
+    s
+}
+
+fn sec_to_proto(s: SiteSecurity) -> SiteSecuritySpec {
+    SiteSecuritySpec {
+        waf_enable: s.waf_enable,
+        limit_req_enable: s.limit_req_enable,
+        limit_req_rate: s.limit_req_rate,
+        limit_req_burst: s.limit_req_burst,
+        limit_conn_enable: s.limit_conn_enable,
+        limit_conn_num: s.limit_conn_num,
+    }
+}
+
+/// 套餐是否开放站点 WAF（admin/reseller 恒可，与 PHP 能力同一套判定）
+async fn waf_allowed_for(claims: &jwt::Claims) -> bool {
+    if is_operator(claims) {
+        return true;
+    }
+    match crate::routers::package::effective_package_of(claims.id as i64).await {
+        Some(pkg) => pkg.allow_waf == 1,
+        None => false,
+    }
+}
+
+async fn require_waf_allowed(claims: &jwt::Claims) -> Result<(), ZapError> {
+    if waf_allowed_for(claims).await {
+        return Ok(());
+    }
+    Err(ZapError::New(
+        -1,
+        "当前账号未开放站点 WAF（请联系管理员在「系统 → 套餐」中开启「WAF」）".to_string(),
+    ))
+}
+
+/// 全局 WAF 是否可用：现问执行端，不用缓存 —— 面板这边说"可用"而机器上没装，
+/// 站点就会渲染出 `modsecurity on;` 然后卡在 `nginx -t`。
+async fn waf_global_ready() -> bool {
+    match crate::zapexec::call(Request::WafStatus).await {
+        Ok(resp) if resp.code == 0 => resp
+            .data
+            .as_ref()
+            .and_then(|d| d.get("installed"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SecurityQuery {
+    pub id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SecurityBody {
+    pub id: i64,
+    pub sec: SiteSecurity,
+}
+
+/// GET /site/security：站点安全配置 + 两项能力可用性（套餐 / 全局 WAF）
+pub async fn site_security(
+    claims: ValidatedClaims,
+    Query(q): Query<SecurityQuery>,
+) -> ZapJsonResult {
+    require_manageable(&claims)?;
+    site_in_scope(&claims, q.id).await?;
+    let sec = load_site_sec(q.id).await;
+    Ok(Json(json!({
+        "code": 0,
+        "message": "OK",
+        "data": {
+            "sec": {
+                "waf_enable": sec.waf_enable,
+                "limit_req_enable": sec.limit_req_enable,
+                "limit_req_rate": sec.limit_req_rate,
+                "limit_req_burst": sec.limit_req_burst,
+                "limit_conn_enable": sec.limit_conn_enable,
+                "limit_conn_num": sec.limit_conn_num,
+            },
+            "waf_allowed": waf_allowed_for(&claims).await,
+            "waf_ready": waf_global_ready().await,
+        }
+    })))
+}
+
+/// POST /site/security/save：保存站点安全配置并立即同步 vhost（安全片段随配置生效）
+pub async fn site_security_save(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<SecurityBody>,
+) -> ZapJsonResult {
+    require_manageable(&claims)?;
+    site_in_scope(&claims, payload.id).await?;
+    let sec = norm_sec(payload.sec);
+    // 开 WAF 要过两道：套餐允许 + 全局真的装好了
+    if sec.waf_enable {
+        require_waf_allowed(&claims).await?;
+        if !waf_global_ready().await {
+            return Err(ZapError::New(
+                -1,
+                "全局 WAF 尚未启用：请先在「服务配置 → Nginx → WAF」安装并开启 ModSecurity".to_string(),
+            ));
+        }
+    }
+    save_site_sec(payload.id, &sec).await?;
+    let (msg, _data, name, _status) = sync_one_site(payload.id).await?;
+    let _ = audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "site_security",
+        &format!("id={}", payload.id),
+        &format!("name={} waf={} req={} conn={}", name, sec.waf_enable, sec.limit_req_enable, sec.limit_conn_enable),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": format!("安全配置已保存，{}", msg) })))
 }
 
 /// 全部站点按当前模式重同步：vhost 模式开关切换后的「再同步」入口
@@ -2916,6 +3127,31 @@ pub async fn site_sync_all(
         return Err(ZapError::New(-1, format!("部分站点同步失败：{}", summary)));
     }
     Ok(Json(json!({ "code": 0, "message": summary })))
+}
+
+/// 全站重同步的内部入口（不带鉴权与审计），供 WAF 全局开关这类联动场景在后台调用。
+pub(crate) async fn sync_all_sites_summary() -> String {
+    let pool = db::get_db_pool().await;
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM site ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return "没有需要同步的站点".to_string();
+    }
+    let mut ok = 0usize;
+    let mut fails: Vec<String> = Vec::new();
+    for sid in ids {
+        match sync_one_site(sid).await {
+            Ok(_) => ok += 1,
+            Err(e) => fails.push(format!("站点 #{}：{}", sid, e)),
+        }
+    }
+    if fails.is_empty() {
+        format!("已重同步 {} 个站点", ok)
+    } else {
+        format!("成功 {} 个，失败 {} 个（{}）", ok, fails.len(), fails.join("; "))
+    }
 }
 
 /// PHP 实例 → 版本后缀：php74 / php-74 → 74，php83 → 83

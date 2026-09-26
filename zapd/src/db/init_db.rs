@@ -44,6 +44,7 @@ pub async fn init_schema() {
     init_site_table().await;
     // 站点扩展档案（类型/伪静态/upstream/location/自定义目录 + TLS 高级设置）
     init_site_profile_table().await;
+    init_site_sec_table().await;
     // PHP-FPM 规格模板表（user.fpm_spec_ref 已在 user 表中定义）
     init_fpm_spec_table().await;
     // 套餐（Packages）表：创建客户时可选择的资源套餐
@@ -341,13 +342,15 @@ async fn init_packages_table() {
         allow_php INTEGER NOT NULL DEFAULT 1,
         -- 容器能力：默认关闭；且仅在容器运行时为 Podman 时才对普通用户生效
         allow_docker INTEGER NOT NULL DEFAULT 0,
+        -- WAF 能力：允许该套餐的用户为站点开启 WAF（仍需全局已安装并启用 ModSecurity）
+        allow_waf INTEGER NOT NULL DEFAULT 0,
         owner_id INTEGER NOT NULL DEFAULT 0,
         status INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER,
         updated_at INTEGER
     );
-    INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, owner_id, status, created_at, updated_at)
-    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端与 PHP 站点（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 0, 1, strftime('%s','now'), strftime('%s','now'));
+    INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, owner_id, status, created_at, updated_at)
+    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端与 PHP 站点（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 0, 0, 1, strftime('%s','now'), strftime('%s','now'));
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }
@@ -1074,6 +1077,26 @@ async fn init_site_table() {
 }
 
 // ── site_profile（站点扩展档案，1:1 site.id）────────────────────
+
+/// 站点安全配置（site_sec）：WAF 开关 + 请求限速 + 并发连接限制。
+///
+/// 单独成表而不并入 site_profile：后者在代码里是以 12 元元组整体读写的，
+/// 加列会牵动所有解构点；安全配置读写频率与生命周期都不同（保存即触发 vhost 同步）。
+async fn init_site_sec_table() {
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS site_sec (
+        site_id INTEGER NOT NULL PRIMARY KEY,
+        waf_enable INTEGER NOT NULL DEFAULT 0,
+        limit_req_enable INTEGER NOT NULL DEFAULT 0,
+        limit_req_rate INTEGER NOT NULL DEFAULT 10,
+        limit_req_burst INTEGER NOT NULL DEFAULT 20,
+        limit_conn_enable INTEGER NOT NULL DEFAULT 0,
+        limit_conn_num INTEGER NOT NULL DEFAULT 50,
+        updated_at INTEGER NOT NULL DEFAULT 0
+    );
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
 
 async fn init_site_profile_table() {
     let sql = r#"

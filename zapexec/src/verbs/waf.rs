@@ -297,6 +297,19 @@ fn waf_env(info: &NginxInfo) -> WafEnv {
     }
 }
 
+/// 全局 WAF 是否真的可用：组件齐备、已挂到 nginx、且引擎未被关成 `Off`。
+///
+/// 站点渲染 `modsecurity on;` 前必须过这一关。全局关掉之后站点配置里若还留着
+/// 这条指令，`nginx -t` 会因模块不存在直接失败；引擎 Off 则属于"装了但不拦"，
+/// 站点也不该再声明开启（面板有「全局关闭即刷新站点配置」的联动）。
+pub(super) fn waf_ready() -> bool {
+    let Some(info) = nginx_info() else {
+        return false;
+    };
+    let env = waf_env(&info);
+    env.installed && !env.engine.trim().eq_ignore_ascii_case("off")
+}
+
 /// 自动安装的前提清单：缺什么列什么（前端逐条展示，不笼统说"不支持"）。
 fn blockers(info: &NginxInfo, env: &WafEnv) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -1103,9 +1116,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let main = dir.join("modsecurity.conf");
         std::fs::write(&main, "SecRuleEngine DetectionOnly\n").unwrap();
+        // 主配置也用临时文件：否则 conf_loads_module 读到的是真实 nginx.conf，
+        // 机器上挂没挂 load_module 会直接决定这条断言的成败（本机 WAF 已开启即失败）。
+        let conf = dir.join("nginx.conf");
+        std::fs::write(&conf, "worker_processes  1;\n").unwrap();
         let info = NginxInfo {
             bin: PathBuf::from("/usr/local/apps/nginx/sbin/nginx"),
-            conf: PathBuf::from("/usr/local/apps/nginx/conf/nginx.conf"),
+            conf,
             version: "nginx/1.31.5".to_string(),
             args: "--prefix=/usr/local/apps/nginx --with-compat".to_string(),
         };
