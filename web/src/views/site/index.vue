@@ -17,7 +17,7 @@ import { http } from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 import type { InstalledApp } from '@/api/appstore'
 import { getInstalledApps } from '@/api/appstore'
-import { getSiteSecurity, getSecurityCaps, saveSiteSecurity } from '@/api/site'
+import { getSiteSecurity, getSecurityCaps } from '@/api/site'
 import type { SiteSecurity } from '@/api/site'
 import { getCertList } from '@/api/ssl'
 import type { SslCertItem } from '@/api/ssl'
@@ -567,7 +567,6 @@ const wafAllowed = ref(false)
 const secLoaded = ref(false)
 /** waf_ready=false 时执行端给出的逐项原因 */
 const capsBlockers = ref<string[]>([])
-const secSaving = ref(false)
 
 function blankSec(): SiteSecurity {
   return {
@@ -614,21 +613,6 @@ async function loadSecurity() {
   }
 }
 
-async function saveSecurity() {
-  if (!form.id) {
-    ElMessage.warning(t('site.secNeedSavedSite'))
-    return
-  }
-  secSaving.value = true
-  try {
-    const res = await saveSiteSecurity(form.id, { ...sec })
-    ElMessage.success(res.message || t('site.secSaved'))
-  } catch {
-    /* interceptor 已提示 */
-  } finally {
-    secSaving.value = false
-  }
-}
 
 const form = reactive<SiteForm>(blankForm())
 
@@ -1218,10 +1202,10 @@ async function submitForm() {
   if (canManageAll.value) payload.user_id = form.user_id
   if (isEdit.value) {
     payload.id = form.id
-  } else {
-    // 新建：安全配置随站点一起提交（保存后由自动同步渲染进 vhost）
-    payload.sec = { ...sec }
   }
+  // 安全配置随站点一起提交（新建 / 编辑同路径，保存后由 vhost 同步渲染）。
+  // 未加载过就不提交，避免用默认值覆盖库里的配置。
+  if (secLoaded.value) payload.sec = { ...sec }
   formLoading.value = true
   try {
     const res = await http.post<{ code: number; message: string; data?: { id?: number } }>(
@@ -2159,14 +2143,7 @@ onMounted(() => {
           <!-- 安全：WAF / 限速 / 限并发 -->
           <el-tab-pane :label="t('site.tabSecurity')" name="security">
             <el-alert
-              v-if="!form.id"
-              type="info"
-              :closable="false"
-              :title="t('site.secSaveWithSite')"
-              style="margin-bottom: 12px"
-            />
-            <el-alert
-              v-else-if="!secLoaded"
+              v-if="!secLoaded"
               type="warning"
               :closable="false"
               :title="t('site.secLoadFailed')"
@@ -2178,6 +2155,13 @@ onMounted(() => {
               :closable="false"
               :title="t('site.secWafNotReady')"
               :description="capsBlockers.join('；')"
+              style="margin-bottom: 12px"
+            />
+            <el-alert
+              v-else
+              type="info"
+              :closable="false"
+              :title="t('site.secSaveWithSite')"
               style="margin-bottom: 12px"
             />
             <el-form-item :label="t('site.secWaf')">
@@ -2245,19 +2229,6 @@ onMounted(() => {
             <el-form-item v-if="sec.limit_conn_enable" :label="t('site.secConnNum')">
               <el-input-number v-model="sec.limit_conn_num" :min="1" :max="100000" />
               <span class="form-hint">{{ t('site.secConnNumHint') }}</span>
-            </el-form-item>
-            <el-form-item>
-              <el-button
-                type="primary"
-                :loading="secSaving"
-                :disabled="!form.id || !secLoaded"
-                @click="saveSecurity"
-              >
-                {{ t('site.secSave') }}
-              </el-button>
-              <span class="form-hint">
-                {{ !form.id ? t('site.secSaveWithSite') : t('site.secSaveHint') }}
-              </span>
             </el-form-item>
           </el-tab-pane>
 

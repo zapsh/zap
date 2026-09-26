@@ -155,6 +155,9 @@ pub struct SiteUpdatePayload {
     pub id: i64,
     #[serde(default)]
     pub user_id: Option<i64>,
+    /// 站点安全配置（WAF / 限速 / 限并发）：随站点编辑一起保存；None = 不改动
+    #[serde(default)]
+    pub sec: Option<SiteSecurity>,
     #[serde(default)]
     pub name: Option<String>,
     /// None 表示域名保持不变；Some(任意数组，可为空) 表示整体覆盖
@@ -1878,22 +1881,7 @@ pub async fn site_add(
     // 在建站前就拦下，避免站点建好了才发现 WAF 不生效
     let sec = payload.sec.clone().map(norm_sec);
     if let Some(s) = &sec {
-        if s.waf_enable {
-            require_waf_allowed(&claims).await?;
-            if !waf_global_ready().await {
-                return Err(ZapError::New(
-                    -1,
-                    "全局 WAF 尚未启用：请先在「服务配置 → Nginx → WAF」安装并开启 ModSecurity".to_string(),
-                ));
-            }
-        }
-        // 自定义 WAF 规则属管理组能力（与安全页保存同一判定）
-        if !jwt::is_admin(&claims) && !s.waf_rules.is_empty() {
-            return Err(ZapError::New(
-                -1,
-                "自定义 WAF 规则仅管理员可修改".to_string(),
-            ));
-        }
+        validate_sec(&claims, s).await?;
     }
     let pseudo_static = {
         let p = payload.pseudo_static.trim().to_lowercase();
@@ -2355,6 +2343,12 @@ pub async fn site_update(
     tx.commit().await?;
 
     // 写回站点扩展档案（整体覆盖式提交，保证与 DB 现值一致）
+    // 安全配置（可选）：与站点编辑同一次提交，随后由前端触发的 vhost 同步生效
+    if let Some(s) = payload.sec.map(norm_sec) {
+        validate_sec(&claims, &s).await?;
+        save_site_sec(payload.id, &s).await?;
+    }
+
     if let Err(e) = save_profile(
         payload.id,
         eff_type,
@@ -3052,6 +3046,25 @@ async fn waf_allowed_for(claims: &jwt::Claims) -> bool {
     }
 }
 
+/// 站点安全配置的统一校验：**建站 / 编辑站点 / 安全页保存三条入口共用**，
+/// 避免「某条入口漏校验」导致套餐未开放 WAF 也能开、或非管理员能塞自定义规则。
+async fn validate_sec(claims: &jwt::Claims, s: &SiteSecurity) -> Result<(), ZapError> {
+    if s.waf_enable {
+        require_waf_allowed(claims).await?;
+        if !waf_global_ready().await {
+            return Err(ZapError::New(
+                -1,
+                "全局 WAF 尚未启用：请先在「服务配置 → Nginx → WAF」安装并开启 ModSecurity".to_string(),
+            ));
+        }
+    }
+    // 自定义 WAF 规则属管理组能力
+    if !jwt::is_admin(claims) && !s.waf_rules.is_empty() {
+        return Err(ZapError::New(-1, "自定义 WAF 规则仅管理员可修改".to_string()));
+    }
+    Ok(())
+}
+
 async fn require_waf_allowed(claims: &jwt::Claims) -> Result<(), ZapError> {
     if waf_allowed_for(claims).await {
         return Ok(());
@@ -3160,20 +3173,7 @@ pub async fn site_security_save(
     require_manageable(&claims)?;
     site_in_scope(&claims, payload.id).await?;
     let sec = norm_sec(payload.sec);
-    // 自定义 WAF 规则是管理组能力：非管理员只能保持原样（不能新增、修改或清空）
-    if !jwt::is_admin(&claims) && sec.waf_rules != load_site_sec(payload.id).await.waf_rules {
-        return Err(ZapError::New(-1, "自定义 WAF 规则仅管理员可修改".to_string()));
-    }
-    // 开 WAF 要过两道：套餐允许 + 全局真的装好了
-    if sec.waf_enable {
-        require_waf_allowed(&claims).await?;
-        if !waf_global_ready().await {
-            return Err(ZapError::New(
-                -1,
-                "全局 WAF 尚未启用：请先在「服务配置 → Nginx → WAF」安装并开启 ModSecurity".to_string(),
-            ));
-        }
-    }
+    validate_sec(&claims, &sec).await?;
     save_site_sec(payload.id, &sec).await?;
     let (msg, _data, name, _status) = sync_one_site(payload.id).await?;
     let _ = audit::log(
