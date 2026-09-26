@@ -508,6 +508,7 @@ fn api_routers() -> Router {
         .route("/system/waf/conf/list", get(system_waf::conf_list))
         .route("/system/waf/conf/read", get(system_waf::conf_read))
         .route("/system/waf/conf/save", post(system_waf::conf_save))
+        .route("/system/waf/engine", post(system_waf::engine))
         .route("/system/waf/audit", get(system_waf::audit_log))
         // 数据迁移（服务器配置 → 数据迁移，admin only）
         .route(

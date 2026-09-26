@@ -2065,6 +2065,11 @@ export default {
     saveTip:
       '规则引擎默认 DetectionOnly（只记录不拦截）。改为 On 前请先看审计日志，确认正常业务请求没有被误判。',
     detectionOnlyTip: '只记录不拦截',
+    engineOn: '拦截',
+    engineDetection: '仅检测',
+    engineTip:
+      'DetectionOnly 只记录不拦截；切到「拦截」前先看审计日志，确认正常请求没有被误判。',
+    engineSaved: '已切换',
   },
 
   /** 服务配置 - PHP 扩展管理（PIE / pecl / 源码编译） */

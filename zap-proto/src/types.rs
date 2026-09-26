@@ -904,6 +904,12 @@ pub enum Request {
     /// WAF 审计日志尾部（`SecAuditLog` 指向的文件）。
     #[serde(rename = "waf.audit")]
     WafAudit { lines: u32 },
+    /// 切换 WAF 规则引擎形态：`On`（拦截）/ `DetectionOnly`（只记录不拦截）/ `Off`。
+    ///
+    /// 装完默认停在 `DetectionOnly`：先看审计日志确认没有正常业务被误判，再切 On。
+    /// mode 会被写进配置文件，只放行这三个取值。
+    #[serde(rename = "waf.set_engine")]
+    WafSetEngine { mode: String },
     /// 服务总览：应用商店已安装应用中「登记了 systemd 服务」的实例卡片
     /// （名称 / 版本 / 分类 / unit 名 / 运行状态 / 开机自启）。
     ///

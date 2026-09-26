@@ -166,6 +166,37 @@ pub async fn conf_save(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct EngineBody {
+    pub mode: String,
+}
+
+/// POST /system/waf/engine：切换规则引擎形态（On 拦截 / DetectionOnly 只检测 / Off）。
+///
+/// 引擎形态直接决定「拦不拦业务请求」，所以每次切换都进审计。
+pub async fn engine(
+    claims: ValidatedClaims,
+    Extension(addr): Extension<SocketAddr>,
+    Json(body): Json<EngineBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let result = exec(Request::WafSetEngine {
+        mode: body.mode.clone(),
+    })
+    .await;
+    if result.is_ok() {
+        audit::log(
+            Some(&claims),
+            Some(addr.ip().to_string().as_str()),
+            "waf_engine",
+            "waf",
+            &format!("切换 WAF 规则引擎为 {}", body.mode),
+        )
+        .await;
+    }
+    result
+}
+
+#[derive(Debug, Deserialize)]
 pub struct AuditQuery {
     pub lines: Option<u32>,
 }

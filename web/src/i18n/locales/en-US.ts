@@ -2070,6 +2070,11 @@ const enUS: Messages = {
     saveTip:
       'The engine defaults to DetectionOnly (log, do not block). Check the audit log for false positives before switching to On.',
     detectionOnlyTip: 'log only, not blocking',
+    engineOn: 'Block',
+    engineDetection: 'Detect only',
+    engineTip:
+      'DetectionOnly logs without blocking. Check the audit log for false positives before switching to Block.',
+    engineSaved: 'Switched',
   },
 
   /** Service config - PHP extension management (PIE / pecl / source build) */

@@ -73,6 +73,15 @@ export function saveWafConf(path: string, content: string) {
   )
 }
 
+/** 切换规则引擎形态：On（拦截）/ DetectionOnly（只记录不拦截）/ Off（关闭） */
+export function setWafEngine(mode: 'On' | 'DetectionOnly' | 'Off') {
+  return http.post<{
+    code: number
+    message: string
+    data: { engine: string; reload: string }
+  }>('/system/waf/engine', { mode })
+}
+
 export function getWafAudit(lines = 200) {
   return http.get<{ code: number; message: string; data: { path: string; content: string } }>(
     '/system/waf/audit',

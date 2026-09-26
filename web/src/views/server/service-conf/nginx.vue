@@ -267,15 +267,23 @@
             <template v-if="waf?.installed">
               <el-descriptions :column="2" border size="small" class="waf-desc">
                 <el-descriptions-item :label="t('waf.engine')">
-                  <el-tag
-                    size="small"
-                    :type="waf.engine === 'On' ? 'success' : 'warning'"
-                  >
-                    {{ waf.engine || '-' }}
-                  </el-tag>
-                  <span v-if="waf.engine !== 'On'" class="waf-inline-tip">
-                    {{ t('waf.detectionOnlyTip') }}
-                  </span>
+                  <div class="waf-engine">
+                    <el-tag
+                      size="small"
+                      :type="waf.engine === 'On' ? 'success' : 'warning'"
+                    >
+                      {{ waf.engine || '-' }}
+                    </el-tag>
+                    <el-switch
+                      size="small"
+                      :model-value="waf.engine === 'On'"
+                      :loading="wafEngineSwitching"
+                      :active-text="t('waf.engineOn')"
+                      :inactive-text="t('waf.engineDetection')"
+                      @change="onWafEngineSwitch"
+                    />
+                  </div>
+                  <div class="waf-inline-tip">{{ t('waf.engineTip') }}</div>
                 </el-descriptions-item>
                 <el-descriptions-item :label="t('waf.crs')">
                   <el-tag size="small" :type="waf.crs ? 'success' : 'info'">
@@ -391,6 +399,7 @@ import {
   getWafAudit,
   getWafConfRead,
   getWafStatus,
+  setWafEngine,
   installWaf,
   saveWafConf,
   type WafStatus,
@@ -697,6 +706,7 @@ async function doControl(action: 'reload' | 'restart' | 'start' | 'stop') {
 const waf = ref<WafStatus | null>(null)
 const wafLoading = ref(false)
 const wafInstalling = ref(false)
+const wafEngineSwitching = ref(false)
 const logDrawer = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
 const ruleVisible = ref(false)
 const rulePath = ref('')
@@ -738,6 +748,20 @@ function watchWafTask(runId: string) {
       wafTimer = undefined
     }
   }, 3000)
+}
+
+/** 拦截开关：On = 拦截，DetectionOnly = 只记录（装完默认） */
+async function onWafEngineSwitch(val: boolean) {
+  wafEngineSwitching.value = true
+  try {
+    const res = await setWafEngine(val ? 'On' : 'DetectionOnly')
+    ElMessage.success(res.data?.reload || t('waf.engineSaved'))
+    await loadWaf()
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    wafEngineSwitching.value = false
+  }
 }
 
 async function doInstallWaf() {
@@ -1027,6 +1051,12 @@ onUnmounted(() => {
 .waf-desc {
   margin-bottom: 4px;
 }
+.waf-engine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .waf-inline-tip {
   margin-left: 8px;
   font-size: 12px;

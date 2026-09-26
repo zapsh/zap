@@ -220,6 +220,28 @@ fn rules_dir_of(conf: &Path) -> PathBuf {
     suggested
 }
 
+/// 把主配置里的 `SecRuleEngine` 改成指定形态：已有该指令就替换（重复的旧指令一并
+/// 去掉，免得后写覆盖前写），原本没有就追加到末尾。
+fn with_engine(content: &str, mode: &str) -> String {
+    let line = format!("SecRuleEngine {mode}");
+    let mut out: Vec<String> = Vec::new();
+    let mut replaced = false;
+    for l in content.lines() {
+        if l.trim_start().starts_with("SecRuleEngine") {
+            if !replaced {
+                out.push(line.clone());
+                replaced = true;
+            }
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    if !replaced {
+        out.push(line);
+    }
+    out.join("\n") + "\n"
+}
+
 /// 是否已部署 OWASP CRS（`crs-setup.conf` 且 rules/ 下有规则）。
 fn crs_present(rules_dir: &Path) -> bool {
     if !rules_dir.join("crs-setup.conf").is_file() {
@@ -510,6 +532,61 @@ pub async fn conf_save(path: &str, content: &str) -> Response {
             "nginx 未运行，配置将在启动时生效"
         };
         Ok(Response::ok("ok", Some(json!({ "reload": reloaded }))))
+    })
+    .await
+}
+
+/// `waf.set_engine`：切换规则引擎形态 —— On（拦截）/ DetectionOnly（只记录）/ Off。
+///
+/// 装完默认 DetectionOnly：先看审计日志确认没有正常业务被误判，再切 On。
+/// 与主配置保存同一套纪律：备份 → 写入 → `nginx -t` → 不过就回滚。
+pub async fn set_engine(mode: &str) -> Response {
+    // 白名单：mode 会被拼进配置文件，不能放行任意字符串
+    let mode = match mode {
+        "On" | "DetectionOnly" | "Off" => mode.to_string(),
+        other => {
+            return Response::err(
+                -1,
+                format!("不支持的规则引擎形态 '{other}'（可选：On / DetectionOnly / Off）"),
+            )
+        }
+    };
+    run_blocking(move || {
+        let env = require_installed()?;
+        let main = env
+            .main_conf
+            .ok_or_else(|| "未找到 WAF 主配置（modsecurity.conf）".to_string())?;
+        let original =
+            std::fs::read_to_string(&main).map_err(|e| format!("读取 {} 失败: {e}", main.display()))?;
+        let next = with_engine(&original, &mode);
+        if next == original {
+            return Ok(Response::ok(
+                "ok",
+                Some(json!({ "engine": mode, "reload": "形态未变化，无需重载" })),
+            ));
+        }
+        let backup = main.with_extension("conf.zap.bak");
+        std::fs::copy(&main, &backup).map_err(|e| format!("备份失败: {e}"))?;
+        if let Err(e) = std::fs::write(&main, &next) {
+            return Err(format!("写入失败: {e}"));
+        }
+        let info = nginx_info().ok_or_else(|| "未检测到 nginx".to_string())?;
+        if let Err(e) = nginx_test(&info.bin) {
+            let _ = std::fs::copy(&backup, &main);
+            return Err(format!("配置未通过 nginx -t，已回滚：{e}"));
+        }
+        let reloaded = if nginx_running() {
+            match super::svc::act("reload", "nginx") {
+                Ok(_) => "nginx 已重载",
+                Err(e) => return Err(format!("已保存，但重载失败：{e}")),
+            }
+        } else {
+            "nginx 未运行，配置将在启动时生效"
+        };
+        Ok(Response::ok(
+            "ok",
+            Some(json!({ "engine": mode, "reload": reloaded })),
+        ))
     })
     .await
 }
@@ -971,6 +1048,36 @@ mod tests {
     fn rules_dir_lives_in_panel_nginx_dir() {
         let suggested = Path::new(super::super::nginx::ZAP_NGINX_DIR).join(RULES_DIR_NAME);
         assert_eq!(suggested, PathBuf::from("/etc/zap/nginx/modsecurity"));
+    }
+
+    /// 切换引擎:已有指令就替换(且只留一行),其余指令原样保留
+    #[test]
+    fn engine_switch_rewrites_in_place() {
+        let out = super::with_engine(
+            "# zap 生成\nSecRuleEngine DetectionOnly\nSecRequestBodyAccess On\n",
+            "On",
+        );
+        assert!(out.contains("SecRuleEngine On"), "{out}");
+        assert!(!out.contains("DetectionOnly"), "{out}");
+        assert_eq!(out.matches("SecRuleEngine").count(), 1, "{out}");
+        assert!(out.contains("SecRequestBodyAccess On"), "{out}");
+    }
+
+    /// 重复写了两行 SecRuleEngine 时,只保留一行新值
+    #[test]
+    fn engine_switch_collapses_duplicates() {
+        let out =
+            super::with_engine("SecRuleEngine On\nSecRuleEngine DetectionOnly\n", "Off");
+        assert_eq!(out.matches("SecRuleEngine").count(), 1, "{out}");
+        assert!(out.contains("SecRuleEngine Off"), "{out}");
+    }
+
+    /// 原本没有该指令:追加到末尾
+    #[test]
+    fn engine_switch_appends_when_missing() {
+        let out = super::with_engine("SecRequestBodyAccess On\n", "DetectionOnly");
+        assert!(out.trim_end().ends_with("SecRuleEngine DetectionOnly"), "{out}");
+        assert!(out.contains("SecRequestBodyAccess On"), "{out}");
     }
 
     #[test]
