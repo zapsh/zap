@@ -448,9 +448,9 @@ fn running_by_proc(bin: &Path) -> bool {
 }
 
 /// PHP 实例探测上下文：由 svc（php74）定位到安装目录。
-struct PhpInst {
-    digits: String,
-    dir: PathBuf,
+pub(crate) struct PhpInst {
+    pub(crate) digits: String,
+    pub(crate) dir: PathBuf,
 }
 
 /// 实例目录名候选：`php-74` 与 `php74` 都接受（历史两种写法都出现过）。
@@ -496,7 +496,7 @@ fn php_reg_of(svc: &str) -> Option<PhpReg> {
 
 /// PHP 实例解析：svc=php74 → **优先**取 info.yaml 登记的 install_dir，
 /// 兜底按目录名 `php-74` / `php74` 在应用安装根下查找（不存在返回 None）。
-fn php_inst(svc: &str) -> Option<PhpInst> {
+pub(crate) fn php_inst(svc: &str) -> Option<PhpInst> {
     let digits = php_inst_svc(svc)?;
     if let Some(r) = php_reg_of(svc) {
         return Some(PhpInst { digits, dir: r.dir });
@@ -966,7 +966,7 @@ fn set_json_path(obj: &mut Value, path: &[&str], value: Value) {
 
 // ── verbs ────────────────────────────────────────────────────
 
-async fn run_blocking<F>(f: F) -> Response
+pub(crate) async fn run_blocking<F>(f: F) -> Response
 where
     F: FnOnce() -> Result<Response, String> + Send + 'static,
 {

@@ -2044,6 +2044,42 @@ const enUS: Messages = {
   },
 
   /** Service config - PHP */
+  /** Service config - PHP extension management (PIE / pecl / source build) */
+  servicesPhpExt: {
+    tab: 'Extensions',
+    colName: 'Extension',
+    colVersion: 'Version',
+    colState: 'State',
+    colOp: 'Actions',
+    searchPh: 'Search extension',
+    enabled: 'Enabled',
+    disabled: 'Disabled',
+    builtin: 'Built-in',
+    enable: 'Enable',
+    disable: 'Disable',
+    remove: 'Uninstall',
+    install: 'Install',
+    installTitle: 'Install PHP extension',
+    installPkg: 'Package',
+    installPkgPh: 'e.g. redis / imagick / swoole',
+    installVersion: 'Version',
+    installVersionPh: 'Empty = latest stable',
+    installSubmit: 'Install',
+    installHint:
+      'Installer: {way}. Extensions are compiled on this machine (takes minutes); watch the log in the drawer. PHP-FPM is reloaded automatically when done.',
+    extDir: 'Extension dir {path}',
+    summarySuffix: '; installer: {way}',
+    needPkg: 'Enter an extension name',
+    queued: 'A build task is already running; this install is queued at position {n}',
+    confirmEnable: 'Enable extension {name}?',
+    confirmDisable: 'Disable extension {name}? Sites relying on it may fail.',
+    confirmRemove: 'Uninstall extension {name}? Its .so and ini entry are removed.',
+    wayPie: 'PIE',
+    wayPecl: 'pecl',
+    waySource: 'Source build (phpize + make)',
+    wayNone: 'Unavailable (no build toolchain)',
+  },
+
   servicesPhp: {
     title: 'PHP Configuration',
     versionsCount: '{n} version instance(s)',

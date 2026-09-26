@@ -849,6 +849,31 @@ pub enum Request {
     /// 新增一个服务 = 丢一份 yaml，前端据此自动生成配置页入口。
     #[serde(rename = "service_conf.defs")]
     ServiceConfDefs,
+    /// PHP 扩展·清单：已启用 / 已编译未启用 / 内置，扩展目录与可用安装工具。
+    #[serde(rename = "php_ext.list")]
+    PhpExtList { service: String },
+    /// PHP 扩展·启用 / 禁用：写 / 删 php.d 下的 ini，成功后重载 php-fpm。
+    #[serde(rename = "php_ext.toggle")]
+    PhpExtToggle {
+        service: String,
+        name: String,
+        enable: bool,
+    },
+    /// PHP 扩展·安装（长任务：日志追加到 log_path，结束写 __ZAP_DONE__）。
+    #[serde(rename = "php_ext.install")]
+    PhpExtInstall {
+        service: String,
+        package: String,
+        version: String,
+        log_path: String,
+    },
+    /// PHP 扩展·卸载（长任务，日志约定同安装）。
+    #[serde(rename = "php_ext.remove")]
+    PhpExtRemove {
+        service: String,
+        name: String,
+        log_path: String,
+    },
     /// 服务总览：应用商店已安装应用中「登记了 systemd 服务」的实例卡片
     /// （名称 / 版本 / 分类 / unit 名 / 运行状态 / 开机自启）。
     ///

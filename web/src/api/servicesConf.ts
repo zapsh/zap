@@ -182,3 +182,68 @@ export function setServiceConfDefault(service: string, enable: boolean) {
     { service, enable },
   )
 }
+
+// ── PHP 扩展管理（服务配置 → PHP → 扩展）────────────────────
+
+export interface PhpExtItem {
+  name: string
+  version: string
+  enabled: boolean
+  /** 编译进解释器的扩展：没有 .so，不能禁用 / 卸载 */
+  builtin: boolean
+  so: string
+  ini: string
+  removable: boolean
+}
+
+export interface PhpExtListData {
+  installed: boolean
+  reason?: string
+  service?: string
+  bin?: string
+  version?: string
+  extension_dir?: string
+  scan_dir?: string
+  ini?: string
+  /** 安装工具可用性，installer 是后端据此得出的选路结论 */
+  tools?: { pie: boolean; pecl: boolean; phpize: boolean; php_config: boolean; gcc: boolean; make: boolean }
+  installer?: 'pie' | 'pecl' | 'source' | 'none'
+  installer_hint?: string
+  extensions: PhpExtItem[]
+}
+
+export function getPhpExtList(service: string) {
+  return http.get<{ code: number; message: string; data: PhpExtListData }>(
+    '/system/service-conf/php-ext/list',
+    { params: { service } },
+  )
+}
+
+export function togglePhpExt(service: string, name: string, enable: boolean) {
+  return http.post<{ code: number; message: string; data: { enabled: boolean; reload?: string } }>(
+    '/system/service-conf/php-ext/toggle',
+    { service, name, enable },
+  )
+}
+
+/** 安装 / 卸载是长任务（要编译），返回 run_id 供日志抽屉流式查看 */
+export interface PhpExtTaskResult {
+  task_id: string
+  run_id: string
+  queued: boolean
+  position?: number
+}
+
+export function installPhpExt(service: string, package_: string, version?: string) {
+  return http.post<{ code: number; message: string; data: PhpExtTaskResult }>(
+    '/system/service-conf/php-ext/install',
+    { service, package: package_, version: version || '' },
+  )
+}
+
+export function removePhpExt(service: string, name: string) {
+  return http.post<{ code: number; message: string; data: PhpExtTaskResult }>(
+    '/system/service-conf/php-ext/remove',
+    { service, name },
+  )
+}

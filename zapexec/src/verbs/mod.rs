@@ -13,6 +13,7 @@ mod logs;
 mod network;
 mod nginx;
 mod php;
+mod php_ext;
 mod platform;
 mod process;
 mod resource;
@@ -408,6 +409,23 @@ pub async fn dispatch(req: Request) -> Response {
         Request::ServiceConfDefault { service, enable } => {
             service_conf::set_default(&service, enable).await
         }
+        Request::PhpExtList { service } => php_ext::list(&service).await,
+        Request::PhpExtToggle {
+            service,
+            name,
+            enable,
+        } => php_ext::toggle(&service, &name, enable).await,
+        Request::PhpExtInstall {
+            service,
+            package,
+            version,
+            log_path,
+        } => php_ext::install(&service, &package, &version, &log_path).await,
+        Request::PhpExtRemove {
+            service,
+            name,
+            log_path,
+        } => php_ext::remove(&service, &name, &log_path).await,
         Request::ServicesOverview => services::overview().await,
         Request::ServicesControl { svc, action } => services::control(&svc, &action).await,
         Request::ServicesBoot { svc, enable } => services::boot(&svc, enable).await,

@@ -473,6 +473,23 @@ fn api_routers() -> Router {
             "/system/service-conf/defs",
             get(system_service_conf::defs_list),
         )
+        // PHP 扩展管理（服务配置 → PHP → 扩展）
+        .route(
+            "/system/service-conf/php-ext/list",
+            get(system_service_conf::php_ext_list),
+        )
+        .route(
+            "/system/service-conf/php-ext/toggle",
+            post(system_service_conf::php_ext_toggle),
+        )
+        .route(
+            "/system/service-conf/php-ext/install",
+            post(system_service_conf::php_ext_install),
+        )
+        .route(
+            "/system/service-conf/php-ext/remove",
+            post(system_service_conf::php_ext_remove),
+        )
         // 服务配置 → 总览：已装应用中带服务的实例（启停 / 开机自启）
         .route("/system/services/overview", get(system_services::overview))
         .route("/system/services/control", post(system_services::control))

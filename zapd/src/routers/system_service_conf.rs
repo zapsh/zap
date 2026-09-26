@@ -161,6 +161,159 @@ pub async fn set_default(
     result
 }
 
+// ── PHP 扩展管理（服务配置 → PHP → 扩展）──────────────────────
+//
+// 安装 / 卸载要现场编译（分钟级），所以走通用任务队列：这里只登记任务并把
+// 请求下发给 zapexec，日志由 `/appstore/ws/{run_id}` 流式回显，收尾靠
+// zapexec 写的 `__ZAP_DONE__`（见 zap/task.rs）。启用 / 禁用是秒级的，直接同步。
+
+#[derive(Debug, Deserialize)]
+pub struct PhpExtServiceQuery {
+    pub service: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PhpExtToggleBody {
+    pub service: String,
+    pub name: String,
+    pub enable: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PhpExtInstallBody {
+    pub service: String,
+    pub package: String,
+    /// 留空 = 最新稳定版
+    #[serde(default)]
+    pub version: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PhpExtRemoveBody {
+    pub service: String,
+    pub name: String,
+}
+
+/// GET /system/service-conf/php-ext/list
+pub async fn php_ext_list(
+    claims: ValidatedClaims,
+    Query(q): Query<PhpExtServiceQuery>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let service = validate_service(&q.service).await?;
+    exec(Request::PhpExtList { service }).await
+}
+
+/// POST /system/service-conf/php-ext/toggle
+pub async fn php_ext_toggle(
+    claims: ValidatedClaims,
+    Json(body): Json<PhpExtToggleBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let service = validate_service(&body.service).await?;
+    exec(Request::PhpExtToggle {
+        service,
+        name: body.name.clone(),
+        enable: body.enable,
+    })
+    .await
+}
+
+/// 登记一次扩展安装 / 卸载任务。
+///
+/// `make_req` 在日志路径确定后构造请求（请求里要带上同一个 log_path，
+/// 否则 zapexec 写日志和 zapd 读日志会指向两个文件）。
+async fn enqueue_ext_task<F>(
+    claims: &ValidatedClaims,
+    make_req: F,
+    pkg: &str,
+    title: &str,
+) -> Result<Json<serde_json::Value>, ZapError>
+where
+    F: FnOnce(String) -> Request,
+{
+    let task_id = crate::zap::task::new_id();
+    let log_path = crate::zap::task::log_path_in(&crate::zap::task::logs_dir(), &task_id);
+    let payload = serde_json::to_string(&make_req(log_path.clone()))
+        .map_err(|e| ZapError::New(-1, format!("任务参数序列化失败: {e}")))?;
+    let t = crate::zap::task::enqueue(crate::zap::task::NewTask {
+        task_id: task_id.clone(),
+        kind: crate::zap::task::KIND_PHP.to_string(),
+        action: "php_ext".to_string(),
+        pkg: pkg.to_string(),
+        username: claims.sub.clone(),
+        title: title.to_string(),
+        log_path,
+        job_key: String::new(),
+        // 同一时刻只编译一个扩展：并发编译会把机器压满，日志也不好读
+        group_key: "php-ext".to_string(),
+        group_limit: 1,
+        payload,
+    })
+    .await?;
+    let queued = t.status == crate::zap::task::STATUS_PENDING;
+    let position = if queued {
+        crate::zap::task::queue_position(&t).await
+    } else {
+        0
+    };
+    // 拿到槽位就立刻下发；排队中的由调度器放行（payload 已入库）
+    if !queued {
+        crate::zap::task::launch(&t).await?;
+    }
+    Ok(Json(json!({
+        "code": 0,
+        "message": "ok",
+        "data": { "task_id": task_id, "run_id": task_id, "queued": queued, "position": position },
+    })))
+}
+
+/// POST /system/service-conf/php-ext/install
+pub async fn php_ext_install(
+    claims: ValidatedClaims,
+    Json(body): Json<PhpExtInstallBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let service = validate_service(&body.service).await?;
+    let package = body.package.clone();
+    let version = body.version.clone();
+    let title = format!("安装 PHP 扩展 {package}");
+    enqueue_ext_task(
+        &claims,
+        |log_path| Request::PhpExtInstall {
+            service,
+            package,
+            version,
+            log_path,
+        },
+        &body.package,
+        &title,
+    )
+    .await
+}
+
+/// POST /system/service-conf/php-ext/remove
+pub async fn php_ext_remove(
+    claims: ValidatedClaims,
+    Json(body): Json<PhpExtRemoveBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let service = validate_service(&body.service).await?;
+    let name = body.name.clone();
+    let title = format!("卸载 PHP 扩展 {name}");
+    enqueue_ext_task(
+        &claims,
+        |log_path| Request::PhpExtRemove {
+            service,
+            name,
+            log_path,
+        },
+        &body.name,
+        &title,
+    )
+    .await
+}
+
 /// GET /system/service-conf/defs：yaml 注册的服务定义清单（前端动态生成入口用）
 pub async fn defs_list(claims: ValidatedClaims) -> ZapJsonResult {
     require_admin(&claims)?;

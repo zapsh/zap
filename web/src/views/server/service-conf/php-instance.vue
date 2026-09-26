@@ -209,18 +209,188 @@
         </div>
         <el-empty v-else :description="t('servicesCommon.noConfFiles')" />
       </el-tab-pane>
+
+      <!-- 扩展 -->
+      <el-tab-pane :label="t('servicesPhpExt.tab')" name="ext">
+        <el-alert
+          v-if="extData.installed"
+          type="info"
+          :closable="false"
+          show-icon
+          class="ext-tip"
+          :title="extSummary"
+        />
+        <el-alert
+          v-if="extData.installed && extData.installer === 'none'"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="ext-tip"
+          :title="extData.installer_hint || ''"
+        />
+        <el-empty v-if="!extData.installed" :description="extData.reason || ''" />
+
+        <template v-if="extData.installed">
+          <div class="ext-toolbar">
+            <el-input
+              v-model="extKeyword"
+              :placeholder="t('servicesPhpExt.searchPh')"
+              clearable
+              class="ext-search"
+            />
+            <el-button :loading="extLoading" @click="loadExts">
+              {{ t('servicesCommon.refresh') }}
+            </el-button>
+            <el-button type="primary" @click="openInstall">
+              {{ t('servicesPhpExt.install') }}
+            </el-button>
+          </div>
+
+          <el-table v-loading="extLoading" :data="filteredExts" size="small" stripe>
+            <el-table-column prop="name" :label="t('servicesPhpExt.colName')" min-width="140">
+              <template #default="{ row }">
+                <span class="mono">{{ row.name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column
+              prop="version"
+              :label="t('servicesPhpExt.colVersion')"
+              min-width="110"
+            >
+              <template #default="{ row }">
+                <span>{{ row.version || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('servicesPhpExt.colState')" width="110">
+              <template #default="{ row }">
+                <el-tag v-if="row.builtin" size="small" type="info">
+                  {{ t('servicesPhpExt.builtin') }}
+                </el-tag>
+                <el-tag
+                  v-else
+                  size="small"
+                  :type="row.enabled ? 'success' : 'info'"
+                >
+                  {{ row.enabled ? t('servicesPhpExt.enabled') : t('servicesPhpExt.disabled') }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('servicesPhpExt.colOp')" width="200" align="right">
+              <template #default="{ row }">
+                <el-button
+                  v-if="!row.builtin"
+                  size="small"
+                  :type="row.enabled ? 'warning' : 'success'"
+                  plain
+                  :loading="extActing === row.name"
+                  @click="toggleExt(row)"
+                >
+                  {{
+                    row.enabled ? t('servicesPhpExt.disable') : t('servicesPhpExt.enable')
+                  }}
+                </el-button>
+                <el-button
+                  v-if="row.removable"
+                  size="small"
+                  type="danger"
+                  plain
+                  :loading="extRemoving === row.name"
+                  @click="removeExt(row)"
+                >
+                  {{ t('servicesPhpExt.remove') }}
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
+      </el-tab-pane>
     </el-tabs>
+
+    <!-- 安装扩展 -->
+    <el-dialog
+      v-model="installVisible"
+      :title="t('servicesPhpExt.installTitle')"
+      width="520px"
+      append-to-body
+    >
+      <el-form label-width="90px">
+        <el-form-item :label="t('servicesPhpExt.installPkg')">
+          <el-input
+            v-model="installForm.pkg"
+            :placeholder="t('servicesPhpExt.installPkgPh')"
+            class="mono"
+          />
+          <div class="ext-common">
+            <el-tag
+              v-for="p in COMMON_EXTS"
+              :key="p"
+              size="small"
+              class="ext-common-tag"
+              @click="installForm.pkg = p"
+            >
+              {{ p }}
+            </el-tag>
+          </div>
+        </el-form-item>
+        <el-form-item :label="t('servicesPhpExt.installVersion')">
+          <el-input
+            v-model="installForm.version"
+            :placeholder="t('servicesPhpExt.installVersionPh')"
+            class="mono"
+          />
+        </el-form-item>
+      </el-form>
+      <div class="ext-hint">
+        {{ t('servicesPhpExt.installHint', { way: installerText }) }}
+      </div>
+      <template #footer>
+        <el-button @click="installVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="installing" @click="doInstall">
+          {{ t('servicesPhpExt.installSubmit') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 安装 / 卸载的编译日志（与应用商店同一套任务日志组件） -->
+    <AppStoreLogDrawer ref="logDrawer" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document } from '@/icons'
 import CodeEditor from '@/components/CodeEditor.vue'
+import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
 import { useServiceConf } from '@/composables/useServiceConf.ts'
-import { setServiceConfDefault, type ServiceConfInstance } from '@/api/servicesConf.ts'
+import { getTask } from '@/api/task.ts'
+import {
+  getPhpExtList,
+  installPhpExt,
+  removePhpExt,
+  setServiceConfDefault,
+  togglePhpExt,
+  type PhpExtItem,
+  type PhpExtListData,
+  type ServiceConfInstance,
+} from '@/api/servicesConf.ts'
+
+/** 常用扩展：PECL 上的裸名，点一下填进输入框（版本留空取最新稳定版） */
+const COMMON_EXTS = [
+  'redis',
+  'imagick',
+  'swoole',
+  'zip',
+  'bcmath',
+  'gd',
+  'intl',
+  'memcached',
+  'mongodb',
+  'xdebug',
+  'igbinary',
+  'apcu',
+]
 
 const props = defineProps<{
   inst: ServiceConfInstance
@@ -275,6 +445,152 @@ const descText = computed(() => {
   return prefix + t('servicesPhpPanel.descSuffix')
 })
 
+// ── 扩展 ─────────────────────────────────────────────────────
+const extData = ref<PhpExtListData>({ installed: false, extensions: [] })
+const extLoading = ref(false)
+const extKeyword = ref('')
+const extActing = ref('')
+const extRemoving = ref('')
+const installVisible = ref(false)
+const installing = ref(false)
+const logDrawer = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
+const installForm = ref({ pkg: '', version: '' })
+/** 长任务轮询定时器（编译分钟级，完成后自动刷新清单；组件卸载时清掉） */
+let taskTimer: number | undefined
+
+const filteredExts = computed(() => {
+  const k = extKeyword.value.trim().toLowerCase()
+  const list = extData.value.extensions || []
+  return k ? list.filter((e: PhpExtItem) => e.name.toLowerCase().includes(k)) : list
+})
+
+const installerText = computed(() => {
+  const key = extData.value.installer || 'none'
+  return t(`servicesPhpExt.way${key.charAt(0).toUpperCase()}${key.slice(1)}`)
+})
+
+const extSummary = computed(() => {
+  const d = extData.value
+  const parts: string[] = []
+  if (d.version) parts.push(`PHP ${d.version}`)
+  if (d.extension_dir) parts.push(t('servicesPhpExt.extDir', { path: d.extension_dir }))
+  return parts.join(t('servicesCommon.separator')) + t('servicesPhpExt.summarySuffix', {
+    way: installerText.value,
+  })
+})
+
+async function loadExts() {
+  extLoading.value = true
+  try {
+    const res = await getPhpExtList(props.inst.svc)
+    extData.value = res.data
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    extLoading.value = false
+  }
+}
+
+/** 安装 / 卸载都是后台编译任务：打开日志抽屉，轮询到终态再刷新清单 */
+function watchTask(runId: string, title: string) {
+  logDrawer.value?.openDrawer(runId, title)
+  if (taskTimer) window.clearInterval(taskTimer)
+  taskTimer = window.setInterval(async () => {
+    try {
+      const res = await getTask(runId)
+      const st = res.data?.status || res.data?.task?.status
+      if (st === 'success' || st === 'failed' || st === 'canceled') {
+        window.clearInterval(taskTimer)
+        taskTimer = undefined
+        await loadExts()
+      }
+    } catch {
+      if (taskTimer) window.clearInterval(taskTimer)
+      taskTimer = undefined
+    }
+  }, 3000)
+}
+
+async function toggleExt(row: PhpExtItem) {
+  const tip = row.enabled
+    ? t('servicesPhpExt.confirmDisable', { name: row.name })
+    : t('servicesPhpExt.confirmEnable', { name: row.name })
+  try {
+    await ElMessageBox.confirm(tip, t('common.tip'), {
+      type: row.enabled ? 'warning' : 'info',
+    })
+  } catch {
+    return
+  }
+  extActing.value = row.name
+  try {
+    const res = await togglePhpExt(props.inst.svc, row.name, !row.enabled)
+    ElMessage.success(res.data?.reload || res.message || t('servicesCommon.opSuccess'))
+    await loadExts()
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    extActing.value = ''
+  }
+}
+
+function openInstall() {
+  installForm.value = { pkg: '', version: '' }
+  installVisible.value = true
+}
+
+async function doInstall() {
+  const pkg = installForm.value.pkg.trim()
+  if (!pkg) {
+    ElMessage.warning(t('servicesPhpExt.needPkg'))
+    return
+  }
+  installing.value = true
+  try {
+    const res = await installPhpExt(props.inst.svc, pkg, installForm.value.version.trim())
+    installVisible.value = false
+    const data = res.data
+    if (!data?.run_id) {
+      ElMessage.success(res.message || t('servicesCommon.opSuccess'))
+      await loadExts()
+      return
+    }
+    if (data.queued) {
+      ElMessage.success(t('servicesPhpExt.queued', { n: data.position ?? 1 }))
+    }
+    watchTask(data.run_id, `${t('servicesPhpExt.install')} ${pkg}`)
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    installing.value = false
+  }
+}
+
+async function removeExt(row: PhpExtItem) {
+  try {
+    await ElMessageBox.confirm(
+      t('servicesPhpExt.confirmRemove', { name: row.name }),
+      t('common.tip'),
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  extRemoving.value = row.name
+  try {
+    const res = await removePhpExt(props.inst.svc, row.name)
+    if (res.data?.run_id) {
+      watchTask(res.data.run_id, `${t('servicesPhpExt.remove')} ${row.name}`)
+    } else {
+      await loadExts()
+    }
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    extRemoving.value = ''
+  }
+}
+
 async function toggleDefault(next: boolean) {
   if (toggling.value) return
   if (next === props.inst.is_default) return
@@ -305,7 +621,13 @@ async function toggleDefault(next: boolean) {
   }
 }
 
-onMounted(loadAll)
+onMounted(async () => {
+  await loadAll()
+  loadExts()
+})
+onUnmounted(() => {
+  if (taskTimer) window.clearInterval(taskTimer)
+})
 </script>
 
 <style scoped>
@@ -476,5 +798,31 @@ onMounted(loadAll)
 .editor-actions {
   display: flex;
   gap: 6px;
+}
+.ext-tip {
+  margin-bottom: 12px;
+}
+.ext-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.ext-search {
+  max-width: 260px;
+}
+.ext-common {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ext-common-tag {
+  cursor: pointer;
+}
+.ext-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.7;
 }
 </style>
