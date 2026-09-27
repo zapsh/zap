@@ -73,11 +73,7 @@ async fn registered_services() -> &'static Vec<String> {
 }
 
 fn fallback_keys() -> Vec<String> {
-    vec![
-        "php".to_string(),
-        "mysql".to_string(),
-        "docker".to_string(),
-    ]
+    vec!["php".to_string(), "mysql".to_string(), "docker".to_string()]
 }
 
 /// 校验服务名：必须在 exec 侧 yaml 注册的服务里（PHP 版本实例额外放行）。

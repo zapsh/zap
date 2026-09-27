@@ -75,6 +75,10 @@ pub struct PackageRow {
     pub app_types: String,
     /// 每个站点可部署的应用数量上限（0 = 不限）
     pub max_apps: i64,
+    /// 每个用户分到的端口个数（0 = 不限）：端口段由「基准 + 用户ID × N」自动算出
+    pub app_port_span: i64,
+    /// 该用户全部站点合计可部署的应用数量上限（0 = 不限）
+    pub app_max_total: i64,
     pub owner_id: i64,
     pub status: i32,
     pub created_at: i64,
@@ -280,6 +284,10 @@ pub struct PackageAddPayload {
     pub app_types: Option<String>,
     /// 每个站点可部署的应用数上限（0 = 不限）
     pub max_apps: Option<i64>,
+    /// 每个用户分到的端口个数（0 = 不限）
+    pub app_port_span: Option<i64>,
+    /// 该用户全部站点合计的应用数上限（0 = 不限）
+    pub app_max_total: Option<i64>,
     pub status: Option<i32>,
 }
 
@@ -297,6 +305,40 @@ pub fn package_app_types_normalized(raw: &str) -> String {
     }
     out.sort();
     out.join(",")
+}
+
+/// 端口池基准：用户 #N 的端口段从这里往上排
+pub const APP_PORT_BASE: i64 = 10000;
+
+/// 校验「每用户端口个数」：0 = 不限；其余必须是正数，
+/// 且要留出足够余量 —— 用户 ID 增长后不能排到 65535 之外。
+pub fn validate_port_span(span: i64) -> Result<i64, ZapError> {
+    if span == 0 {
+        return Ok(0);
+    }
+    if span < 1 || span > 4096 {
+        return Err(ZapError::New(
+            -1,
+            "每用户端口数需在 1-4096 之间（0 = 不限）".to_string(),
+        ));
+    }
+    Ok(span)
+}
+
+/// 算出用户 #`uid` 的端口段：`[base + uid*span, base + (uid+1)*span - 1]`。
+///
+/// 例：基准 10000、每用户 100 个 → 用户 1 拿到 10100-10199，用户 2 拿到 10200-10299。
+/// `span = 0`（不限）或端口池已被前面的用户排满时返回 `None`。
+pub fn user_port_range(uid: i64, span: i64) -> Option<(i64, i64)> {
+    if span <= 0 {
+        return None;
+    }
+    let lo = APP_PORT_BASE + uid.saturating_mul(span);
+    let hi = lo + span - 1;
+    if hi > 65535 {
+        return None;
+    }
+    Some((lo, hi))
 }
 
 pub async fn package_add(
@@ -327,6 +369,8 @@ pub async fn package_add(
     let allow_apps = i32::from(payload.allow_apps.unwrap_or(false));
     let app_types = package_app_types_normalized(payload.app_types.as_deref().unwrap_or(""));
     let max_apps = validate_limit(payload.max_apps.unwrap_or(0), "每站点应用数上限")?;
+    let app_port_span = validate_port_span(payload.app_port_span.unwrap_or(0))?;
+    let app_max_total = validate_limit(payload.app_max_total.unwrap_or(0), "用户应用总数上限")?;
     let allow_ssh = i32::from(payload.allow_ssh.unwrap_or(false));
     let allow_proxy = i32::from(payload.allow_proxy.unwrap_or(false));
     // PHP 默认开放；容器默认关闭（容器还要求运行时是 Podman，见 routers::docker 门禁）
@@ -344,9 +388,9 @@ pub async fn package_add(
         "INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, \
          max_mysql_dbs, max_pgsql_dbs, max_ftp_users, \
          fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, \
-         allow_apps, app_types, max_apps, \
+         allow_apps, app_types, max_apps, app_port_span, app_max_total, \
          owner_id, status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&name)
     .bind(&remark)
@@ -366,6 +410,8 @@ pub async fn package_add(
     .bind(allow_apps)
     .bind(&app_types)
     .bind(max_apps)
+    .bind(app_port_span)
+    .bind(app_max_total)
     .bind(owner_id)
     .bind(status)
     .bind(now)
@@ -427,6 +473,10 @@ pub struct PackageUpdatePayload {
     pub app_types: Option<String>,
     /// 每个站点可部署的应用数上限（0 = 不限）；未传则保持不变
     pub max_apps: Option<i64>,
+    /// 每个用户分到的端口个数；未传则保持不变
+    pub app_port_span: Option<i64>,
+    /// 该用户全部站点合计的应用数上限；未传则保持不变
+    pub app_max_total: Option<i64>,
     pub status: Option<i32>,
 }
 
@@ -612,6 +662,24 @@ pub async fn package_update(
             .execute(pool)
             .await?;
     }
+    if let Some(v) = payload.app_port_span {
+        let n = validate_port_span(v)?;
+        sqlx::query("UPDATE packages SET app_port_span = ?, updated_at = ? WHERE id = ?")
+            .bind(n)
+            .bind(now)
+            .bind(payload.id)
+            .execute(pool)
+            .await?;
+    }
+    if let Some(v) = payload.app_max_total {
+        let n = validate_limit(v, "用户应用总数上限")?;
+        sqlx::query("UPDATE packages SET app_max_total = ?, updated_at = ? WHERE id = ?")
+            .bind(n)
+            .bind(now)
+            .bind(payload.id)
+            .execute(pool)
+            .await?;
+    }
     if let Some(v) = payload.status {
         sqlx::query("UPDATE packages SET status = ?, updated_at = ? WHERE id = ?")
             .bind(v.clamp(0, 1))
@@ -680,4 +748,41 @@ pub async fn package_delete(
     )
     .await;
     Ok(Json(json!({ "code": 0, "message": "套餐已删除" })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn port_range_defaults_and_bounds() {
+        // span = 0 → 不限
+        assert_eq!(user_port_range(1, 0), None);
+        // 基准 10000 + uid*span：用户 1 拿 10100-10199，用户 2 拿 10200-10299
+        assert_eq!(user_port_range(1, 100), Some((10100, 10199)));
+        assert_eq!(user_port_range(2, 100), Some((10200, 10299)));
+        assert_eq!(user_port_range(0, 100), Some((10000, 10099)));
+        // span = 1：每人一个端口，段首尾相同
+        assert_eq!(user_port_range(3, 1), Some((10003, 10003)));
+        // 端口池排满 65535 之后给不出段，而不是给出一个越界的
+        assert_eq!(user_port_range(60000, 1), None);
+        assert_eq!(user_port_range(600, 100), None);
+        // 越界的 span 直接拒
+        assert!(validate_port_span(0).is_ok());
+        assert!(validate_port_span(1).is_ok());
+        assert!(validate_port_span(4097).is_err());
+        assert!(validate_port_span(-1).is_err());
+    }
+
+    #[test]
+    fn app_types_keep_only_supported_ones() {
+        assert_eq!(
+            package_app_types_normalized("python,nodejs"),
+            "nodejs,python"
+        );
+        assert_eq!(package_app_types_normalized("python,python"), "python");
+        // 未知类型（如 php 尚未支持）直接丢弃
+        assert_eq!(package_app_types_normalized("python,php"), "python");
+        assert_eq!(package_app_types_normalized(""), "");
+    }
 }

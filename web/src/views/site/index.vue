@@ -271,6 +271,15 @@ const currentUserName = computed(
 
 const list = ref<SiteItem[]>([])
 const stats = reactive({ total: 0, running: 0, stopped: 0, failed: 0 })
+// 页面主导航：站点列表 / 应用管理（Application Manager）
+const mainTab = ref<'sites' | 'apps'>('sites')
+const appSiteId = ref(0)
+watch(list, (v) => {
+  if (!appSiteId.value && v.length) appSiteId.value = v[0].id
+})
+function siteLabel(s: SiteItem) {
+  return s.domains?.length ? `${s.name} — ${s.domains.join(', ')}` : s.name
+}
 const loading = ref(false)
 const selection = ref<SiteItem[]>([])
 
@@ -1426,6 +1435,23 @@ onMounted(() => {
 <template>
   <div>
     <el-card shadow="never" class="table-card">
+      <!-- 主导航：站点 / 应用管理 -->
+      <div class="main-nav">
+        <span
+          class="nav-pill"
+          :class="{ active: mainTab === 'sites' }"
+          @click="mainTab = 'sites'"
+          >{{ t('site.navSites') }}</span
+        >
+        <span
+          class="nav-pill"
+          :class="{ active: mainTab === 'apps' }"
+          @click="mainTab = 'apps'"
+          >{{ t('site.navApps') }}</span
+        >
+      </div>
+
+      <div v-if="mainTab === 'sites'">
       <!-- 工具栏 -->
       <div class="toolbar">
         <div class="toolbar-left">
@@ -1845,6 +1871,24 @@ onMounted(() => {
           </template>
         </el-table-column>
       </el-table>
+      </div>
+
+      <!-- 应用管理：先选站点，再管它名下的应用 -->
+      <div v-else class="apps-view">
+        <div class="apps-pick">
+          <span class="apps-pick-label">{{ t('site.appPickSite') }}</span>
+          <el-select
+            v-model="appSiteId"
+            filterable
+            :placeholder="t('site.appPickSitePh')"
+            style="width: 360px"
+          >
+            <el-option v-for="s in list" :key="s.id" :value="s.id" :label="siteLabel(s)" />
+          </el-select>
+        </div>
+        <SiteAppsPanel v-if="appSiteId" :site-id="appSiteId" />
+        <el-empty v-else :image-size="80" :description="t('site.appPickSiteTip')" />
+      </div>
     </el-card>
 
     <!-- 站点日志 / 流量分析 -->
@@ -2303,12 +2347,6 @@ onMounted(() => {
               <el-input-number v-model="sec.limit_conn_num" :min="1" :max="100000" />
               <span class="form-hint">{{ t('site.secConnNumHint') }}</span>
             </el-form-item>
-          </el-tab-pane>
-
-          <!-- 应用管理（Application Manager） -->
-          <el-tab-pane :label="t('site.tabApps')" name="apps" :disabled="!form.id">
-            <SiteAppsPanel v-if="form.id" :site-id="form.id" />
-            <el-empty v-else :image-size="70" :description="t('site.appsNeedSaved')" />
           </el-tab-pane>
 
           <!-- 反代 / 高级 -->
@@ -2810,6 +2848,51 @@ onMounted(() => {
 
 <style scoped>
 /* 工具栏统计胶囊（替代原顶部大卡片） */
+.main-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  background: var(--el-fill-color-light);
+}
+.nav-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 18px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+.nav-pill:hover {
+  background: var(--el-fill-color);
+}
+.nav-pill.active {
+  background: var(--el-color-primary);
+  color: #fff;
+}
+.apps-view {
+  padding: 4px 2px 10px;
+}
+.apps-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.apps-pick-label {
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
 .stat-pills {
   display: inline-flex;
   align-items: center;

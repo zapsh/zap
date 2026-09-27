@@ -17,7 +17,7 @@ use crate::{
         server_env,
     },
 };
-use zap_proto::{LocationSpec, Request, UpstreamSpec, SiteSecuritySpec};
+use zap_proto::{LocationSpec, Request, SiteSecuritySpec, UpstreamSpec};
 
 use super::system_basic::{K_IPV4 as K_DEFAULT_IPV4, K_IPV6 as K_DEFAULT_IPV6};
 use super::user::USER_KIND_MEMBER;
@@ -2435,7 +2435,12 @@ pub async fn site_delete(
             .await
                 && resp.code != 0
             {
-                tracing::warn!("remove app {} of site {} failed: {}", name, id, resp.message);
+                tracing::warn!(
+                    "remove app {} of site {} failed: {}",
+                    name,
+                    id,
+                    resp.message
+                );
             }
         }
     }
@@ -2539,10 +2544,7 @@ pub async fn site_delete(
     }
     dq.execute(&mut *tx).await?;
 
-    let asql = format!(
-        "DELETE FROM site_apps WHERE site_id IN ({})",
-        placeholders
-    );
+    let asql = format!("DELETE FROM site_apps WHERE site_id IN ({})", placeholders);
     let mut aq = sqlx::query(&asql);
     for id in &payload.ids {
         aq = aq.bind(id);
@@ -2996,12 +2998,12 @@ async fn load_site_sec(site_id: i64) -> SiteSecurity {
                 limit_conn_enable, limit_conn_num, waf_mode, waf_rules, waf_audit, \
                 whitelist, limit_dry_run \
          FROM site_sec WHERE site_id = ?",
-    )
-    .bind(site_id)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
+        )
+        .bind(site_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
     let Some((w, lr, rate, burst, lc, num, mode, rules, audit, wl, dry)) = row else {
         return SiteSecurity::default();
     };
@@ -3104,7 +3106,8 @@ async fn validate_sec(claims: &jwt::Claims, s: &SiteSecurity) -> Result<(), ZapE
         if !waf_global_ready().await {
             return Err(ZapError::New(
                 -1,
-                "全局 WAF 尚未启用：请先在「服务配置 → Nginx → WAF」安装并开启 ModSecurity".to_string(),
+                "全局 WAF 尚未启用：请先在「服务配置 → Nginx → WAF」安装并开启 ModSecurity"
+                    .to_string(),
             ));
         }
     }
@@ -3149,7 +3152,10 @@ async fn require_waf_allowed(claims: &jwt::Claims) -> Result<(), ZapError> {
 /// 前端原样展示，避免用户看到一句"未启用"却不知道缺什么。
 async fn waf_global_status() -> (bool, Vec<String>) {
     let Ok(resp) = crate::zapexec::call(Request::WafStatus).await else {
-        return (false, vec!["执行端 zapexec 未响应（未运行或权限不足）".to_string()]);
+        return (
+            false,
+            vec!["执行端 zapexec 未响应（未运行或权限不足）".to_string()],
+        );
     };
     if resp.code != 0 {
         return (false, vec![format!("执行端返回错误：{}", resp.message)]);
@@ -3249,10 +3255,15 @@ pub async fn site_security_save(
         Some(client_addr.ip().to_string().as_str()),
         "site_security",
         &format!("id={}", payload.id),
-        &format!("name={} waf={} req={} conn={}", name, sec.waf_enable, sec.limit_req_enable, sec.limit_conn_enable),
+        &format!(
+            "name={} waf={} req={} conn={}",
+            name, sec.waf_enable, sec.limit_req_enable, sec.limit_conn_enable
+        ),
     )
     .await;
-    Ok(Json(json!({ "code": 0, "message": format!("安全配置已保存，{}", msg) })))
+    Ok(Json(
+        json!({ "code": 0, "message": format!("安全配置已保存，{}", msg) }),
+    ))
 }
 
 /// 全部站点按当前模式重同步：vhost 模式开关切换后的「再同步」入口
@@ -3319,7 +3330,12 @@ pub(crate) async fn sync_all_sites_summary() -> String {
     if fails.is_empty() {
         format!("已重同步 {} 个站点", ok)
     } else {
-        format!("成功 {} 个，失败 {} 个（{}）", ok, fails.len(), fails.join("; "))
+        format!(
+            "成功 {} 个，失败 {} 个（{}）",
+            ok,
+            fails.len(),
+            fails.join("; ")
+        )
     }
 }
 

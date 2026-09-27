@@ -118,6 +118,9 @@ async fn migrate_add_columns() {
     ensure_column("packages", "allow_apps", "INTEGER NOT NULL DEFAULT 0").await;
     ensure_column("packages", "app_types", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("packages", "max_apps", "INTEGER NOT NULL DEFAULT 0").await;
+    // 套餐：每个用户分到的端口个数（端口段自动算）与该用户的应用总数上限（0 = 不限）
+    ensure_column("packages", "app_port_span", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("packages", "app_max_total", "INTEGER NOT NULL DEFAULT 0").await;
     // 套餐 WAF 能力：允许为站点开启 WAF / 限速 / 限并发（仍需全局 ModSecurity 已启用）
     ensure_column("packages", "allow_waf", "INTEGER NOT NULL DEFAULT 0").await;
     // 站点安全：WAF 站点级引擎模式与自定义规则（存量库补列）
@@ -138,9 +141,19 @@ async fn migrate_add_columns() {
     )
     .await;
     ensure_column("nginx_stream", "proxy_timeout", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("nginx_stream", "proxy_responses", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column(
+        "nginx_stream",
+        "proxy_responses",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await;
     ensure_column("nginx_stream", "ssl_enable", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("nginx_stream", "ssl_certificate", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column(
+        "nginx_stream",
+        "ssl_certificate",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
     ensure_column(
         "nginx_stream",
         "ssl_certificate_key",
@@ -364,13 +377,17 @@ async fn init_packages_table() {
         app_types TEXT NOT NULL DEFAULT '',
         -- 每个站点可部署的应用数量上限（0 = 不限）
         max_apps INTEGER NOT NULL DEFAULT 0,
+        -- 每个用户分到的端口个数：端口段 = 10000 + 用户ID × N（0 = 不限）
+        app_port_span INTEGER NOT NULL DEFAULT 0,
+        -- 该用户全部站点合计可部署的应用数量上限（0 = 不限）
+        app_max_total INTEGER NOT NULL DEFAULT 0,
         owner_id INTEGER NOT NULL DEFAULT 0,
         status INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER,
         updated_at INTEGER
     );
-    INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, allow_apps, app_types, max_apps, owner_id, status, created_at, updated_at)
-    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端、PHP 站点与站点 WAF（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 1, 0, '', 0, 0, 1, strftime('%s','now'), strftime('%s','now'));
+    INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, allow_apps, app_types, max_apps, app_port_span, app_max_total, owner_id, status, created_at, updated_at)
+    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端、PHP 站点与站点 WAF（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 1, 0, '', 0, 0, 0, 0, 1, strftime('%s','now'), strftime('%s','now'));
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }

@@ -133,10 +133,16 @@ fn row_json(r: &StreamRow) -> Value {
 fn validate_name(raw: &str) -> Result<String, ZapError> {
     let n = raw.trim();
     if n.is_empty() || n.chars().count() > 64 {
-        return Err(ZapError::New(-1, "规则名不能为空且最长 64 个字符".to_string()));
+        return Err(ZapError::New(
+            -1,
+            "规则名不能为空且最长 64 个字符".to_string(),
+        ));
     }
     if n.chars().any(|c| c.is_control() || c == '"' || c == '\'') {
-        return Err(ZapError::New(-1, "规则名不能包含引号或控制字符".to_string()));
+        return Err(ZapError::New(
+            -1,
+            "规则名不能包含引号或控制字符".to_string(),
+        ));
     }
     Ok(n.to_string())
 }
@@ -167,11 +173,14 @@ fn validate_port(v: i64, label: &str) -> Result<i64, ZapError> {
 fn validate_host(raw: &str) -> Result<String, ZapError> {
     let v = raw.trim();
     if v.is_empty() || v.chars().count() > 253 {
-        return Err(ZapError::New(-1, "后端地址不能为空且最长 253 个字符".to_string()));
+        return Err(ZapError::New(
+            -1,
+            "后端地址不能为空且最长 253 个字符".to_string(),
+        ));
     }
-    let ok = v.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']')
-    });
+    let ok = v
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']'));
     if !ok {
         return Err(ZapError::New(
             -1,
@@ -230,10 +239,7 @@ fn validate_fragment(raw: &str, label: &str) -> Result<String, ZapError> {
         ));
     }
     if v.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
-        return Err(ZapError::New(
-            -1,
-            format!("{label}不能包含控制字符"),
-        ));
+        return Err(ZapError::New(-1, format!("{label}不能包含控制字符")));
     }
     let low = v.to_lowercase();
     if low.contains("stream") && low.contains("{") {
@@ -245,7 +251,9 @@ fn validate_fragment(raw: &str, label: &str) -> Result<String, ZapError> {
         if nested {
             return Err(ZapError::New(
                 -1,
-                format!("{label}里不要写 `stream {{ }}`：面板已包好 stream 块，直接写 upstream / map / server 即可"),
+                format!(
+                    "{label}里不要写 `stream {{ }}`：面板已包好 stream 块，直接写 upstream / map / server 即可"
+                ),
             ));
         }
     }
@@ -307,9 +315,9 @@ fn split_host_port(addr: &str) -> Result<(&str, i64), ZapError> {
             ));
         }
     };
-    let port: i64 = port.parse().map_err(|_| {
-        ZapError::New(-1, format!("后端端口不是数字：{port}（{addr}）"))
-    })?;
+    let port: i64 = port
+        .parse()
+        .map_err(|_| ZapError::New(-1, format!("后端端口不是数字：{port}（{addr}）")))?;
     Ok((host, port))
 }
 
@@ -359,8 +367,12 @@ fn validate_cert_path(raw: &str, label: &str) -> Result<String, ZapError> {
     if v.is_empty() {
         return Ok(String::new());
     }
-    if !v.starts_with('/') || v.contains('"') || v.contains('\'') || v.contains(';')
-        || v.contains('{') || v.contains('}')
+    if !v.starts_with('/')
+        || v.contains('"')
+        || v.contains('\'')
+        || v.contains(';')
+        || v.contains('{')
+        || v.contains('}')
     {
         return Err(ZapError::New(
             -1,
@@ -377,8 +389,7 @@ fn validate_ssl_text(raw: &str, label: &str) -> Result<String, ZapError> {
     if v.is_empty() {
         return Ok(String::new());
     }
-    if v.contains('"') || v.contains('\'') || v.contains(';') || v.contains('{')
-        || v.contains('}')
+    if v.contains('"') || v.contains('\'') || v.contains(';') || v.contains('{') || v.contains('}')
     {
         return Err(ZapError::New(
             -1,
@@ -401,11 +412,7 @@ fn validate_proxy_pass(raw: &str) -> Result<String, ZapError> {
             "自定义 proxy_pass 只能填变量（以 $ 开头，如 $backend）".to_string(),
         ));
     };
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(ZapError::New(
             -1,
             format!("变量名不合法：{v}（只能字母数字下划线）"),
@@ -499,10 +506,7 @@ fn render_rule(r: &StreamRow) -> String {
     if r.ssl_enable == 1 {
         // 证书库优先：应用时已把 PEM 落盘成这两个文件
         let (cert, key) = if r.ssl_certificate_id > 0 {
-            (
-                Some(cert_file(r.id, "crt")),
-                Some(cert_file(r.id, "key")),
-            )
+            (Some(cert_file(r.id, "crt")), Some(cert_file(r.id, "key")))
         } else {
             (
                 (!r.ssl_certificate.is_empty()).then(|| r.ssl_certificate.clone()),
@@ -587,9 +591,9 @@ fn split_target(raw: &str) -> Result<(String, i64), ZapError> {
     }
     if let Some((h, p)) = v.rsplit_once(':') {
         if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
-            let port: i64 = p.parse().map_err(|_| {
-                ZapError::New(-1, format!("后端端口不是数字：{p}（{v}）"))
-            })?;
+            let port: i64 = p
+                .parse()
+                .map_err(|_| ZapError::New(-1, format!("后端端口不是数字：{p}（{v}）")))?;
             let port = validate_port(port, "后端端口")?;
             return Ok((validate_host(h)?, port));
         }
@@ -679,7 +683,9 @@ pub async fn list(claims: ValidatedClaims) -> ZapJsonResult {
             .fetch_all(pool)
             .await?;
     let items: Vec<Value> = rows.iter().map(row_json).collect();
-    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "items": items } })))
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": { "items": items } }),
+    ))
 }
 
 /// 高级字段（add / update 共用，`None` = 保持原值 / 用默认）。
@@ -757,9 +763,8 @@ macro_rules! adv_field {
 }
 
 async fn build_adv(input: AdvInput, cur: Option<&StreamRow>) -> Result<Adv, ZapError> {
-    let cur_str = |f: fn(&StreamRow) -> &str| -> String {
-        cur.map(|c| f(c).to_string()).unwrap_or_default()
-    };
+    let cur_str =
+        |f: fn(&StreamRow) -> &str| -> String { cur.map(|c| f(c).to_string()).unwrap_or_default() };
     let cur_i64 = |f: fn(&StreamRow) -> i64| -> i64 { cur.map(f).unwrap_or(0) };
     let cur_i32 = |f: fn(&StreamRow) -> i32| -> i32 { cur.map(f).unwrap_or(0) };
 
@@ -773,7 +778,11 @@ async fn build_adv(input: AdvInput, cur: Option<&StreamRow>) -> Result<Adv, ZapE
         validate_backend_mode
     );
     let targets = adv_field!(input.targets, cur_str(|c| &c.targets), validate_targets);
-    let listen_opts = adv_field!(input.listen_opts, cur_str(|c| &c.listen_opts), validate_listen_opts);
+    let listen_opts = adv_field!(
+        input.listen_opts,
+        cur_str(|c| &c.listen_opts),
+        validate_listen_opts
+    );
     let proxy_connect_timeout = adv_field!(
         input.proxy_connect_timeout,
         cur_str(|c| &c.proxy_connect_timeout),
@@ -1015,9 +1024,7 @@ pub async fn add(
         Some(addr.ip().to_string().as_str()),
         "stream_add",
         &format!("id={new_id}"),
-        &format!(
-            "{listen_ip}:{listen_port}/{protocol} -> {target_host}:{target_port} name={name}"
-        ),
+        &format!("{listen_ip}:{listen_port}/{protocol} -> {target_host}:{target_port} name={name}"),
     )
     .await;
 
@@ -1067,12 +1074,11 @@ pub async fn update(
 ) -> ZapJsonResult {
     require_admin(&claims)?;
     let pool = db::get_db_pool().await;
-    let cur: Option<StreamRow> = sqlx::query_as(&format!(
-        "SELECT {COLS} FROM nginx_stream WHERE id = ?"
-    ))
-    .bind(body.id)
-    .fetch_optional(pool)
-    .await?;
+    let cur: Option<StreamRow> =
+        sqlx::query_as(&format!("SELECT {COLS} FROM nginx_stream WHERE id = ?"))
+            .bind(body.id)
+            .fetch_optional(pool)
+            .await?;
     let Some(cur) = cur else {
         return Err(ZapError::New(-1, "规则不存在".to_string()));
     };
@@ -1323,11 +1329,10 @@ async fn write_cert_files(rows: &[StreamRow]) -> Result<(), String> {
 pub async fn certs(claims: ValidatedClaims) -> ZapJsonResult {
     require_admin(&claims)?;
     let pool = db::get_db_pool().await;
-    let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(
-        "SELECT id, name, domains, not_after FROM ssl_cert ORDER BY id DESC",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(i64, String, String, i64)> =
+        sqlx::query_as("SELECT id, name, domains, not_after FROM ssl_cert ORDER BY id DESC")
+            .fetch_all(pool)
+            .await?;
     let items: Vec<Value> = rows
         .into_iter()
         .map(|(id, name, domains, not_after)| {
@@ -1342,10 +1347,11 @@ pub async fn certs(claims: ValidatedClaims) -> ZapJsonResult {
 /// 读全局自定义片段（`stream { }` 顶层指令：resolver / map / 公共 upstream …）。
 async fn load_global() -> Result<String, String> {
     let pool = db::get_db_pool().await;
-    let v: Option<String> = sqlx::query_scalar("SELECT content FROM nginx_stream_global WHERE id = 1")
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| format!("读取全局配置失败: {e}"))?;
+    let v: Option<String> =
+        sqlx::query_scalar("SELECT content FROM nginx_stream_global WHERE id = 1")
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("读取全局配置失败: {e}"))?;
     Ok(v.unwrap_or_default())
 }
 
@@ -1396,7 +1402,9 @@ pub async fn global_save(
 /// 渲染并下发到 zapexec；失败时把原因带回前端（库里已经存好，不影响数据）。
 async fn finish_apply(ok_msg: &str) -> ZapJsonResult {
     match apply_all().await {
-        Ok(()) => Ok(Json(json!({ "code": 0, "message": ok_msg, "data": { "applied": true } }))),
+        Ok(()) => Ok(Json(
+            json!({ "code": 0, "message": ok_msg, "data": { "applied": true } }),
+        )),
         Err(e) => Ok(Json(json!({
             "code": 0,
             "message": format!("{ok_msg}，但Nginx未生效：{e}"),
@@ -1624,25 +1632,31 @@ mod tests {
 
         // 开了 TLS 就得给证书（手工路径或证书库二选一）
         assert!(check_adv_combo(&adv(|a| a.ssl_enable = 1)).is_err());
-        assert!(check_adv_combo(&adv(|a| {
-            a.ssl_enable = 1;
-            a.ssl_certificate_id = 7;
-        }))
-        .is_ok());
-        assert!(check_adv_combo(&adv(|a| {
-            a.ssl_enable = 1;
-            a.ssl_certificate = "/etc/nginx/a.crt".to_string();
-            a.ssl_certificate_key = "/etc/nginx/a.key".to_string();
-        }))
-        .is_ok());
+        assert!(
+            check_adv_combo(&adv(|a| {
+                a.ssl_enable = 1;
+                a.ssl_certificate_id = 7;
+            }))
+            .is_ok()
+        );
+        assert!(
+            check_adv_combo(&adv(|a| {
+                a.ssl_enable = 1;
+                a.ssl_certificate = "/etc/nginx/a.crt".to_string();
+                a.ssl_certificate_key = "/etc/nginx/a.key".to_string();
+            }))
+            .is_ok()
+        );
 
         // ssl_preread 必须配变量
         assert!(check_adv_combo(&adv(|a| a.ssl_preread = 1)).is_err());
-        assert!(check_adv_combo(&adv(|a| {
-            a.ssl_preread = 1;
-            a.proxy_pass = "$backend".to_string();
-        }))
-        .is_ok());
+        assert!(
+            check_adv_combo(&adv(|a| {
+                a.ssl_preread = 1;
+                a.proxy_pass = "$backend".to_string();
+            }))
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1656,9 +1670,15 @@ mod tests {
             ("db.example.com".to_string(), 3306)
         );
         // IPv6 的冒号不能当端口分隔符
-        assert_eq!(split_target("[::1]:3306").unwrap(), ("[::1]".to_string(), 3306));
+        assert_eq!(
+            split_target("[::1]:3306").unwrap(),
+            ("[::1]".to_string(), 3306)
+        );
         // 不带端口 = upstream 名
-        assert_eq!(split_target("backend_api").unwrap(), ("backend_api".to_string(), 0));
+        assert_eq!(
+            split_target("backend_api").unwrap(),
+            ("backend_api".to_string(), 0)
+        );
         assert!(split_target("").is_err());
         assert!(split_target("10.0.1.10:99999").is_err());
         assert!(split_target("10.0.1.10:3306; }").is_err());

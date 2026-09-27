@@ -41,7 +41,9 @@ async fn exec(req: Request) -> Result<Json<serde_json::Value>, ZapError> {
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": "ok", "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": resp.data }),
+    ))
 }
 
 /// GET /system/waf/status

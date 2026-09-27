@@ -171,7 +171,16 @@ export interface SiteApp {
 export interface SiteAppCaps {
   allowed: boolean
   types: string[]
+  /** 每站点应用数上限（0 = 不限） */
   max_apps: number
+  /** 应用可监听端口下界（0 = 不限） */
+  port_min: number
+  /** 应用可监听端口上界（0 = 不限） */
+  port_max: number
+  /** 该用户全部站点合计应用数上限（0 = 不限） */
+  max_total: number
+  /** 该用户已部署的应用数 */
+  used_total: number
 }
 
 export function getSiteAppCaps(site_id: number) {

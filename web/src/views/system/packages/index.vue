@@ -119,6 +119,13 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column :label="t('packages.appPortSpan')" width="120" align="center">
+          <template #default="{ row }">
+            <span class="mono-sm">
+              {{ row.app_port_span ? `${row.app_port_span} ${t('packages.perUser')}` : '-' }}
+            </span>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('packages.docker')" width="110" align="center">
           <template #default="{ row }">
             <el-tag :type="row.allow_docker ? 'warning' : 'info'" size="small" effect="plain">
@@ -350,6 +357,17 @@
           <el-input-number v-model="form.max_apps" :min="0" :max="999" />
           <span class="form-hint">{{ t('packages.maxAppsHint') }}</span>
         </el-form-item>
+        <el-form-item v-if="form.allow_apps" :label="t('packages.appPortSpan')">
+          <el-input-number v-model="form.app_port_span" :min="0" :max="4096" />
+          <div class="form-tip">
+            {{ t('packages.appPortSpanHint') }}
+            <span v-if="form.app_port_span > 0" class="port-preview">{{ portPreview }}</span>
+          </div>
+        </el-form-item>
+        <el-form-item v-if="form.allow_apps" :label="t('packages.appMaxTotal')">
+          <el-input-number v-model="form.app_max_total" :min="0" :max="9999" />
+          <span class="form-hint">{{ t('packages.appMaxTotalHint') }}</span>
+        </el-form-item>
         <el-form-item :label="t('common.status')">
           <el-radio-group v-model="form.status">
             <el-radio :value="1">{{ t('common.enable') }}</el-radio>
@@ -408,6 +426,8 @@ const form = reactive({
   allow_apps: false,
   app_types: [] as string[],
   max_apps: 0,
+  app_port_span: 0,
+  app_max_total: 0,
   allow_proxy: false,
   // PHP 站点默认开放（建站的主要形态）；容器默认关闭
   allow_php: true,
@@ -428,6 +448,15 @@ const unlimitedFtp = ref(true)
 const rules = computed<FormRules>(() => ({
   name: [{ required: true, message: t('packages.nameRequired'), trigger: 'blur' }],
 }))
+
+/** 端口段预览：拿用户 #2 演示「10000 + 用户ID × N」算出来是什么区间 */
+const portPreview = computed(() => {
+  const n = form.app_port_span || 0
+  if (!n) return ''
+  const lo = 10000 + 2 * n
+  const cap = Math.floor((65536 - 10000) / n)
+  return `${t('packages.appPortExample')} #2: ${lo}-${lo + n - 1} · ${t('packages.appPortCapacity', { n: cap })}`
+})
 
 const specs = ref<FpmSpecItem[]>([])
 const specsLoading = ref(false)
@@ -484,6 +513,8 @@ function resetForm() {
   form.allow_apps = false
   form.app_types = []
   form.max_apps = 0
+  form.app_port_span = 0
+  form.app_max_total = 0
   form.status = 1
   unlimitedDisk.value = true
   unlimitedSites.value = true
@@ -528,6 +559,8 @@ function openEdit(row: PackageItem) {
   form.allow_apps = !!row.allow_apps
   form.app_types = row.app_types ? String(row.app_types).split(',').filter(Boolean) : []
   form.max_apps = row.max_apps || 0
+  form.app_port_span = row.app_port_span || 0
+  form.app_max_total = row.app_max_total || 0
   form.status = row.status
   dialogVisible.value = true
 }
@@ -558,6 +591,8 @@ async function submitForm() {
     allow_apps: form.allow_apps,
     app_types: form.app_types.join(','),
     max_apps: form.max_apps || 0,
+    app_port_span: form.app_port_span || 0,
+    app_max_total: form.app_max_total || 0,
     status: form.status,
   }
   saving.value = true
@@ -623,6 +658,21 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.form-tip {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+}
+.port-preview {
+  margin-left: 6px;
+  color: var(--el-text-color-regular);
+}
+.mono-sm {
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+}
+
 .packages-page {
   padding: 2px;
 }

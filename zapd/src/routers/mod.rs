@@ -40,6 +40,7 @@ async fn demo_readonly_guard(req: Request, next: Next) -> Result<Response, Respo
 }
 
 pub mod access;
+pub mod app;
 pub mod appstore;
 pub mod auth;
 pub mod cloud;
@@ -51,7 +52,6 @@ pub mod docs;
 pub mod fpm_spec;
 pub mod notice;
 pub mod package;
-pub mod app;
 pub mod site;
 pub mod ssh_terminal;
 pub mod ssh_user_keys;
@@ -69,13 +69,13 @@ pub mod system_job;
 pub mod system_menu;
 pub mod system_migrate;
 pub mod system_nginx;
-pub mod system_stream;
 pub mod system_role;
 pub mod system_service_conf;
 pub mod system_services;
-pub mod system_waf;
+pub mod system_stream;
 pub mod system_update;
 pub mod system_user_menu;
+pub mod system_waf;
 pub mod system_zap;
 pub mod task;
 pub mod user;

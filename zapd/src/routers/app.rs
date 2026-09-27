@@ -23,7 +23,7 @@ use crate::{
         jwt::{self, ValidatedClaims},
     },
 };
-use zap_proto::{Request, APP_TYPES};
+use zap_proto::{APP_TYPES, Request};
 
 use super::{package, site};
 
@@ -130,7 +130,15 @@ fn apps_allowed(claims: &jwt::Claims) -> bool {
 struct AppCaps {
     allowed: bool,
     types: Vec<String>,
+    /// 每站点应用数上限（0 = 不限）
     max_apps: i64,
+    /// 应用可监听端口范围（0/0 = 不限）
+    port_min: i64,
+    port_max: i64,
+    /// 该用户全部站点合计的应用数上限（0 = 不限）
+    max_total: i64,
+    /// 套餐配了每用户端口数，但端口池已排到 65535 之外 → 无法再分配端口
+    exhausted: bool,
 }
 
 async fn caps_of(claims: &jwt::Claims) -> AppCaps {
@@ -139,28 +147,101 @@ async fn caps_of(claims: &jwt::Claims) -> AppCaps {
             allowed: true,
             types: APP_TYPES.iter().map(|s| s.to_string()).collect(),
             max_apps: 0,
+            port_min: 0,
+            port_max: 0,
+            max_total: 0,
+            exhausted: false,
         };
     }
     match package::effective_package_of(claims.id as i64).await {
-        Some(pkg) => AppCaps {
-            allowed: pkg.allow_apps == 1,
-            types: if pkg.app_types.is_empty() {
-                APP_TYPES.iter().map(|s| s.to_string()).collect()
-            } else {
-                pkg.app_types
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            },
-            max_apps: pkg.max_apps,
-        },
+        Some(pkg) => {
+            // 端口段自动计算：基准 10000 + 用户ID × 每用户端口数
+            let range = package::user_port_range(claims.id as i64, pkg.app_port_span);
+            AppCaps {
+                allowed: pkg.allow_apps == 1,
+                types: if pkg.app_types.is_empty() {
+                    APP_TYPES.iter().map(|s| s.to_string()).collect()
+                } else {
+                    pkg.app_types
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                },
+                max_apps: pkg.max_apps,
+                port_min: range.map(|(lo, _)| lo).unwrap_or(0),
+                port_max: range.map(|(_, hi)| hi).unwrap_or(0),
+                max_total: pkg.app_max_total,
+                exhausted: pkg.app_port_span > 0 && range.is_none(),
+            }
+        }
         None => AppCaps {
             allowed: false,
             types: Vec::new(),
             max_apps: 0,
+            port_min: 0,
+            port_max: 0,
+            max_total: 0,
+            exhausted: false,
         },
     }
+}
+
+/// 端口校验：不给特权端口；套餐配了范围就必须落在范围内；且不能和别的应用撞端口
+async fn require_port_ok(
+    caps: &AppCaps,
+    site_id: i64,
+    name: &str,
+    port: i64,
+) -> Result<(), ZapError> {
+    if port <= 0 {
+        return Ok(());
+    }
+    if port < 1024 {
+        return Err(ZapError::New(-1, "端口必须在 1024-65535 之间".to_string()));
+    }
+    if caps.exhausted {
+        return Err(ZapError::New(
+            -1,
+            "端口池已排满：请联系管理员调整端口基准或每用户端口数".to_string(),
+        ));
+    }
+    if caps.port_min > 0 && caps.port_max > 0 && (port < caps.port_min || port > caps.port_max) {
+        return Err(ZapError::New(
+            -1,
+            format!(
+                "端口需在套餐允许的 {}-{} 范围内",
+                caps.port_min, caps.port_max
+            ),
+        ));
+    }
+    // 端口全局唯一：避免两个应用抢同一个端口，谁都起不来
+    let pool = db::get_db_pool().await;
+    let used: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM site_apps WHERE port = ? AND NOT (site_id = ? AND name = ?)",
+    )
+    .bind(port)
+    .bind(site_id)
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    if used > 0 {
+        return Err(ZapError::New(-1, format!("端口 {port} 已被其他应用占用")));
+    }
+    Ok(())
+}
+
+/// 该用户全部站点已部署的应用数（admin / reseller 不受总量限制，不查）
+async fn count_user_apps(user_id: i64) -> i64 {
+    let pool = db::get_db_pool().await;
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM site_apps a JOIN site s ON s.id = a.site_id WHERE s.user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
 }
 
 async fn require_caps(claims: &jwt::Claims) -> Result<AppCaps, ZapError> {
@@ -190,34 +271,46 @@ fn exec_err(resp: &zap_proto::Response) -> ZapError {
 // ── 路由 ────────────────────────────────────────────────
 
 /// GET /site/app/caps —— 当前用户在某站点上的应用能力（前端据此禁用 UI）
-pub async fn app_caps(
-    claims: ValidatedClaims,
-    Query(q): Query<SiteAppQuery>,
-) -> ZapJsonResult {
+pub async fn app_caps(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) -> ZapJsonResult {
     site::site_in_scope(&claims, q.site_id).await?;
     let caps = caps_of(&claims).await;
     Ok(Json(json!({
         "code": 0,
         "message": "ok",
-        "data": { "allowed": caps.allowed, "types": caps.types, "max_apps": caps.max_apps },
+        "data": {
+            "allowed": caps.allowed,
+            "types": caps.types,
+            "max_apps": caps.max_apps,
+            "port_min": caps.port_min,
+            "port_max": caps.port_max,
+            "max_total": caps.max_total,
+            "used_total": count_user_apps(claims.id as i64).await,
+        },
     })))
 }
 
 /// GET /site/app/list —— 应用列表 + 实时运行状态
-pub async fn app_list(
-    claims: ValidatedClaims,
-    Query(q): Query<SiteAppQuery>,
-) -> ZapJsonResult {
+pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) -> ZapJsonResult {
     site::site_in_scope(&claims, q.site_id).await?;
     let pool = db::get_db_pool().await;
-    let rows: Vec<(i64, String, String, String, String, String, i64, String, i64, i64)> =
-        sqlx::query_as(
-            "SELECT id, name, app_type, workdir, entry, command, port, env, autostart, running \\
+    let rows: Vec<(
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, name, app_type, workdir, entry, command, port, env, autostart, running \\
              FROM site_apps WHERE site_id = ? ORDER BY id",
-        )
-        .bind(q.site_id)
-        .fetch_all(pool)
-        .await?;
+    )
+    .bind(q.site_id)
+    .fetch_all(pool)
+    .await?;
 
     // 实时状态：zapexec 不可用时静默降级（列表照出，状态为 unknown）
     let mut live: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
@@ -230,7 +323,12 @@ pub async fn app_list(
         .await
         {
             if resp.code == 0 {
-                if let Some(list) = resp.data.as_ref().and_then(|d| d.get("apps")).and_then(|v| v.as_array()) {
+                if let Some(list) = resp
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("apps"))
+                    .and_then(|v| v.as_array())
+                {
                     for a in list {
                         if let Some(n) = a.get("name").and_then(|v| v.as_str()) {
                             live.insert(n.to_string(), a.clone());
@@ -243,29 +341,33 @@ pub async fn app_list(
 
     let apps: Vec<Value> = rows
         .into_iter()
-        .map(|(id, name, app_type, workdir, entry, command, port, env, autostart, running)| {
-            let st = live.get(&name).cloned().unwrap_or(json!({
-                "state": "unknown", "active": false, "enabled": false, "pid": 0,
-            }));
-            json!({
-                "id": id,
-                "name": name,
-                "app_type": app_type,
-                "workdir": workdir,
-                "entry": entry,
-                "command": command,
-                "port": port,
-                "env": env,
-                "autostart": autostart == 1,
-                "running": running == 1,
-                "state": st.get("state").and_then(|v| v.as_str()).unwrap_or("unknown"),
-                "active": st.get("active").and_then(|v| v.as_bool()).unwrap_or(false),
-                "enabled": st.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
-                "pid": st.get("pid").and_then(|v| v.as_i64()).unwrap_or(0),
-            })
-        })
+        .map(
+            |(id, name, app_type, workdir, entry, command, port, env, autostart, running)| {
+                let st = live.get(&name).cloned().unwrap_or(json!({
+                    "state": "unknown", "active": false, "enabled": false, "pid": 0,
+                }));
+                json!({
+                    "id": id,
+                    "name": name,
+                    "app_type": app_type,
+                    "workdir": workdir,
+                    "entry": entry,
+                    "command": command,
+                    "port": port,
+                    "env": env,
+                    "autostart": autostart == 1,
+                    "running": running == 1,
+                    "state": st.get("state").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                    "active": st.get("active").and_then(|v| v.as_bool()).unwrap_or(false),
+                    "enabled": st.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                    "pid": st.get("pid").and_then(|v| v.as_i64()).unwrap_or(0),
+                })
+            },
+        )
         .collect();
-    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "apps": apps } })))
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": { "apps": apps } }),
+    ))
 }
 
 /// POST /site/app/deploy —— 新建或重新部署（同一个 (站点, 名称) 幂等覆盖）
@@ -281,7 +383,10 @@ pub async fn app_deploy(
     if !caps.types.iter().any(|t| *t == app_type) {
         return Err(ZapError::New(
             -1,
-            format!("当前套餐不允许部署 {app_type} 应用（允许：{}）", caps.types.join(", ")),
+            format!(
+                "当前套餐不允许部署 {app_type} 应用（允许：{}）",
+                caps.types.join(", ")
+            ),
         ));
     }
 
@@ -300,7 +405,12 @@ pub async fn app_deploy(
     let ctx = load_site_ctx(payload.site_id).await?;
 
     // 工作目录：不填用站点根目录；填了也必须在站点目录内（执行端还会再校验一次）
-    let workdir = match payload.workdir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let workdir = match payload
+        .workdir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(w) => {
             let root = ctx.web_root.trim_end_matches('/');
             let full = if w.starts_with('/') {
@@ -316,16 +426,23 @@ pub async fn app_deploy(
         None => ctx.web_root.clone(),
     };
 
+    require_port_ok(&caps, payload.site_id, &name, port).await?;
+    if caps.max_total > 0 && count_user_apps(claims.id as i64).await >= caps.max_total {
+        return Err(ZapError::New(
+            -1,
+            format!("当前套餐限制每个用户最多 {} 个应用", caps.max_total),
+        ));
+    }
+
     // 数量上限：仅新建时校验（重新部署同名应用不算新增）
     let pool = db::get_db_pool().await;
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM site_apps WHERE site_id = ? AND name = ?",
-    )
-    .bind(payload.site_id)
-    .bind(&name)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
+    let exists: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM site_apps WHERE site_id = ? AND name = ?")
+            .bind(payload.site_id)
+            .bind(&name)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
     if exists == 0 && caps.max_apps > 0 && count_apps(payload.site_id).await >= caps.max_apps {
         return Err(ZapError::New(
             -1,
@@ -384,7 +501,10 @@ pub async fn app_deploy(
         &format!("type={app_type} workdir={workdir}"),
     )
     .await;
-    info!("app deploy: site={} name={} type={}", payload.site_id, name, app_type);
+    info!(
+        "app deploy: site={} name={} type={}",
+        payload.site_id, name, app_type
+    );
     Ok(Json(json!({
         "code": 0,
         "message": resp.message,
@@ -488,5 +608,7 @@ pub async fn app_log(claims: ValidatedClaims, Query(q): Query<AppLogQuery>) -> Z
         .and_then(|d| d.get("lines"))
         .cloned()
         .unwrap_or(Value::Array(Vec::new()));
-    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "lines": lines } })))
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": { "lines": lines } }),
+    ))
 }

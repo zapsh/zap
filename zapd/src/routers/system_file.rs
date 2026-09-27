@@ -818,7 +818,10 @@ pub async fn file_upload(
                 Ok(None) => break,
                 Err(e) => {
                     let _ = tokio::fs::remove_dir_all(&run_dir).await;
-                    return Err(ZapError::New(-1, format!("接收文件「{}」失败：{}", rel_name, e)));
+                    return Err(ZapError::New(
+                        -1,
+                        format!("接收文件「{}」失败：{}", rel_name, e),
+                    ));
                 }
             }
         }

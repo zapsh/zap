@@ -16,10 +16,22 @@ import type { SiteApp } from '@/api/site'
 const props = defineProps<{ siteId: number }>()
 const { t } = useI18n()
 
-const caps = ref<{ allowed: boolean; types: string[]; max_apps: number }>({
+const caps = ref<{
+  allowed: boolean
+  types: string[]
+  max_apps: number
+  port_min: number
+  port_max: number
+  max_total: number
+  used_total: number
+}>({
   allowed: false,
   types: [],
   max_apps: 0,
+  port_min: 0,
+  port_max: 0,
+  max_total: 0,
+  used_total: 0,
 })
 const apps = ref<SiteApp[]>([])
 const loading = ref(false)
@@ -39,6 +51,22 @@ const form = ref({
   install_deps: false,
 })
 const submitting = ref(false)
+
+const hasPortRange = computed(() => caps.value.port_min > 0 && caps.value.port_max > 0)
+
+/** 顶部一行配额说明：应用数量 + 可用端口范围 */
+const quotaText = computed(() => {
+  const parts: string[] = []
+  if (caps.value.max_total > 0) {
+    parts.push(
+      t('site.appQuotaTotal', { used: caps.value.used_total, max: caps.value.max_total }),
+    )
+  }
+  if (hasPortRange.value) {
+    parts.push(t('site.appPortRangeHint', { min: caps.value.port_min, max: caps.value.port_max }))
+  }
+  return parts.join(' · ')
+})
 
 const typeOptions = computed(() =>
   (caps.value.types.length ? caps.value.types : ['python', 'nodejs']).map((v) => ({
@@ -176,7 +204,8 @@ watch(() => props.siteId, load)
         <el-button size="small" :icon="Refresh" :loading="loading" @click="load">
           {{ t('common.refresh') }}
         </el-button>
-        <span class="apps-hint">{{ t('site.appRunAsHint') }}</span>
+        <span v-if="quotaText" class="apps-hint">{{ quotaText }}</span>
+        <span v-else class="apps-hint">{{ t('site.appRunAsHint') }}</span>
       </div>
 
       <el-table :data="apps" size="small" v-loading="loading" style="width: 100%">
@@ -238,8 +267,19 @@ watch(() => props.siteId, load)
             <div class="apps-tip">{{ t('site.appCommandTip') }}</div>
           </el-form-item>
           <el-form-item :label="t('site.appPort')">
-            <el-input-number v-model="form.port" :min="0" :max="65535" />
-            <span class="apps-tip-inline">{{ t('site.appPortTip') }}</span>
+            <el-input-number
+              v-model="form.port"
+              :min="0"
+              :max="65535"
+              :step="1"
+            />
+            <span class="apps-tip-inline">
+              {{
+                hasPortRange
+                  ? t('site.appPortRangeHint', { min: caps.port_min, max: caps.port_max })
+                  : t('site.appPortTip')
+              }}
+            </span>
           </el-form-item>
           <el-form-item :label="t('site.appEnv')">
             <el-input v-model="form.env" type="textarea" :rows="3" placeholder="DEBUG=0&#10;SECRET=xxx" />

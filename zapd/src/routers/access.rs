@@ -167,6 +167,37 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("site", "update")),
     ),
+    // ── 站点应用（Application Manager）：读取=view，部署/启停=update，删除=delete ──
+    (
+        "/site/app/caps",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
+    (
+        "/site/app/list",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
+    (
+        "/site/app/log",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
+    (
+        "/site/app/deploy",
+        Required::User,
+        Some(Perm::action("site", "update")),
+    ),
+    (
+        "/site/app/action",
+        Required::User,
+        Some(Perm::action("site", "update")),
+    ),
+    (
+        "/site/app/remove",
+        Required::User,
+        Some(Perm::action("site", "delete")),
+    ),
     // ── 站点日志与流量分析 ────────────────────────────────
     (
         "/site/logs",

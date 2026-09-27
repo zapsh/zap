@@ -37,6 +37,10 @@ export interface PackageItem {
   app_types: string
   /** 每个站点可部署的应用数上限（0 = 不限） */
   max_apps: number
+  /** 每个用户分到的端口个数（0 = 不限）：端口段 = 10000 + 用户ID × N */
+  app_port_span: number
+  /** 该用户全部站点合计的应用数上限（0 = 不限） */
+  app_max_total: number
   /** 归属：0 = 全局套餐（admin 维护）；其余为 reseller 自建 */
   owner_id: number
   /** 1 启用 / 0 停用 */
