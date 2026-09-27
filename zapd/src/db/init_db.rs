@@ -45,6 +45,8 @@ pub async fn init_schema() {
     // 站点扩展档案（类型/伪静态/upstream/location/自定义目录 + TLS 高级设置）
     init_site_profile_table().await;
     init_site_sec_table().await;
+    // 站点应用（Application Manager）：python / nodejs 进程，以站点用户身份跑在 systemd 下
+    init_site_apps_table().await;
     // PHP-FPM 规格模板表（user.fpm_spec_ref 已在 user 表中定义）
     init_fpm_spec_table().await;
     // 套餐（Packages）表：创建客户时可选择的资源套餐
@@ -112,6 +114,10 @@ async fn migrate_add_columns() {
     // 套餐能力开关：PHP 站点（默认开放）/ 容器（默认关闭，且仅 Podman 运行时生效）
     ensure_column("packages", "allow_php", "INTEGER NOT NULL DEFAULT 1").await;
     ensure_column("packages", "allow_docker", "INTEGER NOT NULL DEFAULT 0").await;
+    // 套餐：应用管理能力（总开关 / 允许的类型 / 每站点应用数上限）
+    ensure_column("packages", "allow_apps", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("packages", "app_types", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("packages", "max_apps", "INTEGER NOT NULL DEFAULT 0").await;
     // 套餐 WAF 能力：允许为站点开启 WAF / 限速 / 限并发（仍需全局 ModSecurity 已启用）
     ensure_column("packages", "allow_waf", "INTEGER NOT NULL DEFAULT 0").await;
     // 站点安全：WAF 站点级引擎模式与自定义规则（存量库补列）
@@ -352,13 +358,19 @@ async fn init_packages_table() {
         allow_docker INTEGER NOT NULL DEFAULT 0,
         -- WAF 能力：允许该套餐的用户为站点开启 WAF（仍需全局已安装并启用 ModSecurity）
         allow_waf INTEGER NOT NULL DEFAULT 0,
+        -- 应用管理（Application Manager）总开关：默认关闭
+        allow_apps INTEGER NOT NULL DEFAULT 0,
+        -- 允许部署的应用类型（逗号分隔，如 `python,nodejs`）；空 = 不限（允许全部已支持类型）
+        app_types TEXT NOT NULL DEFAULT '',
+        -- 每个站点可部署的应用数量上限（0 = 不限）
+        max_apps INTEGER NOT NULL DEFAULT 0,
         owner_id INTEGER NOT NULL DEFAULT 0,
         status INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER,
         updated_at INTEGER
     );
-    INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, owner_id, status, created_at, updated_at)
-    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端、PHP 站点与站点 WAF（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 1, 0, 1, strftime('%s','now'), strftime('%s','now'));
+    INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, allow_apps, app_types, max_apps, owner_id, status, created_at, updated_at)
+    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端、PHP 站点与站点 WAF（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 1, 0, '', 0, 0, 1, strftime('%s','now'), strftime('%s','now'));
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }
@@ -1090,6 +1102,46 @@ async fn init_site_table() {
 ///
 /// 单独成表而不并入 site_profile：后者在代码里是以 12 元元组整体读写的，
 /// 加列会牵动所有解构点；安全配置读写频率与生命周期都不同（保存即触发 vhost 同步）。
+/// 站点应用（Application Manager）。
+/// - 一个站点下可部署多个应用，进程一律以**站点归属的 unix 用户**运行（systemd `User=`），
+///   绝不以 root 身份启动用户代码
+/// - 工作目录强制收敛在站点目录内；日志落在站点日志目录（面板可查看）
+async fn init_site_apps_table() {
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS site_apps (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        site_id INTEGER NOT NULL,
+        -- 应用名：站点内唯一，决定 unit 名 zap-app-{site_id}-{name}.service
+        name VARCHAR(64) NOT NULL,
+        -- python | nodejs（后续扩展类型在此放宽）
+        app_type VARCHAR(32) NOT NULL,
+        -- 工作目录（站点目录内的绝对路径）
+        workdir TEXT NOT NULL DEFAULT '',
+        -- 入口文件 / 模块
+        entry TEXT NOT NULL DEFAULT '',
+        -- 自定义启动命令（非空则覆盖类型默认模板）
+        command TEXT NOT NULL DEFAULT '',
+        -- 应用监听端口（面板展示 + 反代提示）
+        port INTEGER NOT NULL DEFAULT 0,
+        -- 环境变量，每行一条 KEY=VALUE
+        env TEXT NOT NULL DEFAULT '',
+        -- 开机自启
+        autostart INTEGER NOT NULL DEFAULT 1,
+        -- 期望状态：1 = 运行中（面板目标），0 = 已停止
+        running INTEGER NOT NULL DEFAULT 0,
+        remark TEXT NOT NULL DEFAULT '',
+        created_at INTEGER,
+        updated_at INTEGER,
+        UNIQUE(site_id, name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_site_apps_site ON site_apps(site_id);
+    "#;
+    let pool = get_db_pool().await;
+    if let Err(e) = sqlx::query(sql).execute(pool).await {
+        eprintln!("创建 site_apps 表失败: {e}");
+    }
+}
+
 async fn init_site_sec_table() {
     let sql = r#"
     CREATE TABLE IF NOT EXISTS site_sec (

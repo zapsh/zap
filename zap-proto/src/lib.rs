@@ -21,7 +21,7 @@ pub use types::{
     AcmeChallengeEntry, DockerBuildArg, HeaderSpec, LocationSpec, Message, Request, Response,
     SiteSecuritySpec, UpstreamServer, UpstreamSpec, docker_namespace, linux_username,
     normalize_image_tag,
-    sanitize_site_name, valid_image_ref,
+    sanitize_site_name, valid_image_ref, app_type_supported, APP_TYPES,
 };
 
 /// base64 编码（文件内容传输用）。

@@ -69,6 +69,12 @@ pub struct PackageRow {
     pub allow_docker: i32,
     /// 允许该套餐的用户为站点开启 WAF / 限速 / 限并发（仍要求全局 WAF 已安装并启用）
     pub allow_waf: i32,
+    /// 允许使用应用管理（Application Manager）：部署 python / nodejs 等长驻进程
+    pub allow_apps: i32,
+    /// 允许部署的应用类型（逗号分隔，如 `python,nodejs`）；空 = 不限
+    pub app_types: String,
+    /// 每个站点可部署的应用数量上限（0 = 不限）
+    pub max_apps: i64,
     pub owner_id: i64,
     pub status: i32,
     pub created_at: i64,
@@ -268,10 +274,31 @@ pub struct PackageAddPayload {
     /// 是否允许使用容器功能（默认 false；且仅 Podman 运行时对非管理员生效）
     pub allow_docker: Option<bool>,
     pub allow_waf: Option<bool>,
+    /// 是否允许使用应用管理（默认 false）
+    pub allow_apps: Option<bool>,
+    /// 允许部署的应用类型（逗号分隔）；空 = 不限
+    pub app_types: Option<String>,
+    /// 每个站点可部署的应用数上限（0 = 不限）
+    pub max_apps: Option<i64>,
     pub status: Option<i32>,
 }
 
 /// POST /system/package/add —— admin 建全局套餐；reseller 建自己名下套餐
+/// 归一化套餐里配置的「允许的应用类型」：只保留受支持的类型，去重后逗号分隔。
+/// 空串 / 全是无效值 = 不限（允许全部已支持类型）。
+pub fn package_app_types_normalized(raw: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for t in raw.split(|c: char| c == ',' || c.is_whitespace()) {
+        let t = t.trim().to_ascii_lowercase();
+        if t.is_empty() || !zap_proto::app_type_supported(&t) || out.contains(&t) {
+            continue;
+        }
+        out.push(t);
+    }
+    out.sort();
+    out.join(",")
+}
+
 pub async fn package_add(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
@@ -297,6 +324,9 @@ pub async fn package_add(
         crate::routers::fpm_spec::validate_spec_ref(&fpm_spec_ref, is_admin, claims.sub.as_str())
             .await?;
     }
+    let allow_apps = i32::from(payload.allow_apps.unwrap_or(false));
+    let app_types = package_app_types_normalized(payload.app_types.as_deref().unwrap_or(""));
+    let max_apps = validate_limit(payload.max_apps.unwrap_or(0), "每站点应用数上限")?;
     let allow_ssh = i32::from(payload.allow_ssh.unwrap_or(false));
     let allow_proxy = i32::from(payload.allow_proxy.unwrap_or(false));
     // PHP 默认开放；容器默认关闭（容器还要求运行时是 Podman，见 routers::docker 门禁）
@@ -314,8 +344,9 @@ pub async fn package_add(
         "INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, \
          max_mysql_dbs, max_pgsql_dbs, max_ftp_users, \
          fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, \
+         allow_apps, app_types, max_apps, \
          owner_id, status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&name)
     .bind(&remark)
@@ -332,6 +363,9 @@ pub async fn package_add(
     .bind(allow_php)
     .bind(allow_docker)
     .bind(allow_waf)
+    .bind(allow_apps)
+    .bind(&app_types)
+    .bind(max_apps)
     .bind(owner_id)
     .bind(status)
     .bind(now)
@@ -387,6 +421,12 @@ pub struct PackageUpdatePayload {
     /// 是否允许使用容器功能；未传则保持不变
     pub allow_docker: Option<bool>,
     pub allow_waf: Option<bool>,
+    /// 是否允许使用应用管理；未传则保持不变
+    pub allow_apps: Option<bool>,
+    /// 允许部署的应用类型（逗号分隔）；未传则保持不变
+    pub app_types: Option<String>,
+    /// 每个站点可部署的应用数上限（0 = 不限）；未传则保持不变
+    pub max_apps: Option<i64>,
     pub status: Option<i32>,
 }
 
@@ -542,6 +582,31 @@ pub async fn package_update(
     if let Some(v) = payload.allow_waf {
         sqlx::query("UPDATE packages SET allow_waf = ?, updated_at = ? WHERE id = ?")
             .bind(i32::from(v))
+            .bind(now)
+            .bind(payload.id)
+            .execute(pool)
+            .await?;
+    }
+    if let Some(v) = payload.allow_apps {
+        sqlx::query("UPDATE packages SET allow_apps = ?, updated_at = ? WHERE id = ?")
+            .bind(i32::from(v))
+            .bind(now)
+            .bind(payload.id)
+            .execute(pool)
+            .await?;
+    }
+    if let Some(v) = &payload.app_types {
+        sqlx::query("UPDATE packages SET app_types = ?, updated_at = ? WHERE id = ?")
+            .bind(package_app_types_normalized(v))
+            .bind(now)
+            .bind(payload.id)
+            .execute(pool)
+            .await?;
+    }
+    if let Some(v) = payload.max_apps {
+        let n = validate_limit(v, "每站点应用数上限")?;
+        sqlx::query("UPDATE packages SET max_apps = ?, updated_at = ? WHERE id = ?")
+            .bind(n)
             .bind(now)
             .bind(payload.id)
             .execute(pool)

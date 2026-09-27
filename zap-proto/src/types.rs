@@ -234,6 +234,15 @@ pub struct LocationSpec {
     pub limit_dry_run: bool,
 }
 
+/// Application Manager 支持的应用类型。
+/// 新增类型 = 这里加一项 + 执行端 `verbs/app.rs` 里加一个「依赖准备 + 默认启动命令」分支。
+pub const APP_TYPES: &[&str] = &["python", "nodejs"];
+
+/// 类型是否受支持（套餐里配置的白名单也会先用它过滤一次）
+pub fn app_type_supported(t: &str) -> bool {
+    APP_TYPES.contains(&t)
+}
+
 /// `zapd` -> `zapexec` 的请求。只有白名单动词，刻意不提供任意 shell 执行。
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
@@ -755,6 +764,66 @@ pub enum Request {
         /// access | error；空 = 两者都清空
         #[serde(default)]
         kind: String,
+    },
+    /// 部署（或重新部署）站点应用：准备运行时依赖 -> 写 systemd unit -> 重新启动。
+    /// 幂等：同一个 (site_id, name) 重复调用即「改配置后重新部署」。
+    #[serde(rename = "app.deploy")]
+    AppDeploy {
+        site_id: i64,
+        /// 应用名（站点内唯一，用于 unit 名 zap-app-{site_id}-{name}.service）
+        name: String,
+        /// python | nodejs
+        app_type: String,
+        /// 工作目录（必须是站点目录内的绝对路径，越界直接拒绝）
+        workdir: String,
+        /// 入口：python 用 `main.py` / `wsgi:app`，nodejs 用 `server.js`
+        #[serde(default)]
+        entry: String,
+        /// 自定义启动命令；非空则覆盖类型默认模板（如 `gunicorn -w 4 wsgi:app`）
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        command: String,
+        /// 应用监听端口（仅面板展示与反代提示，不参与 unit 渲染）
+        #[serde(default)]
+        port: i64,
+        /// 环境变量，每行一条 `KEY=VALUE`
+        #[serde(default)]
+        env: String,
+        /// 开机自启（systemctl enable）
+        #[serde(default)]
+        autostart: bool,
+        /// 是否重新安装依赖（python: pip install -r；nodejs: npm install）
+        #[serde(default)]
+        install_deps: bool,
+        /// 站点归属的 unix 用户：进程以它运行（永远不是 root）
+        owner_user: String,
+        /// 应用日志落盘目录（站点日志目录，属主为站点用户）
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        log_dir: String,
+    },
+    /// 应用动作：start | stop | restart | enable | disable
+    #[serde(rename = "app.action")]
+    AppAction {
+        site_id: i64,
+        name: String,
+        /// start | stop | restart | enable | disable
+        action: String,
+    },
+    /// 批量查询应用实时状态（active / enabled / pid）
+    #[serde(rename = "app.status")]
+    AppStatus {
+        site_id: i64,
+        names: Vec<String>,
+    },
+    /// 删除应用：停服务 -> disable -> 删 unit -> daemon-reload
+    #[serde(rename = "app.remove")]
+    AppRemove { site_id: i64, name: String },
+    /// 读取应用日志尾部行（站点日志目录下的 app-{name}.log）
+    #[serde(rename = "app.log")]
+    AppLog {
+        site_id: i64,
+        name: String,
+        #[serde(default = "default_log_lines")]
+        lines: usize,
     },
     /// 防火墙状态：探测后端（firewalld / ufw / nftables / iptables）并返回规则列表
     #[serde(rename = "firewall.status")]

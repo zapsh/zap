@@ -329,7 +329,7 @@ pub(crate) async fn resolve_target_user(claims: &jwt::Claims, target: i64) -> Re
 }
 
 /// 校验站点是否处于当前操作者的管理范围
-async fn site_in_scope(claims: &jwt::Claims, site_id: i64) -> Result<(), ZapError> {
+pub(crate) async fn site_in_scope(claims: &jwt::Claims, site_id: i64) -> Result<(), ZapError> {
     let pool = db::get_db_pool().await;
     let row: Option<(i64,)> = sqlx::query_as("SELECT user_id FROM site WHERE id = ?")
         .bind(site_id)
@@ -2420,6 +2420,26 @@ pub async fn site_delete(
         }
     }
 
+    // 应用管理：先停掉并移除该站点下的所有应用（否则站点删了、进程还在跑）
+    for id in &payload.ids {
+        let apps: Vec<String> = sqlx::query_scalar("SELECT name FROM site_apps WHERE site_id = ?")
+            .bind(id)
+            .fetch_all(db::get_db_pool().await)
+            .await
+            .unwrap_or_default();
+        for name in apps {
+            if let Ok(resp) = crate::zapexec::call(Request::AppRemove {
+                site_id: *id,
+                name: name.clone(),
+            })
+            .await
+                && resp.code != 0
+            {
+                tracing::warn!("remove app {} of site {} failed: {}", name, id, resp.message);
+            }
+        }
+    }
+
     // 勾选「同时删除网站数据」：删除前先取回目录规划（DB 记录删除后就没了），
     // 再让执行端 rm -rf 文档根与日志目录（日志随网站数据一起删，避免残留）。
     // 目录清理失败只记录告警，不阻塞站点本身删除（否则 zapexec 不可用时站点删不掉）。
@@ -2518,6 +2538,16 @@ pub async fn site_delete(
         dq = dq.bind(id);
     }
     dq.execute(&mut *tx).await?;
+
+    let asql = format!(
+        "DELETE FROM site_apps WHERE site_id IN ({})",
+        placeholders
+    );
+    let mut aq = sqlx::query(&asql);
+    for id in &payload.ids {
+        aq = aq.bind(id);
+    }
+    aq.execute(&mut *tx).await?;
 
     let isql = format!("DELETE FROM site_ip WHERE site_id IN ({})", placeholders);
     let mut iq = sqlx::query(&isql);

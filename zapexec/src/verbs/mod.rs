@@ -1,4 +1,5 @@
 mod acme;
+mod app;
 mod appstore;
 mod cred;
 mod cron;
@@ -342,6 +343,49 @@ pub async fn dispatch(req: Request) -> Response {
             status,
         } => logs::read(log_root, kind, archive, lines, keyword, status).await,
         Request::SiteLogClear { log_root, kind } => logs::clear(log_root, kind).await,
+        // ── 站点应用（Application Manager）─────────────────────
+        Request::AppDeploy {
+            site_id,
+            name,
+            app_type,
+            workdir,
+            entry,
+            command,
+            port,
+            env,
+            autostart,
+            install_deps,
+            owner_user,
+            log_dir,
+        } => {
+            app::deploy(
+                site_id,
+                &name,
+                &app_type,
+                &workdir,
+                &entry,
+                &command,
+                port,
+                &env,
+                autostart,
+                install_deps,
+                &owner_user,
+                &log_dir,
+            )
+            .await
+        }
+        Request::AppAction {
+            site_id,
+            name,
+            action,
+        } => app::action(site_id, &name, &action).await,
+        Request::AppStatus { site_id, names } => app::status(site_id, &names).await,
+        Request::AppRemove { site_id, name } => app::remove(site_id, &name).await,
+        Request::AppLog {
+            site_id,
+            name,
+            lines,
+        } => app::log(site_id, &name, lines).await,
         Request::FirewallStatus { panel_port } => firewall::status(panel_port).await,
         Request::FirewallRuleAdd {
             port,

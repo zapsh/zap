@@ -143,3 +143,73 @@ export async function getSecurityCaps() {
 export async function saveSiteSecurity(id: number, sec: SiteSecurity) {
   return http.post<ApiResponse>('/site/security/save', { id, sec })
 }
+
+// ── 站点应用（Application Manager）───────────────────────────
+
+/** 站点应用：一个应用 = 一个 systemd unit，以站点用户身份运行 */
+export interface SiteApp {
+  id: number
+  name: string
+  /** python | nodejs */
+  app_type: string
+  workdir: string
+  entry: string
+  /** 自定义启动命令（空 = 用类型默认模板） */
+  command: string
+  port: number
+  env: string
+  autostart: boolean
+  running: boolean
+  /** systemd is-active 结果：active / inactive / unknown ... */
+  state: string
+  active: boolean
+  enabled: boolean
+  pid: number
+}
+
+/** 当前操作者在该站点上的应用能力（套餐控制） */
+export interface SiteAppCaps {
+  allowed: boolean
+  types: string[]
+  max_apps: number
+}
+
+export function getSiteAppCaps(site_id: number) {
+  return http.get<ApiResponse<SiteAppCaps>>('/site/app/caps', { params: { site_id } })
+}
+
+export function getSiteApps(site_id: number) {
+  return http.get<ApiResponse<{ apps: SiteApp[] }>>('/site/app/list', { params: { site_id } })
+}
+
+export interface SiteAppDeployPayload {
+  site_id: number
+  name: string
+  app_type: string
+  workdir?: string
+  entry?: string
+  command?: string
+  port?: number
+  env?: string
+  autostart?: boolean
+  install_deps?: boolean
+}
+
+export function deploySiteApp(p: SiteAppDeployPayload) {
+  return http.post<ApiResponse>('/site/app/deploy', p)
+}
+
+/** start | stop | restart | enable | disable */
+export function siteAppAction(site_id: number, name: string, action: string) {
+  return http.post<ApiResponse>('/site/app/action', { site_id, name, action })
+}
+
+export function removeSiteApp(site_id: number, name: string) {
+  return http.post<ApiResponse>('/site/app/remove', { site_id, name })
+}
+
+export function getSiteAppLog(site_id: number, name: string, lines = 200) {
+  return http.get<ApiResponse<{ lines: string[] }>>('/site/app/log', {
+    params: { site_id, name, lines },
+  })
+}

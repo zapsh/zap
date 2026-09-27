@@ -51,6 +51,7 @@ pub mod docs;
 pub mod fpm_spec;
 pub mod notice;
 pub mod package;
+pub mod app;
 pub mod site;
 pub mod ssh_terminal;
 pub mod ssh_user_keys;
@@ -756,6 +757,13 @@ fn api_routers() -> Router {
         .route("/site/logs/clear", post(site::site_logs_clear))
         .route("/site/logs/rotate", post(site::site_logs_rotate))
         .route("/site/traffic", get(site::site_traffic))
+        // 站点应用（Application Manager）
+        .route("/site/app/caps", get(app::app_caps))
+        .route("/site/app/list", get(app::app_list))
+        .route("/site/app/deploy", post(app::app_deploy))
+        .route("/site/app/action", post(app::app_action))
+        .route("/site/app/remove", post(app::app_remove))
+        .route("/site/app/log", get(app::app_log))
         // SSL/TLS：证书管理（手动导入 / 自签名 / Let's Encrypt）
         .route("/ssl/cert/list", get(ssl::cert_list))
         .route("/ssl/cert/detail", get(ssl::cert_detail))

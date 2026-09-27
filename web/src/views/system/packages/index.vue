@@ -108,6 +108,17 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column :label="t('packages.apps')" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.allow_apps ? 'success' : 'info'" size="small" effect="plain">
+              {{
+                row.allow_apps
+                  ? row.app_types || t('packages.appsAll')
+                  : t('packages.deny')
+              }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('packages.docker')" width="110" align="center">
           <template #default="{ row }">
             <el-tag :type="row.allow_docker ? 'warning' : 'info'" size="small" effect="plain">
@@ -324,6 +335,21 @@
           <el-switch v-model="form.allow_docker" />
           <span class="form-hint">{{ t('packages.dockerHint') }}</span>
         </el-form-item>
+        <el-form-item :label="t('packages.apps')">
+          <el-switch v-model="form.allow_apps" />
+          <span class="form-hint">{{ t('packages.appsHint') }}</span>
+        </el-form-item>
+        <el-form-item v-if="form.allow_apps" :label="t('packages.appTypes')">
+          <el-checkbox-group v-model="form.app_types">
+            <el-checkbox value="python" label="Python" />
+            <el-checkbox value="nodejs" label="Node.js" />
+          </el-checkbox-group>
+          <div class="form-tip">{{ t('packages.appTypesHint') }}</div>
+        </el-form-item>
+        <el-form-item v-if="form.allow_apps" :label="t('packages.maxApps')">
+          <el-input-number v-model="form.max_apps" :min="0" :max="999" />
+          <span class="form-hint">{{ t('packages.maxAppsHint') }}</span>
+        </el-form-item>
         <el-form-item :label="t('common.status')">
           <el-radio-group v-model="form.status">
             <el-radio :value="1">{{ t('common.enable') }}</el-radio>
@@ -379,6 +405,9 @@ const form = reactive({
   max_ftp_users: 10,
   fpm_spec_ref: '',
   allow_ssh: false,
+  allow_apps: false,
+  app_types: [] as string[],
+  max_apps: 0,
   allow_proxy: false,
   // PHP 站点默认开放（建站的主要形态）；容器默认关闭
   allow_php: true,
@@ -452,6 +481,9 @@ function resetForm() {
   form.allow_php = true
   form.allow_waf = false
   form.allow_docker = false
+  form.allow_apps = false
+  form.app_types = []
+  form.max_apps = 0
   form.status = 1
   unlimitedDisk.value = true
   unlimitedSites.value = true
@@ -493,6 +525,9 @@ function openEdit(row: PackageItem) {
   form.allow_php = row.allow_php !== false
   form.allow_waf = !!row.allow_waf
   form.allow_docker = !!row.allow_docker
+  form.allow_apps = !!row.allow_apps
+  form.app_types = row.app_types ? String(row.app_types).split(',').filter(Boolean) : []
+  form.max_apps = row.max_apps || 0
   form.status = row.status
   dialogVisible.value = true
 }
@@ -520,6 +555,9 @@ async function submitForm() {
     allow_php: form.allow_php,
     allow_waf: form.allow_waf,
     allow_docker: form.allow_docker,
+    allow_apps: form.allow_apps,
+    app_types: form.app_types.join(','),
+    max_apps: form.max_apps || 0,
     status: form.status,
   }
   saving.value = true

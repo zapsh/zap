@@ -23,6 +23,7 @@ import { getCertList } from '@/api/ssl'
 import type { SslCertItem } from '@/api/ssl'
 import { formatBytes } from '@/utils/fmt'
 import { useI18n } from 'vue-i18n'
+import SiteAppsPanel from './SiteAppsPanel.vue'
 import SiteLogsDrawer from './SiteLogsDrawer.vue'
 import SiteTrafficDrawer from './SiteTrafficDrawer.vue'
 
@@ -2302,6 +2303,12 @@ onMounted(() => {
               <el-input-number v-model="sec.limit_conn_num" :min="1" :max="100000" />
               <span class="form-hint">{{ t('site.secConnNumHint') }}</span>
             </el-form-item>
+          </el-tab-pane>
+
+          <!-- 应用管理（Application Manager） -->
+          <el-tab-pane :label="t('site.tabApps')" name="apps" :disabled="!form.id">
+            <SiteAppsPanel v-if="form.id" :site-id="form.id" />
+            <el-empty v-else :image-size="70" :description="t('site.appsNeedSaved')" />
           </el-tab-pane>
 
           <!-- 反代 / 高级 -->

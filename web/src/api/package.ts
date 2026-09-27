@@ -31,6 +31,12 @@ export interface PackageItem {
   allow_waf: boolean
   /** 是否允许客户使用容器功能（默认 false；且仅 Podman 运行时对非管理员生效） */
   allow_docker: boolean
+  /** 是否允许客户使用应用管理 Application Manager（默认 false） */
+  allow_apps: boolean
+  /** 允许部署的应用类型（逗号分隔，如 `python,nodejs`）；空 = 不限 */
+  app_types: string
+  /** 每个站点可部署的应用数上限（0 = 不限） */
+  max_apps: number
   /** 归属：0 = 全局套餐（admin 维护）；其余为 reseller 自建 */
   owner_id: number
   /** 1 启用 / 0 停用 */
@@ -65,6 +71,12 @@ export interface PackagePayload {
   allow_waf?: boolean
   /** 允许客户使用容器功能；不传时后端取默认（新建=关闭） */
   allow_docker?: boolean
+  /** 允许客户使用应用管理；不传保持不变 */
+  allow_apps?: boolean
+  /** 允许部署的应用类型（数组形式，前端拼成逗号分隔字符串） */
+  app_types?: string
+  /** 每个站点可部署的应用数上限（0 = 不限） */
+  max_apps?: number
   status?: number
 }
 
