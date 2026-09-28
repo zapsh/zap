@@ -13,7 +13,138 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use zap_proto::{Response, app_type_supported};
 
+use super::env::uv_bin;
 use super::root_cmd;
+
+// ── 运行时版本探测 ──────────────────────────────────────
+
+/// 版本号只允许 `3.11` / `3` / `20` 这种点分数字：它会被拼进命令里
+/// （`python3.11 -m venv`），绝不能带空格或 shell 元字符。
+fn valid_version(v: &str) -> bool {
+    !v.is_empty() && v.len() <= 16 && v.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// 扫目录里形如 `python3.11` 的可执行文件，收集次要版本号（降序去重）
+fn scan_python_versions(dir: &str) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut vs: Vec<String> = rd
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            let rest = n.strip_prefix("python")?;
+            // 只收 `python3.x`（含 `python3`），跳过 python2 / python3-config 之类
+            if !rest.starts_with('3') {
+                return None;
+            }
+            if rest != "3" && !rest.starts_with("3.") {
+                return None;
+            }
+            Some(rest.to_string())
+        })
+        .collect();
+    vs.sort();
+    vs.dedup();
+    vs.reverse();
+    vs
+}
+
+/// node 版本：系统 node + 常见的多版本安装目录（nvm / n / nodejs 官方包）
+fn scan_node_versions() -> Vec<String> {
+    let mut vs: Vec<String> = Vec::new();
+    // 系统默认 node
+    if let Some(v) = node_version_of("node") {
+        vs.push(v);
+    }
+    // 多版本管理器 / 官方分发：每个子目录里的 bin/node
+    for base in [
+        "/usr/local/n/versions/node",
+        "/usr/local/lib/nodejs",
+        "/opt/nodejs",
+    ] {
+        if let Ok(rd) = std::fs::read_dir(base) {
+            let mut subs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            subs.sort();
+            for p in subs {
+                let bin = p.join("bin/node");
+                if bin.exists() {
+                    if let Some(v) = node_version_of(&bin.to_string_lossy()) {
+                        vs.push(v);
+                    }
+                }
+            }
+        }
+    }
+    // 各用户 home 下的 nvm（以 root 身份也能读到）
+    if let Ok(rd) = std::fs::read_dir("/home") {
+        for e in rd.flatten() {
+            let nvm = e.path().join(".nvm/versions/node");
+            if let Ok(inner) = std::fs::read_dir(&nvm) {
+                let mut subs: Vec<PathBuf> = inner.flatten().map(|x| x.path()).collect();
+                subs.sort();
+                for p in subs {
+                    let bin = p.join("bin/node");
+                    if bin.exists() {
+                        if let Some(v) = node_version_of(&bin.to_string_lossy()) {
+                            vs.push(v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // node 只认大版本（18 / 20 / 22）
+    let mut major: Vec<String> = vs
+        .iter()
+        .filter_map(|v| v.split('.').next())
+        .map(|s| s.to_string())
+        .collect();
+    major.sort();
+    major.dedup();
+    major.reverse();
+    major
+}
+
+fn node_version_of(bin: &str) -> Option<String> {
+    let o = std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&o.stdout).to_string();
+    let t = text.trim().trim_start_matches('v');
+    if t.is_empty() || !t.chars().next()?.is_ascii_digit() {
+        return None;
+    }
+    Some(t.to_string())
+}
+
+/// `app.runtimes`：返回服务器上已安装的版本，供部署向导下拉
+pub async fn runtimes() -> Response {
+    blocking(move || {
+        let mut py = scan_python_versions("/usr/bin");
+        py.extend(scan_python_versions("/usr/local/bin"));
+        // uv 管理的解释器也要列出来（系统 /usr/bin 下没有对应二进制）
+        if let Some(v) = super::env::detect_python().get("versions") {
+            if let Some(arr) = v.as_array() {
+                for item in arr {
+                    if let Some(ver) = item.get("version").and_then(|x| x.as_str()) {
+                        py.push(ver.to_string());
+                    }
+                }
+            }
+        }
+        py.sort();
+        py.dedup();
+        py.reverse();
+        let data = json!({
+            "python": py,
+            "nodejs": scan_node_versions(),
+        });
+        Ok(Response::ok("运行时版本探测完成", Some(data)))
+    })
+    .await
+}
 
 // ── 校验 ────────────────────────────────────────────────
 
@@ -128,34 +259,100 @@ fn systemctl(args: &[&str]) -> Result<(bool, String), String> {
 // ── 类型相关：依赖准备 + 默认启动命令 ────────────────────
 
 /// 安装依赖（以站点用户身份）。返回人类可读的进度说明。
-fn prepare_deps(app_type: &str, workdir: &Path, owner: &str, install: bool) -> Result<String, String> {
-    if !install {
-        return Ok(String::new());
+/// python 解释器：指定版本时用 `python3.11`，否则用系统默认 `python3`
+fn python_bin(version: &str) -> String {
+    if version.is_empty() {
+        return "python3".to_string();
     }
+    if version == "3" {
+        return "python3".to_string();
+    }
+    format!("python{version}")
+}
+
+fn prepare_deps(
+    app_type: &str,
+    version: &str,
+    create_venv: bool,
+    workdir: &Path,
+    owner: &str,
+    install: bool,
+) -> Result<String, String> {
     let mut log = String::new();
     match app_type {
         "python" => {
+            let venv = workdir.join(".venv");
+            let need_venv = create_venv || install;
             let req = workdir.join("requirements.txt");
-            if !req.exists() {
+            let uv = uv_bin();
+
+            // 明确要求建环境、或要装依赖时都要有 .venv。
+            // 优先 uv：它能按指定版本现拉一个解释器，不依赖系统装没装 pythonX-venv。
+            if need_venv && !venv.join("bin/python").exists() {
+                let (cmd, how) = match &uv {
+                    Some(uv) => {
+                        if version.is_empty() {
+                            (format!("{uv} venv .venv"), "uv（默认版本）".to_string())
+                        } else {
+                            (
+                                format!("{uv} venv --python {version} .venv"),
+                                format!("uv --python {version}"),
+                            )
+                        }
+                    }
+                    None => {
+                        let py = python_bin(version);
+                        (format!("{py} -m venv .venv"), format!("{py} -m venv"))
+                    }
+                };
+                let (ok, out) = run_as(owner, workdir, &cmd)?;
+                if !ok {
+                    return Err(format!("创建虚拟环境失败（{cmd}）：{out}"));
+                }
+                log.push_str(&format!("已创建 .venv（{how}）\\n"));
+            }
+            if !install || !req.exists() {
                 return Ok(log);
             }
-            let venv = workdir.join(".venv");
-            if !venv.join("bin/python").exists() {
-                let (ok, out) = run_as(owner, workdir, "python3 -m venv .venv")?;
-                if !ok {
-                    return Err(format!("创建虚拟环境失败：{out}"));
+
+            // 装依赖：uv pip > .venv/bin/pip > ensurepip 兜底。
+            // 早先固定走 .venv/bin/pip，而很多发行版的 venv 里压根没 pip
+            // （缺 pythonX-venv），于是直接 `.venv/bin/pip: No such file`。
+            let cmd = match &uv {
+                Some(uv) => format!(
+                    "VIRTUAL_ENV={} {uv} pip install -r requirements.txt",
+                    venv.to_string_lossy()
+                ),
+                None if venv.join("bin/pip").exists() => {
+                    ".venv/bin/pip install -r requirements.txt".to_string()
                 }
-                log.push_str("已创建 .venv\n");
-            }
-            let (ok, out) = run_as(owner, workdir, ".venv/bin/pip install -r requirements.txt")?;
+                None => {
+                    // venv 里没 pip：先补装，再走 pip
+                    let (ok, out) =
+                        run_as(owner, workdir, ".venv/bin/python -m ensurepip --upgrade")?;
+                    if !ok {
+                        return Err(format!(
+                            "虚拟环境里没有 pip，且 ensurepip 失败：{out}\\n\
+                             建议安装 uv（curl -LsSf https://astral.sh/uv/install.sh | sh），\\
+                             或给系统补上 pythonX-venv"
+                        ));
+                    }
+                    ".venv/bin/pip install -r requirements.txt".to_string()
+                }
+            };
+            let (ok, out) = run_as(owner, workdir, &cmd)?;
             if !ok {
-                return Err(format!("pip install 失败：{out}"));
+                return Err(format!("依赖安装失败（{cmd}）：{out}"));
             }
-            log.push_str("依赖安装完成（pip）\n");
+            log.push_str(if uv.is_some() {
+                "依赖安装完成（uv pip）\\n"
+            } else {
+                "依赖安装完成（pip）\\n"
+            });
         }
         "nodejs" => {
             let pkg = workdir.join("package.json");
-            if !pkg.exists() {
+            if !install || !pkg.exists() {
                 return Ok(log);
             }
             let cmd = if workdir.join("package-lock.json").exists() {
@@ -175,15 +372,66 @@ fn prepare_deps(app_type: &str, workdir: &Path, owner: &str, install: bool) -> R
 }
 
 /// 推导默认启动命令（用户填了 `command` 就不走这里）
-fn default_command(app_type: &str, workdir: &Path, entry: &str, port: i64) -> Result<String, String> {
+fn default_command(
+    app_type: &str,
+    workdir: &Path,
+    entry: &str,
+    port: i64,
+) -> Result<String, String> {
     match app_type {
         "python" => {
             let venv_py = workdir.join(".venv/bin/python");
             let py = if venv_py.exists() {
-                workdir.join(".venv/bin/python").to_string_lossy().to_string()
+                workdir
+                    .join(".venv/bin/python")
+                    .to_string_lossy()
+                    .to_string()
             } else {
                 "python3".to_string()
             };
+            // 未填入口：按常见文件名探测，别生成一条 `python3 ` 空命令
+            let entry = if entry.is_empty() {
+                [
+                    "app.py",
+                    "main.py",
+                    "wsgi.py",
+                    "manage.py",
+                    "run.py",
+                    "server.py",
+                ]
+                .iter()
+                .find(|f| workdir.join(f).exists())
+                .map(|f| f.to_string())
+                .ok_or_else(|| {
+                    "未找到入口：请填写入口（如 app.py、wsgi:app），或在「启动命令」里自定义"
+                        .to_string()
+                })?
+            } else {
+                entry.to_string()
+            };
+            // 是 .py 文件时，尽量走生产级服务器：Flask / FastAPI + gunicorn / uvicorn
+            if entry.ends_with(".py") {
+                let module = entry.trim_end_matches(".py").to_string();
+                let src = std::fs::read_to_string(workdir.join(&entry)).unwrap_or_default();
+                let gunicorn = workdir.join(".venv/bin/gunicorn");
+                let uvicorn = workdir.join(".venv/bin/uvicorn");
+                if (src.contains("Flask(") || src.contains("FastAPI(")) && gunicorn.exists() {
+                    return Ok(format!(
+                        "{} -b 127.0.0.1:{} {}:app",
+                        gunicorn.to_string_lossy(),
+                        port,
+                        module
+                    ));
+                }
+                if src.contains("FastAPI(") && uvicorn.exists() {
+                    return Ok(format!(
+                        "{} --host 127.0.0.1 --port {} {}:app",
+                        uvicorn.to_string_lossy(),
+                        port,
+                        module
+                    ));
+                }
+            }
             if entry.contains(':') {
                 // module:app 形态：优先 gunicorn，其次 uvicorn
                 let gunicorn = workdir.join(".venv/bin/gunicorn");
@@ -204,11 +452,9 @@ fn default_command(app_type: &str, workdir: &Path, entry: &str, port: i64) -> Re
                         entry
                     ));
                 }
-                return Err(
-                    "入口是 `模块:应用` 形态，需要 gunicorn 或 uvicorn：\
+                return Err("入口是 `模块:应用` 形态，需要 gunicorn 或 uvicorn：\
                      请把它们写进 requirements.txt，或在「启动命令」里自定义"
-                        .to_string(),
-                );
+                    .to_string());
             }
             Ok(format!("{py} {entry}"))
         }
@@ -247,9 +493,7 @@ fn render_unit(
 ) -> String {
     let mut u = String::new();
     u.push_str("[Unit]\n");
-    u.push_str(&format!(
-        "Description=Zap App {name} (site {site_id})\n"
-    ));
+    u.push_str(&format!("Description=Zap App {name} (site {site_id})\n"));
     u.push_str("After=network.target\n\n");
     u.push_str("[Service]\n");
     u.push_str("Type=simple\n");
@@ -308,6 +552,9 @@ pub async fn deploy(
     site_id: i64,
     name: &str,
     app_type: &str,
+    runtime_version: &str,
+    build_cmd: &str,
+    create_venv: bool,
     workdir: &str,
     entry: &str,
     command: &str,
@@ -318,9 +565,22 @@ pub async fn deploy(
     owner_user: &str,
     log_dir: &str,
 ) -> Response {
-    let (name, app_type, workdir, entry, command, env, owner_user, log_dir) = (
+    let (
+        name,
+        app_type,
+        runtime_version,
+        build_cmd,
+        workdir,
+        entry,
+        command,
+        env,
+        owner_user,
+        log_dir,
+    ) = (
         name.to_string(),
         app_type.to_string(),
+        runtime_version.to_string(),
+        build_cmd.to_string(),
         workdir.to_string(),
         entry.to_string(),
         command.to_string(),
@@ -338,10 +598,14 @@ pub async fn deploy(
         if !app_type_supported(&app_type) {
             return Err(format!("不支持的应用类型：{app_type}"));
         }
+        if !runtime_version.is_empty() && !valid_version(&runtime_version) {
+            return Err(format!("运行时版本号不合法：{runtime_version}"));
+        }
         for (f, v) in [
             ("工作目录", workdir.as_str()),
             ("入口", entry.as_str()),
             ("启动命令", command.as_str()),
+            ("构建命令", build_cmd.as_str()),
             ("环境变量", env.as_str()),
         ] {
             if !no_newline(v) {
@@ -350,7 +614,24 @@ pub async fn deploy(
         }
         let wd = check_workdir(&workdir, &owner_user)?;
 
-        let mut steps = prepare_deps(&app_type, &wd, &owner_user, install_deps)?;
+        let mut steps = prepare_deps(
+            &app_type,
+            &runtime_version,
+            create_venv,
+            &wd,
+            &owner_user,
+            install_deps,
+        )?;
+
+        // 构建命令：在装完依赖之后、拉起进程之前跑（npm run build / 迁移脚本之类）
+        let bc = build_cmd.trim();
+        if !bc.is_empty() {
+            let (ok, out) = run_as(&owner_user, &wd, bc)?;
+            if !ok {
+                return Err(format!("构建命令失败：{out}"));
+            }
+            steps.push_str("构建命令执行完成\n");
+        }
 
         let exec = if !command.trim().is_empty() {
             command.trim().to_string()
@@ -568,8 +849,15 @@ mod tests {
     #[test]
     fn nodejs_falls_back_to_npm_start() {
         let d = tmp("node");
-        std::fs::write(d.join("package.json"), r#"{"scripts":{"start":"node s.js"}}"#).unwrap();
-        assert_eq!(default_command("nodejs", &d, "", 3000).unwrap(), "npm start");
+        std::fs::write(
+            d.join("package.json"),
+            r#"{"scripts":{"start":"node s.js"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            default_command("nodejs", &d, "", 3000).unwrap(),
+            "npm start"
+        );
         std::fs::write(d.join("package.json"), r#"{"name":"x"}"#).unwrap();
         assert!(default_command("nodejs", &d, "", 3000).is_err());
     }
@@ -595,5 +883,115 @@ mod tests {
         assert!(u.contains("StandardOutput=append:/home/admin/logs/1-w4u-cn/app-demo.log"));
         assert!(u.contains("NoNewPrivileges=yes"));
         assert_eq!(u.matches("ExecStart=").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn python_scan_only_picks_python3() {
+        let vs = scan_python_versions("/usr/bin");
+        for v in &vs {
+            assert!(v == "3" || v.starts_with("3."), "意外的版本号: {v}");
+        }
+        // 服务器上必然装了 python3，否则 python 应用类型无从跑起
+        assert!(
+            vs.iter().any(|v| v.starts_with('3')),
+            "未探测到 python3: {vs:?}"
+        );
+    }
+
+    #[test]
+    fn version_format_guard() {
+        assert!(valid_version("3.11"));
+        assert!(valid_version("20"));
+        // 会被拼进 `python{version} -m venv`，这些必须挡住
+        assert!(!valid_version("3.11; rm -rf /"));
+        assert!(!valid_version("$(id)"));
+        assert!(!valid_version(""));
+    }
+
+    #[test]
+    fn python_bin_maps_version() {
+        assert_eq!(python_bin(""), "python3");
+        assert_eq!(python_bin("3"), "python3");
+        assert_eq!(python_bin("3.11"), "python3.11");
+    }
+}
+
+#[cfg(test)]
+mod detect_tests {
+    use super::*;
+
+    #[test]
+    fn python_scan_only_picks_python3() {
+        let vs = scan_python_versions("/usr/bin");
+        for v in &vs {
+            assert!(v == "3" || v.starts_with("3."), "unexpected version: {v}");
+        }
+        assert!(
+            vs.iter().any(|v| v.starts_with('3')),
+            "no python3 found: {vs:?}"
+        );
+    }
+
+    #[test]
+    fn version_format_guard() {
+        assert!(valid_version("3.11"));
+        assert!(valid_version("20"));
+        assert!(!valid_version("3.11; rm -rf /"));
+        assert!(!valid_version("$(id)"));
+        assert!(!valid_version(""));
+    }
+
+    #[test]
+    fn python_bin_maps_version() {
+        assert_eq!(python_bin(""), "python3");
+        assert_eq!(python_bin("3"), "python3");
+        assert_eq!(python_bin("3.11"), "python3.11");
+    }
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+
+    #[test]
+    fn python_entry_is_detected_instead_of_empty_command() {
+        let d = std::env::temp_dir().join("zap-app-entry-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("app.py"),
+            "from flask import Flask\napp = Flask(__name__)\n",
+        )
+        .unwrap();
+
+        // 没装 gunicorn：退回 `python3 app.py`，绝不能生成空的 `python3 `
+        let cmd = default_command("python", &d, "", 8080).unwrap();
+        assert!(cmd.ends_with("app.py"), "{cmd}");
+        assert!(!cmd.trim().ends_with("python3"), "{cmd}");
+
+        // 装了 gunicorn：Flask 项目自动走 gunicorn，端口来自 PORT
+        std::fs::create_dir_all(d.join(".venv/bin")).unwrap();
+        std::fs::write(d.join(".venv/bin/gunicorn"), "").unwrap();
+        let cmd = default_command("python", &d, "", 8080).unwrap();
+        assert!(cmd.contains("gunicorn"), "{cmd}");
+        assert!(cmd.contains("127.0.0.1:8080"), "{cmd}");
+        assert!(cmd.ends_with("app:app"), "{cmd}");
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn python_without_entry_file_errors_clearly() {
+        let d = std::env::temp_dir().join("zap-app-entry-test-empty");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let err = default_command("python", &d, "", 8080).unwrap_err();
+        assert!(err.contains("未找到入口"), "{err}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

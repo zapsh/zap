@@ -120,6 +120,8 @@ async fn migrate_add_columns() {
     ensure_column("packages", "max_apps", "INTEGER NOT NULL DEFAULT 0").await;
     // 套餐：每个用户分到的端口个数（端口段自动算）与该用户的应用总数上限（0 = 不限）
     ensure_column("packages", "app_port_span", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("site_apps", "runtime_version", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_apps", "build_cmd", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("packages", "app_max_total", "INTEGER NOT NULL DEFAULT 0").await;
     // 套餐 WAF 能力：允许为站点开启 WAF / 限速 / 限并发（仍需全局 ModSecurity 已启用）
     ensure_column("packages", "allow_waf", "INTEGER NOT NULL DEFAULT 0").await;
@@ -1132,6 +1134,10 @@ async fn init_site_apps_table() {
         name VARCHAR(64) NOT NULL,
         -- python | nodejs（后续扩展类型在此放宽）
         app_type VARCHAR(32) NOT NULL,
+        -- 运行时版本（python 3.11 / nodejs 20）；空 = 系统默认
+        runtime_version VARCHAR(16) NOT NULL DEFAULT '',
+        -- 构建 / 编译命令（部署时先执行，如 npm run build）；空 = 不构建
+        build_cmd TEXT NOT NULL DEFAULT '',
         -- 工作目录（站点目录内的绝对路径）
         workdir TEXT NOT NULL DEFAULT '',
         -- 入口文件 / 模块

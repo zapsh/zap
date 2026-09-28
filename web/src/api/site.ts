@@ -187,21 +187,75 @@ export function getSiteAppCaps(site_id: number) {
   return http.get<ApiResponse<SiteAppCaps>>('/site/app/caps', { params: { site_id } })
 }
 
+/** 服务器上已安装的运行时版本（部署向导下拉用） */
+export interface AppRuntimes {
+  python: string[]
+  nodejs: string[]
+  types: string[]
+  /** 当前套餐是否允许部署应用 */
+  allowed: boolean
+  port_min: number
+  port_max: number
+}
+
+export function getAppRuntimes() {
+  return http.get<ApiResponse<AppRuntimes>>('/site/app/runtimes')
+}
+
+/** 跨站点应用列表（应用管理面板） */
+export interface AllAppItem {
+  id: number
+  site_id: number
+  site_name: string
+  name: string
+  app_type: string
+  runtime_version: string
+  build_cmd: string
+  workdir: string
+  entry: string
+  command: string
+  port: number
+  env: string
+  autostart: boolean
+  /** DB 里的期望状态 */
+  running: boolean
+  /** systemd 实时状态：active / inactive / unknown */
+  state: string
+  active: boolean
+  enabled: boolean
+  pid: number
+}
+
+export function listAllApps() {
+  return http.get<ApiResponse<AllAppItem[]>>('/site/app/list_all')
+}
+
 export function getSiteApps(site_id: number) {
   return http.get<ApiResponse<{ apps: SiteApp[] }>>('/site/app/list', { params: { site_id } })
 }
 
 export interface SiteAppDeployPayload {
+  /** 0 = 用 domain 自动建反代站点 */
   site_id: number
   name: string
   app_type: string
+  /** 运行时版本，如 `3.11` / `20`；空 = 系统默认 */
+  runtime_version?: string
+  /** 构建 / 编译命令（部署时先执行） */
+  build_cmd?: string
+  /** python：是否生成 .venv（默认 true） */
+  create_venv?: boolean
   workdir?: string
   entry?: string
   command?: string
   port?: number
+  /** true = 在套餐端口段里自动挑一个空闲端口 */
+  auto_port?: boolean
   env?: string
   autostart?: boolean
   install_deps?: boolean
+  /** 填了就自动创建反代站点（site_id = 0 时生效） */
+  domain?: string
 }
 
 export function deploySiteApp(p: SiteAppDeployPayload) {

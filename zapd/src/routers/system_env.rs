@@ -24,6 +24,84 @@ use crate::zap::audit;
 use crate::zap::jwt::ValidatedClaims;
 use crate::zap::jwt::is_admin;
 use crate::zap::server_env;
+use zap_proto::Request;
+
+#[derive(Deserialize)]
+pub struct EnvPythonPayload {
+    /// 版本号，如 `3.12` / `3.11.9`
+    pub version: String,
+}
+
+/// 全局默认 Python 版本（uv 管理）。应用部署未指定版本时用它。
+pub fn python_default() -> String {
+    server_env::conf_get("python_default").unwrap_or_default()
+}
+
+/// 用 uv 安装一个 Python 版本（admin）。
+pub async fn env_python_install(
+    claims: ValidatedClaims,
+    client_addr: Extension<SocketAddr>,
+    Json(payload): Json<EnvPythonPayload>,
+) -> ZapJsonResult {
+    if !is_admin(&claims) {
+        return Err(ZapError::New(-1, "仅管理员可安装 Python 版本".to_string()));
+    }
+    let version = payload.version.trim().to_string();
+    if version.is_empty() || version.len() > 16 {
+        return Err(ZapError::New(-1, "版本号不合法".to_string()));
+    }
+    let resp = crate::zapexec::call(Request::EnvPython {
+        action: "install".to_string(),
+        version: version.clone(),
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(-1, resp.message));
+    }
+    let _ = audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "env_python_install",
+        &format!("version={version}"),
+        "",
+    );
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
+}
+
+/// 卸载 uv 管理的 Python 版本（admin）。
+pub async fn env_python_remove(
+    claims: ValidatedClaims,
+    client_addr: Extension<SocketAddr>,
+    Json(payload): Json<EnvPythonPayload>,
+) -> ZapJsonResult {
+    if !is_admin(&claims) {
+        return Err(ZapError::New(-1, "仅管理员可卸载 Python 版本".to_string()));
+    }
+    let version = payload.version.trim().to_string();
+    if version.is_empty() || version.len() > 16 {
+        return Err(ZapError::New(-1, "版本号不合法".to_string()));
+    }
+    let resp = crate::zapexec::call(Request::EnvPython {
+        action: "uninstall".to_string(),
+        version: version.clone(),
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(-1, resp.message));
+    }
+    let _ = audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "env_python_remove",
+        &format!("version={version}"),
+        "",
+    );
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
+}
 
 /// 快照超过该秒数后在 GET 时自动重测。
 const SNAPSHOT_STALE_SECS: i64 = 60;
@@ -87,6 +165,7 @@ fn conf_json(conf: &HashMap<String, String>) -> Value {
     json!({
         "webserver": conf.get("webserver").cloned().unwrap_or_default(),
         "php_default": conf.get("php_default").cloned().unwrap_or_default(),
+        "python_default": conf.get("python_default").cloned().unwrap_or_default(),
         "database": conf.get("database").cloned().unwrap_or_default(),
         "fpm_pool_defaults": conf.get("fpm_pool_defaults").cloned().unwrap_or_else(default_fpm_spec_json),
         "user_home_root": conf.get("user_home_root").cloned().unwrap_or_else(|| "/home".into()),
@@ -176,6 +255,8 @@ pub struct EnvDefaultsPayload {
     pub php_default: Option<String>,
     /// 默认数据库实例（如 mysql / mariadb）
     pub database: Option<String>,
+    /// 默认 Python 版本（如 3.12）：应用部署未指定版本时用它（uv 管理）
+    pub python_default: Option<String>,
     /// PHP-FPM 默认 pool 规格（JSON 字符串）
     pub fpm_pool_defaults: Option<String>,
     /// 用户家目录默认挂载点（如 /home /home2），新用户创建时的 home_dir 前缀
@@ -201,6 +282,7 @@ pub async fn env_defaults_save(
     for (key, val) in [
         ("webserver", payload.webserver),
         ("php_default", payload.php_default),
+        ("python_default", payload.python_default),
         ("database", payload.database),
     ] {
         if let Some(v) = val {

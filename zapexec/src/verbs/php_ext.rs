@@ -82,9 +82,7 @@ fn which(name: &str) -> Option<PathBuf> {
 
 /// 跑一次 php，返回 stdout（失败给空串）。
 fn php_out(bin: &Path, args: &[&str]) -> String {
-    let o = root_cmd(bin.to_string_lossy().as_ref())
-        .args(args)
-        .output();
+    let o = root_cmd(bin.to_string_lossy().as_ref()).args(args).output();
     match o {
         Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         Err(_) => String::new(),
@@ -331,8 +329,9 @@ fn name_ok(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
         && !s.contains("..")
-        && s.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '/' | '-'))
+        && s.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '/' | '-')
+        })
 }
 
 /// 我们管理的 ini 文件名（`zap-ext-<name>.ini`），改它不碰别人写的配置。
@@ -579,7 +578,13 @@ pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) ->
             "安装 PHP 扩展 {}（PHP {}，方式：{}）",
             package,
             c.version,
-            if pie { "PIE" } else if pecl { "pecl" } else { "源码编译" }
+            if pie {
+                "PIE"
+            } else if pecl {
+                "pecl"
+            } else {
+                "源码编译"
+            }
         ),
     );
     std::thread::spawn(move || {
@@ -610,7 +615,10 @@ fn install_inner(
     if !so.is_file() && which("php").is_some() {
         super::log_line(
             log,
-            &format!("未能在 {} 找到 {short}.so，尝试按 php -m 复核", c.ext_dir.display()),
+            &format!(
+                "未能在 {} 找到 {short}.so，尝试按 php -m 复核",
+                c.ext_dir.display()
+            ),
         );
     }
     // 写 ini 并重载（复用 toggle 的写入与验证逻辑）
@@ -693,7 +701,9 @@ mod tests {
     fn ctx_stub() -> PhpCtx {
         PhpCtx {
             bin: PathBuf::from("/usr/local/apps/php-74/bin/php"),
-            ext_dir: PathBuf::from("/usr/local/apps/php-74/lib/php/extensions/no-debug-non-zts-20190902"),
+            ext_dir: PathBuf::from(
+                "/usr/local/apps/php-74/lib/php/extensions/no-debug-non-zts-20190902",
+            ),
             scan_dir: Some(PathBuf::from("/usr/local/apps/php-74/etc/php.d")),
             ini: Some(PathBuf::from("/usr/local/apps/php-74/etc/php.ini")),
             php_config: Some(PathBuf::from("/usr/local/apps/php-74/bin/php-config")),
@@ -741,7 +751,10 @@ mod tests {
         // PIE：非交互，且带本实例的 php-config（系统里可能有多版本 PHP）
         let s = install_script(&c, "redis", "", true, false);
         assert!(s.starts_with("pie install redis"), "{s}");
-        assert!(s.contains("--with-php-config=/usr/local/apps/php-74/bin/php-config"), "{s}");
+        assert!(
+            s.contains("--with-php-config=/usr/local/apps/php-74/bin/php-config"),
+            "{s}"
+        );
         // pecl：交互选项用空回车走默认值；版本拼在包名后
         let s = install_script(&c, "redis", "5.3.7", false, true);
         assert!(s.contains("pecl install redis-5.3.7"), "{s}");
@@ -750,7 +763,10 @@ mod tests {
         let s = install_script(&c, "redis", "", false, false);
         assert!(s.contains("pecl.php.net/get/redis.tgz"), "{s}");
         assert!(s.contains("phpize"), "{s}");
-        assert!(s.contains("--with-php-config=/usr/local/apps/php-74/bin/php-config"), "{s}");
+        assert!(
+            s.contains("--with-php-config=/usr/local/apps/php-74/bin/php-config"),
+            "{s}"
+        );
     }
 
     #[test]
@@ -790,7 +806,10 @@ fn remove_inner(c: &PhpCtx, name: &str, log: &str) -> i32 {
             }
         }
         if touched && write_atomic(ini, &out).is_ok() {
-            super::log_line(log, &format!("已注释 {ini} 中的 {name} 声明", ini = ini.display()));
+            super::log_line(
+                log,
+                &format!("已注释 {ini} 中的 {name} 声明", ini = ini.display()),
+            );
         }
     }
     if which("pecl").is_some() {

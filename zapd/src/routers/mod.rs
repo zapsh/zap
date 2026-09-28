@@ -553,6 +553,14 @@ fn api_routers() -> Router {
         .route("/system/env", get(system_env::env_get))
         .route("/system/env/refresh", post(system_env::env_refresh))
         .route("/system/env/defaults", post(system_env::env_defaults_save))
+        .route(
+            "/system/env/python/install",
+            post(system_env::env_python_install),
+        )
+        .route(
+            "/system/env/python/remove",
+            post(system_env::env_python_remove),
+        )
         // 脚本/自动化：计划任务（admin only）
         .route("/system/cron/list", get(system_cron::cron_list))
         .route("/system/cron/add", post(system_cron::cron_add))
@@ -759,6 +767,8 @@ fn api_routers() -> Router {
         .route("/site/traffic", get(site::site_traffic))
         // 站点应用（Application Manager）
         .route("/site/app/caps", get(app::app_caps))
+        .route("/site/app/runtimes", get(app::app_runtimes))
+        .route("/site/app/list_all", get(app::app_list_all))
         .route("/site/app/list", get(app::app_list))
         .route("/site/app/deploy", post(app::app_deploy))
         .route("/site/app/action", post(app::app_action))

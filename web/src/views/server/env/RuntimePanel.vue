@@ -24,6 +24,7 @@ const saving = ref(false)
 const form = reactive<EnvConf>({
   webserver: '',
   php_default: '',
+  python_default: '',
   database: '',
   fpm_pool_defaults: '',
   user_home_root: '/home',

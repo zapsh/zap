@@ -29,6 +29,13 @@ export interface EnvPayload {
     }>
   }
   databases: Array<{ name: string; version: string; binary: string; running: boolean }>
+  /** Python 运行时（uv 管理的 + 系统自带的解释器） */
+  python?: {
+    uv: boolean
+    uv_path: string
+    uv_version: string
+    versions: Array<{ version: string; path: string; source: 'uv' | 'system' }>
+  }
   tools: Array<{ name: string; version: string }>
 }
 
@@ -36,6 +43,8 @@ export interface EnvPayload {
 export interface EnvConf {
   webserver: string
   php_default: string
+  /** 全局默认 Python 版本（uv 管理），应用部署未指定版本时用它 */
+  python_default: string
   database: string
   /** PHP-FPM 默认 pool 规格（JSON 字符串；用户未自定义时的兜底） */
   fpm_pool_defaults: string
@@ -59,6 +68,8 @@ export interface EnvData {
 export interface EnvDefaultsPayload {
   webserver?: string
   php_default?: string
+  /** 全局默认 Python 版本 */
+  python_default?: string
   database?: string
   fpm_pool_defaults?: string
   user_home_root?: string

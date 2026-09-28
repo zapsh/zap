@@ -616,7 +616,11 @@ pub async fn upload(
         // 与早先 `std::fs::write` 的落盘权限对齐，避免临时文件把 0600 带进目标
         let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644));
         // 与 write 同一规则：只有新建的才归操作者，覆盖已有文件时保持原属主
-        match if existed { Ok(()) } else { apply_owner(actor, &dest) } {
+        match if existed {
+            Ok(())
+        } else {
+            apply_owner(actor, &dest)
+        } {
             Ok(_) => Response::ok("上传成功", Some(json!({ "name": rel.to_string_lossy() }))),
             Err(e) => Response::err(-1, e),
         }

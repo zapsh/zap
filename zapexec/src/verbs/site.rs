@@ -475,7 +475,10 @@ fn render_location_body(
             "        limit_req zone=zap_req_{site_id}_{idx}{burst}{mode};\n"
         ));
         if l.limit_req_status > 0 {
-            b.push_str(&format!("        limit_req_status {};\n", l.limit_req_status));
+            b.push_str(&format!(
+                "        limit_req_status {};\n",
+                l.limit_req_status
+            ));
         }
         if l.limit_dry_run && dry_run_ok {
             b.push_str("        limit_req_dry_run on;\n");
@@ -487,13 +490,19 @@ fn render_location_body(
             l.limit_conn_num
         ));
         if l.limit_conn_status > 0 {
-            b.push_str(&format!("        limit_conn_status {};\n", l.limit_conn_status));
+            b.push_str(&format!(
+                "        limit_conn_status {};\n",
+                l.limit_conn_status
+            ));
         }
     }
     // 下载限速：先给 limit_rate_after（前 N MB 不限速），再给 limit_rate
     if l.limit_rate > 0 {
         if l.limit_rate_after > 0 {
-            b.push_str(&format!("        limit_rate_after {}m;\n", l.limit_rate_after));
+            b.push_str(&format!(
+                "        limit_rate_after {}m;\n",
+                l.limit_rate_after
+            ));
         }
         b.push_str(&format!("        limit_rate {}k;\n", l.limit_rate));
     }
@@ -505,10 +514,18 @@ fn render_location_body(
     if loc_limited(l) && !l.limit_body.trim().is_empty() {
         let mut codes: Vec<u16> = Vec::new();
         if l.limit_req_rate > 0 {
-            codes.push(if l.limit_req_status > 0 { l.limit_req_status } else { 429 });
+            codes.push(if l.limit_req_status > 0 {
+                l.limit_req_status
+            } else {
+                429
+            });
         }
         if l.limit_conn_num > 0 {
-            codes.push(if l.limit_conn_status > 0 { l.limit_conn_status } else { 503 });
+            codes.push(if l.limit_conn_status > 0 {
+                l.limit_conn_status
+            } else {
+                503
+            });
         }
         codes.sort_unstable();
         codes.dedup();
@@ -663,7 +680,11 @@ fn norm_ip_list(s: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for part in s.split(|c: char| c == ',' || c.is_whitespace()) {
         let p = part.trim();
-        if p.is_empty() || !p.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '/') {
+        if p.is_empty()
+            || !p
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == '/')
+        {
             continue;
         }
         let (ip, mask) = match p.split_once('/') {
@@ -830,7 +851,10 @@ fn render_security(
                 rules.push_str("SecAuditLogRelevantStatus \"^(?:5|4(?!04))\"\n");
                 rules.push_str("SecAuditLogType Serial\n");
                 rules.push_str("SecAuditLogParts ABIJDEFHZ\n");
-                rules.push_str(&format!("SecAuditLog {}/waf.log\n", dir.trim_end_matches('/')));
+                rules.push_str(&format!(
+                    "SecAuditLog {}/waf.log\n",
+                    dir.trim_end_matches('/')
+                ));
             }
         }
         let custom = s.waf_rules.trim();
@@ -864,7 +888,10 @@ fn render_security(
         ));
     }
     if !out.is_empty() {
-        out.insert_str(0, "    # ── 安全（Zap 面板）─────────────────────────────\n");
+        out.insert_str(
+            0,
+            "    # ── 安全（Zap 面板）─────────────────────────────\n",
+        );
     }
     out
 }
@@ -1097,13 +1124,13 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
                 out.push_str("server {\n");
                 out.push_str(&listen_443);
                 out.push_str(&format!("    server_name {server_name};\n"));
-            out.push_str(&render_security(
-                site_id,
-                security,
-                super::waf::waf_ready(),
-                waf_log,
-                dry_run_ok,
-            ));
+                out.push_str(&render_security(
+                    site_id,
+                    security,
+                    super::waf::waf_ready(),
+                    waf_log,
+                    dry_run_ok,
+                ));
                 out.push_str(sd);
                 out.push_str(&core);
                 out.push_str("}\n");
@@ -2044,9 +2071,7 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         .as_ref()
         .is_some_and(|s| s.limit_req_enable || s.limit_conn_enable)
         || locations.iter().any(loc_limited);
-    if need_zones
-        && let Err(e) = ensure_limit_zones(site_id, security.as_ref(), &locations)
-    {
+    if need_zones && let Err(e) = ensure_limit_zones(site_id, security.as_ref(), &locations) {
         if injected {
             super::webconf::restore_include(&conf_file);
         }
@@ -2292,7 +2317,10 @@ mod tests {
         };
         let s = render_security(7, Some(&sec), false, None, true);
         // rate 只能写在 zone 定义里，使用处只保留 zone / burst / nodelay
-        assert!(s.contains("limit_req zone=zap_req_7 burst=20 nodelay;"), "{s}");
+        assert!(
+            s.contains("limit_req zone=zap_req_7 burst=20 nodelay;"),
+            "{s}"
+        );
         assert!(!s.contains("rate="), "{s}");
         assert!(s.contains("limit_req_status 429;"), "{s}");
         assert!(s.contains("limit_conn zap_conn_7 50;"), "{s}");
@@ -2329,7 +2357,9 @@ mod tests {
             limit_dry_run: true,
             ..Default::default()
         };
-        assert!(render_security(7, Some(&sec), false, None, true).contains("limit_req_dry_run on;"));
+        assert!(
+            render_security(7, Some(&sec), false, None, true).contains("limit_req_dry_run on;")
+        );
         // 老 nginx：不渲染，避免 nginx -t 失败导致整站回滚
         assert!(!render_security(7, Some(&sec), false, None, false).contains("dry_run"));
         sec.limit_dry_run = false;
@@ -2354,7 +2384,10 @@ mod tests {
             ..Default::default()
         };
         let b = render_location_body(&l, 2, 7, false, true);
-        assert!(b.contains("limit_req zone=zap_req_7_2 burst=10 nodelay;"), "{b}");
+        assert!(
+            b.contains("limit_req zone=zap_req_7_2 burst=10 nodelay;"),
+            "{b}"
+        );
         assert!(b.contains("limit_conn zap_conn_7_2 4;"), "{b}");
         assert!(b.contains("limit_rate_after 10m;"), "{b}");
         assert!(b.contains("limit_rate 500k;"), "{b}");
@@ -2374,7 +2407,10 @@ mod tests {
             ..Default::default()
         };
         let b = render_location_body(&l, 0, 3, false, true);
-        assert!(b.contains("limit_req zone=zap_req_3_0 burst=6 delay=6;"), "{b}");
+        assert!(
+            b.contains("limit_req zone=zap_req_3_0 burst=6 delay=6;"),
+            "{b}"
+        );
     }
 
     /// location 可单独关闭 WAF（仅全局 WAF 可用时才输出）
@@ -2434,7 +2470,10 @@ mod tests {
     /// WAF：开关开了还得全局真的可用 —— 否则 nginx -t 会因模块缺失直接失败
     #[test]
     fn security_waf_requires_global_ready() {
-        let sec = SiteSecuritySpec { waf_enable: true, ..Default::default() };
+        let sec = SiteSecuritySpec {
+            waf_enable: true,
+            ..Default::default()
+        };
         assert!(render_security(7, Some(&sec), true, None, true).contains("modsecurity on;"));
         assert!(!render_security(7, Some(&sec), false, None, true).contains("modsecurity"));
     }
@@ -2460,7 +2499,7 @@ mod tests {
     fn shared_ip_binds_listen_address() {
         let domains = vec!["a.com".to_string()];
         let s = render_vhost_full(VhostRenderSpec {
-                                      security: None,
+            security: None,
             site_id: 11,
             name: "shared",
             domains: &domains,
@@ -2491,7 +2530,7 @@ mod tests {
         assert!(!s.contains("listen 80;"), "不应再出现通配监听");
 
         let d = render_vhost_full(VhostRenderSpec {
-                                      security: None,
+            security: None,
             site_id: 12,
             name: "default",
             domains: &domains,
@@ -2593,7 +2632,7 @@ mod tests {
         error_log: Option<&str>,
     ) -> String {
         render_vhost_full(VhostRenderSpec {
-                              security: None,
+            security: None,
             site_id,
             name,
             domains,
@@ -2724,7 +2763,7 @@ mod tests {
     #[test]
     fn render_static_type_has_no_php_and_tryfiles() {
         let s = render_vhost_full(VhostRenderSpec {
-                                      security: None,
+            security: None,
             site_id: 1,
             name: "s",
             domains: &["s.com".into()],
@@ -2753,7 +2792,7 @@ mod tests {
     #[test]
     fn render_pseudo_thinkphp_and_laravel() {
         let s = render_vhost_full(VhostRenderSpec {
-                                      security: None,
+            security: None,
             site_id: 1,
             name: "tp",
             domains: &["tp.com".into()],
@@ -2780,7 +2819,7 @@ mod tests {
         );
 
         let s2 = render_vhost_full(VhostRenderSpec {
-                                       security: None,
+            security: None,
             site_id: 2,
             name: "lv",
             domains: &["lv.com".into()],
@@ -2842,7 +2881,7 @@ mod tests {
             },
         ];
         let s = render_vhost_full(VhostRenderSpec {
-                                      security: None,
+            security: None,
             site_id: 3,
             name: "proxy",
             domains: &["p.com".into()],
@@ -2925,7 +2964,7 @@ mod tests {
         }];
         expect(
             &render_vhost_full(VhostRenderSpec {
-                                   security: None,
+                security: None,
                 site_id: 5,
                 name: "p",
                 domains: &["p.com".into()],
@@ -2934,7 +2973,7 @@ mod tests {
                 access_log: None,
                 error_log: None,
                 waf_log: None,
-            dry_run_ok: true,
+                dry_run_ok: true,
                 site_type: "proxy",
                 pseudo_static: "none",
                 pseudo_custom: "",
@@ -3120,7 +3159,7 @@ mod tests {
             http2_on_syntax: true, // nginx ≥ 1.25.1
         };
         let s = render_vhost_full(VhostRenderSpec {
-                                      security: None,
+            security: None,
             site_id: 9,
             name: "ssl",
             domains: &["ssl.com".into()],
@@ -3160,7 +3199,7 @@ mod tests {
             http2_on_syntax: false,
         };
         let s2 = render_vhost_full(VhostRenderSpec {
-                                       security: None,
+            security: None,
             site_id: 10,
             name: "legacy",
             domains: &["old.com".into()],

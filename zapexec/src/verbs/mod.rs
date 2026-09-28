@@ -348,6 +348,9 @@ pub async fn dispatch(req: Request) -> Response {
             site_id,
             name,
             app_type,
+            runtime_version,
+            build_cmd,
+            create_venv,
             workdir,
             entry,
             command,
@@ -362,6 +365,9 @@ pub async fn dispatch(req: Request) -> Response {
                 site_id,
                 &name,
                 &app_type,
+                &runtime_version,
+                &build_cmd,
+                create_venv,
                 &workdir,
                 &entry,
                 &command,
@@ -374,6 +380,8 @@ pub async fn dispatch(req: Request) -> Response {
             )
             .await
         }
+        Request::AppRuntimes => app::runtimes().await,
+        Request::EnvPython { action, version } => env::python(&action, &version).await,
         Request::AppAction {
             site_id,
             name,

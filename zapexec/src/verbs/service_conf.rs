@@ -192,7 +192,6 @@ fn php_inst_svc(svc: &str) -> Option<String> {
     Some(rest.to_string())
 }
 
-
 // ── 探测工具 ─────────────────────────────────────────────────
 
 fn zap_path() -> PathBuf {
@@ -1283,8 +1282,7 @@ pub async fn conf_save(svc: &str, path: String, content: String) -> Response {
         let (_, _, Some((main, root, _))) = installed_info(d, &svc) else {
             return Err(format!("{} 未安装或未探测到配置", d.label));
         };
-        let (canon, is_main) =
-            validate_path(d, &service_exts(d, &root), &main, &root, &path)?;
+        let (canon, is_main) = validate_path(d, &service_exts(d, &root), &main, &root, &path)?;
         if d.format == ConfFormat::Json && !content.trim().is_empty() {
             serde_json::from_str::<Value>(&content)
                 .map_err(|e| format!("JSON 语法错误，未保存：{e}"))?;
@@ -1907,25 +1905,40 @@ mod tests {
             assert!(keys.contains(&k), "内置定义缺少 {k}");
         }
         let php = supported("php").expect("php 定义");
-        assert!(php.main_candidates.iter().any(|c| c == "/etc/php/*/fpm/php.ini"));
+        assert!(
+            php.main_candidates
+                .iter()
+                .any(|c| c == "/etc/php/*/fpm/php.ini")
+        );
         assert!(php.main_candidates.iter().any(|c| c == "/etc/php.ini"));
-        assert!(php.main_candidates.iter().any(|c| c == "/etc/opt/remi/*/php.ini"));
+        assert!(
+            php.main_candidates
+                .iter()
+                .any(|c| c == "/etc/opt/remi/*/php.ini")
+        );
         assert_eq!(php.format, ConfFormat::Ini);
         assert_eq!(php.ini_comment, ";");
         assert_eq!(php.fields.len(), 8);
 
         let mysql = supported("mysql").expect("mysql 定义");
         assert_eq!(mysql.ini_comment, "#");
-        assert!(mysql.fields.iter().all(|f| f.section.as_deref() == Some("mysqld")));
+        assert!(
+            mysql
+                .fields
+                .iter()
+                .all(|f| f.section.as_deref() == Some("mysqld"))
+        );
         assert_eq!(mysql.fields.len(), 6);
 
         let docker = supported("docker").expect("docker 定义");
         assert_eq!(docker.format, ConfFormat::Json);
         assert_eq!(docker.fields.len(), 13);
-        assert!(docker
-            .fields
-            .iter()
-            .any(|f| f.kind == FieldKind::List && f.jpath == vec!["registry-mirrors"]));
+        assert!(
+            docker
+                .fields
+                .iter()
+                .any(|f| f.kind == FieldKind::List && f.jpath == vec!["registry-mirrors"])
+        );
 
         // php 多实例 svc 复用 php 定义；未知服务不在注册表里
         assert!(supported("php74").is_some());

@@ -143,10 +143,7 @@ pub async fn boot(svc_name: &str, enable: bool) -> Response {
     let action = if enable { "enable" } else { "disable" };
     let done = tokio::task::spawn_blocking(move || svc::act(action, &unit)).await;
     match done {
-        Ok(Ok(())) => Response::ok(
-            "ok",
-            Some(json!({ "enabled": svc::is_enabled(svc_name) })),
-        ),
+        Ok(Ok(())) => Response::ok("ok", Some(json!({ "enabled": svc::is_enabled(svc_name) }))),
         Ok(Err(e)) => Response::err(-1, e),
         Err(e) => Response::err(-1, format!("任务执行失败: {e}")),
     }

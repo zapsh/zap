@@ -120,17 +120,27 @@ fn which_abs(bin: &Path) -> Option<PathBuf> {
         return None;
     }
     let name = bin.to_string_lossy().to_string();
-    let p = out_str(super::platform::SHELL, &["-c", &format!("command -v {name}")]);
+    let p = out_str(
+        super::platform::SHELL,
+        &["-c", &format!("command -v {name}")],
+    );
     (!p.is_empty()).then(|| PathBuf::from(p))
 }
 
 fn has_cmd(name: &str) -> bool {
-    !out_str(super::platform::SHELL, &["-c", &format!("command -v {name}")]).is_empty()
+    !out_str(
+        super::platform::SHELL,
+        &["-c", &format!("command -v {name}")],
+    )
+    .is_empty()
 }
 
 /// 模块目录：`--modules-path=` 优先，否则 `<prefix>/modules`。
 fn modules_dir(args: &str) -> Option<PathBuf> {
-    if let Some(v) = args.split_whitespace().find_map(|a| a.strip_prefix("--modules-path=")) {
+    if let Some(v) = args
+        .split_whitespace()
+        .find_map(|a| a.strip_prefix("--modules-path="))
+    {
         return Some(PathBuf::from(v));
     }
     args.split_whitespace()
@@ -270,11 +280,16 @@ fn enabled_conf(conf: &Path) -> Option<PathBuf> {
 /// 显示"已安装"，用户改规则改了半天空转。
 fn waf_env(info: &NginxInfo) -> WafEnv {
     let lib = libmodsecurity_present();
-    let so = modules_dir(&info.args).map(|d| d.join(MODULE_SO)).filter(|p| p.is_file());
+    let so = modules_dir(&info.args)
+        .map(|d| d.join(MODULE_SO))
+        .filter(|p| p.is_file());
     let rules_dir = rules_dir_of(&info.conf);
-    let main_conf = [rules_dir.join("modsecurity.conf"), PathBuf::from("/etc/modsecurity/modsecurity.conf")]
-        .into_iter()
-        .find(|p| p.is_file());
+    let main_conf = [
+        rules_dir.join("modsecurity.conf"),
+        PathBuf::from("/etc/modsecurity/modsecurity.conf"),
+    ]
+    .into_iter()
+    .find(|p| p.is_file());
     let enabled = enabled_conf(&info.conf);
     // 模块 .so 在盘上不等于生效：主配置里没 load_module，nginx 根本不会加载它
     let installed = lib
@@ -328,8 +343,7 @@ fn blockers(info: &NginxInfo, env: &WafEnv) -> Vec<String> {
     // 已编出模块但没挂上：不用重装，手工加一行 load_module 即可
     if env.module_so.is_some() && !conf_loads_module(&info.conf) {
         out.push(
-            "模块已编译，但 nginx.conf 顶部缺少 load_module（点「一键开启」自动补上）"
-                .to_string(),
+            "模块已编译，但 nginx.conf 顶部缺少 load_module（点「一键开启」自动补上）".to_string(),
         );
     }
     // 模块挂了但 http 上下文没启用：等同没装，给出可照做的一步
@@ -670,7 +684,7 @@ pub async fn set_engine(mode: &str) -> Response {
             return Response::err(
                 -1,
                 format!("不支持的规则引擎形态 '{other}'（可选：On / DetectionOnly / Off）"),
-            )
+            );
         }
     };
     run_blocking(move || {
@@ -678,8 +692,8 @@ pub async fn set_engine(mode: &str) -> Response {
         let main = env
             .main_conf
             .ok_or_else(|| "未找到 WAF 主配置（modsecurity.conf）".to_string())?;
-        let original =
-            std::fs::read_to_string(&main).map_err(|e| format!("读取 {} 失败: {e}", main.display()))?;
+        let original = std::fs::read_to_string(&main)
+            .map_err(|e| format!("读取 {} 失败: {e}", main.display()))?;
         let next = with_engine(&original, &mode);
         if next == original {
             return Ok(Response::ok(
@@ -882,7 +896,8 @@ pub async fn install(log_path: &str) -> Response {
         let conf = info.conf.clone();
         let bin = info.bin.clone();
         let rules_dir = env.rules_dir.clone();
-        let modules = modules_dir(&args).unwrap_or_else(|| PathBuf::from("/usr/local/nginx/modules"));
+        let modules =
+            modules_dir(&args).unwrap_or_else(|| PathBuf::from("/usr/local/nginx/modules"));
         std::thread::spawn(move || {
             let code = install_inner(&log, &version, &args, &conf, &bin, &rules_dir, &modules);
             super::finish_log(&log, code);
@@ -908,7 +923,12 @@ fn install_inner(
 ) -> i32 {
     let mirror = pkg_mirror();
     // 从 `nginx/1.31.5` 里取版本号，用于下载对应源码编动态模块
-    let ver = nginx_version.split('/').last().unwrap_or("").trim().to_string();
+    let ver = nginx_version
+        .split('/')
+        .last()
+        .unwrap_or("")
+        .trim()
+        .to_string();
 
     // 1) 构建依赖（有 apt 才装，别的发行版假定已具备）
     if has_cmd("apt-get") {
@@ -934,7 +954,12 @@ fn install_inner(
          cd \"$src\"; \
          ./build.sh; ./configure --prefix=/usr/local/modsecurity --without-lmdb; \
          make -j$(nproc); make install",
-        fetch = fetch_from_mirror(&mirror, "modsecurity", "libmodsecurity.tar.gz", &lib_candidates()),
+        fetch = fetch_from_mirror(
+            &mirror,
+            "modsecurity",
+            "libmodsecurity.tar.gz",
+            &lib_candidates()
+        ),
     );
     if super::run_step(log, "编译 libmodsecurity", &lib_script) != 0 {
         super::log_line(log, "libmodsecurity 编译失败");
@@ -968,7 +993,10 @@ fn install_inner(
         modules = modules.display(),
     );
     if super::run_step(log, "编译 ModSecurity nginx 模块", &mod_script) != 0 {
-        super::log_line(log, "动态模块编译失败（常见原因：nginx 源码版本与当前 nginx 不一致）");
+        super::log_line(
+            log,
+            "动态模块编译失败（常见原因：nginx 源码版本与当前 nginx 不一致）",
+        );
         return 1;
     }
 
@@ -1036,7 +1064,10 @@ fn install_inner(
         super::log_line(log, &format!("nginx -t 未通过，已回滚 nginx.conf：{e}"));
         return 1;
     }
-    super::log_line(log, "已加载 ModSecurity 模块（规则引擎：DetectionOnly，只记录不拦截）");
+    super::log_line(
+        log,
+        "已加载 ModSecurity 模块（规则引擎：DetectionOnly，只记录不拦截）",
+    );
     super::log_line(
         log,
         "提示：在规则目录的 modsecurity.conf 里把 SecRuleEngine 改为 On 才会真正拦截",
@@ -1192,8 +1223,7 @@ mod tests {
     /// 重复写了两行 SecRuleEngine 时,只保留一行新值
     #[test]
     fn engine_switch_collapses_duplicates() {
-        let out =
-            super::with_engine("SecRuleEngine On\nSecRuleEngine DetectionOnly\n", "Off");
+        let out = super::with_engine("SecRuleEngine On\nSecRuleEngine DetectionOnly\n", "Off");
         assert_eq!(out.matches("SecRuleEngine").count(), 1, "{out}");
         assert!(out.contains("SecRuleEngine Off"), "{out}");
     }
@@ -1202,7 +1232,10 @@ mod tests {
     #[test]
     fn engine_switch_appends_when_missing() {
         let out = super::with_engine("SecRequestBodyAccess On\n", "DetectionOnly");
-        assert!(out.trim_end().ends_with("SecRuleEngine DetectionOnly"), "{out}");
+        assert!(
+            out.trim_end().ends_with("SecRuleEngine DetectionOnly"),
+            "{out}"
+        );
         assert!(out.contains("SecRequestBodyAccess On"), "{out}");
     }
 
@@ -1216,7 +1249,12 @@ mod tests {
                 "x.tar.gz",
                 &lib_candidates(),
             ),
-            fetch_from_mirror("/opt/local-mirror", "modsecurity", "x.tar.gz", &crs_candidates()),
+            fetch_from_mirror(
+                "/opt/local-mirror",
+                "modsecurity",
+                "x.tar.gz",
+                &crs_candidates(),
+            ),
         ] {
             let out = std::process::Command::new("bash")
                 .args(["-n", "-c", &script])

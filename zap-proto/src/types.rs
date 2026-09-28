@@ -774,6 +774,15 @@ pub enum Request {
         name: String,
         /// python | nodejs
         app_type: String,
+        /// 运行时版本（如 `3.11` / `20`）；空 = 用系统默认版本
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        runtime_version: String,
+        /// 构建 / 编译命令（部署时先跑它，如 `npm run build`）；空 = 不构建
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        build_cmd: String,
+        /// python：是否在项目目录里生成虚拟环境（.venv）
+        #[serde(default)]
+        create_venv: bool,
         /// 工作目录（必须是站点目录内的绝对路径，越界直接拒绝）
         workdir: String,
         /// 入口：python 用 `main.py` / `wsgi:app`，nodejs 用 `server.js`
@@ -799,6 +808,19 @@ pub enum Request {
         /// 应用日志落盘目录（站点日志目录，属主为站点用户）
         #[serde(default, skip_serializing_if = "String::is_empty")]
         log_dir: String,
+    },
+    /// 探测服务器上已安装的应用运行时版本（`python` / `nodejs`），供部署向导下拉选择
+    #[serde(rename = "app.runtimes")]
+    AppRuntimes,
+    /// Python 运行时管理（uv）：
+    /// - `detect`    列出 uv 状态与可用版本
+    /// - `install`   用 uv 装一个 Python 版本（如 `3.12`）
+    /// - `uninstall` 卸载 uv 管理的版本
+    #[serde(rename = "env.python")]
+    EnvPython {
+        action: String,
+        #[serde(default)]
+        version: String,
     },
     /// 应用动作：start | stop | restart | enable | disable
     #[serde(rename = "app.action")]

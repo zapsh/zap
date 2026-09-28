@@ -179,6 +179,16 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::action("site", "view")),
     ),
     (
+        "/site/app/list_all",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
+    (
+        "/site/app/runtimes",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
+    (
         "/site/app/log",
         Required::User,
         Some(Perm::action("site", "view")),
@@ -861,6 +871,16 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     ),
     (
         "/system/env",
+        Required::Admin,
+        Some(Perm::module("system.env")),
+    ),
+    (
+        "/system/env/python/install",
+        Required::Admin,
+        Some(Perm::module("system.env")),
+    ),
+    (
+        "/system/env/python/remove",
         Required::Admin,
         Some(Perm::module("system.env")),
     ),

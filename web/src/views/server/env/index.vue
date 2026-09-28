@@ -5,10 +5,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MagicStick, Refresh } from '@/icons'
+import { Box, MagicStick, Refresh } from '@/icons'
 import NavPillPanels from '@/components/NavPillPanels.vue'
 import RuntimePanel from './RuntimePanel.vue'
 import EntitiesPanel from './EntitiesPanel.vue'
+import PythonPanel from './PythonPanel.vue'
 
 const { t } = useI18n()
 
@@ -30,6 +31,13 @@ const tabs = computed(() => [
     icon: Refresh,
     panel: EntitiesPanel,
     hint: t('serverGroups.hintEntities'),
+  },
+  {
+    key: 'python',
+    label: t('serverEnv.pythonTab'),
+    icon: Box,
+    panel: PythonPanel,
+    hint: t('serverEnv.pythonSub'),
   },
 ])
 </script>

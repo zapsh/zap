@@ -23,7 +23,7 @@ use crate::{
         jwt::{self, ValidatedClaims},
     },
 };
-use zap_proto::{APP_TYPES, Request};
+use zap_proto::{APP_TYPES, LocationSpec, Request};
 
 use super::{package, site};
 
@@ -53,6 +53,12 @@ pub struct AppDeployPayload {
     pub name: String,
     /// python | nodejs
     pub app_type: String,
+    /// 运行时版本（如 `3.11` / `20`）；空 = 系统默认版本
+    pub runtime_version: Option<String>,
+    /// 构建 / 编译命令（部署时先跑它）；空 = 不构建
+    pub build_cmd: Option<String>,
+    /// python：是否生成 .venv 虚拟环境（默认开启）
+    pub create_venv: Option<bool>,
     /// 工作目录（空 = 站点 web_root）
     pub workdir: Option<String>,
     pub entry: Option<String>,
@@ -64,6 +70,11 @@ pub struct AppDeployPayload {
     pub autostart: Option<bool>,
     /// 是否安装依赖（pip / npm）
     pub install_deps: Option<bool>,
+    /// 自动分配端口（true 时忽略 port，在套餐端口段里挑一个没被占用的）
+    pub auto_port: Option<bool>,
+    /// 域名：填了就自动创建一个反向代理站点（`site_type=proxy`，把 `/` 反代到应用端口）。
+    /// 不填 site_id 时用它建站；填了 site_id 时忽略。
+    pub domain: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -93,7 +104,7 @@ struct SiteCtx {
 async fn load_site_ctx(site_id: i64) -> Result<SiteCtx, ZapError> {
     let pool = db::get_db_pool().await;
     let row: Option<(String, String, String, String)> = sqlx::query_as(
-        "SELECT s.web_root, s.log_root, u.linux_user, u.username \\
+        "SELECT s.web_root, s.log_root, u.linux_user, u.username \
          FROM site s JOIN user u ON u.id = s.user_id WHERE s.id = ?",
     )
     .bind(site_id)
@@ -184,6 +195,110 @@ async fn caps_of(claims: &jwt::Claims) -> AppCaps {
             max_total: 0,
             exhausted: false,
         },
+    }
+}
+
+/// 在允许范围内挑一个没被占用的端口：优先套餐端口段，未配端口段时从 10000 起找
+async fn pick_free_port(caps: &AppCaps) -> Result<i64, ZapError> {
+    let pool = db::get_db_pool().await;
+    let used: Vec<i64> = sqlx::query_scalar("SELECT port FROM site_apps WHERE port > 0")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let used: std::collections::HashSet<i64> = used.into_iter().collect();
+    let (lo, hi) = if caps.port_min > 0 && caps.port_max > 0 {
+        (caps.port_min, caps.port_max)
+    } else {
+        (10000, 65535)
+    };
+    (lo..=hi)
+        .find(|p| !used.contains(p))
+        .ok_or_else(|| ZapError::New(-1, "套餐端口段内已无可用端口".to_string()))
+}
+
+/// 域名 -> 建一个反代站点：站点类型 proxy，`/` 反代到 127.0.0.1:<port>。
+/// 走 `site::site_add` 是为了复用建站那一整套校验（套餐站点数、反代开关、目录规划）。
+async fn create_proxy_site(
+    claims: &jwt::Claims,
+    client_addr: SocketAddr,
+    domain: &str,
+    name: &str,
+    port: i64,
+) -> Result<i64, ZapError> {
+    // 建站归属：admin / reseller 没有默认归属，落到操作者本人
+    let owner = if jwt::is_admin(claims) || jwt::is_reseller(claims) {
+        Some(claims.id as i64)
+    } else {
+        None
+    };
+    let add = site::SiteAddPayload {
+        user_id: owner,
+        name: Some(name.to_string()),
+        domains: vec![domain.to_string()],
+        ips: Vec::new(),
+        status: Some(1),
+        remark: Some(format!("应用 {name} 的反代站点（由应用部署自动创建）")),
+        php_instance: None,
+        site_type: "proxy".to_string(),
+        pseudo_static: "none".to_string(),
+        pseudo_custom: String::new(),
+        web_root_custom: false,
+        web_root: None,
+        web_root_sub: None,
+        upstreams: Vec::new(),
+        locations: vec![LocationSpec {
+            path: "/".to_string(),
+            kind: "proxy".to_string(),
+            target: format!("http://127.0.0.1:{port}"),
+            code: 0,
+            ws: true,
+            ..Default::default()
+        }],
+        ssl_cert_id: None,
+        force_https: false,
+        ssl_protocols: String::new(),
+        ssl_ciphers: String::new(),
+        ssl_prefer_server_ciphers: true,
+        ssl_http2: true,
+        sec: None,
+    };
+    let Json(v) = site::site_add(
+        jwt::ValidatedClaims(claims.clone()),
+        Extension(client_addr),
+        Json(add),
+    )
+    .await?;
+    v.get("data")
+        .and_then(|d| d.get("id"))
+        .and_then(|x| x.as_i64())
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ZapError::New(-1, "反代站点创建失败：未拿到站点 ID".to_string()))
+}
+
+/// 应用名合法性：会被拼进 systemd unit 名 `zap-app-{site_id}-{name}.service`，
+/// 所以只允许字母数字和 `-_.`；输入上限 48，留出前缀空间。
+fn valid_app_name(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 48
+        && n.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// 最终应用名：admin 直接用输入名；其余角色自动补上站点归属用户名前缀，
+/// 免得不同用户都叫 `api` 时 unit 名看着分不清是谁的。
+fn final_app_name(name: &str, is_admin: bool, owner: &str) -> Result<String, String> {
+    if is_admin || owner.is_empty() {
+        return Ok(name.to_string());
+    }
+    let prefix = format!("{owner}-");
+    if name.starts_with(&prefix) {
+        Ok(name.to_string())
+    } else {
+        let out = format!("{prefix}{name}");
+        if out.len() > 64 {
+            return Err("应用名太长（加上用户名前缀后超过 64 字符）".to_string());
+        }
+        Ok(out)
     }
 }
 
@@ -300,12 +415,15 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
         String,
         String,
         String,
+        String,
+        String,
         i64,
         String,
         i64,
         i64,
     )> = sqlx::query_as(
-        "SELECT id, name, app_type, workdir, entry, command, port, env, autostart, running \\
+        "SELECT id, name, app_type, runtime_version, build_cmd, workdir, entry, command, \
+                port, env, autostart, running \
              FROM site_apps WHERE site_id = ? ORDER BY id",
     )
     .bind(q.site_id)
@@ -342,7 +460,20 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
     let apps: Vec<Value> = rows
         .into_iter()
         .map(
-            |(id, name, app_type, workdir, entry, command, port, env, autostart, running)| {
+            |(
+                id,
+                name,
+                app_type,
+                runtime_version,
+                build_cmd,
+                workdir,
+                entry,
+                command,
+                port,
+                env,
+                autostart,
+                running,
+            )| {
                 let st = live.get(&name).cloned().unwrap_or(json!({
                     "state": "unknown", "active": false, "enabled": false, "pid": 0,
                 }));
@@ -350,6 +481,8 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
                     "id": id,
                     "name": name,
                     "app_type": app_type,
+                    "runtime_version": runtime_version,
+                    "build_cmd": build_cmd,
                     "workdir": workdir,
                     "entry": entry,
                     "command": command,
@@ -376,7 +509,6 @@ pub async fn app_deploy(
     Extension(client_addr): Extension<SocketAddr>,
     Json(payload): Json<AppDeployPayload>,
 ) -> ZapJsonResult {
-    site::site_in_scope(&claims, payload.site_id).await?;
     let caps = require_caps(&claims).await?;
 
     let app_type = payload.app_type.trim().to_ascii_lowercase();
@@ -391,8 +523,11 @@ pub async fn app_deploy(
     }
 
     let name = payload.name.trim().to_string();
-    if name.is_empty() || name.len() > 64 {
-        return Err(ZapError::New(-1, "应用名长度需在 1-64 之间".to_string()));
+    if !valid_app_name(&name) {
+        return Err(ZapError::New(
+            -1,
+            "应用名只能用字母、数字、-、_ 和 .，且不超过 48 个字符".to_string(),
+        ));
     }
 
     let entry = payload.entry.clone().unwrap_or_default();
@@ -401,8 +536,67 @@ pub async fn app_deploy(
     let port = payload.port.unwrap_or(0);
     let autostart = payload.autostart.unwrap_or(true);
     let install_deps = payload.install_deps.unwrap_or(false);
+    let mut runtime_version = payload
+        .runtime_version
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    // 没指定版本就跟随「运行环境」里的全局默认 Python 版本（uv 管理）
+    if runtime_version.is_empty() && app_type == "python" {
+        runtime_version = crate::routers::system_env::python_default();
+    }
+    let build_cmd = payload
+        .build_cmd
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let create_venv = payload.create_venv.unwrap_or(true);
+    if !runtime_version.is_empty()
+        && !runtime_version
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.')
+    {
+        return Err(ZapError::New(
+            -1,
+            "运行时版本号只能包含数字和点".to_string(),
+        ));
+    }
 
-    let ctx = load_site_ctx(payload.site_id).await?;
+    let domain = payload
+        .domain
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    // 端口先定下来：自动分配时在套餐端口段里挑空闲的（建站要用它做反代目标）
+    let port = if payload.auto_port.unwrap_or(false) || (payload.site_id == 0 && port <= 0) {
+        pick_free_port(&caps).await?
+    } else {
+        port
+    };
+
+    // 站点来源二选一：直接选已有站点，或填域名自动建一个反代站点
+    let site_id = if payload.site_id > 0 {
+        site::site_in_scope(&claims, payload.site_id).await?;
+        payload.site_id
+    } else {
+        if domain.is_empty() {
+            return Err(ZapError::New(
+                -1,
+                "请选择要部署到的站点，或填写域名自动创建反代站点".to_string(),
+            ));
+        }
+        create_proxy_site(&claims, client_addr, &domain, &name, port).await?
+    };
+
+    let ctx = load_site_ctx(site_id).await?;
+
+    // 应用名：admin 不限制前缀，其余角色自动带上站点归属用户名前缀
+    let name = final_app_name(&name, jwt::is_admin(&claims), &ctx.owner)
+        .map_err(|e| ZapError::New(-1, e))?;
 
     // 工作目录：不填用站点根目录；填了也必须在站点目录内（执行端还会再校验一次）
     let workdir = match payload
@@ -412,21 +606,22 @@ pub async fn app_deploy(
         .filter(|s| !s.is_empty())
     {
         Some(w) => {
-            let root = ctx.web_root.trim_end_matches('/');
+            // 与执行端一致：只要落在站点用户的家目录内即可（项目目录可以不在 web_root 下）
+            let home = format!("/home/{}", ctx.owner);
             let full = if w.starts_with('/') {
                 w.to_string()
             } else {
-                format!("{root}/{}", w.trim_start_matches('/'))
+                format!("{}/{}", home, w.trim_start_matches('/'))
             };
-            if !root.is_empty() && !full.starts_with(root) {
-                return Err(ZapError::New(-1, "工作目录必须在站点目录内".to_string()));
+            if !full.starts_with(&home) {
+                return Err(ZapError::New(-1, format!("工作目录必须在 {home} 之内")));
             }
             full
         }
         None => ctx.web_root.clone(),
     };
 
-    require_port_ok(&caps, payload.site_id, &name, port).await?;
+    require_port_ok(&caps, site_id, &name, port).await?;
     if caps.max_total > 0 && count_user_apps(claims.id as i64).await >= caps.max_total {
         return Err(ZapError::New(
             -1,
@@ -443,7 +638,7 @@ pub async fn app_deploy(
             .fetch_one(pool)
             .await
             .unwrap_or(0);
-    if exists == 0 && caps.max_apps > 0 && count_apps(payload.site_id).await >= caps.max_apps {
+    if exists == 0 && caps.max_apps > 0 && count_apps(site_id).await >= caps.max_apps {
         return Err(ZapError::New(
             -1,
             format!("当前套餐限制每个站点最多 {} 个应用", caps.max_apps),
@@ -451,9 +646,12 @@ pub async fn app_deploy(
     }
 
     let resp = crate::zapexec::call(Request::AppDeploy {
-        site_id: payload.site_id,
+        site_id,
         name: name.clone(),
         app_type: app_type.clone(),
+        runtime_version: runtime_version.clone(),
+        build_cmd: build_cmd.clone(),
+        create_venv,
         workdir: workdir.clone(),
         entry: entry.clone(),
         command: command.clone(),
@@ -471,17 +669,20 @@ pub async fn app_deploy(
 
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
-        "INSERT INTO site_apps (site_id, name, app_type, workdir, entry, command, port, env, \\
-                autostart, running, created_at, updated_at) \\
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) \\
-         ON CONFLICT(site_id, name) DO UPDATE SET \\
-           app_type = excluded.app_type, workdir = excluded.workdir, entry = excluded.entry, \\
-           command = excluded.command, port = excluded.port, env = excluded.env, \\
+        "INSERT INTO site_apps (site_id, name, app_type, runtime_version, build_cmd, workdir, \
+                entry, command, port, env, autostart, running, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) \
+         ON CONFLICT(site_id, name) DO UPDATE SET \
+           app_type = excluded.app_type, runtime_version = excluded.runtime_version, \
+           build_cmd = excluded.build_cmd, workdir = excluded.workdir, entry = excluded.entry, \
+           command = excluded.command, port = excluded.port, env = excluded.env, \
            autostart = excluded.autostart, running = 1, updated_at = excluded.updated_at",
     )
-    .bind(payload.site_id)
+    .bind(site_id)
     .bind(&name)
     .bind(&app_type)
+    .bind(&runtime_version)
+    .bind(&build_cmd)
     .bind(&workdir)
     .bind(&entry)
     .bind(&command)
@@ -491,25 +692,194 @@ pub async fn app_deploy(
     .bind(now)
     .bind(now)
     .execute(pool)
-    .await?;
+    .await
+    .map_err(|e| ZapError::New(-1, format!("保存应用配置失败：{e}")))?;
 
     let _ = audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "app_deploy",
-        &format!("site={} name={}", payload.site_id, name),
+        &format!("site={} name={}", site_id, name),
         &format!("type={app_type} workdir={workdir}"),
     )
     .await;
     info!(
         "app deploy: site={} name={} type={}",
-        payload.site_id, name, app_type
+        site_id, name, app_type
     );
     Ok(Json(json!({
         "code": 0,
         "message": resp.message,
-        "data": resp.data.unwrap_or(Value::Null),
+        "data": {
+            "site_id": site_id,
+            "name": name,
+            "port": port,
+            "detail": resp.data.unwrap_or(Value::Null),
+        }
     })))
+}
+
+/// GET /site/app/runtimes —— 探测服务器已安装的运行时版本（部署向导下拉用）
+pub async fn app_runtimes(claims: ValidatedClaims) -> ZapJsonResult {
+    let caps = require_caps(&claims).await?;
+    if !caps.allowed {
+        return Ok(Json(json!({
+            "code": 0,
+            "message": "当前套餐未开启应用管理",
+            "data": { "python": [], "nodejs": [], "types": [] },
+        })));
+    }
+    match crate::zapexec::call(Request::AppRuntimes).await {
+        Ok(resp) if resp.code == 0 => {
+            let d = resp.data.unwrap_or(Value::Null);
+            Ok(Json(json!({
+                "code": 0,
+                "message": resp.message,
+                "data": {
+                    "python": d.get("python").cloned().unwrap_or(json!([])),
+                    "nodejs": d.get("nodejs").cloned().unwrap_or(json!([])),
+                    "types": caps.types,
+                    "allowed": caps.allowed,
+                    "port_min": caps.port_min,
+                    "port_max": caps.port_max,
+                },
+            })))
+        }
+        Ok(resp) => Err(exec_err(&resp)),
+        Err(e) => Err(e),
+    }
+}
+
+/// GET /site/app/list_all —— 跨站点应用列表（应用管理面板用，带站点名与端口）
+pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
+    let caps = require_caps(&claims).await?;
+    if !caps.allowed {
+        return Ok(Json(json!({ "code": 0, "message": "", "data": [] })));
+    }
+    let pool = db::get_db_pool().await;
+    let base = "SELECT a.id, a.site_id, s.name AS site_name, a.name, a.app_type, \
+                       a.runtime_version, a.build_cmd, a.workdir, a.entry, a.command, \
+                       a.port, a.env, a.autostart, a.running \
+                FROM site_apps a JOIN site s ON s.id = a.site_id";
+    type Row = (
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        i64,
+        i64,
+    );
+    let rows: Vec<Row> = if jwt::is_admin(&claims) {
+        sqlx::query_as(&format!("{base} ORDER BY s.name, a.name"))
+            .fetch_all(pool)
+            .await?
+    } else if jwt::is_reseller(&claims) {
+        sqlx::query_as(&format!(
+            "{base} WHERE s.user_id = ? OR s.user_id IN (SELECT id FROM user WHERE owner_id = ?) \
+                 ORDER BY s.name, a.name"
+        ))
+        .bind(claims.id as i64)
+        .bind(claims.id as i64)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as(&format!(
+            "{base} WHERE s.user_id = ? ORDER BY s.name, a.name"
+        ))
+        .bind(claims.id as i64)
+        .fetch_all(pool)
+        .await?
+    };
+
+    // 实时进程状态：按站点批量问一次 zapexec（不可用则降级为 unknown，列表照出）
+    let mut live: std::collections::HashMap<(i64, String), Value> =
+        std::collections::HashMap::new();
+    let mut by_site: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    for r in &rows {
+        by_site.entry(r.1).or_default().push(r.3.clone());
+    }
+    for (sid, names) in by_site {
+        if let Ok(resp) = crate::zapexec::call(Request::AppStatus {
+            site_id: sid,
+            names,
+        })
+        .await
+        {
+            if resp.code != 0 {
+                continue;
+            }
+            if let Some(list) = resp
+                .data
+                .as_ref()
+                .and_then(|d| d.get("apps"))
+                .and_then(|v| v.as_array())
+            {
+                for a in list {
+                    if let Some(n) = a.get("name").and_then(|v| v.as_str()) {
+                        live.insert((sid, n.to_string()), a.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let apps: Vec<Value> = rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                site_id,
+                site_name,
+                name,
+                app_type,
+                runtime_version,
+                build_cmd,
+                workdir,
+                entry,
+                command,
+                port,
+                env,
+                autostart,
+                running,
+            )| {
+                let st = live
+                    .get(&(site_id, name.clone()))
+                    .cloned()
+                    .unwrap_or(json!({
+                        "state": "unknown", "active": false, "enabled": false, "pid": 0,
+                    }));
+                json!({
+                    "id": id,
+                    "site_id": site_id,
+                    "site_name": site_name,
+                    "name": name,
+                    "app_type": app_type,
+                    "runtime_version": runtime_version,
+                    "build_cmd": build_cmd,
+                    "workdir": workdir,
+                    "entry": entry,
+                    "command": command,
+                    "port": port,
+                    "env": env,
+                    "autostart": autostart == 1,
+                    "running": running == 1,
+                    "state": st.get("state").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                    "active": st.get("active").and_then(|v| v.as_bool()).unwrap_or(false),
+                    "enabled": st.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                    "pid": st.get("pid").and_then(|v| v.as_i64()).unwrap_or(0),
+                })
+            },
+        )
+        .collect();
+    Ok(Json(json!({ "code": 0, "message": "", "data": apps })))
 }
 
 /// POST /site/app/action —— start | stop | restart | enable | disable
@@ -611,4 +981,52 @@ pub async fn app_log(claims: ValidatedClaims, Query(q): Query<AppLogQuery>) -> Z
     Ok(Json(
         json!({ "code": 0, "message": "ok", "data": { "lines": lines } }),
     ))
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn app_name_charset_is_guarded() {
+        assert!(valid_app_name("helloflask"));
+        assert!(valid_app_name("my_app.v2"));
+        // 会被拼进 systemd unit 名 / 命令行，这些必须挡住
+        assert!(!valid_app_name(""));
+        assert!(!valid_app_name("my app"));
+        assert!(!valid_app_name("app;rm -rf /"));
+        assert!(!valid_app_name("应用名"));
+        assert!(!valid_app_name(&"a".repeat(49)));
+    }
+
+    #[test]
+    fn admin_keeps_bare_name_users_get_owner_prefix() {
+        // admin：原样使用
+        assert_eq!(final_app_name("api", true, "alice").unwrap(), "api");
+        // 普通用户：自动带站点归属用户名前缀，且不会重复加
+        assert_eq!(final_app_name("api", false, "alice").unwrap(), "alice-api");
+        assert_eq!(
+            final_app_name("alice-api", false, "alice").unwrap(),
+            "alice-api"
+        );
+        // 没有归属信息时不硬加前缀
+        assert_eq!(final_app_name("api", false, "").unwrap(), "api");
+    }
+
+    /// 回归防护：多行 SQL 的续行符写错成 `\\` 时编译照过、运行才炸
+    /// （SQLite 报 `unrecognized token: "\"`，而这类错误只在部署时才暴露）。
+    #[test]
+    fn sql_continuations_have_single_backslash() {
+        let src = include_str!("app.rs");
+        for (i, line) in src.lines().enumerate() {
+            if line.contains("SELECT") || line.contains("INSERT") || line.contains("UPDATE") {
+                assert!(
+                    !line.trim_end().ends_with("\\\\"),
+                    "第 {} 行 SQL 续行符写成了双反斜杠（会泄漏进 SQL 文本）：{}",
+                    i + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
 }

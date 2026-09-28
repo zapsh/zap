@@ -303,10 +303,7 @@ fn bin_exists(bin: &str) -> bool {
         "/usr/local/sbin",
         "/sbin",
     ];
-    if dirs
-        .iter()
-        .any(|d| Path::new(d).join(bin).exists())
-    {
+    if dirs.iter().any(|d| Path::new(d).join(bin).exists()) {
         return true;
     }
     super::root_cmd("/bin/sh")

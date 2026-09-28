@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{config, db};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     pub id: u64,       // uid
     pub iat: u64,      // 签发时间

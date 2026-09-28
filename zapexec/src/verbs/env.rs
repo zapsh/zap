@@ -20,6 +20,206 @@ pub async fn detect() -> Response {
         .unwrap_or_else(|e| Response::err(-1, e))
 }
 
+/// Python 运行时管理入口：detect / install / uninstall。
+///
+/// 全局由 uv 统一管理解释器版本，应用目录里再各建自己的 `.venv`（local），
+/// 这样不同应用想要不同 Python 版本时互不影响。
+pub async fn python(action: &str, version: &str) -> Response {
+    let action = action.to_string();
+    let version = version.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Response, String> {
+        Ok(python_inner(&action, &version))
+    })
+    .await
+    .unwrap_or_else(|e| Ok(Response::err(-1, format!("任务执行失败: {e}"))))
+    .unwrap_or_else(|e| Response::err(-1, e))
+}
+
+fn python_inner(action: &str, version: &str) -> Response {
+    match action {
+        "detect" => Response::ok(
+            "Python 运行时探测完成",
+            Some(json!({ "python": detect_python() })),
+        ),
+        "install" | "uninstall" => {
+            let v = version.trim();
+            if v.is_empty() {
+                return Response::err(-1, "请指定 Python 版本（如 3.12）".to_string());
+            }
+            if !is_safe_version(v) {
+                return Response::err(-1, format!("版本号不合法：{v}"));
+            }
+            let Some(uv) = uv_bin() else {
+                return Response::err(
+                    -1,
+                    "未找到 uv：请先安装（curl -LsSf https://astral.sh/uv/install.sh | sh），\
+                     或改用系统自带的 python3"
+                        .to_string(),
+                );
+            };
+            let cmd = if action == "install" {
+                format!("{} python install {v}", uv)
+            } else {
+                format!("{} python uninstall {v}", uv)
+            };
+            let out = root_cmd("bash")
+                .arg("-lc")
+                .arg(&cmd)
+                .output()
+                .map_err(|e| Response::err(-1, format!("执行 {cmd} 失败：{e}")));
+            match out {
+                Ok(o) => {
+                    let tail = String::from_utf8_lossy(&o.stdout).to_string()
+                        + &String::from_utf8_lossy(&o.stderr);
+                    if o.status.success() {
+                        Response::ok(
+                            format!(
+                                "{} {v} 完成",
+                                if action == "install" {
+                                    "安装"
+                                } else {
+                                    "卸载"
+                                }
+                            ),
+                            Some(json!({ "python": detect_python(), "log": tail })),
+                        )
+                    } else {
+                        Response::err(-1, format!("{cmd} 失败：{}", tail.trim()))
+                    }
+                }
+                Err(r) => r,
+            }
+        }
+        other => Response::err(-1, format!("不支持的 python 操作：{other}")),
+    }
+}
+
+/// 版本号只允许 `3` / `3.11` / `3.11.9` 这类形式（要拼进 shell 命令，必须严格）。
+fn is_safe_version(v: &str) -> bool {
+    !v.is_empty() && v.len() <= 16 && v.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// uv 可执行文件位置。uv 常装在 root 家目录，PATH 里未必有，故按常见路径兜底找。
+pub fn uv_bin() -> Option<String> {
+    let mut dirs: Vec<PathBuf> = vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/root/.local/bin"),
+        PathBuf::from("/root/.cargo/bin"),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".cargo/bin"));
+    }
+    for d in dirs {
+        let c = d.join("uv");
+        if c.is_file() {
+            return Some(c.to_string_lossy().to_string());
+        }
+    }
+    which("uv")
+}
+
+fn which(name: &str) -> Option<String> {
+    let o = root_cmd("bash")
+        .arg("-lc")
+        .arg(format!("command -v {name}"))
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// 探测 Python 运行时：uv 是否可用 + 可用版本（uv 管理的 / 系统自带的）。
+pub fn detect_python() -> Value {
+    let uv_path = uv_bin();
+    let uv_version = match &uv_path {
+        Some(p) => probe_first_line(p, &["--version"]).unwrap_or_default(),
+        None => String::new(),
+    };
+    let mut versions: Vec<Value> = Vec::new();
+    // uv 管理的版本：`uv python list` 每行形如
+    //   cpython-3.12.4-linux-x86_64-gnu    /root/.local/share/uv/python/.../bin/python3.12
+    if let Some(uv) = &uv_path {
+        if let Ok(o) = root_cmd(uv).args(["python", "list"]).output() {
+            let txt = String::from_utf8_lossy(&o.stdout);
+            for line in txt.lines() {
+                let t = line.trim();
+                if t.is_empty() || t.starts_with("Installed") || t.starts_with("Available") {
+                    continue;
+                }
+                if let Some(ver) = uv_list_version(t) {
+                    let path = t.split_whitespace().nth(1).unwrap_or("").to_string();
+                    versions.push(json!({
+                        "version": ver,
+                        "path": path,
+                        "source": "uv",
+                    }));
+                }
+            }
+        }
+    }
+    // 系统自带：扫描 /usr/bin/python3.*
+    for cand in system_pythons() {
+        let short = short_version(&cand);
+        if versions
+            .iter()
+            .any(|v| v.get("version").and_then(|x| x.as_str()) == Some(short.as_str()))
+        {
+            continue;
+        }
+        versions.push(json!({
+            "version": short,
+            "path": format!("/usr/bin/python{short}"),
+            "source": "system",
+        }));
+    }
+    versions.sort_by(|a, b| {
+        b.get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .cmp(a.get("version").and_then(|v| v.as_str()).unwrap_or(""))
+    });
+    json!({
+        "uv": uv_path.is_some(),
+        "uv_path": uv_path.unwrap_or_default(),
+        "uv_version": uv_version,
+        "versions": versions,
+    })
+}
+
+/// 从 `cpython-3.12.4-linux-x86_64-gnu` 里取出 `3.12.4`。
+fn uv_list_version(line: &str) -> Option<String> {
+    let tok = line.split_whitespace().next()?;
+    let ver = tok.split('-').nth(1)?;
+    if ver.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        Some(ver.to_string())
+    } else {
+        None
+    }
+}
+
+fn system_pythons() -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir("/usr/bin") {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if let Some(rest) = n.strip_prefix("python3.") {
+                if rest.chars().all(|c| c.is_ascii_digit()) {
+                    out.push(format!("3.{rest}"));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn detect_inner() -> Response {
     let (os_id, os_name, os_ver) = os_release();
     let data = json!({
@@ -33,6 +233,7 @@ fn detect_inner() -> Response {
         "hostname": hostname_detect(),
         "webserver": detect_webserver(),
         "php": detect_php(),
+        "python": detect_python(),
         "databases": detect_databases(),
         "tools": detect_tools(),
         "network": detect_network(),
@@ -784,5 +985,44 @@ mod tests {
             "7.2.4"
         );
         assert_eq!(db_version("mongodb", "db version v7.0.5"), "7.0.5");
+    }
+}
+
+#[cfg(test)]
+mod python_tests {
+    use super::*;
+
+    /// 版本号要拼进 shell 命令，必须严格限制（防注入）。
+    #[test]
+    fn version_token_must_be_numeric() {
+        assert!(is_safe_version("3"));
+        assert!(is_safe_version("3.12"));
+        assert!(is_safe_version("3.12.4"));
+        assert!(!is_safe_version(""));
+        assert!(!is_safe_version("3.12; rm -rf /"));
+        assert!(!is_safe_version("3.12 ls"));
+        assert!(!is_safe_version("$(id)"));
+    }
+
+    #[test]
+    fn uv_list_parses_cpython_token() {
+        assert_eq!(
+            uv_list_version("cpython-3.12.4-linux-x86_64-gnu   /root/.local/share/uv/python/x/bin/python3.12")
+                .unwrap(),
+            "3.12.4"
+        );
+        // 表头 / 分隔行不能误判成版本
+        assert!(uv_list_version("Installed versions").is_none());
+        assert!(uv_list_version("Available for download").is_none());
+    }
+
+    #[test]
+    fn python_detect_shape_is_stable() {
+        let v = detect_python();
+        // uv 可能没装，但字段必须齐全，否则面板渲染会缺字段
+        assert!(v.get("uv").is_some());
+        assert!(v.get("uv_path").is_some());
+        assert!(v.get("uv_version").is_some());
+        assert!(v.get("versions").and_then(|x| x.as_array()).is_some());
     }
 }

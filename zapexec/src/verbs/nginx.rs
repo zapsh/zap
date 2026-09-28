@@ -1366,10 +1366,7 @@ fn ensure_stream_log() -> Result<PathBuf, String> {
 /// 删掉迁移前留在 nginx.conf 同级的旧 zap-stream.conf（不删主配置，只删文件；
 /// include 行由 ensure/remove_include 统一处理）。
 fn remove_legacy_file(conf: &Path) -> Result<(), String> {
-    let old = conf
-        .parent()
-        .unwrap_or(Path::new("/"))
-        .join(STREAM_CONF);
+    let old = conf.parent().unwrap_or(Path::new("/")).join(STREAM_CONF);
     if old == stream_conf_path() {
         return Ok(());
     }
@@ -1466,8 +1463,7 @@ fn remove_include(conf: &Path) -> Result<(), String> {
         .lines()
         .filter(|l| !(l.trim_start().starts_with("include") && l.contains(STREAM_CONF)))
         .collect();
-    std::fs::write(conf, kept.join("\n") + "\n")
-        .map_err(|e| format!("写入主配置失败: {e}"))
+    std::fs::write(conf, kept.join("\n") + "\n").map_err(|e| format!("写入主配置失败: {e}"))
 }
 
 /// 删除 stream 配置文件（不存在也算成功，保证幂等）。
@@ -1494,10 +1490,11 @@ mod tests {
             "http {{\n  include sites-enabled/*.conf;\n}}\n{abs}"
         )));
         assert!(!main_has_include("include zap-stream.conf;\n"));
-        assert!(!main_has_include("http {\n  include sites-enabled/*.conf;\n}\n"));
+        assert!(!main_has_include(
+            "http {\n  include sites-enabled/*.conf;\n}\n"
+        ));
         assert!(!main_has_include("include mime.types;\n"));
     }
-
 
     /// 日志不跟配置混在一个目录：配置在 /etc/zap/nginx，日志在 /var/log/nginx
     #[test]
