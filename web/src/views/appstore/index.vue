@@ -1,73 +1,5 @@
 <template>
   <div class="appstore-page">
-    <!-- 多 Git 源管理卡片 -->
-    <el-card shadow="never" class="repo-card">
-      <div class="repo-head">
-        <div class="repo-title-wrap">
-          <el-icon :size="24" color="#409eff"><Goods /></el-icon>
-          <div class="repo-detail">
-            <div class="repo-title">{{ t('appstore.repoTitle') }}</div>
-            <div class="repo-sub">{{ t('appstore.repoSub') }}</div>
-          </div>
-        </div>
-        <div class="repo-head__actions">
-          <!-- 任务队列入口：编译/安装是排队的，这里看得到排到哪了 -->
-          <el-button size="small" :icon="List" @click="openQueue">
-            {{ t('appstore.queueBtn') }}
-            <el-tag v-if="activeCount" size="small" type="warning" effect="dark" round>
-              {{ activeCount }}
-            </el-tag>
-          </el-button>
-          <el-button type="primary" :disabled="!isAdmin" @click="showAddDialog = true">
-            {{ t('appstore.addSource') }}
-          </el-button>
-        </div>
-      </div>
-
-      <div class="repo-list">
-        <div v-for="r in repos" :key="r.id" class="repo-item">
-          <div class="repo-item-left">
-            <div class="repo-item-name">
-              {{ r.name || r.id }}
-              <el-tag v-if="r.builtin" size="small" type="primary" effect="plain">{{
-                t('appstore.tagBuiltin')
-              }}</el-tag>
-              <el-tag v-if="!r.exists" size="small" type="danger" effect="plain">{{
-                t('appstore.tagDirMissing')
-              }}</el-tag>
-            </div>
-            <div class="repo-item-url">{{ r.url }}</div>
-            <div class="repo-item-meta">
-              <span>id: {{ r.id }}</span>
-              <span v-if="r.version">{{ t('appstore.versionColon') }} {{ r.version }}</span>
-              <span v-if="r.commit">commit: {{ r.commit.slice(0, 7) }}</span>
-              <span>{{ t('appstore.updatedAtColon', { time: fmtTime(r.updated_at) }) }}</span>
-            </div>
-          </div>
-          <div class="repo-item-actions">
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :disabled="!isAdmin"
-              @click="handleUpdateRepo(r)"
-              >{{ t('appstore.update') }}</el-button
-            >
-            <el-button
-              v-if="!r.builtin"
-              size="small"
-              type="danger"
-              plain
-              :disabled="!isAdmin"
-              @click="handleRemoveRepo(r)"
-              >{{ t('common.delete') }}</el-button
-            >
-          </div>
-        </div>
-        <el-empty v-if="repos.length === 0" :description="t('appstore.noRepo')" :image-size="60" />
-      </div>
-    </el-card>
-
     <!-- 页内导航：应用商店是单一菜单，已安装 / 我的站点应用都在本页切换 -->
     <div class="view-tabs">
       <el-radio-group v-model="activeTab" size="default">
@@ -75,7 +7,31 @@
         <el-radio-button value="installed">{{ t('appstore.tabInstalled') }}</el-radio-button>
         <el-radio-button value="mine">{{ t('appstore.tabMine') }}</el-radio-button>
       </el-radio-group>
+      <div class="view-tabs__actions">
+        <!-- 任务队列入口：编译/安装是排队的，这里看得到排到哪了 -->
+        <el-button size="small" :icon="List" @click="openQueue">
+          {{ t('appstore.queueBtn') }}
+          <el-tag v-if="activeCount" size="small" type="warning" effect="dark" round>
+            {{ activeCount }}
+          </el-tag>
+        </el-button>
+        <el-button size="small" :icon="Goods" @click="repoDrawerRef?.open('list')">
+          {{ t('appstore.manageRepos') }}
+        </el-button>
+        <el-button
+          size="small"
+          type="primary"
+          :icon="Plus"
+          :disabled="!isAdmin"
+          @click="repoDrawerRef?.open('add')"
+        >
+          {{ t('appstore.addSource') }}
+        </el-button>
+      </div>
     </div>
+
+    <!-- 软件园（Git 源）管理抽屉：列表 / 更新 / 删除 / 增加源 -->
+    <RepoManageDrawer ref="repoDrawerRef" @changed="loadPackages" @log="onRepoLog" />
 
     <!-- 已安装实例（按实例操作：启停 / 卸载） -->
     <InstalledPane
@@ -274,28 +230,6 @@
       :description="t('appstore.noPackages')"
     />
 
-    <!-- 添加源对话框 -->
-    <el-dialog v-model="showAddDialog" :title="t('appstore.addRepoTitle')" width="520px">
-      <el-form label-width="80px" @submit.prevent>
-        <el-form-item :label="t('appstore.nameLabel')" required>
-          <el-input
-            v-model="addForm.name"
-            :placeholder="t('appstore.namePlaceholder')"
-            maxlength="32"
-          />
-        </el-form-item>
-        <el-form-item :label="t('appstore.gitUrlLabel')" required>
-          <el-input v-model="addForm.url" placeholder="https://github.com/org/repo.git" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showAddDialog = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="adding" @click="handleAddRepo">{{
-          t('appstore.addAndPull')
-        }}</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 任务队列抽屉：应用商店自己的任务（安装 / 升级 / 脚本 / 仓库同步） -->
     <el-drawer v-model="queueVisible" :title="t('appstore.queueTitle')" size="72%" destroy-on-close>
       <TaskQueuePanel ref="queuePanelRef" kind="appstore" @changed="onQueueChanged" />
@@ -390,15 +324,11 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
-import { Goods, List, Search, InfoFilled } from '@/icons'
+import { Goods, List, Plus, Search, InfoFilled } from '@/icons'
 import { useUserStore } from '@/stores/user'
 import TaskQueuePanel from '@/components/TaskQueuePanel.vue'
 import { getTasks } from '@/api/task'
 import {
-  getRepos,
-  addRepo,
-  removeRepo,
-  updateRepo,
   getPackages,
   installPackage,
   uninstallPackage,
@@ -408,12 +338,12 @@ import {
   type AppOption,
   type AppChoice,
   type FormOptions,
-  type RepoSource,
   type RunItem,
   type VersionMeta,
 } from '@/api/appstore'
 import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
 import InstalledPane from '@/views/appstore/installed.vue'
+import RepoManageDrawer from '@/views/appstore/RepoManageDrawer.vue'
 
 const { t } = useI18n()
 const userStore = useUserStore()
@@ -446,88 +376,6 @@ function canViewPkg(pkg: AppPackage): boolean {
 function canOperatePkg(pkg: AppPackage): boolean {
   if (pkg.source === 'custom') return isAdmin.value
   return canViewPkg(pkg)
-}
-
-// ── Git 源（多源）───────────────────────────────────────────
-
-const repos = ref<RepoSource[]>([])
-const updatingId = ref('')
-const adding = ref(false)
-const showAddDialog = ref(false)
-const addForm = ref({ name: '', url: '' })
-
-async function loadRepos() {
-  try {
-    const resp = await getRepos()
-    repos.value = resp.data.repos || []
-  } catch (e: any) {
-    ElMessage.error(e.message || t('appstore.loadReposFailed'))
-  }
-}
-
-async function handleAddRepo() {
-  const name = addForm.value.name.trim()
-  const url = addForm.value.url.trim()
-  if (!name) {
-    ElMessage.warning(t('appstore.nameRequired'))
-    return
-  }
-  if (!url) {
-    ElMessage.warning(t('appstore.urlRequired'))
-    return
-  }
-  adding.value = true
-  try {
-    const resp = await addRepo({ name, url })
-    ElMessage.success(t('appstore.addStarted'))
-    showAddDialog.value = false
-    addForm.value = { name: '', url: '' }
-    logDrawerRef.value?.openDrawer(resp.data.run_id, t('appstore.addRepoLogTitle'))
-    setTimeout(() => {
-      loadRepos()
-      loadPackages()
-    }, 3000)
-  } catch (e: any) {
-    ElMessage.error(e.message || t('appstore.addFailed'))
-  } finally {
-    adding.value = false
-  }
-}
-
-async function handleUpdateRepo(r: RepoSource) {
-  updatingId.value = r.id
-  try {
-    const resp = await updateRepo({ id: r.id })
-    ElMessage.success(t('appstore.updateStarted'))
-    logDrawerRef.value?.openDrawer(
-      resp.data.run_id,
-      t('appstore.updateLogTitle', { name: r.name || r.id }),
-    )
-    setTimeout(() => {
-      loadRepos()
-      loadPackages()
-    }, 3000)
-  } catch (e: any) {
-    ElMessage.error(e.message || t('appstore.updateFailed'))
-  } finally {
-    updatingId.value = ''
-  }
-}
-
-async function handleRemoveRepo(r: RepoSource) {
-  try {
-    await ElMessageBox.confirm(
-      t('appstore.removeConfirm', { name: r.name || r.id }),
-      t('appstore.removeTitle'),
-      { type: 'warning' },
-    )
-    const resp = await removeRepo({ id: r.id })
-    ElMessage.success(resp.message || t('appstore.removed'))
-    loadRepos()
-    loadPackages()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error(e.message || t('appstore.removeFailed'))
-  }
 }
 
 // ── 包列表 ──────────────────────────────────────────────────
@@ -1105,17 +953,15 @@ function statusText(s: string) {
 
 // ── 工具 ────────────────────────────────────────────────────
 
-function fmtTime(ts: number | null | undefined): string {
-  if (!ts) return '-'
-  const d = new Date(ts * 1000)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+const logDrawerRef = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
+const repoDrawerRef = ref<InstanceType<typeof RepoManageDrawer> | null>(null)
+
+/** 软件园抽屉里的异步任务（拉取 / 删除）也用同一个日志抽屉展示 */
+function onRepoLog(runId: string, title: string) {
+  logDrawerRef.value?.openDrawer(runId, title)
 }
 
-const logDrawerRef = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
-
 onMounted(() => {
-  loadRepos()
   loadPackages()
   loadQueueCount()
 })
@@ -1153,96 +999,20 @@ onMounted(() => {
   flex: none;
 }
 
-.repo-card {
-  margin-bottom: 4px;
-}
-
-.repo-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.repo-title-wrap {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.repo-head__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.repo-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.repo-sub {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-top: 4px;
-}
-
-.repo-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.repo-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  background: var(--el-bg-color-page);
-}
-
-.repo-item-left {
-  min-width: 0;
-}
-
-.repo-item-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.repo-item-url {
-  font-size: 12px;
-  color: var(--el-text-color-regular);
-  margin-top: 4px;
-  word-break: break-all;
-}
-
-.repo-item-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.repo-item-actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
 /* 页内导航（应用商店单一菜单，已安装 / 我的站点应用在这里切） */
 .view-tabs {
   margin: 12px 0 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.view-tabs__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .filter-bar {

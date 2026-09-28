@@ -3415,6 +3415,7 @@ const enUS: Messages = {
     repoSub:
       'Package data comes from multiple Git sources; add, remove, or update them at any time',
     addSource: 'Add Source',
+    manageRepos: 'Manage Sources',
     tagBuiltin: 'Built-in',
     tagDirMissing: 'Directory Missing',
     updatedAtColon: 'Updated: {time}',

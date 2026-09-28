@@ -3387,7 +3387,8 @@ export default {
   appstore: {
     repoTitle: '应用商店软件库（Git 源）',
     repoSub: '包数据来自多个 Git 源，可随时添加 / 删除 / 更新',
-    addSource: '添加源',
+    addSource: '增加软件源',
+    manageRepos: '管理软件源',
     tagBuiltin: '内置',
     tagDirMissing: '目录缺失',
     updatedAtColon: '更新时间: {time}',
