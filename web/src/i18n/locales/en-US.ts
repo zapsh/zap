@@ -4110,6 +4110,8 @@ const enUS: Messages = {
     appPickSite: 'Select site',
     appPickSitePh: 'Pick a site to manage its apps',
     appPickSiteTip: 'Select a site above first',
+    appNoSite: 'No site available',
+    appNoSiteTip: 'No site yet — switch to "Domain" to create a reverse-proxy site',
     appQuotaTotal: '{used}/{max} apps deployed',
     navSitesHint: 'Sites: create / edit / start-stop / sync vhost config',
     navAppsHint: 'Applications: deploy Python / Node.js apps, managed across sites',

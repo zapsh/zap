@@ -484,21 +484,27 @@ pub fn detect_python() -> Value {
     // uv 管理的版本：`uv python list` 每行形如
     //   cpython-3.12.4-linux-x86_64-gnu    /root/.local/share/uv/python/.../bin/python3.12
     if let Some(uv) = &uv_path {
-        if let Ok(o) = root_cmd(uv).args(["python", "list"]).output() {
-            let txt = String::from_utf8_lossy(&o.stdout);
-            for line in txt.lines() {
-                let t = line.trim();
-                if t.is_empty() || t.starts_with("Installed") || t.starts_with("Available") {
-                    continue;
-                }
-                if let Some(ver) = uv_list_version(t) {
-                    let path = t.split_whitespace().nth(1).unwrap_or("").to_string();
-                    versions.push(json!({
-                        "version": ver,
-                        "path": path,
-                        "source": "uv",
-                    }));
-                }
+        // 只要已安装的；老版本 uv 不认 --only-installed（输出为空）时退回完整列表，
+        // 再靠 uv_list_installed 的路径判断把未安装项剔掉
+        let mut txt = String::new();
+        if let Ok(o) = root_cmd(uv)
+            .args(["python", "list", "--only-installed"])
+            .output()
+        {
+            txt = String::from_utf8_lossy(&o.stdout).to_string();
+        }
+        if txt.trim().is_empty() {
+            if let Ok(o) = root_cmd(uv).args(["python", "list"]).output() {
+                txt = String::from_utf8_lossy(&o.stdout).to_string();
+            }
+        }
+        for line in txt.lines() {
+            if let Some((ver, path)) = uv_list_installed(line) {
+                versions.push(json!({
+                    "version": ver,
+                    "path": path,
+                    "source": "uv",
+                }));
             }
         }
     }
@@ -533,6 +539,57 @@ pub fn detect_python() -> Value {
 }
 
 /// 从 `cpython-3.12.4-linux-x86_64-gnu` 里取出 `3.12.4`。
+/// 解析 `uv python list` 的一行，只接受**已安装**的解释器。
+///
+/// 未安装的行第二列是 `<download available>` 之类而不是路径，形如：
+///   cpython-3.13.0-linux-x86_64-gnu    <download available>
+/// 以前只看第一列版本就收，导致部署向导里能选到根本没装的版本（一部署就失败）。
+fn uv_list_installed(line: &str) -> Option<(String, String)> {
+    let t = line.trim();
+    if t.is_empty() || t.starts_with("Installed") || t.starts_with("Available") {
+        return None;
+    }
+    let ver = uv_list_version(t)?;
+    let path = t.split_whitespace().nth(1).unwrap_or("").to_string();
+    if !path.starts_with('/') {
+        return None;
+    }
+    Some((ver, path))
+}
+
+#[cfg(test)]
+mod uv_list_tests {
+    use super::*;
+
+    /// 已安装的行：第二列是解释器绝对路径
+    #[test]
+    fn installed_line_is_kept() {
+        let line = "cpython-3.12.4-linux-x86_64-gnu    /root/.local/share/uv/python/cpython-3.12.4/bin/python3.12";
+        let (ver, path) = uv_list_installed(line).expect("已安装行应保留");
+        assert_eq!(ver, "3.12.4");
+        assert!(path.starts_with('/'), "{path}");
+    }
+
+    /// 未安装的行（可下载）：不能出现在版本下拉里
+    #[test]
+    fn downloadable_line_is_dropped() {
+        for line in [
+            "cpython-3.13.0-linux-x86_64-gnu    <download available>",
+            "cpython-3.14.0-linux-x86_64-gnu",
+        ] {
+            assert!(uv_list_installed(line).is_none(), "{line} 不应算已安装");
+        }
+    }
+
+    /// 分组标题与空行
+    #[test]
+    fn headers_and_blank_are_dropped() {
+        for line in ["", "   ", "Installed versions:", "Available for download:"] {
+            assert!(uv_list_installed(line).is_none(), "{line}");
+        }
+    }
+}
+
 fn uv_list_version(line: &str) -> Option<String> {
     let tok = line.split_whitespace().next()?;
     let ver = tok.split('-').nth(1)?;

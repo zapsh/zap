@@ -22,9 +22,15 @@
         </el-radio-group>
       </el-form-item>
       <el-form-item v-if="form.target === 'site'" :label="t('site.appPickSite')" required>
-        <el-select v-model="form.site_id" filterable style="width: 100%">
+        <el-select
+          v-model="siteIdModel"
+          filterable
+          style="width: 100%"
+          :placeholder="sites.length ? t('site.appPickSitePh') : t('site.appNoSite')"
+        >
           <el-option v-for="s in sites" :key="s.id" :value="s.id" :label="s.name" />
         </el-select>
+        <div v-if="!sites.length" class="wz-tip">{{ t('site.appNoSiteTip') }}</div>
       </el-form-item>
       <template v-else>
         <el-form-item :label="t('site.appDomain')" required>
@@ -213,6 +219,14 @@ const step = ref(0)
 const saving = ref(false)
 const dirVisible = ref(false)
 const sites = ref<SiteOption[]>([])
+
+/** 没有可选站点时不回显 0（el-select 会把无匹配的 modelValue 原样显示出来） */
+const siteIdModel = computed({
+  get: () => (sites.value.length ? form.value.site_id || null : null),
+  set: (v: number | null) => {
+    form.value.site_id = v ?? 0
+  },
+})
 const runtimes = ref<{ python: string[]; nodejs: string[]; types: string[]; port_min: number; port_max: number }>({
   python: [],
   nodejs: [],

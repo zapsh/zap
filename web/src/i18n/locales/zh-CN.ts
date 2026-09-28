@@ -4046,6 +4046,8 @@ export default {
     appPickSite: '选择站点',
     appPickSitePh: '选择要管理应用的站点',
     appPickSiteTip: '请先在上方选择一个站点',
+    appNoSite: '暂无可选站点',
+    appNoSiteTip: '还没有站点，可切换到「域名」直接创建一个反代站点',
     appQuotaTotal: '已部署 {used}/{max} 个应用',
     navSitesHint: '站点列表：新建 / 编辑 / 启停 / 同步站点配置',
     navAppsHint: '应用管理：部署 Python / Node.js 应用，独立于站点维度管理',
