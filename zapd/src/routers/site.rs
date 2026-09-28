@@ -17,7 +17,7 @@ use crate::{
         server_env,
     },
 };
-use zap_proto::{LocationSpec, Request, SiteSecuritySpec, UpstreamSpec};
+use zap_proto::{LOC_DIRECTIVES, LocationSpec, Request, SiteSecuritySpec, UpstreamSpec};
 
 use super::system_basic::{K_IPV4 as K_DEFAULT_IPV4, K_IPV6 as K_DEFAULT_IPV6};
 use super::user::USER_KIND_MEMBER;
@@ -1765,6 +1765,17 @@ pub async fn site_feature(claims: ValidatedClaims) -> ZapJsonResult {
 
 /// 站点已有目录浏览（供「选择已有目录」使用）：
 /// admin/reseller 可指定归属用户浏览；普通用户只能浏览自己的家目录
+/// location 附加指令白名单：面板下拉项由这张表驱动（与执行端校验同一份），
+/// 加参数只改 zap-proto 里的 LOC_DIRECTIVES。
+pub async fn site_loc_directives(claims: ValidatedClaims) -> ZapJsonResult {
+    require_manageable(&claims)?;
+    Ok(Json(json!({
+        "code": 0,
+        "message": "OK",
+        "data": { "directives": LOC_DIRECTIVES },
+    })))
+}
+
 pub async fn site_dirs_browse(
     claims: ValidatedClaims,
     Json(payload): Json<SiteDirsPayload>,

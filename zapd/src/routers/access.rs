@@ -127,6 +127,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("site", "view")),
     ),
+    // location 附加指令白名单（只读字典）
+    (
+        "/site/loc-directives",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
     (
         "/site/add",
         Required::User,

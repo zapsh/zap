@@ -276,3 +276,19 @@ export function getSiteAppLog(site_id: number, name: string, lines = 200) {
     params: { site_id, name, lines },
   })
 }
+
+/** location 附加指令白名单条目（与执行端校验同一份表） */
+export interface LocDirectiveSpec {
+  key: string
+  kind: 'on_off' | 'duration' | 'size' | 'token' | 'header' | 'path_or_off'
+  multi: boolean
+  hint: string
+  sample: string
+}
+
+/** 面板下拉项：可附加到 location 的 nginx 指令白名单 */
+export function getLocDirectives() {
+  return http.get<ApiResponse<{ directives: LocDirectiveSpec[] }>>(
+    '/site/loc-directives',
+  )
+}

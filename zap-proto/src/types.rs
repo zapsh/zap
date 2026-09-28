@@ -153,6 +153,156 @@ impl Default for SiteSecuritySpec {
     }
 }
 
+/// location 内的附加指令：白名单指令名 + 校验过的值。
+/// 面板下拉项由执行端白名单驱动，加参数只需改那张表。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct LocDirective {
+    /// 指令名（必须在执行端白名单内，如 expires / access_log）
+    pub key: String,
+    /// 指令值；空串渲染成不带值的指令
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub value: String,
+}
+
+/// 附加指令的值形态（决定校验规则与面板输入控件）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocDirValue {
+    /// `on` / `off`
+    OnOff,
+    /// 时长：`30d` `12h` `max` `off` `-1` `epoch`
+    Duration,
+    /// 大小：`10m` `1g`
+    Size,
+    /// 自由值（禁 `;` `{}` `#` 与换行）
+    Token,
+    /// 响应头：`Name value`，末尾可选 `always`
+    Header,
+    /// 日志：`off` 或绝对路径（须在归属用户目录下）
+    PathOrOff,
+}
+
+/// 附加指令白名单条目：面板下拉项与执行端校验共用这一张表，加参数只改这里。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct LocDirSpec {
+    /// nginx 指令名
+    pub key: &'static str,
+    /// 值形态
+    pub kind: LocDirValue,
+    /// 是否允许多条（nginx 里 expires 之类重复会报 duplicate）
+    pub multi: bool,
+    /// 面板上的一句话说明
+    pub hint: &'static str,
+    /// 示例值
+    pub sample: &'static str,
+}
+
+/// location 附加指令白名单。
+///
+/// 刻意不含 `alias` / `root` / `proxy_pass` / `return` / `include` / `rewrite`
+/// 等会改变 location 语义或读任意文件的指令——它们要么有专门的 kind，
+/// 要么会绕过路径校验。
+pub const LOC_DIRECTIVES: &[LocDirSpec] = &[
+    LocDirSpec {
+        key: "expires",
+        kind: LocDirValue::Duration,
+        multi: false,
+        hint: "浏览器缓存过期时间；off / -1 表示不缓存",
+        sample: "30d",
+    },
+    LocDirSpec {
+        key: "access_log",
+        kind: LocDirValue::PathOrOff,
+        multi: true,
+        hint: "访问日志：off 关闭，或指定日志文件路径",
+        sample: "off",
+    },
+    LocDirSpec {
+        key: "error_log",
+        kind: LocDirValue::PathOrOff,
+        multi: true,
+        hint: "错误日志：off 关闭，或指定日志文件路径",
+        sample: "off",
+    },
+    LocDirSpec {
+        key: "add_header",
+        kind: LocDirValue::Header,
+        multi: true,
+        hint: "追加响应头，末尾带 always 时错误响应也生效",
+        sample: "Cache-Control public",
+    },
+    LocDirSpec {
+        key: "try_files",
+        kind: LocDirValue::Token,
+        multi: false,
+        hint: "静态文件回退查找，常用于前端路由兜底",
+        sample: "$uri $uri/ /index.html",
+    },
+    LocDirSpec {
+        key: "gzip",
+        kind: LocDirValue::OnOff,
+        multi: false,
+        hint: "gzip 压缩响应",
+        sample: "on",
+    },
+    LocDirSpec {
+        key: "gzip_static",
+        kind: LocDirValue::OnOff,
+        multi: false,
+        hint: "存在同名 .gz 时直接发送预压缩文件",
+        sample: "on",
+    },
+    LocDirSpec {
+        key: "etag",
+        kind: LocDirValue::OnOff,
+        multi: false,
+        hint: "ETag 协商缓存",
+        sample: "on",
+    },
+    LocDirSpec {
+        key: "if_modified_since",
+        kind: LocDirValue::Token,
+        multi: false,
+        hint: "协商缓存比对方式：exact / before / off",
+        sample: "exact",
+    },
+    LocDirSpec {
+        key: "sendfile",
+        kind: LocDirValue::OnOff,
+        multi: false,
+        hint: "零拷贝发送静态文件",
+        sample: "on",
+    },
+    LocDirSpec {
+        key: "tcp_nopush",
+        kind: LocDirValue::OnOff,
+        multi: false,
+        hint: "与 sendfile 配合，凑满一个包再发",
+        sample: "on",
+    },
+    LocDirSpec {
+        key: "autoindex",
+        kind: LocDirValue::OnOff,
+        multi: false,
+        hint: "目录列表（公开目录谨慎开启）",
+        sample: "off",
+    },
+    LocDirSpec {
+        key: "client_max_body_size",
+        kind: LocDirValue::Size,
+        multi: false,
+        hint: "该 location 的请求体上限",
+        sample: "10m",
+    },
+    LocDirSpec {
+        key: "charset",
+        kind: LocDirValue::Token,
+        multi: false,
+        hint: "响应字符集",
+        sample: "utf-8",
+    },
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LocationSpec {
     /// location 匹配路径，必须以 `/` 开头（如 `/`、`/api`）；不支持正则前缀
@@ -232,6 +382,14 @@ pub struct LocationSpec {
     /// 本 location 限速「干跑」：命中只记日志不拦（`limit_req_dry_run on`）
     #[serde(default)]
     pub limit_dry_run: bool,
+    /// kind=alias（静态目录）时的挂载方式：
+    /// `alias`（默认，location 路径被目录替换）/ `root`（location 路径拼到目录之后）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub static_mode: String,
+    /// 附加指令（白名单内）：如 expires / access_log / add_header，
+    /// 面板上可动态增删，值格式由执行端校验
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra: Vec<LocDirective>,
 }
 
 /// Application Manager 支持的应用类型。
@@ -852,10 +1010,7 @@ pub enum Request {
     },
     /// 批量查询应用实时状态（active / enabled / pid）
     #[serde(rename = "app.status")]
-    AppStatus {
-        site_id: i64,
-        names: Vec<String>,
-    },
+    AppStatus { site_id: i64, names: Vec<String> },
     /// 删除应用：停服务 -> disable -> 删 unit -> daemon-reload
     #[serde(rename = "app.remove")]
     AppRemove { site_id: i64, name: String },

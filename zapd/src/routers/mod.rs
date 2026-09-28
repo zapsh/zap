@@ -767,6 +767,8 @@ fn api_routers() -> Router {
         // 站点能力读取（普通用户能否用反代/自定义目录，依套餐而定）+ 已有目录浏览
         .route("/site/feature", get(site::site_feature))
         .route("/site/dirs", post(site::site_dirs_browse))
+        // location 附加指令白名单（面板下拉项）
+        .route("/site/loc-directives", get(site::site_loc_directives))
         // 站点启停 / 维护三态切换（running / stopped / maintenance）
         .route("/site/state", post(site::site_state))
         .route("/site/sync_all", post(site::site_sync_all))

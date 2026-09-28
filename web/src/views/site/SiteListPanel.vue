@@ -18,7 +18,8 @@ import { http } from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 import type { InstalledApp } from '@/api/appstore'
 import { getInstalledApps } from '@/api/appstore'
-import { getSiteSecurity, getSecurityCaps } from '@/api/site'
+import { getLocDirectives, getSiteSecurity, getSecurityCaps } from '@/api/site'
+import type { LocDirectiveSpec } from '@/api/site'
 import type { SiteSecurity } from '@/api/site'
 import { getCertList } from '@/api/ssl'
 import type { SslCertItem } from '@/api/ssl'
@@ -116,6 +117,12 @@ interface HeaderKV {
 }
 
 /** 自定义 location（proxy / redirect / deny / alias / raw） */
+/** location 附加指令（白名单内的一条：指令名 + 值） */
+interface LocExtra {
+  key: string
+  value: string
+}
+
 interface LocationSpec {
   path: string
   kind: 'proxy' | 'redirect' | 'deny' | 'alias' | 'raw'
@@ -156,6 +163,10 @@ interface LocationSpec {
   no_waf: boolean
   /** 本 location 限速干跑：命中只记日志不拦 */
   limit_dry_run: boolean
+  /** 静态目录挂载方式：'' = alias（目录替换 location 路径）/ 'root'（路径拼到目录之后） */
+  static_mode: string
+  /** 附加指令（白名单内，可动态增删） */
+  extra: LocExtra[]
   /** 仅本地 UI 使用：高级参数展开（不入 payload） */
   adv?: boolean
 }
@@ -799,6 +810,8 @@ function blankLocation(path = '/'): LocationSpec {
     limit_body: '',
     no_waf: false,
     limit_dry_run: false,
+    static_mode: '',
+    extra: [],
     adv: false,
   }
 }
@@ -809,6 +822,45 @@ function addLocationRow() {
   const l = blankLocation(form.locations.length ? '/api' : '/')
   form.locations.push(l)
 }
+const locDirectives = ref<LocDirectiveSpec[]>([])
+async function loadLocDirectives() {
+  try {
+    const res = await getLocDirectives()
+    locDirectives.value = res.data?.directives || []
+  } catch {
+    locDirectives.value = []
+  }
+}
+
+/** 白名单条目（决定值输入控件与示例） */
+function dirSpecOf(key: string): LocDirectiveSpec | undefined {
+  return locDirectives.value.find((d) => d.key === key)
+}
+/** on/off 型指令用下拉，其余用输入框（placeholder 给示例） */
+function isOnOff(key: string) {
+  return dirSpecOf(key)?.kind === 'on_off'
+}
+function sampleOf(key: string) {
+  return dirSpecOf(key)?.sample || ''
+}
+function addExtraRow(loc: LocationSpec) {
+  if (!loc.extra) loc.extra = []
+  loc.extra.push({ key: '', value: '' })
+}
+/** 静态资源常用组合：缓存过期 + 关访问日志 + gzip */
+function applyStaticPreset(loc: LocationSpec) {
+  loc.extra = [
+    { key: 'expires', value: '30d' },
+    { key: 'access_log', value: 'off' },
+    { key: 'gzip', value: 'on' },
+  ]
+  ElMessage.success(t('site.staticPresetApplied'))
+}
+/** alias / root 的实际映射效果，写在切换器旁边避免选错 */
+function mountTip(loc: LocationSpec) {
+  return loc.static_mode === 'root' ? t('site.staticRootTip') : t('site.staticAliasTip')
+}
+
 function addUpstreamRow() {
   form.upstreams.push(blankUpstream())
 }
@@ -862,6 +914,7 @@ function onLocationKindChange(loc: LocationSpec) {
     if (!loc.target) loc.target = ''
   } else if (loc.kind === 'alias') {
     loc.code = 0
+    if (!loc.extra) loc.extra = []
   } else if (loc.kind === 'raw') {
     loc.code = 0
     loc.target = ''
@@ -910,6 +963,8 @@ const dirDialog = reactive({
   dirs: [] as string[],
   loading: false,
   error: '',
+  /** 回填目标：'' = 站点根目录；`loc:<index>` = 第 index 个 location 的目标 */
+  target: '',
 })
 function joinPath(base: string, name: string) {
   return `${base.replace(/\/+$/, '')}/${name}`
@@ -944,6 +999,19 @@ function openDirBrowser() {
   dirFetch(cur)
   dirDialog.visible = true
 }
+/** 打开目录浏览并回填到指定 location 的静态目录（已存在目录才能选） */
+function openDirBrowserFor(i: number) {
+  if (canManageAll.value && !form.user_id) {
+    ElMessage.warning(t('site.selectOwner'))
+    return
+  }
+  dirDialog.ownerId = canManageAll.value ? form.user_id : null
+  dirDialog.target = `loc:${i}`
+  const cur = form.locations[i]?.target?.trim()
+  dirFetch(cur && cur.startsWith('/') ? cur : '')
+  dirDialog.visible = true
+}
+
 function dirGoHome() {
   dirFetch(dirDialog.home)
 }
@@ -960,14 +1028,22 @@ function dirEnter(name: string) {
 function dirPickCurrent() {
   if (!dirDialog.path) return
   // 选中家目录下已存在的目录 → 切到「已有目录」模式，并去掉家目录前缀只存相对子路径
-  form.web_root_custom = true
   const pre = dirDialog.home
-  form.web_root_sub =
+  const rel =
     pre && dirDialog.path.startsWith(pre + '/')
       ? dirDialog.path.slice(pre.length + 1)
       : dirDialog.path
+  if (dirDialog.target.startsWith('loc:')) {
+    // 静态目录（alias / root）要绝对路径，不做相对化
+    const i = Number(dirDialog.target.slice(4))
+    if (form.locations[i]) form.locations[i].target = dirDialog.path
+  } else {
+    form.web_root_custom = true
+    form.web_root_sub = rel
+  }
   dirDialog.visible = false
-  ElMessage.success(t('site.dirSelected', { path: form.web_root_sub }))
+  dirDialog.target = ''
+  ElMessage.success(t('site.dirSelected', { path: dirDialog.path }))
 }
 
 /** 从「已有目录」改回「自动创建」：目录不存在时创建站点会自动建好（不覆盖已有文件） */
@@ -1083,6 +1159,8 @@ function openEdit(row: SiteItem) {
     limit_body: l.limit_body || '',
     no_waf: !!l.no_waf,
     limit_dry_run: !!l.limit_dry_run,
+    static_mode: l.static_mode || '',
+    extra: (l.extra || []).map((d) => ({ key: d.key || '', value: d.value || '' })),
     adv: false,
   }))
   if (form.site_type === 'proxy' && !form.locations.length) {
@@ -1421,6 +1499,7 @@ function handleSelectionChange(rows: SiteItem[]) {
 }
 
 onMounted(() => {
+  loadLocDirectives()
   loadOwners()
   loadPhpOptions()
   loadCerts()
@@ -2496,6 +2575,12 @@ onMounted(() => {
                               : t('site.locTargetProxy')
                         "
                       />
+                      <el-button
+                        v-if="loc.kind === 'alias'"
+                        :icon="FolderOpened"
+                        :title="t('site.pickDir')"
+                        @click="openDirBrowserFor(i)"
+                      />
                       <el-select
                         v-if="loc.kind === 'redirect' || loc.kind === 'deny'"
                         v-model="loc.code"
@@ -2509,12 +2594,31 @@ onMounted(() => {
                         />
                       </el-select>
                       <el-button
+                        v-if="loc.kind !== 'raw'"
+                        link
+                        type="primary"
+                        size="small"
+                        @click="loc.adv = !loc.adv"
+                      >
+                        {{ loc.adv ? t('site.collapseAdv') : t('site.expandAdv') }}
+                      </el-button>
+                      <el-button
                         link
                         type="danger"
                         :icon="Delete"
                         @click="removeAt(form.locations, i)"
                       />
                     </div>
+                    <!-- 静态目录：alias（替换路径）/ root（拼接路径）两种挂载方式 -->
+                    <div v-if="loc.kind === 'alias'" class="loc-static">
+                      <span class="adv-label">{{ t('site.staticMount') }}</span>
+                      <el-radio-group v-model="loc.static_mode" size="small">
+                        <el-radio-button value="">alias</el-radio-button>
+                        <el-radio-button value="root">root</el-radio-button>
+                      </el-radio-group>
+                      <span class="form-tip">{{ mountTip(loc) }}</span>
+                    </div>
+
                     <!-- raw 自由指令体 -->
                     <el-input
                       v-if="loc.kind === 'raw'"
@@ -2524,6 +2628,62 @@ onMounted(() => {
                       class="loc-raw"
                       :placeholder="t('site.locRawPlaceholder')"
                     />
+                    <!-- 附加指令：白名单内动态增删（值格式由服务端校验） -->
+                    <div v-if="loc.adv && loc.kind !== 'raw'" class="loc-extra">
+                      <div class="adv-row adv-col">
+                        <span class="adv-label">
+                          {{ t('site.extraDirectives') }}
+                          <span class="form-tip">{{ t('site.extraDirectivesTip') }}</span>
+                        </span>
+                        <div v-for="(d, j) in loc.extra || []" :key="j" class="extra-row">
+                          <el-select
+                            v-model="d.key"
+                            filterable
+                            class="extra-key"
+                            :placeholder="t('site.extraKeyPlaceholder')"
+                          >
+                            <el-option
+                              v-for="o in locDirectives"
+                              :key="o.key"
+                              :value="o.key"
+                              :label="o.key"
+                            >
+                              <span>{{ o.key }}</span>
+                              <span class="extra-hint">{{ o.hint }}</span>
+                            </el-option>
+                          </el-select>
+                          <el-select v-if="isOnOff(d.key)" v-model="d.value" class="extra-val">
+                            <el-option value="on" label="on" />
+                            <el-option value="off" label="off" />
+                          </el-select>
+                          <el-input
+                            v-else
+                            v-model="d.value"
+                            class="extra-val"
+                            :placeholder="sampleOf(d.key)"
+                          />
+                          <el-button
+                            link
+                            type="danger"
+                            :icon="Delete"
+                            @click="removeAt(loc.extra, j)"
+                          />
+                        </div>
+                        <div class="extra-actions">
+                          <el-button size="small" :icon="Plus" @click="addExtraRow(loc)">
+                            {{ t('site.addExtra') }}
+                          </el-button>
+                          <el-button
+                            v-if="loc.kind === 'alias'"
+                            size="small"
+                            @click="applyStaticPreset(loc)"
+                          >
+                            {{ t('site.staticPreset') }}
+                          </el-button>
+                        </div>
+                      </div>
+                    </div>
+
                     <!-- proxy 快捷开关行 -->
                     <div v-if="loc.kind === 'proxy'" class="loc-flags">
                       <el-switch
@@ -2532,9 +2692,6 @@ onMounted(() => {
                         active-text="WebSocket"
                         inactive-text="HTTP"
                       />
-                      <el-button link type="primary" size="small" @click="loc.adv = !loc.adv">
-                        {{ loc.adv ? t('site.collapseAdv') : t('site.expandAdv') }}
-                      </el-button>
                     </div>
                     <!-- proxy 高级参数 -->
                     <div v-if="loc.kind === 'proxy' && loc.adv" class="loc-adv">
@@ -3428,5 +3585,44 @@ onMounted(() => {
 }
 .domain-dup-tip {
   color: var(--el-color-danger);
+}
+
+.loc-static {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.loc-extra {
+  margin-top: 6px;
+}
+
+.extra-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.extra-key {
+  width: 200px;
+}
+
+.extra-val {
+  width: 240px;
+}
+
+.extra-hint {
+  float: right;
+  margin-left: 12px;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.extra-actions {
+  display: flex;
+  gap: 8px;
 }
 </style>

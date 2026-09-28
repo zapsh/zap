@@ -18,10 +18,10 @@ pub mod types;
 pub const DEFAULT_EXEC_SOCKET: &str = "/run/zap/exec.sock";
 
 pub use types::{
-    AcmeChallengeEntry, DockerBuildArg, HeaderSpec, LocationSpec, Message, Request, Response,
-    SiteSecuritySpec, UpstreamServer, UpstreamSpec, docker_namespace, linux_username,
-    normalize_image_tag,
-    sanitize_site_name, valid_image_ref, app_type_supported, APP_TYPES,
+    APP_TYPES, AcmeChallengeEntry, DockerBuildArg, HeaderSpec, LOC_DIRECTIVES, LocDirSpec,
+    LocDirValue, LocDirective, LocationSpec, Message, Request, Response, SiteSecuritySpec,
+    UpstreamServer, UpstreamSpec, app_type_supported, docker_namespace, linux_username,
+    normalize_image_tag, sanitize_site_name, valid_image_ref,
 };
 
 /// base64 编码（文件内容传输用）。

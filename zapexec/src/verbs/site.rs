@@ -14,7 +14,9 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
-use zap_proto::{LocationSpec, Response, SiteSecuritySpec, UpstreamSpec};
+use zap_proto::{
+    LOC_DIRECTIVES, LocDirValue, LocationSpec, Response, SiteSecuritySpec, UpstreamSpec,
+};
 
 use super::root_cmd;
 
@@ -443,7 +445,12 @@ fn render_location_body(
             b.push_str(&format!("        return {code};\n"));
         }
         "alias" => {
-            b.push_str(&format!("        alias {};\n", l.target.trim()));
+            // 两种挂载方式：alias 用目录替换 location 路径；root 把 location 路径拼到目录之后
+            if l.static_mode.trim() == "root" {
+                b.push_str(&format!("        root {};\n", l.target.trim()));
+            } else {
+                b.push_str(&format!("        alias {};\n", l.target.trim()));
+            }
         }
         // raw：高级自由指令体（每行原样输出，同步前已校验，禁止 include / 块嵌套）
         "raw" => {
@@ -454,6 +461,15 @@ fn render_location_body(
             }
         }
         _ => {}
+    }
+    // ── 附加指令（白名单内；值形态与去重在 validate_loc_extra 里已校验）──
+    for d in &l.extra {
+        let k = d.key.trim();
+        let v = d.value.trim();
+        if k.is_empty() || v.is_empty() {
+            continue;
+        }
+        b.push_str(&format!("        {k} {v};\n"));
     }
     // ── 本 location 的限速 / 限并发 / 下载限速（zone 见 ensure_limit_zones）──
     if l.limit_req_rate > 0 {
@@ -1383,6 +1399,341 @@ fn path_under(base: &Path, p: &Path) -> bool {
 
 /// 校验 vhost 高级配置：站点类型 / 伪静态 / 自定义目录 / upstream / location。
 /// 失败返回带原因的 Err，同步方据此中止发布（nginx -t 仅是最后一道保险）。
+/// 判断是否是合法的 nginx 时长写法：30d / 12h / 5m / 500ms / max / off / epoch / -1
+fn is_duration(v: &str) -> bool {
+    if matches!(v, "off" | "max" | "epoch") {
+        return true;
+    }
+    let body = v.strip_prefix('-').unwrap_or(v);
+    let digits = body.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 {
+        return false;
+    }
+    let unit: String = body.chars().skip(digits).collect();
+    unit.is_empty()
+        || matches!(
+            unit.as_str(),
+            "ms" | "s" | "m" | "h" | "d" | "w" | "M" | "y"
+        )
+}
+
+/// 判断是否是合法的体积写法：10m / 1g / 512k / 0
+fn is_size(v: &str) -> bool {
+    let digits = v.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 {
+        return false;
+    }
+    let unit: String = v.chars().skip(digits).collect();
+    unit.is_empty() || matches!(unit.as_str(), "k" | "K" | "m" | "M" | "g" | "G")
+}
+
+/// 附加指令值通用字符过滤：禁控制字符与能截断 / 改写指令的符号
+fn extra_value_clean(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 200
+        && !v
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ';' | '{' | '}' | '#' | '\\' | '`'))
+}
+
+/// location 附加指令校验：只放行 LOC_DIRECTIVES 白名单里的指令，
+/// 值按形态校验，不可重复的指令去重；日志路径沿用 alias 的目录围栏。
+fn validate_loc_extra(l: &LocationSpec, root: Option<&Path>) -> Result<(), String> {
+    if l.extra.len() > 20 {
+        return Err("附加指令最多 20 条".to_string());
+    }
+    let mut seen: Vec<&'static str> = Vec::new();
+    for d in &l.extra {
+        let key = d.key.trim().to_lowercase();
+        let spec = LOC_DIRECTIVES
+            .iter()
+            .find(|s| s.key == key)
+            .ok_or_else(|| {
+                format!(
+                    "不支持的附加指令：{}（可用：{}）",
+                    d.key.trim(),
+                    LOC_DIRECTIVES
+                        .iter()
+                        .map(|s| s.key)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+        let v = d.value.trim();
+        if !extra_value_clean(v) {
+            return Err(format!("附加指令 {key} 的值非法或超长：{v}"));
+        }
+        match spec.kind {
+            LocDirValue::OnOff => {
+                if v != "on" && v != "off" {
+                    return Err(format!("{key} 的值只能是 on / off（收到：{v}）"));
+                }
+            }
+            LocDirValue::Duration => {
+                if !is_duration(v) {
+                    return Err(format!(
+                        "{key} 需要时长写法，如 30d / 12h / 5m / max / off（收到：{v}）"
+                    ));
+                }
+            }
+            LocDirValue::Size => {
+                if !is_size(v) {
+                    return Err(format!(
+                        "{key} 需要体积写法，如 10m / 1g / 512k（收到：{v}）"
+                    ));
+                }
+            }
+            LocDirValue::Token => {
+                // 允许变量（$uri 等），但不放行能改写指令结构的字符
+                if !v.chars().all(|c| {
+                    c.is_ascii_alphanumeric()
+                        || matches!(c, ' ' | '/' | '.' | '_' | '-' | '$' | '=' | ':' | '*' | ',')
+                }) {
+                    return Err(format!("{key} 的值含非法字符：{v}"));
+                }
+            }
+            LocDirValue::Header => {
+                // add_header Name value [always]
+                let mut parts: Vec<&str> = v.split_whitespace().collect();
+                if parts.last() == Some(&"always") {
+                    parts.pop();
+                }
+                if parts.len() < 2 {
+                    return Err(format!(
+                        "{key} 需要「名称 值」两段，如 Cache-Control public"
+                    ));
+                }
+                let name = parts[0];
+                if !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Err(format!("{key} 的头名只允许字母/数字/-/_：{name}"));
+                }
+                let val = parts[1..].join(" ");
+                if !val.chars().all(|c| {
+                    c.is_ascii_alphanumeric()
+                        || matches!(c, ' ' | '/' | '.' | '_' | '-' | ':' | ',' | '*' | '=' | '+')
+                }) {
+                    return Err(format!("{key} 的头值含非法字符：{val}"));
+                }
+            }
+            LocDirValue::PathOrOff => {
+                if v != "off" {
+                    if !v.starts_with('/')
+                        || v.split('/').any(|seg| seg == "..")
+                        || v.chars().any(|c| {
+                            c.is_control() || matches!(c, '{' | '}' | ';' | '#' | '$' | '"')
+                        })
+                    {
+                        return Err(format!("{key} 只能是 off 或安全的绝对路径（收到：{v}）"));
+                    }
+                    // 有文档根的站点（php / static）仍限制在文档根内；
+                    // 反代站点没有文档根，日志可落在应用目录
+                    if let Some(r) = root
+                        && !path_under(r, Path::new(v))
+                    {
+                        return Err(format!("{key} 的日志路径必须在站点目录内：{v}"));
+                    }
+                }
+            }
+        }
+        if !spec.multi && seen.contains(&spec.key) {
+            return Err(format!("{key} 不允许重复出现"));
+        }
+        seen.push(spec.key);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod loc_extra_tests {
+    use super::*;
+    use zap_proto::LocDirective;
+
+    fn d(key: &str, value: &str) -> LocDirective {
+        LocDirective {
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    /// 反代站点必须有 location / 兜底，否则校验先挂在别处
+    fn proxy_root() -> LocationSpec {
+        LocationSpec {
+            path: "/".to_string(),
+            kind: "proxy".to_string(),
+            target: "http://127.0.0.1:8080".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn static_loc(mode: &str, extra: Vec<LocDirective>) -> LocationSpec {
+        LocationSpec {
+            path: "/static/".to_string(),
+            kind: "alias".to_string(),
+            target: "/home/u/www/p-1".to_string(),
+            static_mode: mode.to_string(),
+            extra,
+            ..Default::default()
+        }
+    }
+
+    fn validate(locs: Vec<LocationSpec>) -> Result<(), String> {
+        validate_vhost_cfg("proxy", "none", "", false, None, &[], &locs)
+    }
+
+    /// 静态目录两种挂载方式：alias 替换 location 路径，root 拼在目录之后。
+    #[test]
+    fn static_dir_supports_alias_and_root_mode() {
+        let body = render_location_body(&static_loc("", vec![]), 0, 1, false, false);
+        assert!(body.contains("alias /home/u/www/p-1;"), "{body}");
+        assert!(!body.contains("root "), "{body}");
+
+        let body = render_location_body(&static_loc("root", vec![]), 0, 1, false, false);
+        assert!(body.contains("root /home/u/www/p-1;"), "{body}");
+        assert!(!body.contains("alias "), "{body}");
+    }
+
+    /// 附加指令按填写顺序渲染在主指令之后
+    #[test]
+    fn extra_directives_rendered_after_main_directive() {
+        let l = static_loc(
+            "",
+            vec![d("expires", "30d"), d("access_log", "off"), d("gzip", "on")],
+        );
+        let body = render_location_body(&l, 0, 1, false, false);
+        let alias_at = body.find("alias ").unwrap();
+        let expires_at = body.find("expires 30d;").unwrap();
+        let log_at = body.find("access_log off;").unwrap();
+        assert!(alias_at < expires_at, "{body}");
+        assert!(expires_at < log_at, "{body}");
+        assert!(body.contains("gzip on;"), "{body}");
+    }
+
+    /// 白名单之外一律拒绝：否则能塞进 proxy_pass / alias 绕过路径校验
+    #[test]
+    fn extra_directives_reject_keys_outside_whitelist() {
+        for bad in [
+            "proxy_pass",
+            "alias",
+            "root",
+            "return",
+            "include",
+            "rewrite",
+        ] {
+            let err = validate(vec![proxy_root(), static_loc("", vec![d(bad, "x")])]).unwrap_err();
+            assert!(err.contains("不支持的附加指令"), "{bad} => {err}");
+        }
+    }
+
+    /// 值形态校验：expires 只接受时长写法
+    #[test]
+    fn extra_directives_check_value_shape() {
+        let err = validate(vec![
+            proxy_root(),
+            static_loc("", vec![d("expires", "30x")]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("需要时长写法"), "{err}");
+        let err = validate(vec![proxy_root(), static_loc("", vec![d("gzip", "yes")])]).unwrap_err();
+        assert!(err.contains("on / off"), "{err}");
+        let err = validate(vec![
+            proxy_root(),
+            static_loc("", vec![d("client_max_body_size", "10x")]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("需要体积写法"), "{err}");
+        // 合法值放行
+        assert!(
+            validate(vec![
+                proxy_root(),
+                static_loc("", vec![d("expires", "30d"), d("expires", "max")])
+            ])
+            .is_err()
+        );
+        assert!(validate(vec![proxy_root(), static_loc("", vec![d("expires", "-1")])]).is_ok());
+    }
+
+    /// nginx 对不可重复指令会报 duplicate：expires 只能有一条
+    #[test]
+    fn extra_directives_reject_duplicate_single_directives() {
+        let err = validate(vec![
+            proxy_root(),
+            static_loc("", vec![d("expires", "30d"), d("expires", "10d")]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("不允许重复出现"), "{err}");
+        // 允许多条的指令（add_header）不拦
+        assert!(
+            validate(vec![
+                proxy_root(),
+                static_loc(
+                    "",
+                    vec![
+                        d("add_header", "X-A 1"),
+                        d("add_header", "X-B 2"),
+                        d("add_header", "X-C 3 always"),
+                    ]
+                ),
+            ])
+            .is_ok()
+        );
+    }
+
+    /// add_header 必须是「名称 值」，头名不能塞空格或分号
+    #[test]
+    fn extra_directives_check_header_shape() {
+        let err = validate(vec![
+            proxy_root(),
+            static_loc("", vec![d("add_header", "X-A")]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("名称 值"), "{err}");
+        let err = validate(vec![
+            proxy_root(),
+            static_loc("", vec![d("add_header", "X-A v; proxy_pass http://x")]),
+        ])
+        .unwrap_err();
+        // 分号在通用字符过滤里就被拦（否则能截断指令再注入新指令）
+        assert!(err.contains("非法"), "{err}");
+    }
+
+    /// 日志路径只允许 off 或绝对路径，不能越出站点目录
+    #[test]
+    fn extra_directives_check_log_path() {
+        assert!(
+            validate(vec![
+                proxy_root(),
+                static_loc("", vec![d("access_log", "off")])
+            ])
+            .is_ok()
+        );
+        let err = validate(vec![
+            proxy_root(),
+            static_loc("", vec![d("access_log", "../../x.log")]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("off 或安全的绝对路径"), "{err}");
+        // 有文档根的站点：日志必须落在文档根内
+        let locs = vec![
+            proxy_root(),
+            static_loc("", vec![d("access_log", "/etc/passwd")]),
+        ];
+        let err = validate_vhost_cfg(
+            "static",
+            "none",
+            "",
+            false,
+            Some(Path::new("/home/u/www/p-1")),
+            &[],
+            &locs,
+        )
+        .unwrap_err();
+        assert!(err.contains("站点目录内"), "{err}");
+    }
+}
+
 fn validate_vhost_cfg(
     site_type: &str,
     pseudo_static: &str,
@@ -1672,6 +2023,8 @@ fn validate_vhost_cfg(
             }
             _ => return Err(format!("location 类型不支持：{}", l.kind)),
         }
+        // 附加指令：白名单 + 值形态 + 去重（nginx 对不可重复指令会报 duplicate）
+        validate_loc_extra(l, root)?;
     }
     if s_type == "proxy" && !has_root_loc {
         return Err(
