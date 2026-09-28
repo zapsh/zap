@@ -885,6 +885,31 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::module("system.env")),
     ),
     (
+        "/system/env/python/uv",
+        Required::Admin,
+        Some(Perm::module("system.env")),
+    ),
+    (
+        "/system/env/python/index",
+        Required::Admin,
+        Some(Perm::module("system.env")),
+    ),
+    (
+        "/system/env/nodejs/fnm",
+        Required::Admin,
+        Some(Perm::module("system.env")),
+    ),
+    (
+        "/system/env/nodejs/action",
+        Required::Admin,
+        Some(Perm::module("system.env")),
+    ),
+    (
+        "/system/env/nodejs/registry",
+        Required::Admin,
+        Some(Perm::module("system.env")),
+    ),
+    (
         "/system/cron",
         Required::Admin,
         Some(Perm::module("system.cron")),

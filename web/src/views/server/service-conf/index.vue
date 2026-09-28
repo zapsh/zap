@@ -28,6 +28,8 @@ import Overview from './overview.vue'
 import NginxConf from './nginx.vue'
 import PhpConf from './php.vue'
 import MysqlConf from './mysql.vue'
+import PythonConf from './python.vue'
+import NodejsConf from './nodejs.vue'
 
 const { t } = useI18n()
 
@@ -39,6 +41,8 @@ const tabs = computed(() => [
   { key: 'nginx', label: t('serviceConf.nginx'), component: NginxConf },
   { key: 'php', label: t('serviceConf.php'), component: PhpConf },
   { key: 'mysql', label: t('serviceConf.mysql'), component: MysqlConf },
+  { key: 'python', label: t('serviceConf.pythonTab'), component: PythonConf },
+  { key: 'nodejs', label: t('serviceConf.nodejsTab'), component: NodejsConf },
 ])
 
 const current = computed(() => tabs.value.find((x) => x.key === active.value) ?? tabs.value[0])

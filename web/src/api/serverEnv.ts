@@ -29,11 +29,29 @@ export interface EnvPayload {
     }>
   }
   databases: Array<{ name: string; version: string; binary: string; running: boolean }>
+  /** Node.js 运行时（fnm 全局管理） */
+  nodejs?: {
+    fnm: boolean
+    fnm_path: string
+    fnm_version: string
+    fnm_dir: string
+    default: string
+    /** /usr/local/bin/node 软链是否存在（其它用户直接可用） */
+    global_link: boolean
+    versions: Array<{
+      version: string
+      path: string
+      source: 'fnm' | 'system'
+      installed: boolean
+    }>
+  }
   /** Python 运行时（uv 管理的 + 系统自带的解释器） */
   python?: {
     uv: boolean
     uv_path: string
     uv_version: string
+    /** 当前生效的 PyPI 源 */
+    index_url: string
     versions: Array<{ version: string; path: string; source: 'uv' | 'system' }>
   }
   tools: Array<{ name: string; version: string }>
@@ -45,6 +63,10 @@ export interface EnvConf {
   php_default: string
   /** 全局默认 Python 版本（uv 管理），应用部署未指定版本时用它 */
   python_default: string
+  /** 全局默认 Node 版本（fnm 管理），应用部署未指定版本时用它 */
+  node_default: string
+  /** 下载镜像：official（默认）/ china */
+  download_mirror: string
   database: string
   /** PHP-FPM 默认 pool 规格（JSON 字符串；用户未自定义时的兜底） */
   fpm_pool_defaults: string
@@ -70,6 +92,10 @@ export interface EnvDefaultsPayload {
   php_default?: string
   /** 全局默认 Python 版本 */
   python_default?: string
+  /** 全局默认 Node 版本 */
+  node_default?: string
+  /** 下载镜像：official（默认）/ china */
+  download_mirror?: string
   database?: string
   fpm_pool_defaults?: string
   user_home_root?: string
@@ -85,6 +111,44 @@ export const refreshServerEnv = () =>
 
 export const saveServerEnvDefaults = (data: EnvDefaultsPayload) =>
   http.post<{ code: number; message: string; data: EnvConf }>('/system/env/defaults', data)
+
+// ── Python / Node.js 运行时 ──────────────────────────────
+
+/**
+ * 安装运行时可能要下载几十 MB，前端默认 15s 超时会直接弹「请求超时」，
+ * 这里单独放宽到 10 分钟。
+ */
+const LONG_TIMEOUT = { timeout: 10 * 60 * 1000 }
+
+/** 一键安装 uv（装到 /usr/local/bin，所有用户可用） */
+export const installEnvUv = () => http.post('/system/env/python/uv', {}, LONG_TIMEOUT)
+
+/** 切换 PyPI 源（系统级 uv + pip 配置）；传官方地址即回到官方源 */
+export const setPythonIndex = (index_url: string) =>
+  http.post('/system/env/python/index', { index_url }, LONG_TIMEOUT)
+
+/** 安装 / 卸载一个 Python 版本（uv） */
+export const installPythonVersion = (version: string) =>
+  http.post('/system/env/python/install', { version }, LONG_TIMEOUT)
+
+export const removePythonVersion = (version: string) =>
+  http.post('/system/env/python/remove', { version }, LONG_TIMEOUT)
+
+/** 一键安装 fnm（装到 /usr/local/fnm，所有用户可用） */
+export const installEnvFnm = (mirror?: string) =>
+  http.post('/system/env/nodejs/fnm', { mirror: mirror || '' }, LONG_TIMEOUT)
+
+/** Node 版本操作：install | default | uninstall */
+export const nodejsAction = (action: string, version: string, mirror?: string) =>
+  http.post(
+    '/system/env/nodejs/action',
+    { action, version, mirror: mirror || '' },
+    LONG_TIMEOUT,
+  )
+
+/** 设置 npm registry（写 /etc/npmrc，所有用户生效） */
+export const setNodeRegistry = (registry: string) =>
+  http.post('/system/env/nodejs/registry', { registry }, LONG_TIMEOUT)
 
 // ── PHP-FPM 规格模板库（admin 维护） ─────────────────────────
 

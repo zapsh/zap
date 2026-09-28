@@ -25,6 +25,8 @@ const form = reactive<EnvConf>({
   webserver: '',
   php_default: '',
   python_default: '',
+  node_default: '',
+  download_mirror: 'official',
   database: '',
   fpm_pool_defaults: '',
   user_home_root: '/home',

@@ -381,7 +381,16 @@ pub async fn dispatch(req: Request) -> Response {
             .await
         }
         Request::AppRuntimes => app::runtimes().await,
-        Request::EnvPython { action, version } => env::python(&action, &version).await,
+        Request::EnvPython {
+            action,
+            version,
+            extra,
+        } => env::python(&action, &version, &extra).await,
+        Request::EnvNodejs {
+            action,
+            version,
+            extra,
+        } => env::nodejs(&action, &version, &extra).await,
         Request::AppAction {
             site_id,
             name,

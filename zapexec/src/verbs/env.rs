@@ -20,27 +20,321 @@ pub async fn detect() -> Response {
         .unwrap_or_else(|e| Response::err(-1, e))
 }
 
-/// Python 运行时管理入口：detect / install / uninstall。
-///
-/// 全局由 uv 统一管理解释器版本，应用目录里再各建自己的 `.venv`（local），
-/// 这样不同应用想要不同 Python 版本时互不影响。
-pub async fn python(action: &str, version: &str) -> Response {
+/// fnm 安装目录：固定放全局，装一次所有用户都能用（各自只需挑版本）。
+pub const FNM_DIR: &str = "/usr/local/fnm";
+
+/// 一键装 uv 的命令：pip（走已配 PyPI 源）优先，其次官方脚本。
+const INSTALL_UV_CMD: &str = "if command -v pip3 >/dev/null 2>&1; then \
+     pip3 install --break-system-packages uv 2>/dev/null || pip3 install uv; \
+   elif python3 -m pip --version >/dev/null 2>&1; then \
+     python3 -m pip install --break-system-packages uv 2>/dev/null \
+       || python3 -m pip install uv; \
+   fi; \
+   command -v uv >/dev/null 2>&1 \
+     || curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh";
+
+/// Node 版本下载镜像：nodejs.org 直连慢时走 npmmirror。
+const NODE_DIST_MIRROR: &str = "https://npmmirror.com/mirrors/node/";
+
+/// GitHub 下载加速前缀（fnm 二进制在 GitHub Releases）。
+const GH_MIRROR_PREFIX: &str = "https://ghfast.top/";
+
+/// npm 全局配置：/etc/npmrc 对所有用户生效。
+fn write_npm_registry(url: &str) -> Result<(), String> {
+    std::fs::write("/etc/npmrc", format!("registry={url}\n"))
+        .map_err(|e| format!("写 /etc/npmrc 失败：{e}"))
+}
+
+/// 当前 npm registry（没配过就是官方源）。
+fn current_npm_registry() -> String {
+    if let Ok(txt) = std::fs::read_to_string("/etc/npmrc") {
+        for line in txt.lines() {
+            if let Some(v) = line.trim().strip_prefix("registry=") {
+                let v = v.trim().to_string();
+                if !v.is_empty() {
+                    return v;
+                }
+            }
+        }
+    }
+    "https://registry.npmjs.org/".to_string()
+}
+
+/// Node.js 运行时管理入口（fnm）：detect / install_fnm / install / default / uninstall。
+pub async fn nodejs(action: &str, version: &str, mirror: &str) -> Response {
     let action = action.to_string();
     let version = version.to_string();
+    let mirror = mirror.to_string();
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
-        Ok(python_inner(&action, &version))
+        Ok(nodejs_inner(&action, &version, &mirror))
     })
     .await
     .unwrap_or_else(|e| Ok(Response::err(-1, format!("任务执行失败: {e}"))))
     .unwrap_or_else(|e| Response::err(-1, e))
 }
 
-fn python_inner(action: &str, version: &str) -> Response {
+fn nodejs_inner(action: &str, version: &str, mirror: &str) -> Response {
+    let fresh = || json!({ "nodejs": detect_nodejs() });
+    match action {
+        "detect" => Response::ok("Node.js 运行时探测完成", Some(fresh())),
+        // 一键安装 fnm 到全局目录（其他用户只管用，不用自己装管理器）。
+        // 国内镜像模式下直接拉 GitHub Release 的 zip：
+        // 官方脚本会去连 GitHub API，国内环境经常卡在那里超时。
+        "install_fnm" => {
+            let cmd = if mirror == "china" {
+                format!(
+                    "mkdir -p {FNM_DIR} && \
+                     curl -fsSL {GH_MIRROR_PREFIX}https://github.com/Schniz/fnm/releases/latest/download/fnm-linux.zip \
+                       -o /tmp/fnm.zip && \
+                     (unzip -o -q /tmp/fnm.zip -d {FNM_DIR} 2>/dev/null || \
+                      python3 -c \"import zipfile; zipfile.ZipFile('/tmp/fnm.zip').extractall('{FNM_DIR}')\") && \
+                     chmod +x {FNM_DIR}/fnm && rm -f /tmp/fnm.zip"
+                )
+            } else {
+                "curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /usr/local/fnm --skip-shell"
+                    .to_string()
+            };
+            run_shell(&cmd, "fnm 安装完成", Some(fresh()))
+        }
+        // npm 源：写 /etc/npmrc，所有用户 npm install 都走它
+        "set_registry" => {
+            let url = version.trim();
+            if url.is_empty() || !url.starts_with("http") {
+                return Response::err(-1, "registry 地址不合法（需以 http 开头）".to_string());
+            }
+            match write_npm_registry(url) {
+                Ok(()) => Response::ok(format!("npm 源已切换：{url}"), Some(fresh())),
+                Err(e) => Response::err(-1, format!("写 npm 源配置失败：{e}")),
+            }
+        }
+        "install" | "uninstall" | "default" => {
+            let v = version.trim();
+            if v.is_empty() {
+                return Response::err(-1, "请指定 Node 版本（如 20）".to_string());
+            }
+            if !is_safe_version(v) {
+                return Response::err(-1, format!("版本号不合法：{v}"));
+            }
+            if !fnm_bin().is_some() {
+                return Response::err(-1, "未找到 fnm：请先一键安装 fnm".to_string());
+            }
+            // 装完/切换后把 node、npm、npx 软链到 /usr/local/bin，
+            // 这样其它用户不用配 fnm 也能直接 node/npm（他们只需选版本号）。
+            let link = r#"BIN=$(ls -d $FNM_DIR/node-versions/v{VER}*/installation/bin 2>/dev/null | tail -1); \
+                 if [ -n "$BIN" ]; then for b in node npm npx; do \
+                   [ -x "$BIN/$b" ] && ln -sf "$BIN/$b" /usr/local/bin/$b; done; fi"#;
+            let cmd = match action {
+                "install" => format!(
+                    "fnm install {v} && if [ ! -e /usr/local/bin/node ]; then {link}; fi",
+                    link = link.replace("{VER}", v)
+                ),
+                "default" => format!("fnm default {v} && {}", link.replace("{VER}", v)),
+                _ => format!(
+                    "fnm uninstall {v} && if [ ! -e /usr/local/bin/node ]; then \
+                     rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx; fi"
+                ),
+            };
+            let script = fnm_script(&cmd, mirror);
+            match root_cmd("bash").arg("-lc").arg(&script).output() {
+                Ok(o) => {
+                    let tail = String::from_utf8_lossy(&o.stdout).to_string()
+                        + &String::from_utf8_lossy(&o.stderr);
+                    if o.status.success() {
+                        Response::ok(
+                            format!(
+                                "{} {v} 完成",
+                                match action {
+                                    "install" => "安装",
+                                    "default" => "设为默认",
+                                    _ => "卸载",
+                                }
+                            ),
+                            Some(fresh()),
+                        )
+                    } else {
+                        Response::err(-1, format!("{cmd} 失败：{}", tail.trim()))
+                    }
+                }
+                Err(e) => Response::err(-1, format!("执行 {cmd} 失败：{e}")),
+            }
+        }
+        other => Response::err(-1, format!("不支持的 nodejs 操作：{other}")),
+    }
+}
+
+/// 拼一段带 fnm 环境的脚本：fnm 装在全局目录，普通用户只要 source 一下就能用。
+/// 国内镜像模式下额外指定 Node 发行版镜像（nodejs.org 直连很慢）。
+fn fnm_script(cmd: &str, mirror: &str) -> String {
+    let dist = if mirror == "china" {
+        format!("export FNM_NODE_DIST_MIRROR={NODE_DIST_MIRROR}; ")
+    } else {
+        String::new()
+    };
+    format!(
+        "export FNM_DIR={FNM_DIR}; {dist} \\
+         export PATH=$FNM_DIR:$PATH; \\
+         if [ -f $FNM_DIR/fnm ]; then . <($FNM_DIR/fnm env --use-on-cd 2>/dev/null) 2>/dev/null || true; fi; \\
+         {cmd}"
+    )
+}
+
+fn fnm_bin() -> Option<String> {
+    let c = Path::new(FNM_DIR).join("fnm");
+    if c.is_file() {
+        return Some(c.to_string_lossy().to_string());
+    }
+    which("fnm")
+}
+
+/// 探测 Node.js 运行时：fnm 状态 + 已装版本（fnm 管理的 + 系统自带的）。
+pub fn detect_nodejs() -> Value {
+    let fnm_path = fnm_bin();
+    let fnm_version = match &fnm_path {
+        Some(p) => probe_first_line(p, &["--version"]).unwrap_or_default(),
+        None => String::new(),
+    };
+    let mut versions: Vec<Value> = Vec::new();
+    let default = default_node_version();
+    let root = Path::new(FNM_DIR).join("node-versions");
+
+    // fnm 装的版本：/usr/local/fnm/node-versions/v20.11.1/installation/bin/node
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        let mut dirs: Vec<String> = rd
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.strip_prefix('v').map(|s| s.to_string())
+            })
+            .collect();
+        dirs.sort();
+        for v in dirs {
+            let bin = root.join(format!("v{v}")).join("installation/bin/node");
+            versions.push(json!({
+                "version": v,
+                "path": bin.to_string_lossy(),
+                "source": "fnm",
+                "installed": bin.is_file(),
+            }));
+        }
+    }
+
+    // 系统自带（非 fnm 管理）
+    if let Some(line) = probe_first_line("node", &["--version"]) {
+        let v = line.trim_start_matches('v').to_string();
+        if !v.is_empty()
+            && !versions
+                .iter()
+                .any(|x| x.get("version").and_then(|y| y.as_str()) == Some(v.as_str()))
+        {
+            versions.push(json!({
+                "version": v,
+                "path": which("node").unwrap_or_default(),
+                "source": "system",
+                "installed": true,
+            }));
+        }
+    }
+    json!({
+        "fnm": fnm_path.is_some(),
+        "fnm_path": fnm_path.unwrap_or_default(),
+        "fnm_version": fnm_version,
+        "fnm_dir": FNM_DIR,
+        "default": default,
+        "global_link": Path::new("/usr/local/bin/node").exists(),
+        "npm_registry": current_npm_registry(),
+        "versions": versions,
+    })
+}
+
+/// 全局默认 Node 版本：看 /usr/local/bin/node 软链指向哪个 installation。
+fn default_node_version() -> String {
+    let link = Path::new("/usr/local/bin/node");
+    if let Ok(target) = std::fs::read_link(link) {
+        let s = target.to_string_lossy().to_string();
+        // .../node-versions/v20.11.1/installation/bin/node
+        for part in s.split('/') {
+            if let Some(v) = part.strip_prefix('v') {
+                if v.chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+                {
+                    return v.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// 指定版本对应的 node 可执行文件（fnm 目录里找），供部署时拼命令用。
+///
+/// 版本可写 `20` 或 `20.11.1`：先精确匹配，再按主版本前缀匹配最新的一个。
+pub fn node_bin_for(version: &str) -> Option<PathBuf> {
+    if version.is_empty() {
+        return None;
+    }
+    let root = Path::new(FNM_DIR).join("node-versions");
+    let rd = std::fs::read_dir(&root).ok()?;
+    let mut cands: Vec<(String, PathBuf)> = Vec::new();
+    for e in rd.flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        let v = n.strip_prefix('v')?.to_string();
+        if v == version || v.starts_with(&format!("{version}.")) {
+            let bin = root.join(&n).join("installation/bin/node");
+            if bin.is_file() {
+                cands.push((v, bin));
+            }
+        }
+    }
+    cands.sort_by(|a, b| b.0.cmp(&a.0));
+    cands.into_iter().next().map(|(_, p)| p)
+}
+
+/// Python 运行时管理入口：detect / install / uninstall。
+///
+/// 全局由 uv 统一管理解释器版本，应用目录里再各建自己的 `.venv`（local），
+/// 这样不同应用想要不同 Python 版本时互不影响。
+pub async fn python(action: &str, version: &str, extra: &str) -> Response {
+    let action = action.to_string();
+    let version = version.to_string();
+    let extra = extra.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Response, String> {
+        Ok(python_inner(&action, &version, &extra))
+    })
+    .await
+    .unwrap_or_else(|e| Ok(Response::err(-1, format!("任务执行失败: {e}"))))
+    .unwrap_or_else(|e| Response::err(-1, e))
+}
+
+fn python_inner(action: &str, version: &str, extra: &str) -> Response {
     match action {
         "detect" => Response::ok(
             "Python 运行时探测完成",
             Some(json!({ "python": detect_python() })),
         ),
+        // 一键安装 uv。优先用 pip 装：它读 /etc/pip.conf，
+        // 也就是说选了清华/阿里源之后，装 uv 本身就走国内源，快得多；
+        // 机器上没有 pip 时才回退官方安装脚本。
+        "install_uv" => run_shell(
+            INSTALL_UV_CMD,
+            "uv 安装完成",
+            Some(json!({ "python": detect_python() })),
+        ),
+        // 切换 PyPI 源：系统级写 uv 配置 + pip 配置，所有用户与应用都生效
+        "set_index" => {
+            let url = extra.trim();
+            if url.is_empty() || !url.starts_with("http") {
+                return Response::err(-1, "源地址不合法（需以 http 开头）".to_string());
+            }
+            match write_python_index(url) {
+                Ok(()) => Response::ok(
+                    format!("已切换 PyPI 源：{url}"),
+                    Some(json!({ "python": detect_python() })),
+                ),
+                Err(e) => Response::err(-1, format!("写源配置失败：{e}")),
+            }
+        }
         "install" | "uninstall" => {
             let v = version.trim();
             if v.is_empty() {
@@ -97,6 +391,51 @@ fn python_inner(action: &str, version: &str) -> Response {
 /// 版本号只允许 `3` / `3.11` / `3.11.9` 这类形式（要拼进 shell 命令，必须严格）。
 fn is_safe_version(v: &str) -> bool {
     !v.is_empty() && v.len() <= 16 && v.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// PyPI 系统级配置：uv 读 /etc/uv/uv.toml，pip 读 /etc/pip.conf。
+/// 两处都写，uv pip 与传统 pip 就走同一个源。
+fn write_python_index(url: &str) -> Result<(), String> {
+    let uv_dir = Path::new("/etc/uv");
+    std::fs::create_dir_all(uv_dir).map_err(|e| format!("创建 {uv_dir:?} 失败：{e}"))?;
+    let body = format!("[[index]]\nurl = \"{url}\"\ndefault = true\n");
+    std::fs::write(uv_dir.join("uv.toml"), body)
+        .map_err(|e| format!("写 /etc/uv/uv.toml 失败：{e}"))?;
+    let _ = std::fs::write("/etc/pip.conf", format!("[global]\nindex-url = {url}\n"));
+    Ok(())
+}
+
+/// 当前生效的 PyPI 源（读 /etc/uv/uv.toml；没配过就是官方源）。
+fn current_python_index() -> String {
+    if let Ok(txt) = std::fs::read_to_string("/etc/uv/uv.toml") {
+        for line in txt.lines() {
+            if let Some(rest) = line.trim().strip_prefix("url") {
+                if let Some(v) = rest.split('=').nth(1) {
+                    let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+                    if !v.is_empty() {
+                        return v;
+                    }
+                }
+            }
+        }
+    }
+    "https://pypi.org/simple".to_string()
+}
+
+/// 跑一条 shell 命令（root），成功返回 ok + 可选数据。
+fn run_shell(cmd: &str, ok_msg: &str, data: Option<Value>) -> Response {
+    match root_cmd("bash").arg("-lc").arg(cmd).output() {
+        Ok(o) => {
+            let tail = String::from_utf8_lossy(&o.stdout).to_string()
+                + &String::from_utf8_lossy(&o.stderr);
+            if o.status.success() {
+                Response::ok(ok_msg.to_string(), data)
+            } else {
+                Response::err(-1, format!("{cmd} 失败：{}", tail.trim()))
+            }
+        }
+        Err(e) => Response::err(-1, format!("执行 {cmd} 失败：{e}")),
+    }
 }
 
 /// uv 可执行文件位置。uv 常装在 root 家目录，PATH 里未必有，故按常见路径兜底找。
@@ -188,6 +527,7 @@ pub fn detect_python() -> Value {
         "uv": uv_path.is_some(),
         "uv_path": uv_path.unwrap_or_default(),
         "uv_version": uv_version,
+        "index_url": current_python_index(),
         "versions": versions,
     })
 }
@@ -234,6 +574,7 @@ fn detect_inner() -> Response {
         "webserver": detect_webserver(),
         "php": detect_php(),
         "python": detect_python(),
+        "nodejs": detect_nodejs(),
         "databases": detect_databases(),
         "tools": detect_tools(),
         "network": detect_network(),
@@ -1007,8 +1348,10 @@ mod python_tests {
     #[test]
     fn uv_list_parses_cpython_token() {
         assert_eq!(
-            uv_list_version("cpython-3.12.4-linux-x86_64-gnu   /root/.local/share/uv/python/x/bin/python3.12")
-                .unwrap(),
+            uv_list_version(
+                "cpython-3.12.4-linux-x86_64-gnu   /root/.local/share/uv/python/x/bin/python3.12"
+            )
+            .unwrap(),
             "3.12.4"
         );
         // 表头 / 分隔行不能误判成版本
@@ -1024,5 +1367,36 @@ mod python_tests {
         assert!(v.get("uv_path").is_some());
         assert!(v.get("uv_version").is_some());
         assert!(v.get("versions").and_then(|x| x.as_array()).is_some());
+    }
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::*;
+
+    /// 国内镜像模式下必须带上 Node 发行版镜像，否则还是直连 nodejs.org。
+    #[test]
+    fn fnm_script_adds_dist_mirror_only_in_china_mode() {
+        let cn = fnm_script("fnm install 20", "china");
+        assert!(cn.contains("FNM_NODE_DIST_MIRROR"), "{cn}");
+        assert!(cn.contains(NODE_DIST_MIRROR), "{cn}");
+
+        let off = fnm_script("fnm install 20", "official");
+        assert!(!off.contains("FNM_NODE_DIST_MIRROR"), "{off}");
+    }
+
+    /// 装 uv 要先试 pip（走已配的 PyPI 源，国内快），最后才回退官方脚本。
+    #[test]
+    fn uv_install_tries_pip_before_official_script() {
+        assert!(
+            INSTALL_UV_CMD.contains("pip3 install"),
+            "{}",
+            INSTALL_UV_CMD
+        );
+        assert!(INSTALL_UV_CMD.contains("astral.sh"), "{}", INSTALL_UV_CMD);
+        // pip 失败才轮到 curl：必须是 || 兜底而不是无条件执行
+        let pip_pos = INSTALL_UV_CMD.find("pip").unwrap();
+        let curl_pos = INSTALL_UV_CMD.find("astral.sh").unwrap();
+        assert!(pip_pos < curl_pos);
     }
 }

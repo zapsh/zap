@@ -561,6 +561,20 @@ fn api_routers() -> Router {
             "/system/env/python/remove",
             post(system_env::env_python_remove),
         )
+        .route("/system/env/python/uv", post(system_env::env_uv_install))
+        .route(
+            "/system/env/python/index",
+            post(system_env::env_python_index),
+        )
+        .route("/system/env/nodejs/fnm", post(system_env::env_fnm_install))
+        .route(
+            "/system/env/nodejs/action",
+            post(system_env::env_nodejs_action),
+        )
+        .route(
+            "/system/env/nodejs/registry",
+            post(system_env::env_node_registry),
+        )
         // 脚本/自动化：计划任务（admin only）
         .route("/system/cron/list", get(system_cron::cron_list))
         .route("/system/cron/add", post(system_cron::cron_add))

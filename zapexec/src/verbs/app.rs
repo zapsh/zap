@@ -270,6 +270,23 @@ fn python_bin(version: &str) -> String {
     format!("python{version}")
 }
 
+/// Python 项目要不要补装 WSGI/ASGI 服务器，装哪个。
+///
+/// 返回 `None` = 不需要（普通脚本，直接 `python3 app.py` 就行）。
+/// ASGI（FastAPI）用 uvicorn，其余（Flask / Django / 裸 WSGI）用 gunicorn。
+fn server_pkg(entry: &str, src: &str, req: &str) -> Option<&'static str> {
+    let entry = entry.trim();
+    let is_asgi = src.contains("FastAPI(")
+        || req.to_lowercase().contains("fastapi")
+        || entry.contains("uvicorn");
+    let needs_server = entry.contains(':')
+        || (entry.ends_with(".py") && (src.contains("Flask(") || src.contains("FastAPI(")));
+    if !needs_server {
+        return None;
+    }
+    Some(if is_asgi { "uvicorn" } else { "gunicorn" })
+}
+
 fn prepare_deps(
     app_type: &str,
     version: &str,
@@ -277,6 +294,7 @@ fn prepare_deps(
     workdir: &Path,
     owner: &str,
     install: bool,
+    entry: &str,
 ) -> Result<String, String> {
     let mut log = String::new();
     match app_type {
@@ -311,56 +329,95 @@ fn prepare_deps(
                 }
                 log.push_str(&format!("已创建 .venv（{how}）\\n"));
             }
-            if !install || !req.exists() {
-                return Ok(log);
-            }
-
-            // 装依赖：uv pip > .venv/bin/pip > ensurepip 兜底。
-            // 早先固定走 .venv/bin/pip，而很多发行版的 venv 里压根没 pip
-            // （缺 pythonX-venv），于是直接 `.venv/bin/pip: No such file`。
-            let cmd = match &uv {
-                Some(uv) => format!(
-                    "VIRTUAL_ENV={} {uv} pip install -r requirements.txt",
-                    venv.to_string_lossy()
-                ),
-                None if venv.join("bin/pip").exists() => {
-                    ".venv/bin/pip install -r requirements.txt".to_string()
-                }
-                None => {
-                    // venv 里没 pip：先补装，再走 pip
-                    let (ok, out) =
-                        run_as(owner, workdir, ".venv/bin/python -m ensurepip --upgrade")?;
-                    if !ok {
-                        return Err(format!(
-                            "虚拟环境里没有 pip，且 ensurepip 失败：{out}\\n\
+            if install && req.exists() {
+                // 装依赖：uv pip > .venv/bin/pip > ensurepip 兜底。
+                // 早先固定走 .venv/bin/pip，而很多发行版的 venv 里压根没 pip
+                // （缺 pythonX-venv），于是直接 `.venv/bin/pip: No such file`。
+                let cmd = match &uv {
+                    Some(uv) => format!(
+                        "VIRTUAL_ENV={} {uv} pip install -r requirements.txt",
+                        venv.to_string_lossy()
+                    ),
+                    None if venv.join("bin/pip").exists() => {
+                        ".venv/bin/pip install -r requirements.txt".to_string()
+                    }
+                    None => {
+                        // venv 里没 pip：先补装，再走 pip
+                        let (ok, out) =
+                            run_as(owner, workdir, ".venv/bin/python -m ensurepip --upgrade")?;
+                        if !ok {
+                            return Err(format!(
+                                "虚拟环境里没有 pip，且 ensurepip 失败：{out}\\n\
                              建议安装 uv（curl -LsSf https://astral.sh/uv/install.sh | sh），\\
                              或给系统补上 pythonX-venv"
-                        ));
+                            ));
+                        }
+                        ".venv/bin/pip install -r requirements.txt".to_string()
                     }
-                    ".venv/bin/pip install -r requirements.txt".to_string()
+                };
+                let (ok, out) = run_as(owner, workdir, &cmd)?;
+                if !ok {
+                    return Err(format!("依赖安装失败（{cmd}）：{out}"));
                 }
-            };
-            let (ok, out) = run_as(owner, workdir, &cmd)?;
-            if !ok {
-                return Err(format!("依赖安装失败（{cmd}）：{out}"));
+                log.push_str(if uv.is_some() {
+                    "依赖安装完成（uv pip）\\n"
+                } else {
+                    "依赖安装完成（pip）\\n"
+                });
             }
-            log.push_str(if uv.is_some() {
-                "依赖安装完成（uv pip）\\n"
-            } else {
-                "依赖安装完成（pip）\\n"
-            });
+            // 需要生产级服务器但 venv 里没有 → 自动补装，
+            // 别让用户为了能部署去改 requirements.txt。
+            if venv.join("bin/python").exists() {
+                let src = if !entry.is_empty() && !entry.contains(':') {
+                    std::fs::read_to_string(workdir.join(entry)).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let req_txt = std::fs::read_to_string(&req).unwrap_or_default();
+                if let Some(pkg) = server_pkg(entry, &src, &req_txt) {
+                    if !venv.join(format!("bin/{pkg}")).exists() {
+                        let cmd = match &uv {
+                            Some(uv) => format!(
+                                "VIRTUAL_ENV={} {uv} pip install {pkg}",
+                                venv.to_string_lossy()
+                            ),
+                            _ if venv.join("bin/pip").exists() => {
+                                format!(".venv/bin/pip install {pkg}")
+                            }
+                            _ => String::new(),
+                        };
+                        if !cmd.is_empty() {
+                            match run_as(owner, workdir, &cmd) {
+                                Ok((true, _)) => log.push_str(&format!("已自动安装 {pkg}\n")),
+                                Ok((false, out)) => log.push_str(&format!(
+                                    "自动安装 {pkg} 失败（可写进 requirements.txt 或自定义启动命令）：{out}\n"
+                                )),
+                                Err(e) => log.push_str(&format!("自动安装 {pkg} 出错：{e}\n")),
+                            }
+                        }
+                    }
+                }
+            }
         }
         "nodejs" => {
             let pkg = workdir.join("package.json");
             if !install || !pkg.exists() {
                 return Ok(log);
             }
-            let cmd = if workdir.join("package-lock.json").exists() {
+            let npm = if workdir.join("package-lock.json").exists() {
                 "npm ci"
             } else {
                 "npm install"
             };
-            let (ok, out) = run_as(owner, workdir, cmd)?;
+            // 指定了版本就让 PATH 先命中 fnm 里那一份，其它用户直接用全局软链
+            let cmd = match super::env::node_bin_for(version) {
+                Some(p) => match p.parent() {
+                    Some(dir) => format!("PATH={}:$PATH {}", dir.to_string_lossy(), npm),
+                    None => npm.to_string(),
+                },
+                None => npm.to_string(),
+            };
+            let (ok, out) = run_as(owner, workdir, &cmd)?;
             if !ok {
                 return Err(format!("{cmd} 失败：{out}"));
             }
@@ -377,7 +434,12 @@ fn default_command(
     workdir: &Path,
     entry: &str,
     port: i64,
+    version: &str,
 ) -> Result<String, String> {
+    // node 优先用 fnm 装的对应版本（绝对路径），免得 unit 跑成系统默认那一个
+    let node = super::env::node_bin_for(version)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "node".to_string());
     match app_type {
         "python" => {
             let venv_py = workdir.join(".venv/bin/python");
@@ -452,15 +514,16 @@ fn default_command(
                         entry
                     ));
                 }
-                return Err("入口是 `模块:应用` 形态，需要 gunicorn 或 uvicorn：\
-                     请把它们写进 requirements.txt，或在「启动命令」里自定义"
+                return Err("入口是 `模块:应用` 形态，需要 gunicorn 或 uvicorn：\\
+                     部署时已尝试自动安装但没装上（见部署日志），\\
+                     请把它写进 requirements.txt，或在「启动命令」里自定义"
                     .to_string());
             }
             Ok(format!("{py} {entry}"))
         }
         "nodejs" => {
             if !entry.is_empty() {
-                return Ok(format!("node {entry}"));
+                return Ok(format!("{node} {entry}"));
             }
             // 未填入口：优先 package.json 的 start 脚本，其次常见入口文件
             if let Ok(txt) = std::fs::read_to_string(workdir.join("package.json")) {
@@ -470,7 +533,7 @@ fn default_command(
             }
             for f in ["server.js", "app.js", "index.js", "main.js"] {
                 if workdir.join(f).exists() {
-                    return Ok(format!("node {f}"));
+                    return Ok(format!("{node} {f}"));
                 }
             }
             Err("未找到入口：请填写入口文件（如 server.js）或在「启动命令」里自定义".to_string())
@@ -621,6 +684,7 @@ pub async fn deploy(
             &wd,
             &owner_user,
             install_deps,
+            &entry,
         )?;
 
         // 构建命令：在装完依赖之后、拉起进程之前跑（npm run build / 迁移脚本之类）
@@ -636,7 +700,7 @@ pub async fn deploy(
         let exec = if !command.trim().is_empty() {
             command.trim().to_string()
         } else {
-            default_command(&app_type, &wd, &entry, port)?
+            default_command(&app_type, &wd, &entry, port, &runtime_version)?
         };
 
         // 应用日志落站点日志目录，属主给站点用户（否则 systemd 以该用户写不进去）
@@ -830,7 +894,7 @@ mod tests {
         let d = tmp("py");
         std::fs::create_dir_all(d.join(".venv/bin")).unwrap();
         std::fs::write(d.join(".venv/bin/gunicorn"), "").unwrap();
-        let cmd = default_command("python", &d, "wsgi:app", 8000).unwrap();
+        let cmd = default_command("python", &d, "wsgi:app", 8000, "").unwrap();
         assert!(cmd.contains("gunicorn"));
         assert!(cmd.contains("-b 127.0.0.1:8000"));
         assert!(cmd.ends_with("wsgi:app"));
@@ -841,7 +905,7 @@ mod tests {
         let d = tmp("py2");
         std::fs::create_dir_all(d.join(".venv/bin")).unwrap();
         std::fs::write(d.join(".venv/bin/python"), "").unwrap();
-        let cmd = default_command("python", &d, "main.py", 0).unwrap();
+        let cmd = default_command("python", &d, "main.py", 0, "").unwrap();
         assert!(cmd.contains(".venv/bin/python"));
         assert!(cmd.ends_with("main.py"));
     }
@@ -855,11 +919,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            default_command("nodejs", &d, "", 3000).unwrap(),
+            default_command("nodejs", &d, "", 3000, "").unwrap(),
             "npm start"
         );
         std::fs::write(d.join("package.json"), r#"{"name":"x"}"#).unwrap();
-        assert!(default_command("nodejs", &d, "", 3000).is_err());
+        assert!(default_command("nodejs", &d, "", 3000, "").is_err());
     }
 
     #[test]
@@ -970,14 +1034,14 @@ mod entry_tests {
         .unwrap();
 
         // 没装 gunicorn：退回 `python3 app.py`，绝不能生成空的 `python3 `
-        let cmd = default_command("python", &d, "", 8080).unwrap();
+        let cmd = default_command("python", &d, "", 8080, "").unwrap();
         assert!(cmd.ends_with("app.py"), "{cmd}");
         assert!(!cmd.trim().ends_with("python3"), "{cmd}");
 
         // 装了 gunicorn：Flask 项目自动走 gunicorn，端口来自 PORT
         std::fs::create_dir_all(d.join(".venv/bin")).unwrap();
         std::fs::write(d.join(".venv/bin/gunicorn"), "").unwrap();
-        let cmd = default_command("python", &d, "", 8080).unwrap();
+        let cmd = default_command("python", &d, "", 8080, "").unwrap();
         assert!(cmd.contains("gunicorn"), "{cmd}");
         assert!(cmd.contains("127.0.0.1:8080"), "{cmd}");
         assert!(cmd.ends_with("app:app"), "{cmd}");
@@ -990,8 +1054,53 @@ mod entry_tests {
         let d = std::env::temp_dir().join("zap-app-entry-test-empty");
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let err = default_command("python", &d, "", 8080).unwrap_err();
+        let err = default_command("python", &d, "", 8080, "").unwrap_err();
         assert!(err.contains("未找到入口"), "{err}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod server_pkg_tests {
+    use super::server_pkg;
+
+    #[test]
+    fn plain_script_needs_no_server() {
+        assert_eq!(server_pkg("app.py", "print('hi')", ""), None);
+    }
+
+    #[test]
+    fn flask_gets_gunicorn() {
+        assert_eq!(
+            server_pkg(
+                "app.py",
+                "from flask import Flask\napp = Flask(__name__)",
+                "flask"
+            ),
+            Some("gunicorn")
+        );
+    }
+
+    #[test]
+    fn fastapi_gets_uvicorn() {
+        assert_eq!(
+            server_pkg(
+                "main.py",
+                "from fastapi import FastAPI\napp = FastAPI()",
+                ""
+            ),
+            Some("uvicorn")
+        );
+        // 源码看不到时，requirements 里的 fastapi 也算数
+        assert_eq!(
+            server_pkg("wsgi:app", "", "fastapi\nuvicorn"),
+            Some("uvicorn")
+        );
+    }
+
+    /// `模块:应用` 形态裸跑不了，必须给服务器
+    #[test]
+    fn module_app_form_needs_server() {
+        assert_eq!(server_pkg("wsgi:app", "", ""), Some("gunicorn"));
     }
 }

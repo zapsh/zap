@@ -542,9 +542,12 @@ pub async fn app_deploy(
         .unwrap_or_default()
         .trim()
         .to_string();
-    // 没指定版本就跟随「运行环境」里的全局默认 Python 版本（uv 管理）
+    // 没指定版本就跟随全局默认版本（Python 由 uv 管、Node 由 fnm 管）
     if runtime_version.is_empty() && app_type == "python" {
         runtime_version = crate::routers::system_env::python_default();
+    }
+    if runtime_version.is_empty() && app_type == "nodejs" {
+        runtime_version = crate::routers::system_env::node_default();
     }
     let build_cmd = payload
         .build_cmd

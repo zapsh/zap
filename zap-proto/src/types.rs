@@ -818,9 +818,29 @@ pub enum Request {
     /// - `uninstall` 卸载 uv 管理的版本
     #[serde(rename = "env.python")]
     EnvPython {
+        /// detect | install | uninstall | install_uv | set_index
         action: String,
         #[serde(default)]
         version: String,
+        /// 附加参数：`set_index` 时为 PyPI 源地址
+        #[serde(default)]
+        extra: String,
+    },
+    /// Node.js 运行时管理（fnm，装到全局供所有用户使用）：
+    /// - `detect`       列出 fnm 状态与可用版本
+    /// - `install_fnm`  一键安装 fnm（/usr/local/fnm）
+    /// - `install`      装一个 Node 版本（全局）
+    /// - `default`      设为全局默认（软链到 /usr/local/bin）
+    /// - `uninstall`    卸载版本
+    /// - `set_registry` 写 /etc/npmrc（npm 源，所有用户生效）
+    #[serde(rename = "env.nodejs")]
+    EnvNodejs {
+        action: String,
+        #[serde(default)]
+        version: String,
+        /// 附加参数：下载镜像（official / china）或 `set_registry` 时的 registry 地址
+        #[serde(default)]
+        extra: String,
     },
     /// 应用动作：start | stop | restart | enable | disable
     #[serde(rename = "app.action")]
