@@ -1,5 +1,5 @@
 <template>
-  <div v-if="!item.meta || !item.meta.hidden">
+  <div v-if="!isHiddenSelf && !allChildrenHidden">
     <!-- 没有子菜单的情况 -->
     <template
       v-if="
@@ -68,6 +68,18 @@ const props = defineProps({
 
 // 唯一子菜单
 const onlyOneChild = ref<any>(null)
+
+const isHiddenSelf = computed(() => !!(props.item.meta && props.item.meta.hidden))
+
+/**
+ * 子菜单全部隐藏（如「系统设置」下只剩隐藏的 About ZAP）：父级也不该再显示，
+ * 否则会渲染一个点进去什么都没有的空壳目录。
+ */
+const allChildrenHidden = computed(() => {
+  const children = props.item.children || []
+  if (!children.length) return false
+  return children.every((c: any) => c.meta && c.meta.hidden)
+})
 
 // 单子菜单显示时：优先子菜单图标，缺失则回退父菜单图标。
 // 菜单图标来自数据库，可能是不认识的名字，由 <Icon> 内部解析并兜底。

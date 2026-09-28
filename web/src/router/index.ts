@@ -109,6 +109,21 @@ export const constantRoutes: Array<RouteRecordRaw> = [
       },
     ],
   },
+  // About ZAP：菜单里已删除（入口在首页快捷入口 / 页脚品牌位），
+  // 这里常驻注册——不走后端菜单下发，任何登录角色都能直达。
+  {
+    path: '/system/about',
+    component: Layout,
+    meta: { hidden: true, title: 'About ZAP' },
+    children: [
+      {
+        path: '',
+        name: 'SystemAbout',
+        component: () => import('@/views/system/about/index.vue'),
+        meta: { title: 'About ZAP', hidden: true },
+      },
+    ],
+  },
 ]
 
 // 动态路由，基于用户权限动态加载
@@ -148,13 +163,6 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/system/tasks/index.vue'),
         meta: { title: '任务队列', icon: 'material-symbols:view-list' },
       },
-      // 系统更新已并入 About ZAP（页内 nav pill 切换）：见 menus 30 / 27
-      {
-        path: 'about',
-        name: 'SystemAbout',
-        component: () => import('@/views/system/about/index.vue'),
-        meta: { title: 'About ZAP', icon: 'material-symbols:info' },
-      },
       // 自定义脚本 + 计划任务已合并为一页「自动化脚本」（页内 nav pill 切换）：见 menus 101 / 102
       // 菜单接口挂掉时回退到本表，这个页面不能跟着一起消失。
       {
@@ -163,6 +171,8 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/automation/index.vue'),
         meta: { title: '自动化脚本', icon: 'material-symbols:timer' },
       },
+
+
     ],
   },
   // 文件管理（Layout 包裹 + 一级直链）

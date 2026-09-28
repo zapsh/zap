@@ -223,6 +223,13 @@ const shortcuts = computed(() => [
   { title: t('dashboardAdmin.serverStatusPage'), path: '/server-status/index', icon: 'material-symbols:monitoring', color: '#f56c6c' },
   { title: t('dashboardAdmin.terminal'), path: '/terminal/index', icon: 'material-symbols:monitor', color: '#13c2c2' },
   { title: 'SSL/TLS', path: '/ssl-tls/certs', icon: 'material-symbols:lock', color: '#eb2f96' },
+  // 侧栏入口已下线，首页与页脚是它的新落点
+  {
+    title: t('dashboardAdmin.aboutZap'),
+    path: '/system/about',
+    icon: 'material-symbols:info',
+    color: '#2f54eb',
+  },
 ])
 
 /** 构建信息缺失时 vergen 会返回 unknown，统一不展示内部占位串 */

@@ -103,6 +103,7 @@ export default {
     tagsCloseCurrent: '关闭当前',
     tagsCloseOthers: '关闭其他',
     tagsCloseAll: '关闭所有',
+    aboutZapTip: '关于 ZAP：版本、系统更新、文档',
     goUpdateTip: '系统设置 → 系统更新',
     demoTip: '演示账号仅支持浏览，不能执行任何操作',
     // 页脚常驻入口：文档已整合进「系统设置 → About ZAP」

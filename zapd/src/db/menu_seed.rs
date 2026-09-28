@@ -266,17 +266,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("system")
     .icon("material-symbols:confirmation-number")
     .affix(),
-    MenuSeed::new(
-        "about",
-        "About ZAP",
-        "menu",
-        "about",
-        "system/about/index",
-        R_ALL,
-        9,
-    )
-    .parent("system")
-    .icon("material-symbols:info"),
     // 自动化脚本：自定义脚本 + 计划任务 合到一页（页面内 nav pill 切换）
     MenuSeed::new(
         "automation-scripts",
@@ -876,6 +865,15 @@ mod tests {
         }
     }
 
+    /// About ZAP 已从菜单删除：入口在首页快捷入口 / 页脚品牌位，路由常驻前端
+    #[test]
+    fn about_is_not_a_menu_seed() {
+        assert!(
+            all_seeds().all(|s| s.name != "about"),
+            "About ZAP 不该再出现在菜单种子里：入口在首页快捷入口和页脚，路由已在前端常驻"
+        );
+    }
+
     /// 真跑一遍建库：id 自增、父子关联、role_menus 按 roles 生成。
     #[tokio::test]
     async fn seeds_insert_with_auto_ids_and_grants() {
@@ -957,7 +955,6 @@ mod tests {
             "appstore-index",
             "crontab-index",
             "docs-faq",
-            "about",
         ] {
             assert!(demo.iter().any(|n| n == must), "demo 应能看到 {must}");
         }
@@ -975,16 +972,16 @@ mod tests {
             );
         }
         // 与「旧库最终态」对齐的可见条数（防止重构悄悄改了可见范围）
-        assert_eq!(demo.len(), 16, "demo 可见菜单数变化");
+        assert_eq!(demo.len(), 15, "demo 可见菜单数变化");
         let reseller = grants(&pool, "reseller").await;
-        assert_eq!(reseller.len(), 28, "reseller 可见菜单数变化");
+        assert_eq!(reseller.len(), 27, "reseller 可见菜单数变化");
         // reseller 专属：客户管理只给它自己
         assert!(reseller.iter().any(|n| n == "reseller-users"));
         assert!(!admin.iter().any(|n| n == "reseller-users"));
 
         // 自动化脚本是 admin 专属
         let user = grants(&pool, "user").await;
-        assert_eq!(user.len(), 30, "user 可见菜单数变化");
+        assert_eq!(user.len(), 29, "user 可见菜单数变化");
         assert!(
             !user.iter().any(|n| n == "automation-scripts"),
             "自动化脚本必须仅 admin 可见"

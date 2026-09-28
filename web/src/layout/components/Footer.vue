@@ -1,6 +1,12 @@
 <template>
   <div class="footer">
-    <span class="app-name">ZAP</span>
+    <span
+      class="app-name verlink"
+      :class="{ 'no-cursor': !canGoAbout }"
+      :title="canGoAbout ? t('layout.aboutZapTip') : ''"
+      @click="goAbout"
+      >© {{ year }} ZAP</span
+    >
     <span class="sep">·</span>
     <span
       class="version verlink"
@@ -24,7 +30,6 @@
     <!-- 文档：入口已整合进「系统设置 → About ZAP」，这里只留常驻直达链接 -->
     <span class="sep">·</span>
     <span class="docs-link verlink" @click="goAbout">{{ t('layout.docs') }}</span>
-    <span class="copyright">© {{ year }}</span>
   </div>
 </template>
 
@@ -58,6 +63,8 @@ const userStore = useUserStore()
  * 所以任何角色都能点版本号进去看，面板里非管理员的按钮是置灰的。
  */
 const canGoUpdate = computed(() => userStore.roles.length > 0)
+// 页脚品牌位（© 2026 ZAP）同样直达 About：登录用户可点，未登录时只是文字
+const canGoAbout = canGoUpdate
 
 onMounted(async () => {
   if (!canGoUpdate.value) return
@@ -123,7 +130,8 @@ function goAbout() {
   color: var(--el-color-primary);
 }
 
-.copyright {
-  margin-left: 4px;
+.app-name {
+  color: var(--el-color-primary);
+  font-weight: 600;
 }
 </style>

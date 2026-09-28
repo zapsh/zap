@@ -68,6 +68,41 @@ pub async fn init_schema() {
     migrate_add_columns().await;
     // 依赖上面的补列结果，必须排在其后
     sync_menu_features().await;
+    sync_removed_menus().await;
+}
+
+/// 已下线的菜单：入口改由首页快捷入口 / 页脚品牌位直达，菜单记录和授权一并清掉。
+///
+/// About ZAP 原先挂在「系统设置」下且对所有角色开放——为了让非管理员也能进，
+/// 父目录也得是 R_ALL，结果侧栏就多出一个只装着它的「系统设置」。现在路由
+/// 常驻在前端 constantRoutes（不再依赖菜单下发），这条菜单可以真正删掉。
+async fn sync_removed_menus() {
+    let pool = get_db_pool().await;
+    for name in ["about"] {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM menus WHERE name = ?")
+            .bind(name)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+        let id = match row {
+            Some((id,)) => id,
+            None => continue,
+        };
+        // 先清授权行（role_menus / user_menus 都靠 menu_id 关联）
+        let _ = sqlx::query("DELETE FROM role_menus WHERE menu_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM user_menus WHERE menu_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM menus WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await;
+    }
 }
 
 /// 幂等补列：列已存在则跳过，否则 `ALTER TABLE ... ADD COLUMN`。

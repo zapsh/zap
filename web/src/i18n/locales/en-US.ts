@@ -98,6 +98,7 @@ const enUS: Messages = {
     tagsCloseCurrent: 'Close current',
     tagsCloseOthers: 'Close others',
     tagsCloseAll: 'Close all',
+    aboutZapTip: 'About ZAP: version, updates, docs',
     goUpdateTip: 'System Settings → System Update',
     demoTip: 'Demo accounts are read-only. No actions can be performed.',
     // Persistent footer entry: docs now live under System Settings → About ZAP
