@@ -307,6 +307,12 @@ pub const LOC_DIRECTIVES: &[LocDirSpec] = &[
 pub struct LocationSpec {
     /// location 匹配路径，必须以 `/` 开头（如 `/`、`/api`）；不支持正则前缀
     pub path: String,
+    /// location 匹配方式：
+    /// - 空：前缀匹配（`location /api`，会连 `/api-docs` 一起命中）
+    /// - `exact`：精确匹配（`location = /api`，只命中 `/api` 本身）
+    /// - `prefer`：优先前缀（`location ^~ /api`，命中前缀且跳过正则 location）
+    #[serde(default)]
+    pub match_mode: String,
     /// proxy | redirect | deny | alias | raw
     pub kind: String,
     /// proxy：upstream 名 或 `http(s)://host[:port][/uri]`；
@@ -319,6 +325,11 @@ pub struct LocationSpec {
     /// proxy 时是否启用 WebSocket 升级（proxy_http_version 1.1 + Upgrade 头）
     #[serde(default)]
     pub ws: bool,
+    /// proxy 时剥离 location 前缀（proxy_pass 带 URI）：
+    /// `location /njs` + 开启 → `proxy_pass http://127.0.0.1:8000/;`，
+    /// `/njs/a` 转发给后端变成 `/a`；关闭则原样转发（后端收到 `/njs/a`）
+    #[serde(default)]
+    pub strip_prefix: bool,
     // ── 高级参数（serde default，兼容旧数据）──
     /// kind=raw 时直接渲染的 location 指令体（多行 nginx 指令，逐行原样输出）
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -390,6 +401,10 @@ pub struct LocationSpec {
     /// 面板上可动态增删，值格式由执行端校验
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra: Vec<LocDirective>,
+    /// 应用部署自动挂载的 location 归属应用名（站点内唯一）。
+    /// 只用于面板识别「这条 location 是哪个应用挂的」，不渲染到 nginx。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app_name: String,
 }
 
 /// Application Manager 支持的应用类型。

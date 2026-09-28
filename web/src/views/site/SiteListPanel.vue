@@ -138,6 +138,8 @@ interface LocationSpec {
   target: string
   code: number
   ws: boolean
+  /** 剥掉 location 前缀再转发（proxy_pass 带 URI） */
+  strip_prefix: boolean
   // ── 高级参数（serde default，兼容旧数据）──
   raw: string
   conn_timeout: number
@@ -174,8 +176,12 @@ interface LocationSpec {
   limit_dry_run: boolean
   /** 静态目录挂载方式：'' = alias（目录替换 location 路径）/ 'root'（路径拼到目录之后） */
   static_mode: string
+  /** location 匹配方式：'' 前缀 / exact `= /api` / prefer `^~ /api` */
+  match_mode: string
   /** 附加指令（白名单内，可动态增删） */
   extra: LocExtra[]
+  /** 应用部署自动挂载的 location 归属应用名（编辑站点时要原样带回去） */
+  app_name: string
   /** 仅本地 UI 使用：高级参数展开（不入 payload） */
   adv?: boolean
 }
@@ -219,6 +225,13 @@ const pseudoMeta = (v?: string) =>
   pseudoOptions.find((o) => o.value === (v || 'none')) ?? pseudoOptions[0]
 
 // location 类型
+/** location 匹配方式：直接用 nginx 写法当选项，所见即所得 */
+const locMatchOptions = [
+  { value: '', label: '/path' },
+  { value: 'exact', label: '= /path' },
+  { value: 'prefer', label: '^~ /path' },
+] as const
+
 const locKindOptions = [
   { value: 'proxy', label: t('site.locKindProxy') },
   { value: 'redirect', label: t('site.locKindRedirect') },
@@ -799,6 +812,7 @@ function blankLocation(path = '/'): LocationSpec {
     target: '',
     code: 0,
     ws: false,
+    strip_prefix: false,
     raw: '',
     conn_timeout: 0,
     read_timeout: 0,
@@ -820,7 +834,9 @@ function blankLocation(path = '/'): LocationSpec {
     no_waf: false,
     limit_dry_run: false,
     static_mode: '',
+    match_mode: '',
     extra: [],
+    app_name: '',
     adv: false,
   }
 }
@@ -1148,6 +1164,7 @@ function openEdit(row: SiteItem) {
     target: l.target || '',
     code: l.code || 0,
     ws: !!l.ws,
+    strip_prefix: !!l.strip_prefix,
     raw: l.raw || '',
     conn_timeout: l.conn_timeout || 0,
     read_timeout: l.read_timeout || 0,
@@ -1169,7 +1186,9 @@ function openEdit(row: SiteItem) {
     no_waf: !!l.no_waf,
     limit_dry_run: !!l.limit_dry_run,
     static_mode: l.static_mode || '',
+    match_mode: l.match_mode || '',
     extra: (l.extra || []).map((d) => ({ key: d.key || '', value: d.value || '' })),
+    app_name: l.app_name || '',
     adv: false,
   }))
   if (form.site_type === 'proxy' && !form.locations.length) {
@@ -2569,6 +2588,18 @@ onMounted(() => {
                         class="loc-path"
                       />
                       <el-select
+                        v-model="loc.match_mode"
+                        class="loc-match"
+                        :title="t('site.locMatchModeTip')"
+                      >
+                        <el-option
+                          v-for="m in locMatchOptions"
+                          :key="m.value"
+                          :value="m.value"
+                          :label="m.label"
+                        />
+                      </el-select>
+                      <el-select
                         v-model="loc.kind"
                         class="loc-kind"
                         @change="onLocationKindChange(loc)"
@@ -2710,6 +2741,13 @@ onMounted(() => {
                         inline-prompt
                         active-text="WebSocket"
                         inactive-text="HTTP"
+                      />
+                      <el-switch
+                        v-model="loc.strip_prefix"
+                        inline-prompt
+                        :active-text="t('site.locStripPrefix')"
+                        :inactive-text="t('site.locStripPrefix')"
+                        :title="t('site.locStripPrefixTip')"
                       />
                     </div>
                     <!-- proxy 高级参数 -->
@@ -3643,5 +3681,9 @@ onMounted(() => {
 .extra-actions {
   display: flex;
   gap: 8px;
+}
+
+.loc-match {
+  width: 104px;
 }
 </style>

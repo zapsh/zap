@@ -72,9 +72,18 @@ pub struct AppDeployPayload {
     pub install_deps: Option<bool>,
     /// 自动分配端口（true 时忽略 port，在套餐端口段里挑一个没被占用的）
     pub auto_port: Option<bool>,
-    /// 域名：填了就自动创建一个反向代理站点（`site_type=proxy`，把 `/` 反代到应用端口）。
+    /// 域名：填了就自动创建一个反向代理站点（`site_type=proxy`，把应用反代出去）。
     /// 不填 site_id 时用它建站；填了 site_id 时忽略。
     pub domain: Option<String>,
+    /// 挂载点：站点上用哪个 location 前缀把应用反代出去，默认 `/`。
+    /// 同一站点挂多个应用时各填各的（`/`、`/api`、`/admin` …）。
+    pub mount_path: Option<String>,
+    /// 挂载点匹配方式：空（默认）= 前缀匹配；`exact` = 精确匹配 `location = /api`；
+    /// `prefer` = 优先前缀 `location ^~ /api`
+    pub match_mode: Option<String>,
+    /// 是否把挂载前缀剥掉再转发（proxy_pass 带 URI）：挂 `/njs` 时
+    /// `/njs/a` 转发给后端变成 `/a`。不传时子路径挂载默认剥离。
+    pub strip_prefix: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -216,7 +225,7 @@ async fn pick_free_port(caps: &AppCaps) -> Result<i64, ZapError> {
         .ok_or_else(|| ZapError::New(-1, "套餐端口段内已无可用端口".to_string()))
 }
 
-/// 域名 -> 建一个反代站点：站点类型 proxy，`/` 反代到 127.0.0.1:<port>。
+/// 域名 -> 建一个反代站点：站点类型 proxy，挂载点（默认 `/`）反代到 127.0.0.1:<port>。
 /// 走 `site::site_add` 是为了复用建站那一整套校验（套餐站点数、反代开关、目录规划）。
 async fn create_proxy_site(
     claims: &jwt::Claims,
@@ -224,6 +233,9 @@ async fn create_proxy_site(
     domain: &str,
     name: &str,
     port: i64,
+    mount: &str,
+    match_mode: &str,
+    strip_prefix: bool,
 ) -> Result<i64, ZapError> {
     // 建站归属：admin / reseller 没有默认归属，落到操作者本人
     let owner = if jwt::is_admin(claims) || jwt::is_reseller(claims) {
@@ -247,11 +259,14 @@ async fn create_proxy_site(
         web_root_sub: None,
         upstreams: Vec::new(),
         locations: vec![LocationSpec {
-            path: "/".to_string(),
+            path: site::normalize_mount_path(mount).map_err(|e| ZapError::New(-1, e))?,
+            match_mode: site::normalize_match_mode(match_mode),
             kind: "proxy".to_string(),
             target: format!("http://127.0.0.1:{port}"),
             code: 0,
             ws: true,
+            strip_prefix,
+            app_name: name.to_string(),
             ..Default::default()
         }],
         ssl_cert_id: None,
@@ -581,6 +596,16 @@ pub async fn app_deploy(
         port
     };
 
+    // 挂载点：站点上用哪个前缀反代这个应用（默认 /，可自定义；一个站点可挂多个应用）
+    let mount = payload
+        .mount_path
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let match_mode = payload.match_mode.clone().unwrap_or_default();
+    let strip_prefix = payload.strip_prefix;
+
     // 站点来源二选一：直接选已有站点，或填域名自动建一个反代站点
     let site_id = if payload.site_id > 0 {
         site::site_in_scope(&claims, payload.site_id).await?;
@@ -592,7 +617,17 @@ pub async fn app_deploy(
                 "请选择要部署到的站点，或填写域名自动创建反代站点".to_string(),
             ));
         }
-        create_proxy_site(&claims, client_addr, &domain, &name, port).await?
+        create_proxy_site(
+            &claims,
+            client_addr,
+            &domain,
+            &name,
+            port,
+            &mount,
+            &match_mode,
+            strip_prefix.unwrap_or(mount != "/"),
+        )
+        .await?
     };
 
     let ctx = load_site_ctx(site_id).await?;
@@ -699,9 +734,10 @@ pub async fn app_deploy(
     .map_err(|e| ZapError::New(-1, format!("保存应用配置失败：{e}")))?;
 
     // 部署完只写库还不够：nginx 上没有这条反代，站点等于没同步
-    let mounted = site::ensure_app_location(site_id, &name, port)
-        .await
-        .unwrap_or(None);
+    let mounted =
+        site::ensure_app_location(site_id, &name, port, &mount, &match_mode, strip_prefix)
+            .await
+            .unwrap_or(None);
     let sync_ok = match site::sync_one_site(site_id).await {
         Ok(_) => true,
         Err(e) => {
@@ -816,6 +852,19 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
         .await?
     };
 
+    // 挂载点：站点 locations 里标了 app_name 的那条就是该应用挂在哪
+    let mut mounts: std::collections::HashMap<(i64, String), (String, String)> =
+        std::collections::HashMap::new();
+    let mut seen_sites: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for r in &rows {
+        if !seen_sites.insert(r.1) {
+            continue;
+        }
+        for (app, p, m) in site::app_mounts(r.1).await {
+            mounts.insert((r.1, app), (p, m));
+        }
+    }
+
     // 实时进程状态：按站点批量问一次 zapexec（不可用则降级为 unknown，列表照出）
     let mut live: std::collections::HashMap<(i64, String), Value> =
         std::collections::HashMap::new();
@@ -873,11 +922,17 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
                     .unwrap_or(json!({
                         "state": "unknown", "active": false, "enabled": false, "pid": 0,
                     }));
+                let (mount_path, mount_mode) = mounts
+                    .get(&(site_id, name.clone()))
+                    .cloned()
+                    .unwrap_or_default();
                 json!({
                     "id": id,
                     "site_id": site_id,
                     "site_name": site_name,
                     "name": name,
+                    "mount_path": mount_path,
+                    "mount_mode": mount_mode,
                     "app_type": app_type,
                     "runtime_version": runtime_version,
                     "build_cmd": build_cmd,

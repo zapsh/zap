@@ -204,6 +204,10 @@ export function getAppRuntimes() {
 
 /** 跨站点应用列表（应用管理面板） */
 export interface AllAppItem {
+  /** 站点上的挂载点（location 前缀），未挂载时为空 */
+  mount_path?: string
+  /** 挂载点匹配方式：空 = 前缀，exact = `= /api`，prefer = `^~ /api` */
+  mount_mode?: string
   id: number
   site_id: number
   site_name: string
@@ -254,6 +258,12 @@ export interface SiteAppDeployPayload {
   env?: string
   autostart?: boolean
   install_deps?: boolean
+  /** 站点上的挂载点（location 前缀），默认 / */
+  mount_path?: string
+  /** 匹配方式：空 = 前缀（默认），exact = 精确，prefer = 优先前缀 */
+  match_mode?: string
+  /** 剥掉挂载前缀再转发：挂 /njs 时后端收到 /a 而不是 /njs/a */
+  strip_prefix?: boolean
   /** 填了就自动创建反代站点（site_id = 0 时生效） */
   domain?: string
 }

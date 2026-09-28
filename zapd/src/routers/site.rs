@@ -917,7 +917,7 @@ type ProfileRowRaw = (
 );
 
 /// 读取站点扩展档案；老站点（无档案行）返回默认值
-async fn load_profile(site_id: i64) -> ProfileRow {
+pub(crate) async fn load_profile(site_id: i64) -> ProfileRow {
     let pool = db::get_db_pool().await;
     let row: Option<ProfileRowRaw> = sqlx::query_as(
         "SELECT site_type, pseudo_static, pseudo_custom, web_root_custom, upstreams, locations, \
@@ -1066,33 +1066,127 @@ fn parse_specs<T: serde::de::DeserializeOwned>(text: &str) -> Vec<T> {
 ///   绝不覆盖站点已有的 `/`，避免把 php / 静态站改瘫。
 ///
 /// 返回挂载路径（供部署结果提示「从这个路径访问」），达到 location 上限时不挂载。
+/// 应用挂载点规范化：必须以 `/` 开头、去掉结尾多余的 `/`（根路径保持 `/`），
+/// 字符集与 location 路径校验保持一致，避免写进去后被同步校验打回。
+pub(crate) fn normalize_mount_path(raw: &str) -> Result<String, String> {
+    let t = raw.trim();
+    let mut p = if t.is_empty() { "/" } else { t }.to_string();
+    if !p.starts_with('/') {
+        p = format!("/{p}");
+    }
+    while p.len() > 1 && p.ends_with('/') {
+        p.pop();
+    }
+    if p.len() > 100 {
+        return Err("挂载点过长（上限 100 字符）".to_string());
+    }
+    if p.split('/').any(|seg| seg == "..") {
+        return Err(format!("挂载点不允许包含 ..：{t}"));
+    }
+    if !p.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '/' | '_' | '.' | '-' | '~' | '%' | '@' | ':' | '=' | '&')
+    }) {
+        return Err(format!("挂载点含非法字符：{t}"));
+    }
+    Ok(p)
+}
+
+/// 应用部署后确保站点有一条指向该应用的反代，挂载点由用户指定（默认 `/`）。
+///
+/// - 该应用之前挂过（按 `app_name` 认）→ 就地更新路径与端口，重新部署不重复添加；
+/// - 新挂载时路径已被其它规则占用 → 直接报错，让用户换一个；
+/// - 一个站点挂多个应用就是各自一个挂载点（`/`、`/api`、`/admin` …）。
+/// 在已有 location 里挑出该应用应当复用的那条：
+/// 1) 标着同一应用名的（重新部署 / 端口变了都更新这一条）；
+/// 2) 没有标记的（部署功能早期挂载的），端口相同或挂载点相同就认作同一个应用，
+///    顺手补上标记，避免再部署时被自己占的坑挡住。
+fn pick_app_location(
+    locs: &[LocationSpec],
+    app_name: &str,
+    target: &str,
+    path: &str,
+) -> Option<usize> {
+    if let Some(i) = locs.iter().position(|l| l.app_name == app_name) {
+        return Some(i);
+    }
+    locs.iter()
+        .position(|l| l.app_name.is_empty() && (l.target == target || l.path == path))
+}
+
+/// location 匹配方式归一化：只放行前缀 / 精确 / 优先前缀，其余按前缀处理
+pub(crate) fn normalize_match_mode(raw: &str) -> String {
+    match raw.trim() {
+        "exact" => "exact".to_string(),
+        "prefer" => "prefer".to_string(),
+        _ => String::new(),
+    }
+}
+
 pub(crate) async fn ensure_app_location(
     site_id: i64,
     app_name: &str,
     port: i64,
+    mount: &str,
+    match_mode: &str,
+    strip_prefix: Option<bool>,
 ) -> Result<Option<String>, ZapError> {
+    let path = normalize_mount_path(mount).map_err(|e| ZapError::New(-1, e))?;
+    let mode = normalize_match_mode(match_mode);
+    // 未显式指定时：挂在子路径（非 `/`）的应用默认剥离前缀——绝大多数应用
+    // 只监听 `/`，不剥离就会收到 `/njs/xxx` 而 404
+    let strip = strip_prefix.unwrap_or(path != "/");
     let prof = load_profile(site_id).await;
     let mut locs: Vec<LocationSpec> = parse_specs(&prof.5);
-    let want = format!("127.0.0.1:{port}");
-    if locs.iter().any(|l| l.target.contains(&want)) {
-        return Ok(None);
+    let target = format!("http://127.0.0.1:{port}");
+
+    // 目标挂载点是否已被别的应用占用（本应用自己的旧挂载不算冲突）
+    let conflict = locs
+        .iter()
+        .any(|x| x.path == path && !x.app_name.is_empty() && x.app_name != app_name);
+    if let Some(i) = pick_app_location(&locs, app_name, &target, &path) {
+        if conflict && locs[i].path != path {
+            return Err(ZapError::New(
+                -1,
+                format!("挂载点 {path} 已被站点上的其它应用占用，请换一个"),
+            ));
+        }
+        let l = &mut locs[i];
+        l.path = path.clone();
+        l.target = target;
+        l.kind = "proxy".to_string();
+        l.match_mode = mode;
+        // 调用方没明确指定时保留原有开关，避免把面板上的手动设置冲掉
+        if let Some(v) = strip_prefix {
+            l.strip_prefix = v;
+        }
+        l.app_name = app_name.to_string();
+        let ups: Vec<UpstreamSpec> = parse_specs(&prof.4);
+        save_profile(
+            site_id, &prof.0, &prof.1, &prof.2, prof.3, &ups, &locs, prof.6, prof.7, &prof.8,
+            &prof.9, prof.10, prof.11,
+        )
+        .await?;
+        return Ok(Some(path));
+    }
+
+    if locs.iter().any(|l| l.path == path) {
+        return Err(ZapError::New(
+            -1,
+            format!("挂载点 {path} 已被站点上的其它规则占用，请换一个（如 /{app_name}）"),
+        ));
     }
     if locs.len() >= 16 {
-        return Ok(None);
-    }
-    let base = app_name.trim().trim_matches('/').to_string();
-    let mut path = format!("/{base}/");
-    if locs.iter().any(|l| l.path == path) {
-        path = format!("/{base}-{port}/");
-    }
-    if locs.iter().any(|l| l.path == path) {
         return Ok(None);
     }
     locs.push(LocationSpec {
         path: path.clone(),
         kind: "proxy".to_string(),
-        target: format!("http://127.0.0.1:{port}"),
+        target,
         ws: true,
+        strip_prefix: strip,
+        match_mode: mode,
+        app_name: app_name.to_string(),
         ..Default::default()
     });
     let ups: Vec<UpstreamSpec> = parse_specs(&prof.4);
@@ -1102,6 +1196,80 @@ pub(crate) async fn ensure_app_location(
     )
     .await?;
     Ok(Some(path))
+}
+
+/// 站点上各应用的挂载点：`(应用名, 挂载路径, 匹配方式)`，供应用列表展示
+pub(crate) async fn app_mounts(site_id: i64) -> Vec<(String, String, String)> {
+    let prof = load_profile(site_id).await;
+    parse_specs::<LocationSpec>(&prof.5)
+        .into_iter()
+        .filter(|l| !l.app_name.is_empty())
+        .map(|l| (l.app_name.clone(), l.path.clone(), l.match_mode.clone()))
+        .collect()
+}
+
+#[cfg(test)]
+mod mount_path_tests {
+    use super::*;
+
+    #[test]
+    fn mount_path_defaults_to_root() {
+        assert_eq!(normalize_mount_path("").unwrap(), "/");
+        assert_eq!(normalize_mount_path("   ").unwrap(), "/");
+        assert_eq!(normalize_mount_path("/").unwrap(), "/");
+    }
+
+    #[test]
+    fn mount_path_is_normalized() {
+        assert_eq!(normalize_mount_path("api").unwrap(), "/api");
+        assert_eq!(normalize_mount_path("/api/").unwrap(), "/api");
+        assert_eq!(normalize_mount_path(" /admin// ").unwrap(), "/admin");
+    }
+
+    /// 重新部署要认回原来那条：优先按应用名，老数据按端口 / 挂载点认领
+    #[test]
+    fn pick_reuses_the_same_location() {
+        let mk = |path: &str, target: &str, app: &str| LocationSpec {
+            path: path.to_string(),
+            kind: "proxy".to_string(),
+            target: target.to_string(),
+            app_name: app.to_string(),
+            ..Default::default()
+        };
+        let locs = vec![
+            mk("/api", "http://127.0.0.1:8001", "api"),
+            mk("/old", "http://127.0.0.1:9001", ""),
+            mk("/", "http://127.0.0.1:9002", "web"),
+        ];
+        // 1) 按应用名
+        assert_eq!(
+            pick_app_location(&locs, "api", "http://127.0.0.1:8002", "/api"),
+            Some(0)
+        );
+        // 2) 老数据：端口相同
+        assert_eq!(
+            pick_app_location(&locs, "legacy", "http://127.0.0.1:9001", "/legacy"),
+            Some(1)
+        );
+        // 3) 老数据：挂载点相同
+        assert_eq!(
+            pick_app_location(&locs, "legacy2", "http://127.0.0.1:7777", "/old"),
+            Some(1)
+        );
+        // 4) 别的应用挂着的位置不会被抢
+        assert_eq!(
+            pick_app_location(&locs, "other", "http://127.0.0.1:7777", "/nope"),
+            None
+        );
+    }
+
+    #[test]
+    fn mount_path_rejects_bad_chars() {
+        for bad in ["/a b", "/a\\b", "/a;b", "/a{b", "/../etc"] {
+            assert!(normalize_mount_path(bad).is_err(), "{bad} 应被拒绝");
+        }
+        assert!(normalize_mount_path(&format!("/{}", "a".repeat(120))).is_err());
+    }
 }
 
 /// 归属用户家目录（空 = 尚未初始化）

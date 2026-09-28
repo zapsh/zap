@@ -54,6 +54,12 @@
           </span>
         </template>
       </el-table-column>
+      <el-table-column :label="t('site.appColMount')" width="110" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.mount_path" class="app-port">{{ mountLabel(row) }}</span>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column :label="t('site.appColPort')" width="90" align="center">
         <template #default="{ row }">
           <span v-if="row.port" class="app-port">{{ row.port }}</span>
@@ -159,6 +165,14 @@ const quotaText = computed(() => {
 
 function typeLabel(v: string) {
   return v === 'python' ? 'Python' : v === 'nodejs' ? 'Node.js' : v
+}
+
+/** 挂载点按 nginx 写法显示：精确 `= /api`、优先前缀 `^~ /api` */
+function mountLabel(r: AllAppItem) {
+  if (!r.mount_path) return '-'
+  if (r.mount_mode === 'exact') return `= ${r.mount_path}`
+  if (r.mount_mode === 'prefer') return `^~ ${r.mount_path}`
+  return r.mount_path
 }
 
 function stateLabel(r: AllAppItem) {

@@ -38,6 +38,24 @@
           <div class="wz-tip">{{ t('site.appDomainHint') }}</div>
         </el-form-item>
       </template>
+      <el-form-item :label="t('site.appMount')">
+        <div class="mount-row">
+          <el-select v-model="form.match_mode" class="mount-mode">
+            <el-option value="" label="/path" />
+            <el-option value="exact" label="= /path" />
+            <el-option value="prefer" label="^~ /path" />
+          </el-select>
+          <el-input v-model="form.mount_path" placeholder="/" class="mount-path" />
+        </div>
+        <div v-if="mountHasPrefix" class="mount-switch">
+          <el-switch v-model="form.strip_prefix" size="small" />
+          <span>{{ t('site.appStripPrefix') }}</span>
+          <el-tooltip :content="t('site.locStripPrefixTip')" placement="top">
+            <span class="mount-switch-hint">?</span>
+          </el-tooltip>
+        </div>
+        <div class="wz-tip">{{ t('site.appMountTip') }}</div>
+      </el-form-item>
       <el-form-item :label="t('site.appName')" required>
         <el-input v-model="form.name" :placeholder="t('site.appNamePh')" style="width: 100%" />
         <div class="wz-tip">{{ t('site.appNameTip') }}</div>
@@ -239,6 +257,11 @@ const form = ref({
   target: 'site' as 'site' | 'domain',
   site_id: 0,
   domain: '',
+  /** 站点上用哪个前缀反代这个应用，默认 / */
+  mount_path: '/',
+  match_mode: '',
+  /** 剥掉挂载前缀再转发：挂 /njs 时后端只监听 / 也能正常访问 */
+  strip_prefix: false,
   name: '',
   app_type: 'python',
   runtime_version: '',
@@ -366,6 +389,9 @@ async function submit() {
       autostart: form.value.autostart,
       install_deps: form.value.install_deps,
       domain: form.value.target === 'domain' ? form.value.domain.trim() : '',
+      mount_path: form.value.mount_path.trim() || '/',
+      match_mode: form.value.match_mode,
+      strip_prefix: form.value.strip_prefix,
     })
     const d = (res as any)?.data
     ElMessage.success(
@@ -392,6 +418,23 @@ function onClosed() {
   step.value = 0
 }
 
+// 有挂载前缀（非 `/`）时才显示「剥离前缀」开关
+const mountHasPrefix = computed(() => {
+  const p = form.value.mount_path.trim() || '/'
+  return p !== '/'
+})
+
+// 挂载点从 `/` 改成子路径时默认勾上（用户手动改过之后不再自动动它）
+watch(
+  () => form.value.mount_path,
+  (v, old) => {
+    const cur = (v || '').trim() || '/'
+    const prev = (old || '').trim() || '/'
+    if (cur !== '/' && prev === '/') form.value.strip_prefix = true
+    if (cur === '/') form.value.strip_prefix = false
+  },
+)
+
 watch(visible, (v) => {
   if (!v) return
   loadMeta().then(() => {
@@ -413,6 +456,10 @@ watch(visible, (v) => {
       form.value.name = i.name || ''
       form.value.app_type = i.app_type || 'python'
       form.value.runtime_version = i.runtime_version || ''
+      form.value.mount_path = i.mount_path || '/'
+      form.value.match_mode = i.match_mode || ''
+      form.value.strip_prefix =
+        i.strip_prefix ?? (form.value.mount_path.trim() || '/') !== '/'
       form.value.workdir = i.workdir || ''
       form.value.entry = i.entry || ''
       form.value.build_cmd = i.build_cmd || ''
@@ -458,5 +505,40 @@ watch(visible, (v) => {
 }
 .wz-dim {
   color: var(--el-text-color-secondary);
+}
+
+.mount-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.mount-mode {
+  width: 110px;
+}
+
+.mount-path {
+  flex: 1;
+}
+
+.mount-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #606266;
+}
+
+.mount-switch-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid #c0c4cc;
+  font-size: 10px;
+  cursor: default;
 }
 </style>

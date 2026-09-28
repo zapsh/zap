@@ -368,6 +368,11 @@ fn render_location_body(
             let target = l.target.trim();
             b.push_str("        proxy_pass ");
             b.push_str(target);
+            // 带 URI 的 proxy_pass：nginx 会把 location 匹配到的前缀替换掉，
+            // `/njs/a` → 后端 `/a`。不带 URI 则原样透传。
+            if l.strip_prefix && !target.ends_with('/') {
+                b.push('/');
+            }
             b.push_str(";\n");
             b.push_str(
                 "        proxy_set_header Host $host;\n\
@@ -1051,7 +1056,15 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         if body.is_empty() {
             continue;
         }
-        core.push_str(&format!("\n    location {path} {{\n{body}    }}\n"));
+        // 匹配修饰符：精确 `= /api` / 优先前缀 `^~ /api` / 默认前缀
+        let modifier = match l.match_mode.trim() {
+            "exact" => "= ",
+            "prefer" => "^~ ",
+            _ => "",
+        };
+        core.push_str(&format!(
+            "\n    location {modifier}{path} {{\n{body}    }}\n"
+        ));
         // 自定义限速响应体：server 级 named location，供上面的 error_page 跳转
         if loc_limited(l) && !l.limit_body.trim().is_empty() {
             core.push_str(&format!(
@@ -1595,6 +1608,120 @@ mod loc_extra_tests {
         assert!(!body.contains("alias "), "{body}");
     }
 
+    /// 精确匹配渲染成 `location = /api`，只命中 `/api` 本身（不会吞掉 /api-docs）
+    #[test]
+    fn location_match_mode_renders_modifier() {
+        let domains = vec!["a.com".to_string()];
+        let locs = vec![
+            LocationSpec {
+                path: "/api".to_string(),
+                kind: "proxy".to_string(),
+                target: "http://127.0.0.1:8080".to_string(),
+                match_mode: "exact".to_string(),
+                ..Default::default()
+            },
+            LocationSpec {
+                path: "/pre".to_string(),
+                kind: "proxy".to_string(),
+                target: "http://127.0.0.1:8081".to_string(),
+                match_mode: "prefer".to_string(),
+                ..Default::default()
+            },
+            LocationSpec {
+                path: "/plain/".to_string(),
+                kind: "proxy".to_string(),
+                target: "http://127.0.0.1:8082".to_string(),
+                ..Default::default()
+            },
+        ];
+        let s = render_vhost_full(VhostRenderSpec {
+            security: None,
+            site_id: 21,
+            name: "m",
+            domains: &domains,
+            root: "",
+            php_socket: None,
+            access_log: None,
+            error_log: None,
+            waf_log: None,
+            dry_run_ok: true,
+            site_type: "proxy",
+            pseudo_static: "none",
+            pseudo_custom: "",
+            upstreams: &[],
+            locations: &locs,
+            ssl_files: None,
+            force_https: false,
+            ssl_tls: None,
+            listen_ipv4: "",
+            listen_ipv6: "",
+        });
+        assert!(s.contains("location = /api {"), "{s}");
+        assert!(s.contains("location ^~ /pre {"), "{s}");
+        assert!(s.contains("location /plain/ {"), "{s}");
+    }
+
+    /// 匹配方式只允许三种，防止塞进 `~*` 之类把 location 变成正则匹配
+    #[test]
+    fn location_match_mode_is_whitelisted() {
+        for bad in ["~*", "~", "= ", "@name"] {
+            let l = LocationSpec {
+                path: "/".to_string(),
+                kind: "proxy".to_string(),
+                target: "http://127.0.0.1:8080".to_string(),
+                match_mode: bad.to_string(),
+                ..Default::default()
+            };
+            assert!(validate(vec![l]).is_err(), "{bad} 应被拒绝");
+        }
+        for ok in ["", "exact", "prefer"] {
+            let l = LocationSpec {
+                path: "/".to_string(),
+                kind: "proxy".to_string(),
+                target: "http://127.0.0.1:8080".to_string(),
+                match_mode: ok.to_string(),
+                ..Default::default()
+            };
+            assert!(validate(vec![l]).is_ok(), "{ok} 应放行");
+        }
+    }
+
+    /// 剥离前缀：proxy_pass 带 URI（后端只监听 / 时打开它）
+    #[test]
+    fn proxy_strip_prefix_appends_uri() {
+        let mut l = LocationSpec {
+            path: "/njs".to_string(),
+            kind: "proxy".to_string(),
+            target: "http://127.0.0.1:8080".to_string(),
+            ..Default::default()
+        };
+        let plain = render_location_body(&l, 0, 1, false, false);
+        assert!(
+            plain.contains("proxy_pass http://127.0.0.1:8080;"),
+            "{plain}"
+        );
+
+        l.strip_prefix = true;
+        let stripped = render_location_body(&l, 0, 1, false, false);
+        assert!(
+            stripped.contains("proxy_pass http://127.0.0.1:8080/;"),
+            "{stripped}"
+        );
+
+        // upstream 组名同样支持带 URI
+        l.target = "backend".to_string();
+        let byname = render_location_body(&l, 0, 1, false, false);
+        assert!(byname.contains("proxy_pass backend/;"), "{byname}");
+
+        // 已经带 URI 的目标不重复补斜杠
+        l.target = "http://127.0.0.1:8080/base/".to_string();
+        let keep = render_location_body(&l, 0, 1, false, false);
+        assert!(
+            keep.contains("proxy_pass http://127.0.0.1:8080/base/;"),
+            "{keep}"
+        );
+    }
+
     /// 附加指令按填写顺序渲染在主指令之后
     #[test]
     fn extra_directives_rendered_after_main_directive() {
@@ -1851,6 +1978,14 @@ fn validate_vhost_cfg(
         }
         if p == "/" {
             has_root_loc = true;
+        }
+        match l.match_mode.trim() {
+            "" | "exact" | "prefer" => {}
+            other => {
+                return Err(format!(
+                    "location 匹配方式非法：{other}（只能是 前缀 / 精确 / 优先前缀）"
+                ));
+            }
         }
         let kind = l.kind.trim().to_lowercase();
         match kind.as_str() {
