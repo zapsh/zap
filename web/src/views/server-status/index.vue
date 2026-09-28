@@ -1,35 +1,28 @@
 <template>
-  <div class="status-tabs">
-    <el-tabs v-model="active" type="border-card" class="status-tabs-body">
-      <el-tab-pane :label="t('statusTabs.info')" name="info">
-        <InfoPage v-if="active === 'info'" />
-      </el-tab-pane>
-      <el-tab-pane :label="t('statusTabs.monitor')" name="monitor">
-        <MonitorPage v-if="active === 'monitor'" />
-      </el-tab-pane>
-      <el-tab-pane :label="t('statusTabs.load')" name="load">
-        <LoadPage v-if="active === 'load'" />
-      </el-tab-pane>
-      <el-tab-pane :label="t('statusTabs.cpu')" name="cpu">
-        <CpuPage v-if="active === 'cpu'" />
-      </el-tab-pane>
-      <el-tab-pane :label="t('statusTabs.memory')" name="memory">
-        <MemoryPage v-if="active === 'memory'" />
-      </el-tab-pane>
-      <el-tab-pane :label="t('statusTabs.disk')" name="disk">
-        <DiskPage v-if="active === 'disk'" />
-      </el-tab-pane>
-      <el-tab-pane :label="t('statusTabs.network')" name="network">
-        <NetworkPage v-if="active === 'network'" />
-      </el-tab-pane>
-    </el-tabs>
-  </div>
+  <NavPillPanels :tabs="tabs" />
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useRoute } from 'vue-router'
+/**
+ * 服务器状态：一个路由下 7 个面板，页内 nav pill 切换（与站点、系统管理同一套）。
+ *
+ * pill 的 key 同时是地址栏 ?tab= 的值，旧链接 / 首页快捷入口照旧直达：
+ * `?tab=monitor`（服务器状态卡片）、`?tab=disk`、`?tab=network`（首页磁盘 / 网络）。
+ * computed 包一层：切换语言时 pill 文案跟着变。
+ */
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import {
+  Connection,
+  Cpu,
+  DataLine,
+  HardDrive,
+  InfoFilled,
+  Memory,
+  Monitor,
+  Odometer,
+} from '@/icons'
+import NavPillPanels from '@/components/NavPillPanels.vue'
 import InfoPage from './info/index.vue'
 import MonitorPage from './monitor/index.vue'
 import LoadPage from './load/index.vue'
@@ -39,19 +32,24 @@ import DiskPage from './disk/index.vue'
 import NetworkPage from './network/index.vue'
 
 const { t } = useI18n()
-const route = useRoute()
 
-/** 支持 `?tab=monitor` 直达指定页签（首页「系统信息」的查看详情跳转监控页） */
-const TAB_NAMES = ['info', 'monitor', 'load', 'cpu', 'memory', 'disk', 'network']
-const wanted = String(route.query.tab || '')
-const active = ref(TAB_NAMES.includes(wanted) ? wanted : 'info')
+const tabs = computed(() => [
+  { key: 'info', label: t('statusTabs.info'), icon: InfoFilled, panel: InfoPage },
+  { key: 'monitor', label: t('statusTabs.monitor'), icon: DataLine, panel: MonitorPage },
+  { key: 'load', label: t('statusTabs.load'), icon: Odometer, panel: LoadPage },
+  { key: 'cpu', label: t('statusTabs.cpu'), icon: Cpu, panel: CpuPage },
+  { key: 'memory', label: t('statusTabs.memory'), icon: Memory, panel: MemoryPage },
+  { key: 'disk', label: t('statusTabs.disk'), icon: HardDrive, panel: DiskPage },
+  { key: 'network', label: t('statusTabs.network'), icon: Connection, panel: NetworkPage },
+])
+</script>
+
+<script lang="ts">
+export default { name: 'ServerStatusIndex' }
 </script>
 
 <style scoped>
-.status-tabs-body {
+.pill-panels {
   min-height: 60vh;
-}
-.status-tabs-body :deep(.el-tab-pane) {
-  padding: 14px 4px 8px;
 }
 </style>

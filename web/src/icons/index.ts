@@ -54,6 +54,7 @@ import IconLink from '~icons/material-symbols/link'
 import IconLock from '~icons/material-symbols/lock'
 import IconLogout from '~icons/material-symbols/logout'
 import IconMemory from '~icons/material-symbols/memory'
+import IconMemoryAlt from '~icons/material-symbols/memory-alt'
 import IconMenu from '~icons/material-symbols/menu'
 import IconMinimize from '~icons/material-symbols/minimize'
 import IconMenuBook from '~icons/material-symbols/menu-book'
@@ -219,6 +220,8 @@ export const CloudUpload = IconCloudUpload
 export const Connection = IconCable
 export const Copy = IconContentCopy
 export const Cpu = IconMemory
+/** 内存条（Cpu 用的是芯片那颗，两者不撞） */
+export const Memory = IconMemoryAlt
 export const Cut = IconContentCut
 export const DataLine = IconMonitoring
 export const Delete = IconDelete

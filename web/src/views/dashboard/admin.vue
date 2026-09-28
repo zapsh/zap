@@ -147,7 +147,13 @@
       </el-col>
     </el-row>
 
-    <!-- 磁盘使用 / 网络接口 -->
+    <!-- 磁盘使用 / 网络接口：标题与「查看详情」跟着当前页签走 -->
+    <div class="section-title-row">
+      <span class="section-title">{{ resourceTitle }}</span>
+      <el-link type="primary" underline="never" @click="go(resourcePath)">
+        {{ t('dashboardAdmin.viewDetails') }}
+      </el-link>
+    </div>
     <el-row :gutter="16" class="section-row">
       <el-col :span="24">
         <el-card shadow="hover" v-loading="loading">
@@ -206,6 +212,12 @@ const sysinfo: Record<string, any> = ref({})
 const overview: Record<string, any> = ref({})
 const about: Record<string, any> = ref({})
 const resourceTab = ref('disk')
+
+/** 磁盘 / 网络共用一张卡：标题与跳转目标跟着当前页签走（pill key 就是 ?tab=） */
+const resourceTitle = computed(() =>
+  resourceTab.value === 'disk' ? t('dashboardAdmin.diskUsage') : t('dashboardAdmin.network'),
+)
+const resourcePath = computed(() => `/server-status/index?tab=${resourceTab.value}`)
 
 const shortcuts = computed(() => [
   { title: t('dashboardAdmin.sites'), path: '/site/index', icon: 'material-symbols:public', color: '#409eff' },
