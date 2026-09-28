@@ -698,6 +698,18 @@ pub async fn app_deploy(
     .await
     .map_err(|e| ZapError::New(-1, format!("保存应用配置失败：{e}")))?;
 
+    // 部署完只写库还不够：nginx 上没有这条反代，站点等于没同步
+    let mounted = site::ensure_app_location(site_id, &name, port)
+        .await
+        .unwrap_or(None);
+    let sync_ok = match site::sync_one_site(site_id).await {
+        Ok(_) => true,
+        Err(e) => {
+            info!("app deploy: site sync failed: site={site_id} err={e}");
+            false
+        }
+    };
+
     let _ = audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
@@ -717,6 +729,8 @@ pub async fn app_deploy(
             "site_id": site_id,
             "name": name,
             "port": port,
+            "mounted": mounted,
+            "synced": sync_ok,
             "detail": resp.data.unwrap_or(Value::Null),
         }
     })))

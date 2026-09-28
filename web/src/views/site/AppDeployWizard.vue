@@ -357,6 +357,13 @@ async function submit() {
     ElMessage.success(
       d?.name ? t('site.appDeployOk', { name: d.name }) : t('site.appDeploySubmitted'),
     )
+    // 部署会改站点配置（自动挂载反代 + 同步）：通知站点面板刷新
+    window.dispatchEvent(new CustomEvent('zap:sites-changed'))
+    if (d?.mounted) {
+      ElMessage.info(t('site.appMounted', { path: d.mounted, port: d.port }))
+    } else if (d?.synced === false) {
+      ElMessage.warning(t('site.appSyncFailed'))
+    }
     visible.value = false
     emit('done')
   } catch (e: any) {

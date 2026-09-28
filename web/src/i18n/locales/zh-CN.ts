@@ -4104,6 +4104,8 @@ export default {
     appDeployFailed: '部署失败',
     appNamePrefixHint: '非管理员部署时会自动加前缀「{prefix}」，便于区分归属',
     appDeploySubmitted: '部署已提交',
+    appMounted: '已在站点挂载反代：{path} → 127.0.0.1:{port}（站点已同步）',
+    appSyncFailed: '应用已部署，但站点同步失败，请在站点列表里手动同步',
     tabAdvanced: '反代 / 高级',
     tabSecurity: '安全',
     secLoadFailed: '安全配置加载失败：请确认后端已更新并重启（接口 /site/security 不可用）',

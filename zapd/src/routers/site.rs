@@ -1059,6 +1059,51 @@ fn parse_specs<T: serde::de::DeserializeOwned>(text: &str) -> Vec<T> {
     serde_json::from_str(text).unwrap_or_default()
 }
 
+/// 应用部署完成后，确保站点上有一条指向该应用端口的反代。
+///
+/// - 已存在指向该端口的 location（部署时自动建的反代站点已预置 `/`）→ 不动，返回 None；
+/// - 否则追加 `/{app_name}/` → `http://127.0.0.1:{port}`：只加子路径，
+///   绝不覆盖站点已有的 `/`，避免把 php / 静态站改瘫。
+///
+/// 返回挂载路径（供部署结果提示「从这个路径访问」），达到 location 上限时不挂载。
+pub(crate) async fn ensure_app_location(
+    site_id: i64,
+    app_name: &str,
+    port: i64,
+) -> Result<Option<String>, ZapError> {
+    let prof = load_profile(site_id).await;
+    let mut locs: Vec<LocationSpec> = parse_specs(&prof.5);
+    let want = format!("127.0.0.1:{port}");
+    if locs.iter().any(|l| l.target.contains(&want)) {
+        return Ok(None);
+    }
+    if locs.len() >= 16 {
+        return Ok(None);
+    }
+    let base = app_name.trim().trim_matches('/').to_string();
+    let mut path = format!("/{base}/");
+    if locs.iter().any(|l| l.path == path) {
+        path = format!("/{base}-{port}/");
+    }
+    if locs.iter().any(|l| l.path == path) {
+        return Ok(None);
+    }
+    locs.push(LocationSpec {
+        path: path.clone(),
+        kind: "proxy".to_string(),
+        target: format!("http://127.0.0.1:{port}"),
+        ws: true,
+        ..Default::default()
+    });
+    let ups: Vec<UpstreamSpec> = parse_specs(&prof.4);
+    save_profile(
+        site_id, &prof.0, &prof.1, &prof.2, prof.3, &ups, &locs, prof.6, prof.7, &prof.8, &prof.9,
+        prof.10, prof.11,
+    )
+    .await?;
+    Ok(Some(path))
+}
+
 /// 归属用户家目录（空 = 尚未初始化）
 async fn home_dir_of(user_id: i64) -> Result<String, ZapError> {
     let pool = db::get_db_pool().await;

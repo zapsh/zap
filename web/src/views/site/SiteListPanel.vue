@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  h,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  watch,
+} from 'vue'
 import {
   ArrowRight,
   Delete,
@@ -1498,8 +1507,18 @@ function handleSelectionChange(rows: SiteItem[]) {
   selection.value = rows
 }
 
+onUnmounted(() => {
+  window.removeEventListener('zap:sites-changed', onSitesChanged)
+})
+
+/** 站点配置在别处被改动（如应用部署自动挂载反代 + 同步）时刷新列表 */
+function onSitesChanged() {
+  load()
+}
+
 onMounted(() => {
   loadLocDirectives()
+  window.addEventListener('zap:sites-changed', onSitesChanged)
   loadOwners()
   loadPhpOptions()
   loadCerts()

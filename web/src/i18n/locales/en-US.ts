@@ -4168,6 +4168,8 @@ const enUS: Messages = {
     appDeployFailed: 'Deployment failed',
     appNamePrefixHint: 'Non-admin deployments get a "{prefix}" prefix to show ownership',
     appDeploySubmitted: 'Deployment submitted',
+    appMounted: 'Proxied on the site: {path} → 127.0.0.1:{port} (site synced)',
+    appSyncFailed: 'App deployed, but site sync failed — sync it manually in the site list',
     tabAdvanced: 'Proxy / Advanced',
     tabSecurity: 'Security',
     secLoadFailed: 'Failed to load security settings: update and restart the backend (API /site/security unavailable)',
