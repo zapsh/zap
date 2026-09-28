@@ -327,6 +327,18 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/server-status/nginx-server/index.vue'),
         meta: { title: 'Nginx Server', icon: 'material-symbols:monitor', affix: true },
       },
+      {
+        path: 'process',
+        name: 'ServerStatusProcess',
+        component: () => import('@/views/server-status/process/index.vue'),
+        meta: { title: '进程管理', icon: 'material-symbols:memory', affix: true },
+      },
+      {
+        path: 'services',
+        name: 'ServerStatusServices',
+        component: () => import('@/views/server-status/services/index.vue'),
+        meta: { title: '系统服务', icon: 'material-symbols:miscellaneous-services', affix: true },
+      },
     ],
   },
   // 终端管理（Layout 包裹 + 一级直链）

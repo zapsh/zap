@@ -292,7 +292,7 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .icon("material-symbols:tune")
     .redirect("/server/system")
     .affix(),
-    // 系统管理：服务器时间 / 系统服务 / SSH 服务 / 进程管理 合到一页
+    // 系统管理：只剩 服务器时间 / SSH 服务（系统服务与进程管理已归到「服务器状态」）
     MenuSeed::new(
         "server-system",
         "系统管理",
@@ -565,6 +565,33 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     )
     .parent("server-status")
     .icon("material-symbols:monitor")
+    .affix(),
+    // 进程管理 / 系统服务：原先是「服务器配置 → 系统管理」里的两个页签。
+    // 它们本质是"看当前状态"（进程占用、单元运行状态），不是改配置，
+    // 归到「服务器状态」下，监控与配置的边界才清楚。
+    MenuSeed::new(
+        "server-status-process",
+        "进程管理",
+        "menu",
+        "process",
+        "server-status/process/index",
+        R_ADMIN,
+        3,
+    )
+    .parent("server-status")
+    .icon("material-symbols:memory")
+    .affix(),
+    MenuSeed::new(
+        "server-status-services",
+        "系统服务",
+        "menu",
+        "services",
+        "server-status/services/index",
+        R_ADMIN,
+        4,
+    )
+    .parent("server-status")
+    .icon("material-symbols:miscellaneous-services")
     .affix(),
     // ── 开发（目录）─────────────────────────────────────────
     MenuSeed::new(
