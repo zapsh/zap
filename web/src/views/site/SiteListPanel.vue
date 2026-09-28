@@ -1655,6 +1655,9 @@ onMounted(() => {
                     >
                       <code class="root-path">{{ row.web_root }}</code>
                     </el-tooltip>
+                    <span v-else-if="row.site_type === 'proxy'" class="dim">
+                      {{ t('site.proxyNoRoot') }}
+                    </span>
                     <span v-else class="dim">{{ t('site.defaultRoot') }}</span>
                   </div>
                 </div>

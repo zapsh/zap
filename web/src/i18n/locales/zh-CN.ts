@@ -3952,6 +3952,7 @@ export default {
     colPhpVersion: 'PHP 版本',
     colPhpChannel: 'PHP 运行通道',
     colOwner: '归属用户',
+    proxyNoRoot: '反代站点无文档根（需要静态资源时添加 alias location）',
     colRoot: '站点目录',
     colDisk: '磁盘占用',
     colTraffic: '本月流量',
@@ -4227,7 +4228,7 @@ export default {
       '反向代理站点至少需要一个 location / 作为默认转发（模板已自动生成）；nginx 按最长前缀匹配，规则自上而下建议从“具体路径”到“/”排列',
     locPathPlaceholder: '路径如 / 或 /api',
     locTargetRedirect: '如 https://example.com/$request_uri',
-    locTargetAlias: '站点目录内绝对路径',
+    locTargetAlias: '绝对路径（可指向应用静态目录）',
     locTargetProxy: '如 http://backend_api 或 http://127.0.0.1:8080',
     locRawPlaceholder:
       '粘贴该 location 内的完整 nginx 指令体（如 try_files / proxy_pass 等，逐行原样输出；禁止 include、# 注释与花括号）',

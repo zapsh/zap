@@ -4016,6 +4016,7 @@ const enUS: Messages = {
     colPhpVersion: 'PHP Version',
     colPhpChannel: 'PHP Runtime Channel',
     colOwner: 'Owner',
+    proxyNoRoot: 'No document root (add an alias location for static assets)',
     colRoot: 'Site Directory',
     colDisk: 'Disk Usage',
     colTraffic: 'Traffic (Month)',
@@ -4297,7 +4298,7 @@ const enUS: Messages = {
       'A reverse proxy site needs at least one location / as the default forward (the template generates it automatically); nginx matches the longest prefix, so order rules from specific paths to "/" top-down',
     locPathPlaceholder: 'Path, e.g. / or /api',
     locTargetRedirect: 'e.g. https://example.com/$request_uri',
-    locTargetAlias: 'Absolute path inside the site directory',
+    locTargetAlias: 'Absolute path (may point to the app static dir)',
     locTargetProxy: 'e.g. http://backend_api or http://127.0.0.1:8080',
     locRawPlaceholder:
       'Paste the full nginx directives for this location (such as try_files / proxy_pass, output line by line as-is; include, # comments and braces are not allowed)',

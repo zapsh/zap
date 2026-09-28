@@ -1973,6 +1973,12 @@ pub async fn site_add(
     let (web_root, log_root) = if let Some(cw) = &custom_web_root {
         let (_, lr) = site_dirs_for(owner, &name, id).await?;
         (cw.clone(), lr)
+    } else if site_type == "proxy" {
+        // 反代站点用不到文档根：不规划（nginx 也不渲染 root），
+        // 免得每个反代站点都建一个空目录。需要暴露静态资源时，
+        // 在 location 里加一条 alias 指向应用目录即可。
+        let (_, lr) = site_dirs_for(owner, &name, id).await?;
+        (String::new(), lr)
     } else {
         // 自动目录：支持用户指定 {home}/子路径（缺省走面板默认规划 www/{name}-{id}）；
         // 目录不存在时由 vhost 同步阶段的 ensure_web_root 递归创建

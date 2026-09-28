@@ -1615,10 +1615,22 @@ fn validate_vhost_cfg(
             }
             "alias" => {
                 let t = l.target.trim();
-                let r =
-                    root.ok_or_else(|| "alias location 仅用于 php / static 站点".to_string())?;
-                let tp = Path::new(t);
-                if !t.starts_with('/') || !path_under(r, tp) {
+                if !t.starts_with('/')
+                    || t.split('/').any(|seg| seg == "..")
+                    || t.chars().any(|c| {
+                        c.is_control() || matches!(c, '{' | '}' | ';' | '#' | '$' | '"' | '\\')
+                    })
+                {
+                    return Err(format!(
+                        "alias 目标需为绝对路径且不能包含 .. 或特殊字符：{t}"
+                    ));
+                }
+                // php / static 站点仍限制在文档根内；
+                // 反代站点本来就没有文档根，静态资源多半放在应用目录里
+                // （如 /home/u/www/app-1/static），所以只做上面的路径安全校验。
+                if let Some(r) = root
+                    && !path_under(r, Path::new(t))
+                {
                     return Err(format!("alias 目标必须位于站点目录内：{t}"));
                 }
             }
@@ -3062,7 +3074,7 @@ mod tests {
             ..Default::default()
         }];
         assert!(validate_vhost_cfg("proxy", "none", "", false, None, &ups, &locs2).is_err());
-        // alias 越出站点目录
+        // alias 越出站点目录（php / static 仍然拦）
         let locs3 = vec![LocationSpec {
             path: "/x".into(),
             kind: "alias".into(),
@@ -3072,6 +3084,43 @@ mod tests {
             ..Default::default()
         }];
         assert!(validate_vhost_cfg("php", "none", "", false, Some(&tmp), &[], &locs3).is_err());
+
+        // 反代站点没有文档根：静态资源可 alias 到应用目录（站点目录之外）。
+        // 反代站点本身仍需一条兜底 `location /` 转发
+        let locs4 = vec![
+            LocationSpec {
+                path: "/".into(),
+                kind: "proxy".into(),
+                target: "http://127.0.0.1:10000".into(),
+                code: 0,
+                ws: false,
+                ..Default::default()
+            },
+            LocationSpec {
+                path: "/static".into(),
+                kind: "alias".into(),
+                target: "/home/u/www/app-1/static".into(),
+                code: 0,
+                ws: false,
+                ..Default::default()
+            },
+        ];
+        assert!(validate_vhost_cfg("proxy", "none", "", false, None, &[], &locs4).is_ok());
+        // 但越界（..）与注入字符照旧拒绝
+        for bad in ["/home/u/../../etc", "/home/u/www/{}", "/home/u/www/a;b"] {
+            let l = vec![LocationSpec {
+                path: "/static".into(),
+                kind: "alias".into(),
+                target: bad.into(),
+                code: 0,
+                ws: false,
+                ..Default::default()
+            }];
+            assert!(
+                validate_vhost_cfg("proxy", "none", "", false, None, &[], &l).is_err(),
+                "应拒绝：{bad}"
+            );
+        }
         // 自定义伪静态花括号不配对
         assert!(
             validate_vhost_cfg(
