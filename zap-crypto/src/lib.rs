@@ -8,8 +8,7 @@
 //! - 32 字节随机数，首次访问自动生成，权限 `0600`
 //!
 //! ## 密文格式
-//! `v1:<base64(nonce)>:<base64(ciphertext)>`；
-//! `decrypt` 对非 `v1:` 前缀的历史明文原样返回（迁移期兼容）。
+//! `v1:<base64(nonce)>:<base64(ciphertext)>`；仅接受此格式密文。
 //!
 //! ## 凭据文件
 //! - 目录：`/etc/zap/credentials`（`0750`，root:面板组）
@@ -177,20 +176,16 @@ pub fn encrypt(plaintext: &str) -> Result<String, String> {
     Ok(format!("{PREFIX}{}:{}", B64.encode(nonce), B64.encode(ct)))
 }
 
-/// 是否为当前格式的密文（`v1:` 前缀）。
+/// 解密；要求 `v1:` 前缀的密文。
 ///
-/// 非密文即历史明文数据，[`decrypt`] 会原样返回，调用侧可据此做一次性迁移。
-pub fn is_encrypted(encrypted: &str) -> bool {
-    encrypted.starts_with(PREFIX)
-}
-
-/// 解密；非 `v1:` 前缀视为历史明文原样返回。
+/// 历史明文（无 `v1:` 前缀）或格式错误一律返回 `Err`，**绝不原样回退明文**：
+/// 明文凭据一旦落库即视为泄露，应当让用户重新录入，而不是被静默当密文读回。
 pub fn decrypt(encrypted: &str) -> Result<String, String> {
     if encrypted.is_empty() {
         return Ok(String::new());
     }
     if !encrypted.starts_with(PREFIX) {
-        return Ok(encrypted.to_string());
+        return Err("密文格式错误（缺少 v1: 前缀，疑似历史明文或已损坏）".to_string());
     }
     let key = SECRET_KEY.as_ref().map_err(|e| e.clone())?;
     let body = &encrypted[PREFIX.len()..];
@@ -370,8 +365,9 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_legacy_plaintext() {
-        assert_eq!(decrypt("old-plain").unwrap(), "old-plain");
+    fn decrypt_rejects_legacy_plaintext() {
+        // 历史明文（无 v1: 前缀）必须被拒绝，而非原样回退
+        assert!(decrypt("old-plain").is_err());
     }
 
     #[test]

@@ -7,7 +7,7 @@
 
 use tracing::warn;
 
-pub use zap_crypto::{decrypt, encrypt, is_encrypted};
+pub use zap_crypto::{decrypt, encrypt};
 
 /// 掩码展示：长值保留头尾各 2 位（`ab****yz`），短值一律 `******`。
 ///
@@ -72,9 +72,9 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_legacy_plaintext() {
-        // 旧版本未加密的明文数据：原样返回，保证迁移期间可用
-        assert_eq!(decrypt("old-plain-password").unwrap(), "old-plain-password");
+    fn decrypt_rejects_legacy_plaintext() {
+        // 历史明文（无 v1: 前缀）必须被拒绝，而非原样回退
+        assert!(decrypt("old-plain-password").is_err());
     }
 
     #[test]
@@ -98,14 +98,6 @@ mod tests {
         assert_eq!(mask_secret("12345678"), "******");
         // 长值只留头尾各 2 位
         assert_eq!(mask_secret("MyP@ssw0rd123"), "My****23");
-    }
-
-    #[test]
-    fn is_encrypted_detects_ciphertext() {
-        let enc = encrypt_password("secret").unwrap();
-        assert!(is_encrypted(&enc));
-        assert!(!is_encrypted("plain-password"));
-        assert!(!is_encrypted(""));
     }
 
     #[test]

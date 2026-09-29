@@ -166,6 +166,11 @@ pub fn is_demo(claims: &Claims) -> bool {
 /// 静态 API Token 前缀（`zap_` 开头，用于区分 JWT）
 pub const API_TOKEN_PREFIX: &str = "zap_";
 
+/// 未显式设置过期的静态 API Token 的默认有效期上限（1 年）。
+///
+/// 避免「永不过期」实际变成十年有效；到期需重新签发，防止长期有效的后门。
+const DEFAULT_API_TOKEN_EXPIRE_SECS: u64 = 365 * 86400;
+
 /// SHA-256 十六进制摘要（API Token 在 DB 中仅存哈希，不落明文）
 pub fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
@@ -316,14 +321,24 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
     .ok()?;
     let r = row?;
 
-    // 注：静态 Token 不参与会话版本号比对 —— 版本号只在「下线所有设备」时
-    // 由 `session::bump` 直接推高到库里的行上（集群节点凭据 scope='cluster' 已被排除）。
+    // 静态 Token 与 JWT 走同一套「下线所有设备」吊销规则：Token 的 `token_version`
+    // 固定在创建时（= 用户当时版本号），而 `session::bump`「下线所有设备」只推高
+    // `user.token_version`（不再同步 Token 行），于是落后即判为已下线。
+    // 集群节点凭据（scope='cluster'）豁免，否则管理员「下线所有设备」会把整舰队踢下线。
 
     let now = time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()?
         .as_secs() as i64;
     if r.token_status != 1 || r.user_status != 1 || (r.expires_at > 0 && r.expires_at <= now) {
+        return None;
+    }
+
+    // 「下线所有设备」把用户版本号推高；静态 Token 的 token_version 落后于它即已作废
+    // （与 JWT 共用 session::version_of 校验）。集群节点凭据豁免，避免误踢整舰队。
+    if r.scope != "cluster"
+        && crate::zap::session::version_of(r.user_id as u64) > r.token_version
+    {
         return None;
     }
 
@@ -338,9 +353,14 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
     let exp = if r.expires_at > 0 {
         r.expires_at as u64
     } else {
-        // 永不过期的 Token：赋予足够远的 exp（10 年）
-        now as u64 + 10 * 365 * 86400
+        // 永不过期的 Token：给予上限默认有效期（1 年），而非十年有效；
+        // 到期需重新签发，避免「永不过期」实际变成长期有效的后门。
+        now as u64 + DEFAULT_API_TOKEN_EXPIRE_SECS
     };
+    // 即使「永不过期」也受上述默认上限约束：超过 exp 即失效，需重新签发
+    if exp <= now as u64 {
+        return None;
+    }
     Some(Claims {
         id: r.user_id as u64,
         iat: now as u64,

@@ -68,18 +68,14 @@ fn get(conf: &HashMap<String, String>, key: &str) -> String {
 
 /// Mail 密码：读取密文并给出「是否已设置 + 掩码提示」。
 ///
-/// 密码本身永不回显；历史上明文保存的值在这里顺手加密回写一次（一次性迁移）。
+/// 密码本身永不回显。
 fn mail_password_view(conf: &HashMap<String, String>) -> (bool, String) {
     let stored = get(conf, K_MAIL_PASSWORD);
     if stored.is_empty() {
         return (false, String::new());
     }
-    if !crypto::is_encrypted(&stored) {
-        // 历史明文：就地升级为密文；加密失败时不回写（保留原值，绝不落明文）
-        if let Ok(enc) = crypto::encrypt_password(&stored) {
-            server_env::conf_set(K_MAIL_PASSWORD, &enc, "面板基础设置");
-        }
-    }
+    // 仅接受 v1: 密文；历史明文（已无兼容路径）解密得到空串，按「未设置」处理，
+    // 由用户重新录入 —— 避免明文凭据静默留存。
     let plain = crypto::decrypt_password(&stored);
     if plain.is_empty() {
         return (false, String::new());
