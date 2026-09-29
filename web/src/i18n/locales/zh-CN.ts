@@ -2201,6 +2201,9 @@ export default {
       '通过应用商店安装 PHP 应用后，本页将按版本标签（php74 / php81 …）逐个实例展示状态、配置 php.ini 与「全局默认访问」开关。',
     emptyHintDir:
       '{base}\n实例扫描目录：{dir}（若 PHP 装在别处，请用 ZAP_APPS_DIR 指向该目录后重启 zapexec）',
+    eolAlert:
+      'PHP 8.0 以下版本（如 7.4、5.6）官方已停止安全维护（EOL），不再接收安全补丁，存在安全风险，建议尽快升级到 PHP 8.1 或更高版本。',
+    eolTag: 'EOL',
   },
 
   /** 服务配置 - PHP 实例面板 */

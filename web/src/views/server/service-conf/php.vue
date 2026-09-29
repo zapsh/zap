@@ -19,6 +19,15 @@
       </div>
     </el-card>
 
+    <el-alert
+      v-if="hasEol"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="mt-3"
+      :title="t('servicesPhp.eolAlert')"
+    />
+
     <template v-if="loading && !instances.length">
       <el-card shadow="never" class="mt-3">
         <el-skeleton :rows="5" animated />
@@ -45,6 +54,9 @@
             </el-tag>
             <el-tag v-if="inst.is_default" size="small" type="warning" class="tab-tag">
               {{ t('servicesPhp.defaultTag') }}
+            </el-tag>
+            <el-tag v-if="phpEol(inst)" size="small" type="danger" class="tab-tag">
+              {{ t('servicesPhp.eolTag') }}
             </el-tag>
           </span>
         </template>
@@ -73,6 +85,21 @@ const emptyHint = computed(() => {
   const base = t('servicesPhp.emptyHint')
   return appsDir.value ? t('servicesPhp.emptyHintDir', { base, dir: appsDir.value }) : base
 })
+
+/** PHP 主版本号解析：优先 version（如 7.4.33），回退 svc（如 php74） */
+function phpMajorOf(v?: string): number {
+  if (!v) return 0
+  const m = v.match(/(\d+)\.(\d+)/)
+  if (m) return parseInt(m[1], 10)
+  const s = v.match(/(\d)(\d)$/)
+  if (s) return parseInt(s[1], 10)
+  return 0
+}
+/** 该 PHP 实例是否低于 8.0（官方已停止安全维护 / EOL） */
+function phpEol(inst: ServiceConfInstance): boolean {
+  return phpMajorOf(inst.version || inst.svc) < 8
+}
+const hasEol = computed(() => instances.value.some(phpEol))
 
 async function load() {
   loading.value = true

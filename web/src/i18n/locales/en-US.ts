@@ -2207,6 +2207,9 @@ const enUS: Messages = {
       'After installing PHP from the App Store, this page lists each instance by version tag (php74 / php81 …) with its status, php.ini configuration and the "Global default access" switch.',
     emptyHintDir:
       '{base}\nInstance scan directory: {dir} (if PHP is installed elsewhere, point ZAP_APPS_DIR at that directory and restart zapexec)',
+    eolAlert:
+      'PHP versions below 8.0 (e.g. 7.4, 5.6) are no longer officially maintained (EOL) and receive no security fixes, which is a security risk. Please upgrade to PHP 8.1 or later.',
+    eolTag: 'EOL',
   },
 
   /** Service config - PHP instance panel */

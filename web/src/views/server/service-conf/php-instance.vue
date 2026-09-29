@@ -91,6 +91,15 @@
       <div class="desc">{{ descText }}</div>
     </el-card>
 
+    <el-alert
+      v-if="eol"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="mt-3"
+      :title="t('servicesPhp.eolAlert')"
+    />
+
     <el-tabs v-model="mode" type="border-card" class="mt-3">
       <!-- 关键配置 -->
       <el-tab-pane :label="t('servicesCommon.tabKeys')" name="keys">
@@ -405,6 +414,18 @@ const mode = ref('keys')
 const toggling = ref(false)
 
 const instanceLabel = computed(() => `PHP ${props.inst.version || props.inst.svc}`)
+
+/** PHP 主版本号解析：优先 version（如 7.4.33），回退 svc（如 php74） */
+function phpMajorOf(v?: string): number {
+  if (!v) return 0
+  const m = v.match(/(\d+)\.(\d+)/)
+  if (m) return parseInt(m[1], 10)
+  const s = v.match(/(\d)(\d)$/)
+  if (s) return parseInt(s[1], 10)
+  return 0
+}
+/** 本实例是否低于 8.0（官方已停止安全维护 / EOL） */
+const eol = computed(() => phpMajorOf(props.inst.version || props.inst.svc) < 8)
 
 const {
   status,
