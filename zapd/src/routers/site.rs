@@ -1395,6 +1395,78 @@ async fn auto_dirs_for(
 
 /// 轻量业务校验（站点类型 / 伪静态 / 功能开关门禁 / upstream/location 字段形态）。
 /// 更细的 nginx 语法与注入校验由 zapexec 同步时兜底执行。
+/// 校验 `raw` 自由指令体（高级代理 / raw 类型 location 共用）。
+///
+/// 安全底线：把「单层 location 内的自定义指令」框死，避免变成配置注入或越权读文件：
+/// - 不允许花括号：维持单层 location，防止嵌套块接管上下文（server/http 等）；
+/// - 不允许 `include` 指令：可把任意外部配置整段拉进 location，造成配置覆盖 / 文件泄露；
+/// - 不允许指向系统敏感目录（`/etc` `/proc` `/sys` `/run` `/var/run` `/root`）或云元数据
+///   地址 `169.254.169.254` 的绝对路径，防止读取密钥 / SSRF 到实例元数据。
+fn validate_raw_body(path: &str, raw: &str) -> Result<(), ZapError> {
+    if raw.len() > 8000 {
+        return Err(ZapError::New(
+            -1,
+            "raw 自由指令体过长（上限 8000 字符）".to_string(),
+        ));
+    }
+    if raw.contains('{') || raw.contains('}') {
+        return Err(ZapError::New(
+            -1,
+            "raw 自由指令体不允许花括号（仅支持单层 location 内指令）".to_string(),
+        ));
+    }
+    for (i, line) in raw.lines().enumerate() {
+        let s = line.trim();
+        if s.is_empty() {
+            continue;
+        }
+        let low = s.to_ascii_lowercase();
+        // 云元数据地址（SSRF 到实例元数据，可窃取临时凭证）
+        if low.contains("169.254.169.254") {
+            return Err(ZapError::New(
+                -1,
+                format!(
+                    "location「{}」raw 第 {} 行指向云元数据地址，已拒绝",
+                    path,
+                    i + 1
+                ),
+            ));
+        }
+        for tok in low.split_whitespace() {
+            // `include` 指令会把外部文件整段并入，绕过单层 location 约束
+            if tok == "include" {
+                return Err(ZapError::New(
+                    -1,
+                    format!(
+                        "location「{}」raw 第 {} 行禁止 include 指令（存在配置注入风险）",
+                        path,
+                        i + 1
+                    ),
+                ));
+            }
+            // 系统敏感目录的绝对路径（越权读密钥 / 系统文件）
+            if tok.starts_with('/')
+                && (tok.starts_with("/etc/")
+                    || tok.starts_with("/proc/")
+                    || tok.starts_with("/sys/")
+                    || tok.starts_with("/run/")
+                    || tok.starts_with("/var/run/")
+                    || tok.starts_with("/root"))
+            {
+                return Err(ZapError::New(
+                    -1,
+                    format!(
+                        "location「{}」raw 第 {} 行指向系统敏感路径，已拒绝",
+                        path,
+                        i + 1
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn validate_advanced_inputs(
     claims: &jwt::Claims,
     site_type: &str,
@@ -1573,20 +1645,13 @@ async fn validate_advanced_inputs(
                         format!("location「{}」类型为 raw 时指令体不能为空", l.path),
                     ));
                 }
-                if l.raw.len() > 8000 {
-                    return Err(ZapError::New(
-                        -1,
-                        "raw 自由指令体过长（上限 8000 字符）".to_string(),
-                    ));
-                }
-                if l.raw.contains('{') || l.raw.contains('}') {
-                    return Err(ZapError::New(
-                        -1,
-                        "raw 自由指令体不允许花括号（仅支持单层 location 内指令）".to_string(),
-                    ));
-                }
             }
             _ => {}
+        }
+        // 任意类型的 location 都可在高级模式下附带 raw 自由指令体（含 rewrite 等自定义规则）；
+        // 统一做安全校验，杜绝 include / 块嵌套 / 读取系统敏感文件 / 打云元数据等注入。
+        if !l.raw.trim().is_empty() {
+            validate_raw_body(&l.path, &l.raw)?;
         }
     }
     Ok(())

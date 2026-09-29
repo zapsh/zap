@@ -4325,6 +4325,11 @@ const enUS: Messages = {
     locTargetProxy: 'e.g. http://backend_api or http://127.0.0.1:8080',
     locRawPlaceholder:
       'Paste the full nginx directives for this location (such as try_files / proxy_pass, output line by line as-is; include, # comments and braces are not allowed)',
+    advRaw: 'Free directives (raw)',
+    advRawTip:
+      'Can coexist with the whitelisted extra directives above; use for rewrite etc. outside the whitelist. include / system-sensitive paths / cloud-metadata addresses are forbidden',
+    advRawPlaceholder:
+      'e.g. rewrite ^/old/(.*)$ /new/$1 permanent; (one directive per line; braces and include forbidden)',
     collapseAdv: 'Collapse advanced ▲',
     expandAdv: 'Advanced (headers / timeouts / cache) ▼',
     timeoutSec: 'Timeout(s)',

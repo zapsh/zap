@@ -1257,7 +1257,7 @@ function validateForm(): string {
       if (!p || !p.startsWith('/')) return t('site.valLocPath', { path: p || t('site.empty') })
       if (l.kind === 'proxy' && !l.target.trim()) return t('site.valLocTarget', { path: p })
       if (l.kind === 'raw' && !l.raw.trim()) return t('site.valLocRaw', { path: p })
-      if (l.kind === 'raw' && (l.raw.includes('{') || l.raw.includes('}')))
+      if (l.raw.trim() && (l.raw.includes('{') || l.raw.includes('}')))
         return t('site.valLocRawBrace', { path: p })
       if (l.headers.some((h) => h.key.trim() && !h.value.trim()))
         return t('site.valLocHeader', { path: p })
@@ -1343,7 +1343,7 @@ async function submitForm() {
           l.kind === 'redirect' || l.kind === 'proxy' || l.kind === 'alias' ? l.target.trim() : '',
         code: l.kind === 'redirect' || l.kind === 'deny' ? l.code : 0,
         ws: l.kind === 'proxy' ? !!l.ws : false,
-        raw: l.kind === 'raw' ? l.raw : '',
+        raw: l.raw || '',
         conn_timeout: l.kind === 'proxy' ? l.conn_timeout || 0 : 0,
         read_timeout: l.kind === 'proxy' ? l.read_timeout || 0 : 0,
         send_timeout: l.kind === 'proxy' ? l.send_timeout || 0 : 0,
@@ -2731,6 +2731,19 @@ onMounted(() => {
                             {{ t('site.staticPreset') }}
                           </el-button>
                         </div>
+                      <!-- 高级代理 raw 自由指令体（与白名单附加指令并存，可写 rewrite 等自定义规则） -->
+                      <div class="loc-raw-adv">
+                        <span class="adv-label">
+                          {{ t('site.advRaw') }}
+                          <span class="form-tip">{{ t('site.advRawTip') }}</span>
+                        </span>
+                        <el-input
+                          v-model="loc.raw"
+                          type="textarea"
+                          :rows="5"
+                          class="loc-raw"
+                          :placeholder="t('site.advRawPlaceholder')"
+                        />
                       </div>
                     </div>
 

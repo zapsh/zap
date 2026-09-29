@@ -457,15 +457,15 @@ fn render_location_body(
                 b.push_str(&format!("        alias {};\n", l.target.trim()));
             }
         }
-        // raw：高级自由指令体（每行原样输出，同步前已校验，禁止 include / 块嵌套）
-        "raw" => {
-            for line in l.raw.lines() {
-                b.push_str("        ");
-                b.push_str(line);
-                b.push('\n');
-            }
-        }
         _ => {}
+    }
+    // ── raw 自由指令体（高级代理 / raw 类型共用；逐行原样输出，同步前已校验）──
+    if !l.raw.trim().is_empty() {
+        for line in l.raw.lines() {
+            b.push_str("        ");
+            b.push_str(line);
+            b.push('\n');
+        }
     }
     // ── 附加指令（白名单内；值形态与去重在 validate_loc_extra 里已校验）──
     for d in &l.extra {

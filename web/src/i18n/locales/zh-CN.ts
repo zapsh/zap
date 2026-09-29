@@ -4255,6 +4255,9 @@ export default {
     locTargetProxy: '如 http://backend_api 或 http://127.0.0.1:8080',
     locRawPlaceholder:
       '粘贴该 location 内的完整 nginx 指令体（如 try_files / proxy_pass 等，逐行原样输出；禁止 include、# 注释与花括号）',
+    advRaw: '自由指令体（raw）',
+    advRawTip: '可与上方白名单附加指令并存，用于写 rewrite 等白名单外的规则；禁止 include / 系统敏感路径 / 云元数据地址',
+    advRawPlaceholder: '如 rewrite ^/old/(.*)$ /new/$1 permanent;（逐行一条指令；禁止花括号与 include）',
     collapseAdv: '收起高级参数 ▲',
     expandAdv: '高级参数（头 / 超时 / 缓存等）▼',
     timeoutSec: '超时(秒)',
