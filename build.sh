@@ -202,10 +202,15 @@ package_variant() {
     ok "打包完成：${name}"
 }
 
-# ── 内置 AppStore 源（git 仓库位于 data/appstore/repos/zap-appstore）──────
-# 源内容由独立 git 仓库管理并随构建机维护在此目录；打包前若有 .git 则 pull 到最新，
-# 无 .git（如 CI 检出仅含 gitlink 快照）则直接使用现有内容，缺失时发行包不含内置包。
+# ── 内置 AppStore 源（独立 git 仓库：data/appstore/repos/zap-appstore）──────
+# 该目录已被 .gitignore 排除，作为独立于 zap 主仓库的 git 项目维护（不再用 submodule）。
+# 关键：发行包必须携带「自包含」的 .git（真实目录）。build.sh 打包时：
+#   有真实 .git 目录 → 原地切回 main 并快进；
+#   否则（目录缺失 / 仅快照）→ 用与 repos.yaml 一致的 HTTPS 地址浅克隆出真实 .git。
+# 这样目标机首次「更新」走 fetch 而非整仓 clone（慢且在国内常因 GitHub 不可达而 180s 超时）。
+# 注：必须用 HTTPS，避免沿用旧 .gitmodules 的 git@ SSH 地址（git@github.com:）导致目标机 fetch 因无密钥失败。
 APPSTORE_BUILTIN="$CUR_DIR/data/appstore/repos/zap-appstore"
+APPSTORE_URL="https://github.com/zapsh/zap-appstore.git"   # 与 data/appstore/repos.yaml 保持一致
 if [ -d "$APPSTORE_BUILTIN" ]; then
     if [ -d "$APPSTORE_BUILTIN/.git" ]; then
         info "更新内置 AppStore 源（$APPSTORE_BUILTIN）..."
@@ -216,7 +221,16 @@ if [ -d "$APPSTORE_BUILTIN" ]; then
         git -C "$APPSTORE_BUILTIN" pull -q --ff-only 2>/dev/null \
             || warn "内置源 git pull 失败，使用本地现有内容"
     else
-        warn "内置源非 git 仓库（$APPSTORE_BUILTIN），跳过 pull，直接打包现有内容"
+        # 无真实 .git（gitlink 指针或纯快照）：用 HTTPS 浅克隆生成自包含仓库，更新走 fetch 而非 clone
+        APPSTORE_TMP="${APPSTORE_BUILTIN}.tmp"
+        rm -rf "$APPSTORE_TMP"
+        if git clone --depth 1 --branch main "$APPSTORE_URL" "$APPSTORE_TMP" 2>/dev/null; then
+            rm -rf "$APPSTORE_BUILTIN"
+            mv "$APPSTORE_TMP" "$APPSTORE_BUILTIN"
+            ok "内置 AppStore 源已浅克隆（自带 .git，更新走 fetch）"
+        else
+            warn "内置源 clone 失败，使用现有内容（发行包不含 .git，更新需联网 clone）"
+        fi
     fi
     [ -d "$APPSTORE_BUILTIN/database" ] \
         && ok "内置 AppStore 源就绪" \
