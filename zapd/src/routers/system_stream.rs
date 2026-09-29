@@ -678,10 +678,11 @@ pub async fn status(claims: ValidatedClaims) -> ZapJsonResult {
 pub async fn list(claims: ValidatedClaims) -> ZapJsonResult {
     require_admin(&claims)?;
     let pool = db::get_db_pool().await;
-    let rows: Vec<StreamRow> =
-        sqlx::query_as(&format!("SELECT {COLS} FROM nginx_stream ORDER BY id"))
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<StreamRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLS} FROM nginx_stream ORDER BY id"
+    )))
+    .fetch_all(pool)
+    .await?;
     let items: Vec<Value> = rows.iter().map(row_json).collect();
     Ok(Json(
         json!({ "code": 0, "message": "ok", "data": { "items": items } }),
@@ -1074,11 +1075,12 @@ pub async fn update(
 ) -> ZapJsonResult {
     require_admin(&claims)?;
     let pool = db::get_db_pool().await;
-    let cur: Option<StreamRow> =
-        sqlx::query_as(&format!("SELECT {COLS} FROM nginx_stream WHERE id = ?"))
-            .bind(body.id)
-            .fetch_optional(pool)
-            .await?;
+    let cur: Option<StreamRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLS} FROM nginx_stream WHERE id = ?"
+    )))
+    .bind(body.id)
+    .fetch_optional(pool)
+    .await?;
     let Some(cur) = cur else {
         return Err(ZapError::New(-1, "规则不存在".to_string()));
     };
@@ -1415,11 +1417,12 @@ async fn finish_apply(ok_msg: &str) -> ZapJsonResult {
 
 async fn apply_all() -> Result<(), String> {
     let pool = db::get_db_pool().await;
-    let rows: Vec<StreamRow> =
-        sqlx::query_as(&format!("SELECT {COLS} FROM nginx_stream ORDER BY id"))
-            .fetch_all(pool)
-            .await
-            .map_err(|e| format!("读取规则失败: {e}"))?;
+    let rows: Vec<StreamRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLS} FROM nginx_stream ORDER BY id"
+    )))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("读取规则失败: {e}"))?;
     // 证书库里的证书先落盘（nginx 只认文件路径），再渲染引用这些路径
     write_cert_files(&rows).await?;
     let global = load_global().await?;

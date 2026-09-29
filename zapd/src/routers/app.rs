@@ -831,22 +831,24 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
         i64,
     );
     let rows: Vec<Row> = if jwt::is_admin(&claims) {
-        sqlx::query_as(&format!("{base} ORDER BY s.name, a.name"))
-            .fetch_all(pool)
-            .await?
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "{base} ORDER BY s.name, a.name"
+        )))
+        .fetch_all(pool)
+        .await?
     } else if jwt::is_reseller(&claims) {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{base} WHERE s.user_id = ? OR s.user_id IN (SELECT id FROM user WHERE owner_id = ?) \
                  ORDER BY s.name, a.name"
-        ))
+        )))
         .bind(claims.id as i64)
         .bind(claims.id as i64)
         .fetch_all(pool)
         .await?
     } else {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{base} WHERE s.user_id = ? ORDER BY s.name, a.name"
-        ))
+        )))
         .bind(claims.id as i64)
         .fetch_all(pool)
         .await?

@@ -259,9 +259,9 @@ pub async fn list_connections(claims: ValidatedClaims) -> ZapJsonResult {
         "SELECT {CONN_SEL_COLS}, u.username AS owner_name \
          FROM ssh_connections s LEFT JOIN user u ON u.id = s.user_id"
     );
-    let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(&format!(
+    let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(sqlx::AssertSqlSafe(format!(
         "{sel} WHERE s.user_id = ? ORDER BY s.sort_order, s.id"
-    ))
+    )))
     .bind(claims.id as i64)
     .fetch_all(pool)
     .await?;
@@ -273,11 +273,11 @@ pub async fn list_connections(claims: ValidatedClaims) -> ZapJsonResult {
 pub async fn get_connection(claims: ValidatedClaims, Path(id): Path<i64>) -> ZapJsonResult {
     connection_in_scope(&claims, id).await?;
     let pool = db::get_db_pool().await;
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {CONN_SEL_COLS}, u.username AS owner_name \
          FROM ssh_connections s LEFT JOIN user u ON u.id = s.user_id \
          WHERE s.id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(pool)
     .await?;

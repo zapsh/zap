@@ -119,18 +119,18 @@ pub async fn cert_list(claims: ValidatedClaims) -> ZapJsonResult {
     let cols = "c.id, c.user_id, u.username AS owner_name, c.name, c.domains, c.cert_type, \
                 c.not_before, c.not_after, c.status, c.remark, c.created_at, c.updated_at";
     let rows: Vec<CertListRow> = if jwt::is_admin(&claims) {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {cols} FROM ssl_cert c LEFT JOIN user u ON u.id = c.user_id \
              ORDER BY c.id DESC"
-        ))
+        )))
         .fetch_all(pool)
         .await?
     } else if jwt::is_reseller(&claims) {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {cols} FROM ssl_cert c LEFT JOIN user u ON u.id = c.user_id \
              WHERE c.user_id = ? OR c.user_id IN (SELECT id FROM user WHERE owner_id = ?) \
              ORDER BY c.id DESC"
-        ))
+        )))
         .bind(claims.id as i64)
         .bind(claims.id as i64)
         .fetch_all(pool)
@@ -138,11 +138,11 @@ pub async fn cert_list(claims: ValidatedClaims) -> ZapJsonResult {
     } else {
         // 团队共享：证书与站点一样按归属组共享（站长 + 成员互相可见可用）
         let gid = crate::routers::site::group_id_of(claims.id as i64).await;
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {cols} FROM ssl_cert c LEFT JOIN user u ON u.id = c.user_id \
              WHERE {} ORDER BY c.id DESC",
             crate::routers::site::group_scope_cond("c.user_id")
-        ))
+        )))
         .bind(gid)
         .bind(crate::routers::user::USER_KIND_MEMBER)
         .bind(gid)

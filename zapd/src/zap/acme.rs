@@ -352,24 +352,24 @@ pub async fn list_orders(claims: &jwt::Claims) -> Result<Vec<OrderView>, String>
                 error, expires_at";
     let base = "FROM ssl_acme_order WHERE status IN ('pending','processing') AND expires_at > ?";
     let rows: Vec<AcmeOrderRow> = if jwt::is_admin(claims) {
-        sqlx::query_as(&format!("SELECT {cols} {base} ORDER BY id DESC"))
+        sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {cols} {base} ORDER BY id DESC")))
             .bind(now_secs())
             .fetch_all(pool)
             .await
     } else if jwt::is_reseller(claims) {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {cols} {base} AND (user_id = ? OR user_id IN (SELECT id FROM user WHERE owner_id = ?)) \
              ORDER BY id DESC"
-        ))
+        )))
         .bind(now_secs())
         .bind(claims.id as i64)
         .bind(claims.id as i64)
         .fetch_all(pool)
         .await
     } else {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {cols} {base} AND user_id = ? ORDER BY id DESC"
-        ))
+        )))
         .bind(now_secs())
         .bind(claims.id as i64)
         .fetch_all(pool)

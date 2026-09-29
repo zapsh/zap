@@ -55,10 +55,10 @@ pub async fn counts(claims: ValidatedClaims) -> ZapJsonResult {
     } else {
         // 团队共享：统计与站点列表一致（归属组内共享可见）
         let gid = crate::routers::site::group_id_of(me).await;
-        sqlx::query_scalar(&format!(
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM site WHERE {}",
             crate::routers::site::group_scope_cond("user_id")
-        ))
+        )))
         .bind(gid)
         .bind(crate::routers::user::USER_KIND_MEMBER)
         .bind(gid)

@@ -360,7 +360,7 @@ pub async fn menu_update(
     let pool = db::get_db_pool().await;
     let now = chrono::Local::now().timestamp();
 
-    let mut qb: sqlx::QueryBuilder<'_, Sqlite> = sqlx::QueryBuilder::new("UPDATE menus SET ");
+    let mut qb: sqlx::QueryBuilder<Sqlite> = sqlx::QueryBuilder::new("UPDATE menus SET ");
     let mut sep = qb.separated(", ");
 
     if let Some(v) = payload.parent_id {

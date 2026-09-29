@@ -1602,16 +1602,19 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
                     u.username AS owner_username, s.php_instance \
                     FROM site s LEFT JOIN user u ON u.id = s.user_id";
     let rows: Vec<SiteRow> = if jwt::is_admin(&claims) {
-        sqlx::query_as(&format!("{} ORDER BY s.id DESC", base_sql))
-            .fetch_all(pool)
-            .await?
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "{} ORDER BY s.id DESC",
+            base_sql
+        )))
+        .fetch_all(pool)
+        .await?
     } else if jwt::is_reseller(&claims) {
         // reseller：自己的站点 + 名下客户的站点
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{} WHERE s.user_id = ? OR s.user_id IN (SELECT id FROM user WHERE owner_id = ?) \
                  ORDER BY s.id DESC",
             base_sql
-        ))
+        )))
         .bind(claims.id as i64)
         .bind(claims.id as i64)
         .fetch_all(pool)
@@ -1619,11 +1622,11 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
     } else {
         // 团队共享：站长 ↔ 成员、成员 ↔ 成员互相可见（无团队时等价于只看自己的）
         let gid = group_id_of(claims.id as i64).await;
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{} WHERE {} ORDER BY s.id DESC",
             base_sql,
             group_scope_cond("s.user_id")
-        ))
+        )))
         .bind(gid)
         .bind(USER_KIND_MEMBER)
         .bind(gid)
@@ -1655,7 +1658,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
             "SELECT site_id, domain FROM site_domain WHERE site_id IN ({}) ORDER BY id",
             ph
         );
-        let mut dq = sqlx::query_as::<_, (i64, String)>(&dsql);
+        let mut dq = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(dsql.as_str()));
         for id in &ids {
             dq = dq.bind(id);
         }
@@ -1666,7 +1669,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
             "SELECT site_id, ip FROM site_ip WHERE site_id IN ({}) ORDER BY id",
             ph
         );
-        let mut iq = sqlx::query_as::<_, (i64, String)>(&isql);
+        let mut iq = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(isql.as_str()));
         for id in &ids {
             iq = iq.bind(id);
         }
@@ -1679,7 +1682,9 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
              FROM site WHERE id IN ({}) ORDER BY id",
             ph
         );
-        let mut vq = sqlx::query_as::<_, (i64, String, String, String, i64)>(&vsql);
+        let mut vq = sqlx::query_as::<_, (i64, String, String, String, i64)>(sqlx::AssertSqlSafe(
+            vsql.as_str(),
+        ));
         for id in &ids {
             vq = vq.bind(id);
         }
@@ -1695,7 +1700,9 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
              FROM site WHERE id IN ({}) ORDER BY id",
             ph
         );
-        let mut dirq = sqlx::query_as::<_, (i64, String, String, i64, i64, i64)>(&dirsql);
+        let mut dirq = sqlx::query_as::<_, (i64, String, String, i64, i64, i64)>(
+            sqlx::AssertSqlSafe(dirsql.as_str()),
+        );
         for id in &ids {
             dirq = dirq.bind(id);
         }
@@ -1730,7 +1737,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
                 i64,
                 i64,
             ),
-        >(&psql2);
+        >(sqlx::AssertSqlSafe(psql2.as_str()));
         for id in &ids {
             pq2 = pq2.bind(id);
         }
@@ -1760,7 +1767,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
         if !owner_ids.is_empty() {
             let ph2 = owner_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let lusql = format!("SELECT id, linux_user FROM user WHERE id IN ({})", ph2);
-            let mut lq = sqlx::query_as::<_, (i64, String)>(&lusql);
+            let mut lq = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(lusql.as_str()));
             for id in &owner_ids {
                 lq = lq.bind(id);
             }
@@ -1776,7 +1783,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
     if !cert_ids.is_empty() {
         let phc = cert_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let csql = format!("SELECT id, name FROM ssl_cert WHERE id IN ({})", phc);
-        let mut cq = sqlx::query_as::<_, (i64, String)>(&csql);
+        let mut cq = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(csql.as_str()));
         for cid in &cert_ids {
             cq = cq.bind(cid);
         }
@@ -2690,7 +2697,9 @@ pub async fn site_delete(
             "SELECT id, user_id, name, web_root, log_root FROM site WHERE id IN ({})",
             dph
         );
-        let mut dq = sqlx::query_as::<_, (i64, i64, String, String, String)>(&dsql);
+        let mut dq = sqlx::query_as::<_, (i64, i64, String, String, String)>(sqlx::AssertSqlSafe(
+            dsql.as_str(),
+        ));
         for id in &payload.ids {
             dq = dq.bind(id);
         }
@@ -2757,7 +2766,7 @@ pub async fn site_delete(
     let mut tx = pool.begin().await?;
 
     let ssql = format!("DELETE FROM site WHERE id IN ({})", placeholders);
-    let mut q = sqlx::query(&ssql);
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(ssql.as_str()));
     for id in &payload.ids {
         q = q.bind(id);
     }
@@ -2768,21 +2777,21 @@ pub async fn site_delete(
         "DELETE FROM site_domain WHERE site_id IN ({})",
         placeholders
     );
-    let mut dq = sqlx::query(&dsql);
+    let mut dq = sqlx::query(sqlx::AssertSqlSafe(dsql.as_str()));
     for id in &payload.ids {
         dq = dq.bind(id);
     }
     dq.execute(&mut *tx).await?;
 
     let asql = format!("DELETE FROM site_apps WHERE site_id IN ({})", placeholders);
-    let mut aq = sqlx::query(&asql);
+    let mut aq = sqlx::query(sqlx::AssertSqlSafe(asql.as_str()));
     for id in &payload.ids {
         aq = aq.bind(id);
     }
     aq.execute(&mut *tx).await?;
 
     let isql = format!("DELETE FROM site_ip WHERE site_id IN ({})", placeholders);
-    let mut iq = sqlx::query(&isql);
+    let mut iq = sqlx::query(sqlx::AssertSqlSafe(isql.as_str()));
     for id in &payload.ids {
         iq = iq.bind(id);
     }
@@ -2793,7 +2802,7 @@ pub async fn site_delete(
         "DELETE FROM site_profile WHERE site_id IN ({})",
         placeholders
     );
-    let mut pq = sqlx::query(&psql);
+    let mut pq = sqlx::query(sqlx::AssertSqlSafe(psql.as_str()));
     for id in &payload.ids {
         pq = pq.bind(id);
     }
@@ -3684,7 +3693,7 @@ pub(crate) async fn provision_site(
          WHERE d.domain = ? AND {} LIMIT 1",
         group_scope_cond("s.user_id")
     );
-    let found: Option<ProvisionSiteRow> = sqlx::query_as(&sql)
+    let found: Option<ProvisionSiteRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(&d)
         .bind(gid)
         .bind(USER_KIND_MEMBER)

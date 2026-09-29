@@ -533,7 +533,7 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
     // 用 `SELECT *` 与 `UserInfo` 保持同步：sqlx::FromRow 按「列名」取值，
     // 显式列清单一旦漏掉 user 表的新增列（如 disk_used_bytes），整行解析就会失败、
     // 接口 500，表现为页面「加载不到任何用户」。
-    let mut querybuilder: QueryBuilder<'_, Sqlite> = QueryBuilder::new("SELECT * FROM user");
+    let mut querybuilder: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT * FROM user");
     if is_reseller && !is_admin {
         querybuilder
             .push(" WHERE owner_id = ")
@@ -1006,7 +1006,7 @@ async fn update_user_inner(
         return Err(ZapError::New(-1, "没有需要更新的字段".to_string()));
     }
 
-    let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new("UPDATE user SET ");
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("UPDATE user SET ");
     let mut separated = qb.separated(", ");
 
     if let Some(ref email) = payload.email {

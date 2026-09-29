@@ -182,7 +182,7 @@ pub async fn role_update(
         }
     }
 
-    let mut qb: sqlx::QueryBuilder<'_, Sqlite> = sqlx::QueryBuilder::new("UPDATE roles SET ");
+    let mut qb: sqlx::QueryBuilder<Sqlite> = sqlx::QueryBuilder::new("UPDATE roles SET ");
     let mut sep = qb.separated(", ");
 
     if let Some(ref name) = payload.name {

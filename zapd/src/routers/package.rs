@@ -172,9 +172,9 @@ pub async fn package_of_user(user_id: i64) -> Option<PackageRow> {
         .ok()
         .flatten();
     let pid = pid.filter(|v| *v > 0)?;
-    sqlx::query_as(&format!(
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM packages WHERE id = ? AND status = 1"
-    ))
+    )))
     .bind(pid)
     .fetch_optional(pool)
     .await
@@ -186,9 +186,9 @@ pub async fn package_of_user(user_id: i64) -> Option<PackageRow> {
 /// 未绑定套餐的普通用户回退到该套餐，用于能力判定。
 pub async fn default_package() -> Option<PackageRow> {
     let pool = db::get_db_pool().await;
-    sqlx::query_as(&format!(
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM packages WHERE owner_id = 0 AND status = 1 ORDER BY id ASC LIMIT 1"
-    ))
+    )))
     .fetch_optional(pool)
     .await
     .ok()
@@ -213,11 +213,12 @@ pub async fn load_for_actor(
     actor_id: i64,
 ) -> Result<PackageRow, ZapError> {
     let pool = db::get_db_pool().await;
-    let row: Option<PackageRow> =
-        sqlx::query_as(&format!("SELECT {COLS} FROM packages WHERE id = ?"))
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<PackageRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLS} FROM packages WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
     match row {
         Some(r) if visible(&r, is_admin, actor_id) => Ok(r),
         _ => Err(ZapError::New(-1, "套餐不存在或无权使用".to_string())),
@@ -235,10 +236,11 @@ pub async fn package_list(claims: ValidatedClaims) -> ZapJsonResult {
     }
     let actor_id = claims.id as i64;
     let pool = db::get_db_pool().await;
-    let rows: Vec<PackageRow> =
-        sqlx::query_as(&format!("SELECT {COLS} FROM packages ORDER BY id DESC"))
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<PackageRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLS} FROM packages ORDER BY id DESC"
+    )))
+    .fetch_all(pool)
+    .await?;
     let usage = usage_counts().await;
 
     let items: Vec<Value> = rows

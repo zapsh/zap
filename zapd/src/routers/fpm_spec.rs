@@ -403,7 +403,7 @@ pub async fn spec_update(
     let now = chrono::Local::now().timestamp();
     for (k, v) in &ups {
         let sql = format!("UPDATE fpm_spec SET {k} = ?, updated_at = ? WHERE id = ?");
-        let result = sqlx::query(&sql)
+        let result = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(v)
             .bind(now)
             .bind(payload.id)

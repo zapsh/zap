@@ -152,7 +152,7 @@ pub async fn api_token_update(
         sets.join(", ")
     );
     let now = chrono::Utc::now().timestamp();
-    let mut q = sqlx::query(&sql);
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
     for b in &binds {
         match b {
             Value::String(s) => q = q.bind(s),

@@ -3,7 +3,9 @@
 //! 通过 **sqlx 的 MySQL 驱动**（纯 Rust 实现，不依赖 `mysql` 客户端、
 //! libmysqlclient 或 OpenSSL）直连本机实例：依次尝试本机 socket 与回环 TCP，
 //! 取第一个能过鉴权的入口（两个入口的来源字符串不同：socket = `localhost`、
-//! TCP = `127.0.0.1`）。连接身份为 `zapadm` 凭据（由 zap-crypto 从
+//! TCP = `127.0.0.1`）；zapadm 全被拒（1045）时用 root 凭据把账号补齐再重试，
+//! 用于「MySQL 不是面板装的、库里根本没有 zapadm」的场景。
+//! 连接身份为 `zapadm` 凭据（由 zap-crypto 从
 //! /etc/zap/credentials 解密读取），**不使用 root 账号**：
 //!
 //! - GET  /api/database/status          服务状态与版本
@@ -31,7 +33,7 @@ use serde_json::{Value, json};
 use sqlx::Connection;
 use sqlx::Row;
 use sqlx::ValueRef;
-use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlRow};
+use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlRow, MySqlSslMode};
 
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
@@ -41,11 +43,139 @@ use crate::zap::jwt::{self, ValidatedClaims, is_admin};
 const CRED_SERVICE: &str = "mysql";
 const CRED_USER: &str = "zapadm";
 
+/// 同一凭据域下的 root 账号：仅用于「面板账号缺失」时补齐授权
+const ROOT_USER: &str = "root";
+
 /// 面板展示用的连接地址主机位（本机管理走 socket，对外连接统一提示回环地址）
 pub(crate) const DB_HOST: &str = "127.0.0.1";
 
 /// 服务端口取不到时的兜底值
 const DEFAULT_PORT: u16 = 3306;
+
+/// MySQL 配置文件（与 mysql 客户端的读取顺序对齐）
+const MYCNF: &[&str] = &[
+    "/etc/my.cnf",
+    "/etc/mysql/my.cnf",
+    "/usr/local/mysql/etc/my.cnf",
+];
+
+/// my.cnf 里可能声明 socket / port 的段（`[mysqld]` 是服务端真值）
+const MYCNF_SECTIONS: &[&str] = &["mysqld", "server", "client", "mysql", "mariadb"];
+
+/// my.cnf 解析结果：候选 socket 与端口（各自去重前的原始顺序）
+#[derive(Default)]
+struct MysqlConf {
+    sockets: Vec<String>,
+    ports: Vec<u16>,
+}
+
+/// 读 MySQL 配置：一次解析后缓住（改了 my.cnf 需要重启面板生效）。
+///
+/// `mysql` 客户端之所以直接登得上，是因为它按 my.cnf 找 socket / port；
+/// 面板若只认硬编码候选，遇到自定义安装路径（如 /usr/local/apps/mysql-*/…）
+/// 会连到另一个实例或连不上 —— 症状就是「CLI 登得上、面板报 1045」。
+fn mysql_conf() -> &'static MysqlConf {
+    static CONF: std::sync::OnceLock<MysqlConf> = std::sync::OnceLock::new();
+    CONF.get_or_init(|| {
+        let mut c = MysqlConf::default();
+        for f in MYCNF {
+            parse_mycnf(std::path::Path::new(f), &mut c, 0);
+        }
+        c
+    })
+}
+
+fn parse_mycnf(path: &std::path::Path, out: &mut MysqlConf, depth: usize) {
+    if depth > 3 {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let mut in_section = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some(sec) = line.strip_prefix('[') {
+            let name = sec.trim_end_matches(']').trim().to_ascii_lowercase();
+            // 精确匹配（否则 [mysqldump] 会被 [mysql] 误吞），并兼容 `[mysqld-8.4]` 这类版本后缀
+            in_section = MYCNF_SECTIONS
+                .iter()
+                .any(|s| name == *s || name.starts_with(&format!("{s}-")));
+            continue;
+        }
+        // !include <file> / !includedir <dir>
+        if let Some(rest) = line.strip_prefix('!')
+            && let Some((directive, arg)) = rest.split_once(char::is_whitespace)
+        {
+            let arg = arg.trim().trim_matches('\'').trim_matches('"');
+            match directive.trim() {
+                "include" => parse_mycnf(std::path::Path::new(arg), out, depth + 1),
+                "includedir" => {
+                    let Ok(rd) = std::fs::read_dir(arg) else {
+                        continue;
+                    };
+                    let mut files: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+                    files.sort();
+                    for f in files {
+                        if f.is_file() {
+                            parse_mycnf(&f, out, depth + 1);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let val = v.trim().trim_matches('\'').trim_matches('"').trim();
+            if val.is_empty() {
+                continue;
+            }
+            match k.trim() {
+                "socket" => out.sockets.push(val.to_string()),
+                "port" => {
+                    if let Ok(p) = val.parse::<u16>() {
+                        out.ports.push(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// 候选 socket（配置里指明的优先，均按存在性过滤并去重）
+fn socket_candidates() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in mysql_conf()
+        .sockets
+        .iter()
+        .map(|s| s.as_str())
+        .chain(SOCKETS.iter().copied())
+    {
+        if std::path::Path::new(s).exists() && !out.iter().any(|x| x == s) {
+            out.push(s.to_string());
+        }
+    }
+    out
+}
+
+/// 候选端口（配置端口优先，最后兜默认端口）
+fn port_candidates() -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    for p in mysql_conf().ports.iter().copied().chain([DEFAULT_PORT]) {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
 
 /// 本机 socket 候选（本地连接优先走 socket，无需开 TCP）
 const SOCKETS: &[&str] = &[
@@ -59,11 +189,9 @@ const SYSTEM_SCHEMAS: &[&str] = &["information_schema", "mysql", "performance_sc
 
 // ── 连接与执行 ──────────────────────────────────────────────
 
-fn socket_path() -> Option<&'static str> {
-    SOCKETS
-        .iter()
-        .copied()
-        .find(|s| std::path::Path::new(s).exists())
+/// 面板实际在用的 socket（状态页展示用）
+fn socket_path() -> Option<String> {
+    socket_candidates().into_iter().next()
 }
 
 /// 从 /etc/zap/credentials 解密读取 zapadm 密码
@@ -78,8 +206,25 @@ fn zapadm_password() -> Result<String, ZapError> {
 }
 
 /// 账号连接选项（主机 / socket 由各入口另行指定）
-fn base_opts(pwd: &str) -> MySqlConnectOptions {
-    MySqlConnectOptions::new().username(CRED_USER).password(pwd)
+fn base_opts(user: &str, pwd: &str) -> MySqlConnectOptions {
+    MySqlConnectOptions::new().username(user).password(pwd)
+}
+
+/// 同一入口的「优先 TLS」版本。
+///
+/// `caching_sha2_password` 的**完整认证**（服务端密码缓存未命中：mysqld 重启、
+/// `FLUSH PRIVILEGES`、改密码之后必然发生）只在「安全通道」上收明文口令。
+/// MySQL 认为 TLS 与 unix socket 都是安全通道，但 sqlx 只认前者 ——
+/// sqlx 的 `encrypt_rsa` 是 `if stream.is_tls { 发明文 } else { 索要 RSA 公钥 }`，
+/// 而 **MySQL 在 unix socket 上根本不下发公钥**：它会把这个「索取公钥」的包当成
+/// 口令包来比对，直接回 `1045 Access denied`（实测：同一账号在 socket 上改成直发
+/// `口令+\0` 即认证通过；libmysqlclient 正是这么做的，所以 CLI 一直正常）。
+///
+/// 于是本机连接先试 TLS：sqlx 见到 `is_tls` 就会走明文口令，快/慢两条认证路径
+/// 都能过；服务端不支持 TLS（或本构建未编译 TLS）时该候选直接失败，由后面的
+/// 明文候选兜底。
+fn tls_opts(opts: MySqlConnectOptions) -> MySqlConnectOptions {
+    opts.ssl_mode(MySqlSslMode::Required)
 }
 
 /// 候选连接入口（按优先级）。
@@ -90,29 +235,39 @@ fn base_opts(pwd: &str) -> MySqlConnectOptions {
 /// zapadm 只授权了其中一个（安装脚本建的是 `@localhost`，手工建库常见
 /// `@127.0.0.1`），走另一个入口就会被拒 —— 所以本机 socket 与回环 TCP
 /// 都列进来，逐个试到能过鉴权的那个为止。
-fn connect_targets(pwd: &str) -> Vec<MySqlConnectOptions> {
-    let mut targets: Vec<MySqlConnectOptions> = SOCKETS
+fn connect_targets(user: &str, pwd: &str) -> Vec<MySqlConnectOptions> {
+    let socks = socket_candidates();
+    // 先 TLS、后明文：完整认证在明文 socket 上必然 1045（见 `tls_opts` 的说明）
+    let mut targets: Vec<MySqlConnectOptions> = socks
         .iter()
-        .filter(|s| std::path::Path::new(s).exists())
-        .map(|s| base_opts(pwd).socket(s))
+        .map(|s| tls_opts(base_opts(user, pwd).socket(s)))
         .collect();
-    // 兜底：socket 不可用 / 该来源未授权时走回环 TCP（IPv4 / IPv6 各来一次，
-    // 与建库时给应用账号展开的 `localhost` / `127.0.0.1` / `::1` 三种来源对齐）
-    targets.push(base_opts(pwd).host(DB_HOST).port(DEFAULT_PORT));
-    targets.push(base_opts(pwd).host("::1").port(DEFAULT_PORT));
+    targets.extend(socks.into_iter().map(|s| base_opts(user, pwd).socket(s)));
+    // 兜底：socket 连不上时走回环 TCP（IPv4 / IPv6 × 各候选端口，与建库时给应用
+    // 账号展开的 `localhost` / `127.0.0.1` / `::1` 三种来源对齐）
+    for port in port_candidates() {
+        targets.push(tls_opts(base_opts(user, pwd).host(DB_HOST).port(port)));
+        targets.push(tls_opts(base_opts(user, pwd).host("::1").port(port)));
+        // 明文 TCP：服务端在这个入口上会下发 RSA 公钥，完整认证同样能过
+        targets.push(base_opts(user, pwd).host(DB_HOST).port(port));
+        targets.push(base_opts(user, pwd).host("::1").port(port));
+    }
     targets
 }
 
-/// 建立一条管理连接：依次尝试候选入口，取第一个能过鉴权的。
+/// 依次尝试候选入口，返回第一个连上的连接与其下标；全失败时返回最值得看的失败原因。
 ///
-/// sqlx 的 MySQL 驱动是纯 Rust 的，`caching_sha2_password`（MySQL 8 默认）
-/// 会在需要时向服务端取 RSA 公钥加密口令，无需 TLS 也能完成认证。
-///
-/// 命中过的入口会被记住，下次从它开始试（避免每次请求都先撞一次拒绝）。
-async fn connect() -> Result<MySqlConnection, ZapError> {
-    let pwd = zapadm_password()?;
-    let targets = connect_targets(&pwd);
-    let start = LAST_OK.load(Ordering::Relaxed).min(targets.len() - 1);
+/// sqlx 的 MySQL 驱动是纯 Rust 的，`caching_sha2_password`（MySQL 8 默认）在非 TLS
+/// 连接上会向服务端取 RSA 公钥加密口令 —— 但 MySQL **只在 TCP 上下发公钥**，
+/// unix socket 上会把它当成口令包，完整认证因此必然 1045。故候选里每个入口都
+/// 先出 TLS 版本（见 `tls_opts`）。
+async fn connect_as(
+    user: &str,
+    pwd: &str,
+    start: usize,
+) -> Result<(MySqlConnection, usize), String> {
+    let targets = connect_targets(user, pwd);
+    let start = start.min(targets.len() - 1);
 
     // 鉴权失败（连上了但账号/来源不匹配）比连不上更值得上报
     let mut denied: Option<String> = None;
@@ -120,12 +275,9 @@ async fn connect() -> Result<MySqlConnection, ZapError> {
     for k in 0..targets.len() {
         let i = (start + k) % targets.len();
         match MySqlConnection::connect_with(&targets[i]).await {
-            Ok(conn) => {
-                LAST_OK.store(i, Ordering::Relaxed);
-                return Ok(conn);
-            }
+            Ok(conn) => return Ok((conn, i)),
             Err(e) => {
-                tracing::debug!("数据库连接入口 #{i} 失败：{e}");
+                tracing::debug!("数据库连接入口（{user} @ #{i}）失败：{e}");
                 if denied.is_none() && e.to_string().contains("Access denied") {
                     denied = Some(e.to_string());
                 }
@@ -134,15 +286,108 @@ async fn connect() -> Result<MySqlConnection, ZapError> {
         }
     }
 
+    Err(denied
+        .or(last)
+        .unwrap_or_else(|| "没有可用的连接入口".to_string()))
+}
+
+/// 以 root 建一条连接：先试凭据库里的 root 密码，再试 unix socket 上的免密 root
+/// （发行版包默认 `auth_socket` / 空密码，走 socket 不需要密码）。
+async fn root_conn() -> Result<MySqlConnection, ZapError> {
+    if let Ok(pwd) = zap_crypto::read_cred(CRED_SERVICE, ROOT_USER)
+        && let Ok((conn, _)) = connect_as(ROOT_USER, &pwd, 0).await
+    {
+        return Ok(conn);
+    }
+    for sock in socket_candidates() {
+        let opts = base_opts(ROOT_USER, "").socket(sock);
+        if let Ok(conn) = MySqlConnection::connect_with(&opts).await {
+            return Ok(conn);
+        }
+    }
     Err(ZapError::New(
         -1,
-        format!(
-            "连接数据库失败：{}",
-            denied
-                .or(last)
-                .unwrap_or_else(|| "没有可用的连接入口".to_string())
-        ),
+        "既读不到 MySQL root 凭据，也无法在本机 socket 上以 root 登录".to_string(),
     ))
+}
+
+/// 用 root 补齐 zapadm 在本机三种来源的账号与授权。
+///
+/// 场景：MySQL 不是由面板 AppStore 装的（或装的时候没走到建号那一步），
+/// 库里根本没有 `zapadm`@`localhost` / `127.0.0.1` / `::1`，面板于是 1045。
+/// root 凭据与 zapadm 凭据同在一个凭据库（root 写、面板组读），这里只是把
+/// 安装脚本本来就该做的事补做一遍；root 也连不上就原样报错，不掩盖真实原因。
+async fn repair_zapadm(pwd: &str) -> Result<(), ZapError> {
+    let mut conn = root_conn().await?;
+    let escaped = escape_literal(pwd);
+    let mut sqls: Vec<String> = Vec::new();
+    for h in LOCAL_HOST_ALIASES {
+        sqls.push(format!(
+            "CREATE USER IF NOT EXISTS '{CRED_USER}'@'{h}' IDENTIFIED BY '{escaped}'"
+        ));
+        sqls.push(format!(
+            "ALTER USER '{CRED_USER}'@'{h}' IDENTIFIED BY '{escaped}'"
+        ));
+        sqls.push(format!(
+            "GRANT ALL PRIVILEGES ON *.* TO '{CRED_USER}'@'{h}' WITH GRANT OPTION"
+        ));
+    }
+    sqls.push("FLUSH PRIVILEGES".to_string());
+    exec_on(&mut conn, &sqls).await
+}
+
+/// 面板账号未授权时的排障提示
+///
+/// 面板进程以 zapadm 运行，用不了 MySQL 的 `auth_socket`（那要求 OS 用户是 root），
+/// 所以「root 侧免密」这条路在面板里不通：要么把 root 密码录进凭据库让面板自己补，
+/// 要么以 OS root 手工授权一次。
+const GRANT_HINT: &str = "本机来源没有 zapadm 账号：执行 zapctl cred set mysql root <root密码> \
+     后刷新即可自动补齐，或以 OS root 执行 mysql -u root -e \"CREATE USER 'zapadm'@'localhost' \
+     IDENTIFIED BY '$(zapctl cred show mysql zapadm)'; GRANT ALL PRIVILEGES ON *.* TO \
+     'zapadm'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES\"";
+
+fn conn_err(reason: &str) -> ZapError {
+    ZapError::New(-1, format!("连接数据库失败：{reason}"))
+}
+
+/// 面板账号被拒且自动补齐也没成：把两边的原因都带上，便于一口气定位。
+fn denied_err(reason: &str, repair: &ZapError) -> ZapError {
+    ZapError::New(
+        -1,
+        format!("连接数据库失败：{reason}；自动补齐 zapadm 授权失败：{repair}；{GRANT_HINT}"),
+    )
+}
+
+/// 建立一条管理连接。
+///
+/// 命中过的入口会被记住，下次从它开始试（避免每次请求都先撞一次拒绝）；
+/// zapadm 在所有本机入口都被拒时，先用 root 凭据把账号补齐再重试一次。
+async fn connect() -> Result<MySqlConnection, ZapError> {
+    let pwd = zapadm_password()?;
+    let start = LAST_OK.load(Ordering::Relaxed);
+
+    let (conn, i) = match connect_as(CRED_USER, &pwd, start).await {
+        Ok(v) => v,
+        Err(reason) => {
+            if !reason.contains("Access denied") {
+                return Err(conn_err(&reason));
+            }
+            match repair_zapadm(&pwd).await {
+                Ok(()) => {
+                    tracing::warn!("zapadm 未在本机来源授权，已用 root 自动补齐后重连");
+                    connect_as(CRED_USER, &pwd, start)
+                        .await
+                        .map_err(|r| conn_err(&r))?
+                }
+                Err(e) => {
+                    tracing::warn!("自动补齐 zapadm 授权失败：{e}");
+                    return Err(denied_err(&reason, &e));
+                }
+            }
+        }
+    };
+    LAST_OK.store(i, Ordering::Relaxed);
+    Ok(conn)
 }
 
 /// 上一次连接成功的入口下标（候选顺序固定，故可直接复用）
@@ -178,7 +423,9 @@ fn cell_text(row: &MySqlRow, i: usize) -> String {
 
 /// 在已有连接上执行查询，返回「行 → 列（文本）」。
 async fn rows_of(conn: &mut MySqlConnection, sql: &str) -> Result<Vec<Vec<String>>, ZapError> {
-    let rows = sqlx::query(sql)
+    // sqlx 0.9 要求动态 SQL 显式标注已审计：这里拼的都是内部构造的语句，
+    // 用户传入的标识符在调用前已按规则校验 / 转义。
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .fetch_all(conn)
         .await
         .map_err(|e| ZapError::New(-1, format!("数据库查询失败：{e}")))?;
@@ -198,7 +445,7 @@ async fn query_rows(sql: &str) -> Result<Vec<Vec<String>>, ZapError> {
 /// 标识符与字面量仍由调用方按规则校验 / 转义后拼进 SQL）。
 async fn exec_on(conn: &mut MySqlConnection, sqls: &[String]) -> Result<(), ZapError> {
     for sql in sqls {
-        sqlx::query(sql)
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .execute(&mut *conn)
             .await
             .map_err(|e| ZapError::New(-1, format!("数据库操作失败：{e}")))?;
@@ -1001,6 +1248,40 @@ mod tests {
         assert_eq!(host_targets("::1"), all);
         // 大小写、两侧空白都归一
         assert_eq!(host_targets(" LocalHost "), all);
+    }
+
+    #[test]
+    fn mycnf_parses_socket_port_and_includes() {
+        let dir = std::env::temp_dir().join(format!("zap-mycnf-{}", std::process::id()));
+        let conf_d = dir.join("conf.d");
+        std::fs::create_dir_all(&conf_d).unwrap();
+        let main = dir.join("my.cnf");
+        std::fs::write(
+            &main,
+            format!(
+                "[mysqld]\n\
+                 socket=/tmp/from-main.sock\n\
+                 port = 3307\n\
+                 ; 注释\n\
+                 [client]\n\
+                 socket = '/tmp/from-client.sock'\n\
+                 [mysqldump]\n\
+                 socket = /tmp/ignored.sock\n\
+                 !includedir {}\n",
+                conf_d.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(conf_d.join("zap.cnf"), "[mysqld]\nport=3308\n").unwrap();
+
+        let mut c = MysqlConf::default();
+        parse_mycnf(&main, &mut c, 0);
+        assert_eq!(
+            c.sockets,
+            vec!["/tmp/from-main.sock", "/tmp/from-client.sock"]
+        );
+        assert_eq!(c.ports, vec![3307, 3308]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -126,7 +126,10 @@ async fn ensure_column(table: &str, column: &str, decl: &str) {
         return;
     }
     let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {decl}");
-    if let Err(e) = sqlx::query(&sql).execute(pool).await {
+    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(pool)
+        .await
+    {
         eprintln!("补列失败 {table}.{column}: {e}");
     }
 }

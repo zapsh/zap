@@ -734,7 +734,7 @@ async fn query_page(
     let (clause, binds) = filter.where_clause(scope.as_ref().map(|_| RESELLER_SCOPE));
 
     let count_sql = format!("SELECT COUNT(*) FROM task_queue{clause}");
-    let mut count = sqlx::query_scalar::<_, i64>(&count_sql);
+    let mut count = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(count_sql.as_str()));
     // 可见范围参数在 WHERE 最前面，必须先于筛选参数绑定
     if let Some(s) = &scope {
         count = count.bind(&s.username).bind(s.owner_id);
@@ -745,7 +745,7 @@ async fn query_page(
     let total = count.fetch_one(pool).await.unwrap_or(0);
 
     let list_sql = format!("SELECT * FROM task_queue{clause} ORDER BY id DESC LIMIT ? OFFSET ?");
-    let mut q = sqlx::query_as::<_, Task>(&list_sql);
+    let mut q = sqlx::query_as::<_, Task>(sqlx::AssertSqlSafe(list_sql.as_str()));
     if let Some(s) = &scope {
         q = q.bind(&s.username).bind(s.owner_id);
     }

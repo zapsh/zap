@@ -75,7 +75,7 @@ pub async fn list_logs(
     };
 
     let total_sql = format!("SELECT COUNT(*) FROM audit_logs {where_clause}");
-    let mut count_q = sqlx::query_as::<_, (i64,)>(&total_sql);
+    let mut count_q = sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(total_sql.as_str()));
     if let Some(a) = &action_like {
         count_q = count_q.bind(a);
     }
@@ -88,7 +88,7 @@ pub async fn list_logs(
         "SELECT id, user_id, username, action, target, detail, ip, created_at
          FROM audit_logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?"
     );
-    let mut q = sqlx::query_as::<_, AuditLogRow>(&sql);
+    let mut q = sqlx::query_as::<_, AuditLogRow>(sqlx::AssertSqlSafe(sql.as_str()));
     if let Some(a) = &action_like {
         q = q.bind(a);
     }
