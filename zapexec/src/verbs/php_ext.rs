@@ -279,8 +279,13 @@ pub async fn list(svc: &str) -> Response {
             .map(|i| i.dir.join("bin").join("phpize").is_file())
             .unwrap_or(false)
             || has("phpize");
-        // 选路：PIE → pecl → 源码编译（phpize + 编译器）
-        let (installer, hint) = if pie_ok {
+        // 选路：仅 PIE 支持的版本（>= 8.1）开放面板一键安装；不支持 PIE 的版本一律提示源码编译
+        let (installer, hint) = if (major, minor) < (PIE_MIN_MAJOR, PIE_MIN_MINOR) {
+            (
+                "none",
+                "该 PHP 版本过低，面板不支持一键安装扩展（PIE 要求 PHP >= 8.1），请从源码编译。",
+            )
+        } else if pie_ok {
             ("pie", "使用 PIE 安装（PHP >= 8.1）")
         } else if pecl_ok {
             ("pecl", "使用 pecl 安装")
@@ -558,6 +563,12 @@ pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) ->
         }
     };
     let (major, minor) = major_minor(&c.version);
+    if (major, minor) < (PIE_MIN_MAJOR, PIE_MIN_MINOR) {
+        let e = "该 PHP 版本过低，面板不支持一键安装扩展（PIE 要求 PHP >= 8.1），请从源码编译。";
+        super::log_line(&log_path, e);
+        super::finish_log(&log_path, 1);
+        return Response::ok("ok", Some(json!({ "started": false, "reason": e })));
+    }
     let pie = which("pie").is_some() && (major, minor) >= (PIE_MIN_MAJOR, PIE_MIN_MINOR);
     let pecl = which("pecl").is_some();
     let phpize_ok = c

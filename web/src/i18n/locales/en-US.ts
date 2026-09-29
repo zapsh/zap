@@ -2180,6 +2180,8 @@ const enUS: Messages = {
     installSubmit: 'Install',
     installHint:
       'Installer: {way}. Extensions are compiled on this machine (takes minutes); watch the log in the drawer. PHP-FPM is reloaded automatically when done.',
+    eolInstallTitle:
+      'This PHP version ({version}) is no longer officially maintained; the panel cannot install extensions in one click. Build from source using the steps below.',
     extDir: 'Extension dir {path}',
     summarySuffix: '; installer: {way}',
     needPkg: 'Enter an extension name',
@@ -2208,7 +2210,7 @@ const enUS: Messages = {
     emptyHintDir:
       '{base}\nInstance scan directory: {dir} (if PHP is installed elsewhere, point ZAP_APPS_DIR at that directory and restart zapexec)',
     eolAlert:
-      'PHP versions below 8.0 (e.g. 7.4, 5.6) are no longer officially maintained (EOL) and receive no security fixes, which is a security risk. Please upgrade to PHP 8.1 or later.',
+      'PHP versions below 8.1 (e.g. 8.0, 7.4) are no longer officially maintained (EOL) and receive no security fixes, which is a security risk. Please upgrade to PHP 8.1 or later.',
     eolTag: 'EOL',
   },
 
@@ -2233,6 +2235,7 @@ const enUS: Messages = {
       'Remove the global default registration of PHP {version}?\nAfter removal the php command of other users will no longer point to this version (unless another instance is registered as default).',
     registered: 'Registered {names} to /usr/local/bin',
     unregistered: 'Registration removed ({names})',
+    eolCompileTitle: 'Source build reference for legacy version (PHP {version})',
   },
 
   /** Service config - Nginx */

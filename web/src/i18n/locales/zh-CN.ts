@@ -2174,6 +2174,7 @@ export default {
     installVersionPh: '留空取最新稳定版',
     installSubmit: '开始安装',
     installHint: '安装方式：{way}。安装过程需要现场编译（分钟级），日志可在抽屉中查看；完成后需重载 PHP-FPM，面板会自动处理。',
+    eolInstallTitle: '该 PHP 版本（{version}）已停止官方安全维护，面板无法一键安装扩展，请按下方步骤从源码编译。',
     extDir: '扩展目录 {path}',
     summarySuffix: '；安装方式：{way}',
     needPkg: '请填写扩展名',
@@ -2202,7 +2203,7 @@ export default {
     emptyHintDir:
       '{base}\n实例扫描目录：{dir}（若 PHP 装在别处，请用 ZAP_APPS_DIR 指向该目录后重启 zapexec）',
     eolAlert:
-      'PHP 8.0 以下版本（如 7.4、5.6）官方已停止安全维护（EOL），不再接收安全补丁，存在安全风险，建议尽快升级到 PHP 8.1 或更高版本。',
+      'PHP 8.1 以下版本（如 8.0、7.4）官方已停止安全维护（EOL），不再接收安全补丁，存在安全风险，建议升级到 PHP 8.1 或更高版本。',
     eolTag: 'EOL',
   },
 
@@ -2226,6 +2227,7 @@ export default {
       '确认取消 PHP {version} 的全局默认注册？\n移除后其他用户执行 php 将不再指向本版本（除非其它实例已注册为默认）。',
     registered: '已注册 {names} 到 /usr/local/bin',
     unregistered: '已取消注册（{names}）',
+    eolCompileTitle: '低版本源码编译参考（PHP {version}）',
   },
 
   /** 服务配置 - Nginx */

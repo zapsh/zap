@@ -86,18 +86,18 @@ const emptyHint = computed(() => {
   return appsDir.value ? t('servicesPhp.emptyHintDir', { base, dir: appsDir.value }) : base
 })
 
-/** PHP 主版本号解析：优先 version（如 7.4.33），回退 svc（如 php74） */
-function phpMajorOf(v?: string): number {
+/** PHP 版本解析为可比较整数（major*100+minor，如 7.4 → 704，8.1 → 801） */
+function phpVerNum(v?: string): number {
   if (!v) return 0
   const m = v.match(/(\d+)\.(\d+)/)
-  if (m) return parseInt(m[1], 10)
+  if (m) return parseInt(m[1], 10) * 100 + parseInt(m[2], 10)
   const s = v.match(/(\d)(\d)$/)
-  if (s) return parseInt(s[1], 10)
+  if (s) return parseInt(s[1], 10) * 100 + parseInt(s[2], 10)
   return 0
 }
-/** 该 PHP 实例是否低于 8.0（官方已停止安全维护 / EOL） */
+/** 该 PHP 实例是否低于 PHP 8.1（PIE 要求 >= 8.1，不支持则提示源码编译 / EOL） */
 function phpEol(inst: ServiceConfInstance): boolean {
-  return phpMajorOf(inst.version || inst.svc) < 8
+  return phpVerNum(inst.version || inst.svc) < 801
 }
 const hasEol = computed(() => instances.value.some(phpEol))
 

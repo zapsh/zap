@@ -240,6 +240,10 @@
         <el-empty v-if="!extData.installed" :description="extData.reason || ''" />
 
         <template v-if="extData.installed">
+          <el-card v-if="eol" shadow="never" class="compile-card mt-3">
+            <pre class="compile-steps">{{ compileSteps }}</pre>
+          </el-card>
+
           <div class="ext-toolbar">
             <el-input
               v-model="extKeyword"
@@ -250,7 +254,12 @@
             <el-button :loading="extLoading" @click="loadExts">
               {{ t('servicesCommon.refresh') }}
             </el-button>
-            <el-button type="primary" @click="openInstall">
+            <el-button
+              type="primary"
+              :disabled="eol || extData.installer === 'none'"
+              :title="(eol || extData.installer === 'none') ? t('servicesPhpExt.eolInstallTitle', { version: props.inst.version || props.inst.svc }) : ''"
+              @click="openInstall"
+            >
               {{ t('servicesPhpExt.install') }}
             </el-button>
           </div>
@@ -415,17 +424,46 @@ const toggling = ref(false)
 
 const instanceLabel = computed(() => `PHP ${props.inst.version || props.inst.svc}`)
 
-/** PHP 主版本号解析：优先 version（如 7.4.33），回退 svc（如 php74） */
-function phpMajorOf(v?: string): number {
+/** PHP 版本解析为可比较整数（major*100+minor，如 7.4 → 704，8.1 → 801） */
+function phpVerNum(v?: string): number {
   if (!v) return 0
   const m = v.match(/(\d+)\.(\d+)/)
-  if (m) return parseInt(m[1], 10)
+  if (m) return parseInt(m[1], 10) * 100 + parseInt(m[2], 10)
   const s = v.match(/(\d)(\d)$/)
-  if (s) return parseInt(s[1], 10)
+  if (s) return parseInt(s[1], 10) * 100 + parseInt(s[2], 10)
   return 0
 }
-/** 本实例是否低于 8.0（官方已停止安全维护 / EOL） */
-const eol = computed(() => phpMajorOf(props.inst.version || props.inst.svc) < 8)
+/** 本实例是否低于 PHP 8.1（PIE 要求 >= 8.1，不支持则提示源码编译 / EOL） */
+const eol = computed(() => phpVerNum(props.inst.version || props.inst.svc) < 801)
+
+/** 低版本源码编译参考步骤：按当前实例版本 / 安装目录生成 shell 示例 */
+const compileSteps = computed(() => {
+  const ver = props.inst.version || props.inst.svc || ''
+  const dir = props.inst.dir || '/path/to/php'
+  return `# PHP ${ver} 已停止官方安全维护（EOL），面板不支持 PIE 一键安装扩展，需从源码编译。
+# 以下为参考步骤（Debian/Ubuntu），把 ${dir} 换成本实例实际安装目录。
+
+# 1) 安装编译依赖
+apt-get install -y build-essential libxml2-dev libsqlite3-dev \\
+  libcurl4-openssl-dev libssl-dev libzip-dev pkg-config
+
+# 2) 下载并解压对应版本源码
+VER=${ver}
+wget https://www.php.net/distributions/php-\${VER}.tar.gz
+tar -xzf php-\${VER}.tar.gz && cd php-\${VER}
+
+# 3) 配置并编译安装（prefix 指向上面实例目录，避免覆盖系统 PHP）
+./configure --prefix=${dir} --enable-fpm --with-config-file-path=${dir}/etc \\
+  --with-zlib --with-curl --with-openssl --enable-mbstring --with-zip
+make -j\$(nproc) && make install
+
+# 4) 编译某个扩展（以 redis 为例，使用本实例自带的 phpize / php-config）
+cd ext/redis
+${dir}/bin/phpize
+./configure --with-php-config=${dir}/bin/php-config
+make -j\$(nproc) && make install
+# 在 ${dir}/etc/php.ini 中追加：extension=redis.so`
+})
 
 const {
   status,
@@ -561,6 +599,11 @@ function openInstall() {
 }
 
 async function doInstall() {
+  // 不支持一键安装的版本（低版本 pie 不可用 / 无编译环境）：直接提示，不发起静默任务
+  if (eol.value || extData.value.installer === 'none') {
+    ElMessage.warning(t('servicesPhpExt.eolInstallTitle', { version: props.inst.version || props.inst.svc }))
+    return
+  }
   const pkg = installForm.value.pkg.trim()
   if (!pkg) {
     ElMessage.warning(t('servicesPhpExt.needPkg'))
@@ -708,6 +751,22 @@ onUnmounted(() => {
 }
 .mt-3 {
   margin-top: 12px;
+}
+.compile-card {
+  border-radius: 8px;
+}
+.compile-steps {
+  margin: 0;
+  padding: 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 360px;
+  overflow: auto;
 }
 .mono {
   font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
