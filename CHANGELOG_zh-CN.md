@@ -29,4 +29,6 @@
 
 - **#12 响应信封不一致（Medium）** —— 约 35 处 `json!({code})` 形态各异（部分缺失 `message`、`database.rs` 用私有 `ok()` 且无 `message`、部分 `data` 内嵌 `ok:true`）。新增统一信封 helper `zap::api_ok` / `api_ok_msg` / `api_ok_data` / `api_err`（成功固定 `{code:0,message,data}`、错误 `{code,message}`），并把 `database.rs` 的私有 `ok()` 改为 `api_ok`、无 `message` 的 `code:0,data` 成功响应统一改用 `api_ok`。注：`database` 响应 `data.ok` 字段因前端 `DbStatus.ok` 等类型契约仍保留，未删除。
 
+- **#15 CI 噪声/缺口（Medium）** —— `ci.yml` 删除为商业模块 `zappro` 建占位 `mod.rs` 的死步骤（无任何 `Cargo.toml` 引用、CI 也不启用 `commercial` feature）；`web/tsconfig.node.json` 移除不存在的 `eslint.config.*` 引用（项目无 eslint 依赖）；`release.yml` 将 `cross` 由 git HEAD 固定到已发布版本 `0.2.5`，并把 `checkout` / `setup-node` / `cache` / `rust-toolchain` / `upload-artifact` / `download-artifact` / `action-gh-release` 等第三方 action 全部固定到 commit SHA（供应链加固）。
+
 - （同系列）JWT 默认密钥缺失时启动即失败（fail-closed）；高级反代 `raw` 体与自定义 `rewrite` 规则防止 `include` / 系统路径 / 云元数据注入。

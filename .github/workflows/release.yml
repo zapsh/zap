@@ -24,15 +24,15 @@ jobs:
           - target: x86_64-unknown-linux-musl
           - target: aarch64-unknown-linux-musl
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross --locked
+      - name: Install cross (pinned)
+        run: cargo install cross --version 0.2.5 --locked
 
       - name: Build
         run: cross build --release --target ${{ matrix.target }} --locked
@@ -43,7 +43,7 @@ jobs:
           bash scripts/release/package.sh package "${{ matrix.target }}" "target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}" "dist"
 
       - name: Upload tar.gz
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: linux-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -53,10 +53,10 @@ jobs:
     needs: [build-linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist
 
@@ -76,7 +76,7 @@ jobs:
           bash scripts/release/package.sh sign "dist"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: |
             dist/*.tar.gz

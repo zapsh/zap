@@ -3,8 +3,7 @@
     "include": [
       "vite.config.*",
       "vitest.config.*",
-      "playwright.config.*",
-      "eslint.config.*"
+      "playwright.config.*"
     ],
     "compilerOptions": {
       "noEmit": true,

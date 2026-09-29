@@ -18,6 +18,8 @@
 
 - **#12 Inconsistent response envelope (Medium)** — ~35 `json!({code})` sites varied in shape (some missing `message`, `database.rs` used a private `ok()` with no `message`, a few nested `ok:true` in `data`). Added unified envelope helpers `zap::api_ok` / `api_ok_msg` / `api_ok_data` / `api_err` (success is always `{code:0,message,data}`, error `{code,message}`); `database.rs`'s private `ok()` now routes through `api_ok`, and the `code:0,data`-without-`message` success responses were migrated to `api_ok`. Note: the `data.ok` field in database responses is retained for the frontend `DbStatus.ok` etc. contract.
 
+- **#15 CI noise / gaps (Medium)** — `ci.yml`: removed the dead step that created a `zappro` placeholder `mod.rs` (no `Cargo.toml` references it and CI never enables the `commercial` feature); `web/tsconfig.node.json`: dropped the dangling `eslint.config.*` (no eslint dependency in the project); `release.yml`: pinned `cross` to the published `0.2.5` instead of git HEAD, and pinned all third-party actions (`checkout`, `setup-node`, `cache`, `rust-toolchain`, `upload-artifact`, `download-artifact`, `action-gh-release`) to their full commit SHAs (supply-chain hardening).
+
 - (same series) JWT startup fails when the default key is missing (fail-closed); advanced proxy `raw` body and custom `rewrite` rules are hardened against `include` / system-path / cloud-metadata injection.
 
 ## [v1.0.10] - Release Date : 2026-9-14
