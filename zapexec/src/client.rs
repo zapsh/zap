@@ -115,8 +115,16 @@ pub async fn run(args: ClientArgs) {
         ClientVerb::ServiceAction { name, action } => Request::ServiceAction { name, action },
         ClientVerb::ProcessList => Request::ProcessList,
         ClientVerb::ProcessKill { pid, signal } => Request::ProcessKill { pid, signal },
-        ClientVerb::FileList { path } => Request::FileList { path },
-        ClientVerb::FileRead { path } => Request::FileRead { path },
+        ClientVerb::FileList { path } => Request::FileList {
+            path,
+            as_user: None,
+            skip_owner_check: true,
+        },
+        ClientVerb::FileRead { path } => Request::FileRead {
+            path,
+            as_user: None,
+            skip_owner_check: true,
+        },
         ClientVerb::FileWrite { path, content } => Request::FileWrite {
             path,
             content,
@@ -128,7 +136,11 @@ pub async fn run(args: ClientArgs) {
             as_user: None,
             skip_owner_check: false,
         },
-        ClientVerb::FileInfo { path } => Request::FileInfo { path },
+        ClientVerb::FileInfo { path } => Request::FileInfo {
+            path,
+            as_user: None,
+            skip_owner_check: true,
+        },
         ClientVerb::FileChmod { path, mode } => Request::FileChmod {
             path,
             mode: parse_octal_mode(&mode),

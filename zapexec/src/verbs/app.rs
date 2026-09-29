@@ -196,6 +196,25 @@ fn check_workdir(workdir: &str, owner: &str) -> Result<PathBuf, String> {
     Ok(real)
 }
 
+/// 越权防护（defense-in-depth）：普通用户部署的应用，其运行账号必须等于请求方本人，
+/// 否则可借 `owner_user` 把应用以他人站点用户身份拉起（跨站点篡改 / 提权）。
+/// 管理员（`skip_owner_check`）不受此约束（但其站点归属仍由 zapd 校验）。
+fn ensure_owner_matches(
+    owner_user: &str,
+    requester: &Option<String>,
+    skip_owner_check: bool,
+) -> Result<(), String> {
+    if skip_owner_check {
+        return Ok(());
+    }
+    match requester.as_deref() {
+        Some(r) if r == owner_user => Ok(()),
+        _ => Err(
+            "应用必须以请求方本人的站点用户部署（owner_user 与请求用户不一致）".to_string(),
+        ),
+    }
+}
+
 /// 应用日志超过这个体积就在重新部署时归档一份（100 MB）
 const APP_LOG_MAX_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -627,6 +646,8 @@ pub async fn deploy(
     install_deps: bool,
     owner_user: &str,
     log_dir: &str,
+    requester: Option<String>,
+    skip_owner_check: bool,
 ) -> Response {
     let (
         name,
@@ -639,6 +660,8 @@ pub async fn deploy(
         env,
         owner_user,
         log_dir,
+        requester,
+        skip_owner_check,
     ) = (
         name.to_string(),
         app_type.to_string(),
@@ -650,6 +673,8 @@ pub async fn deploy(
         env.to_string(),
         owner_user.to_string(),
         log_dir.to_string(),
+        requester.clone(),
+        skip_owner_check,
     );
     blocking(move || {
         if !valid_name(&name) {
@@ -658,6 +683,10 @@ pub async fn deploy(
         if !valid_user(&owner_user) {
             return Err("站点用户不合法（且不能是 root）".to_string());
         }
+        // 越权防护（defense-in-depth）：普通用户部署的应用，其运行账号必须等于请求方本人，
+        // 否则可借 `owner_user` 把应用以他人站点用户身份拉起（跨站点篡改 / 提权）。
+        // 管理员（skip_owner_check）不受此约束，但 zapd 侧仍会校验站点归属。
+        ensure_owner_matches(&owner_user, &requester, skip_owner_check)?;
         if !app_type_supported(&app_type) {
             return Err(format!("不支持的应用类型：{app_type}"));
         }
@@ -887,6 +916,19 @@ mod tests {
     fn workdir_must_stay_inside_site_user_home() {
         assert!(check_workdir("/etc", "admin").is_err());
         assert!(check_workdir("relative/path", "admin").is_err());
+    }
+
+    #[test]
+    fn non_admin_cannot_deploy_as_other_user() {
+        // 普通用户必须以本人站点账号部署
+        assert!(ensure_owner_matches("alice", &Some("alice".into()), false).is_ok());
+        // owner_user 与请求用户不一致 → 拒绝（跨站点篡改 / 提权）
+        assert!(ensure_owner_matches("alice", &Some("bob".into()), false).is_err());
+        // 请求方缺失系统账号也拒绝
+        assert!(ensure_owner_matches("alice", &None, false).is_err());
+        // 管理员不受此约束
+        assert!(ensure_owner_matches("alice", &Some("bob".into()), true).is_ok());
+        assert!(ensure_owner_matches("alice", &None, true).is_ok());
     }
 
     #[test]

@@ -50,12 +50,14 @@ mod tests {
         let (mut a, mut b) = tokio::io::duplex(4096);
         let msg = Message::Request(Box::new(Request::FileRead {
             path: "/etc/hostname".into(),
+            as_user: None,
+            skip_owner_check: true,
         }));
         send(&mut a, &msg).await.unwrap();
         let got = recv(&mut b).await.unwrap();
         assert!(matches!(
             got,
-            Message::Request(req) if matches!(&*req, Request::FileRead { path } if path == "/etc/hostname")
+            Message::Request(req) if matches!(&*req, Request::FileRead { path, .. } if path == "/etc/hostname")
         ));
     }
 

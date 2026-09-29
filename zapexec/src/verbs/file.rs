@@ -146,10 +146,10 @@ struct Actor {
 
 /// `as_user`：Some(linux 账号) = 以该账号名义操作；None = root。
 /// `skip_owner_check`：true = 管理员（内容归属自己，但不校验属主）。
-fn resolve_actor(as_user: Option<String>, skip_owner_check: bool) -> Result<Option<Actor>, String> {
+fn resolve_actor(as_user: &Option<String>, skip_owner_check: bool) -> Result<Option<Actor>, String> {
     match as_user {
         None => Ok(None),
-        Some(name) => match user_lookup(&name) {
+        Some(name) => match user_lookup(name) {
             Some(actor) => Ok(Some(Actor {
                 enforce_owner: !skip_owner_check,
                 ..actor
@@ -277,6 +277,89 @@ fn resolve_path(requested: &str) -> PathBuf {
     }
 }
 
+/// 普通用户（非管理员）文件操作允许落地的根目录集合：`(原始路径, 规范化后路径)`。
+///
+/// 仅作「目录前缀」级约束，与 zapd 侧的 `check_access`（home / 私有 tmp）同源但独立：
+/// 即便 zapd 授权被绕过，zapexec 仍以 root 身份执行前再卡一道，避免普通用户借文件动词
+/// 读写 `/etc`、`/home/<他人>` 等越权路径。
+///
+/// - 家目录：取自 `/etc/passwd` 的 `pw_dir`（站点数据与 web_root 都落在其中）；
+/// - 私有临时目录：`/tmp/zap-<user>`（上传暂存、脚本临时文件）；
+/// - 面板数据目录：`{data}/users/<user>`（脚本 / crontab 等面板私有数据）。
+fn actor_roots(name: &str) -> Vec<(PathBuf, Option<PathBuf>)> {
+    let home = super::linux_account(name)
+        .map(|acc| acc.home)
+        .unwrap_or_else(|_| PathBuf::from(format!("/home/{name}")));
+    let mut roots: Vec<(PathBuf, Option<PathBuf>)> = vec![
+        (home.clone(), home.canonicalize().ok()),
+        (
+            PathBuf::from(format!("/tmp/zap-{name}")),
+            None,
+        ),
+        (
+            super::users_root().join(name),
+            super::users_root().join(name).canonicalize().ok(),
+        ),
+    ];
+    // 去掉重复（家目录恰好等于规范化结果时）
+    roots.dedup_by(|a, b| a.0 == b.0);
+    roots
+}
+
+/// `path` 是否位于 `prefix` 之内（`prefix` 自身也算在内），必须比对到 `/` 边界，
+/// 否则 `/home/admin` 会把 `/home/admin-tools` 也算进去。
+fn within_prefix(path: &Path, prefix: &Path) -> bool {
+    let pv = path.to_string_lossy();
+    let mut pre = prefix.to_string_lossy().into_owned();
+    if pre.ends_with('/') {
+        pre.pop();
+    }
+    if pre.is_empty() {
+        return false;
+    }
+    pv == pre || pv.starts_with(&format!("{pre}/"))
+}
+
+/// 越权沙箱：以 `as_user` 名义且「不跳过属主校验」的普通用户，其解析后的路径必须落在
+/// [`actor_roots`] 之内；管理员（`skip_owner_check`）或 root（`as_user = None`）不受限。
+///
+/// 已存在的路径额外做一次 `canonicalize` 再比对，防符号链接逃逸
+/// （如 `/home/u/evil -> /etc`）；尚不存在的路径（建目录场景）按清洗后的绝对路径比对。
+fn sandbox_path(
+    resolved: &Path,
+    as_user: &Option<String>,
+    skip_owner_check: bool,
+) -> Result<(), String> {
+    if skip_owner_check {
+        return Ok(());
+    }
+    let Some(name) = as_user else {
+        // 非管理员却没带执行账号：不该发生，防御性拒绝，绝不以 root 裸跑。
+        return Err("缺少执行账号，拒绝文件操作".to_string());
+    };
+    let roots = actor_roots(name);
+    // 已存在的路径：规范化后比对（拦截符号链接逃逸）
+    if let Ok(canon) = resolved.canonicalize() {
+        for (_, canon_root) in &roots {
+            if let Some(root) = canon_root {
+                if within_prefix(&canon, root) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    // 不存在的路径：按清洗后的绝对路径比对前缀
+    for (raw, _) in &roots {
+        if within_prefix(resolved, raw) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "路径 {} 不在当前用户允许范围内（仅限个人家目录、私有临时目录与面板数据目录）",
+        resolved.display()
+    ))
+}
+
 fn file_info(path: &Path) -> Option<FileInfo> {
     let metadata = std::fs::metadata(path).ok()?;
     let modified = metadata
@@ -315,9 +398,12 @@ fn is_critical_path(path: &Path) -> bool {
 
 // ── 动词实现 ───────────────────────────────────────────────
 
-pub async fn list(path: String) -> Response {
+pub async fn list(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
     tokio::task::spawn_blocking(move || {
         let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         let md = match std::fs::metadata(&resolved) {
             Ok(m) => m,
             Err(e) => return Response::err(-1, format!("路径不存在: {e}")),
@@ -354,9 +440,12 @@ pub async fn list(path: String) -> Response {
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
 }
 
-pub async fn read(path: String) -> Response {
+pub async fn read(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
     tokio::task::spawn_blocking(move || {
         let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         let md = match std::fs::metadata(&resolved) {
             Ok(m) => m,
             Err(e) => return Response::err(-1, format!("路径不存在: {e}")),
@@ -387,11 +476,14 @@ pub async fn write(
     skip_owner_check: bool,
 ) -> Response {
     tokio::task::spawn_blocking(move || {
-        let actor = match resolve_actor(as_user, skip_owner_check) {
+        let actor = match resolve_actor(&as_user, skip_owner_check) {
             Ok(a) => a,
             Err(e) => return Response::err(-1, e),
         };
         let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         if let Ok(md) = std::fs::metadata(&resolved)
             && md.is_dir()
         {
@@ -434,11 +526,14 @@ pub async fn write(
 
 pub async fn delete(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
     tokio::task::spawn_blocking(move || {
-        let actor = match resolve_actor(as_user, skip_owner_check) {
+        let actor = match resolve_actor(&as_user, skip_owner_check) {
             Ok(a) => a,
             Err(e) => return Response::err(-1, e),
         };
         let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         if is_critical_path(&resolved) {
             return Response::err(-1, "不能删除系统关键目录");
         }
@@ -466,11 +561,14 @@ pub async fn delete(path: String, as_user: Option<String>, skip_owner_check: boo
 
 pub async fn mkdir(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
     tokio::task::spawn_blocking(move || {
-        let actor = match resolve_actor(as_user, skip_owner_check) {
+        let actor = match resolve_actor(&as_user, skip_owner_check) {
             Ok(a) => a,
             Err(e) => return Response::err(-1, e),
         };
         let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         if resolved.exists() {
             return Response::err(-1, "目录已存在");
         }
@@ -494,12 +592,18 @@ pub async fn rename(
     skip_owner_check: bool,
 ) -> Response {
     tokio::task::spawn_blocking(move || {
-        let actor = match resolve_actor(as_user, skip_owner_check) {
+        let actor = match resolve_actor(&as_user, skip_owner_check) {
             Ok(a) => a,
             Err(e) => return Response::err(-1, e),
         };
         let old_path = resolve_path(&path);
         let new_path = resolve_path(&new_path);
+        if let Err(e) = sandbox_path(&old_path, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
+        if let Err(e) = sandbox_path(&new_path, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         if !old_path.exists() {
             return Response::err(-1, "源文件不存在");
         }
@@ -525,9 +629,12 @@ pub async fn rename(
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
 }
 
-pub async fn download(path: String) -> Response {
+pub async fn download(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
     tokio::task::spawn_blocking(move || {
         let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         let md = match std::fs::metadata(&resolved) {
             Ok(m) => m,
             Err(e) => return Response::err(-1, format!("路径不存在: {e}")),
@@ -562,11 +669,14 @@ pub async fn upload(
     skip_owner_check: bool,
 ) -> Response {
     tokio::task::spawn_blocking(move || {
-        let actor = match resolve_actor(as_user, skip_owner_check) {
+        let actor = match resolve_actor(&as_user, skip_owner_check) {
             Ok(a) => a,
             Err(e) => return Response::err(-1, e),
         };
         let dir = resolve_path(&path);
+        if let Err(e) = sandbox_path(&dir, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         // 目录不存在时按操作者身份创建（中间层同样归属该账号）
         if !dir.exists()
             && let Err(e) = create_dirs_owned(actor, &dir)
@@ -587,6 +697,9 @@ pub async fn upload(
         };
         // 临时文件由 zapd 流式写入（边收边落盘），这里只搬移 —— 大文件不进内存
         let tmp_path = PathBuf::from(&tmp);
+        if let Err(e) = sandbox_path(&tmp_path, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         if !tmp_path.is_file() {
             return Response::err(-1, format!("上传临时文件不存在: {}", tmp_path.display()));
         }
@@ -629,9 +742,12 @@ pub async fn upload(
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
 }
 
-pub async fn info(path: String) -> Response {
+pub async fn info(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
     tokio::task::spawn_blocking(move || {
         let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         match file_info(&resolved) {
             Some(info) => Response::ok("ok", Some(json!(info))),
             None => Response::err(-1, "文件不存在"),
@@ -664,11 +780,14 @@ pub async fn chmod(
         if mode & !0o7777 != 0 {
             return Response::err(-1, "权限值非法：仅支持 0-7777（八进制）");
         }
-        let actor = match resolve_actor(as_user, skip_owner_check) {
+        let actor = match resolve_actor(&as_user, skip_owner_check) {
             Ok(a) => a,
             Err(e) => return Response::err(-1, e),
         };
         let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         if is_critical_path(&resolved) {
             return Response::err(-1, "不能修改系统关键目录的权限");
         }
@@ -751,11 +870,14 @@ pub async fn chown(
         } else {
             None
         };
-        let _actor = match resolve_actor(as_user, skip_owner_check) {
+        let _actor = match resolve_actor(&as_user, skip_owner_check) {
             Ok(a) => a,
             Err(e) => return Response::err(-1, e),
         };
         let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         if is_critical_path(&resolved) {
             return Response::err(-1, "不能修改系统关键目录的属主");
         }
@@ -835,7 +957,7 @@ pub async fn copy(
     skip_owner_check: bool,
 ) -> Response {
     tokio::task::spawn_blocking(move || {
-        let actor = match resolve_actor(as_user, skip_owner_check) {
+        let actor = match resolve_actor(&as_user, skip_owner_check) {
             Ok(a) => a,
             Err(e) => return Response::err(-1, e),
         };
@@ -844,6 +966,12 @@ pub async fn copy(
             return Response::err(-1, "源文件不存在");
         }
         let dst = resolve_path(&new_path);
+        if let Err(e) = sandbox_path(&src, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
+        if let Err(e) = sandbox_path(&dst, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         if is_critical_path(&dst) {
             return Response::err(-1, "不能覆盖系统关键目录");
         }
@@ -922,7 +1050,7 @@ pub async fn archive(
     skip_owner_check: bool,
 ) -> Response {
     tokio::task::spawn_blocking(move || {
-        let actor = match resolve_actor(as_user, skip_owner_check) {
+        let actor = match resolve_actor(&as_user, skip_owner_check) {
             Ok(a) => a,
             Err(e) => return Response::err(-1, e),
         };
@@ -941,6 +1069,12 @@ pub async fn archive(
                     format!("路径 {} 不在基目录 {} 下", p.display(), base.display()),
                 );
             }
+            if let Err(e) = sandbox_path(p, &as_user, skip_owner_check) {
+                return Response::err(-1, e);
+            }
+        }
+        if let Err(e) = sandbox_path(&base, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
         }
 
         // 压缩包名只取最后一段并过滤 `..`/空段，避免被写到目标目录之外
@@ -1149,16 +1283,32 @@ mod tests {
     /// `as_user` 解析：不存在的系统账号直接报错（管理员则退回 root），不静默降权。
     #[test]
     fn actor_resolution_from_passwd() {
-        assert!(resolve_actor(None, false).unwrap().is_none());
+        assert!(resolve_actor(&None, false).unwrap().is_none());
         let root = user_lookup("root").expect("root 应存在于 /etc/passwd");
         assert_eq!(root.uid, 0);
-        assert!(resolve_actor(Some("zap_no_such_user_xyz".into()), false).is_err());
+        assert!(resolve_actor(&Some("zap_no_such_user_xyz".into()), false).is_err());
         // 管理员：绑定账号缺失时退回 root，保持全量管理能力
         assert!(
-            resolve_actor(Some("zap_no_such_user_xyz".into()), true)
+            resolve_actor(&Some("zap_no_such_user_xyz".into()), true)
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// 普通用户的文件操作必须被限制在本人家目录 / 私有临时目录 / 面板数据目录内，
+    /// 即便 zapd 的授权被绕过，zapexec 以 root 执行前也会再卡一道。
+    #[test]
+    fn sandbox_blocks_paths_outside_user_roots() {
+        // 管理员 / root：不受限
+        assert!(sandbox_path(Path::new("/etc/passwd"), &None, true).is_ok());
+        // 普通用户：家目录内允许
+        assert!(sandbox_path(Path::new("/home/u1/x.txt"), &Some("u1".into()), false).is_ok());
+        // 普通用户：/etc 越权拒绝
+        assert!(sandbox_path(Path::new("/etc/passwd"), &Some("u1".into()), false).is_err());
+        // 普通用户：他人家目录拒绝（跨用户越权）
+        assert!(sandbox_path(Path::new("/home/u2/x"), &Some("u1".into()), false).is_err());
+        // 普通用户却没带执行账号：防御性拒绝，绝不以 root 裸跑
+        assert!(sandbox_path(Path::new("/home/u1/x"), &None, false).is_err());
     }
 
     /// 管理员模式：跳过属主校验（可管服务器上 root 的文件），但仍是"归属自己"的执行者。
@@ -1175,7 +1325,7 @@ mod tests {
         assert!(ensure_owner(Some(user_actor(1005)), path).is_err());
 
         // 管理员模式（skip_owner_check=true）：归属自己 + 允许管理 root 文件
-        let admin = resolve_actor(Some("root".into()), true).unwrap().unwrap();
+        let admin = resolve_actor(&Some("root".into()), true).unwrap().unwrap();
         assert_eq!(admin.uid, 0);
         assert!(!admin.enforce_owner);
         assert!(ensure_owner(Some(admin), path).is_ok());

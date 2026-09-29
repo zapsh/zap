@@ -101,8 +101,12 @@ pub async fn dispatch(req: Request) -> Response {
             ssh_user_key::public_get(linux_user, name).await
         }
         Request::SshUserKeyList { linux_user } => ssh_user_key::list(linux_user).await,
-        Request::FileList { path } => file::list(path).await,
-        Request::FileRead { path } => file::read(path).await,
+        Request::FileList { path, as_user, skip_owner_check } => {
+            file::list(path, as_user, skip_owner_check).await
+        }
+        Request::FileRead { path, as_user, skip_owner_check } => {
+            file::read(path, as_user, skip_owner_check).await
+        }
         Request::FileWrite {
             path,
             content,
@@ -125,7 +129,9 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
         } => file::rename(path, new_path, as_user, skip_owner_check).await,
-        Request::FileDownload { path } => file::download(path).await,
+        Request::FileDownload { path, as_user, skip_owner_check } => {
+            file::download(path, as_user, skip_owner_check).await
+        }
         Request::FileUpload {
             path,
             name,
@@ -133,7 +139,9 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
         } => file::upload(path, name, tmp, as_user, skip_owner_check).await,
-        Request::FileInfo { path } => file::info(path).await,
+        Request::FileInfo { path, as_user, skip_owner_check } => {
+            file::info(path, as_user, skip_owner_check).await
+        }
         Request::FileChmod {
             path,
             mode,
@@ -360,6 +368,8 @@ pub async fn dispatch(req: Request) -> Response {
             install_deps,
             owner_user,
             log_dir,
+            requester,
+            skip_owner_check,
         } => {
             app::deploy(
                 site_id,
@@ -377,6 +387,8 @@ pub async fn dispatch(req: Request) -> Response {
                 install_deps,
                 &owner_user,
                 &log_dir,
+                requester,
+                skip_owner_check,
             )
             .await
         }

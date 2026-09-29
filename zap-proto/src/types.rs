@@ -515,10 +515,22 @@ pub enum Request {
     },
     /// 列出目录
     #[serde(rename = "file.list")]
-    FileList { path: String },
+    FileList {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
     /// 读文件（文本）
     #[serde(rename = "file.read")]
-    FileRead { path: String },
+    FileRead {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
     /// 写文件（文本）
     ///
     /// `as_user`：以哪个 Linux 账号名义操作（None = root）；新建/覆盖的内容归属该账号。
@@ -563,7 +575,13 @@ pub enum Request {
     },
     /// 下载（base64 字节）
     #[serde(rename = "file.download")]
-    FileDownload { path: String },
+    FileDownload {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
     /// 上传：把 zapd 已落盘的临时文件搬到目标目录。
     ///
     /// 早先这里传的是 base64 全文，等于把整个文件塞进 zapd 内存再放大 1.33 倍；
@@ -582,7 +600,13 @@ pub enum Request {
     },
     /// 文件信息
     #[serde(rename = "file.info")]
-    FileInfo { path: String },
+    FileInfo {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
     /// 修改文件/目录权限（mode 为八进制数值，仅低 12 位有效）
     #[serde(rename = "file.chmod")]
     FileChmod {
@@ -981,6 +1005,14 @@ pub enum Request {
         /// 应用日志落盘目录（站点日志目录，属主为站点用户）
         #[serde(default, skip_serializing_if = "String::is_empty")]
         log_dir: String,
+        /// 请求方（面板用户）绑定的 Linux 账号：普通用户必须等于 `owner_user`，
+        /// 否则存在跨站点篡改他人应用的越权风险。管理员（[`skip_owner_check`]）
+        /// 不受此约束。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requester: Option<String>,
+        /// 请求方是否为管理员：true 时跳过 `requester` 与 `owner_user` 的归属校验。
+        #[serde(default)]
+        skip_owner_check: bool,
     },
     /// 探测服务器上已安装的应用运行时版本（`python` / `nodejs`），供部署向导下拉选择
     #[serde(rename = "app.runtimes")]

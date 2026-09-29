@@ -683,6 +683,22 @@ pub async fn app_deploy(
         ));
     }
 
+    // 请求方身份：zapexec 侧据此独立校验「owner_user 必须等于请求用户本人」，
+    // 避免普通用户借 deploy 把应用以他人站点账号拉起。管理员不受此约束。
+    let (requester, skip_owner_check) = if jwt::is_admin(&claims) {
+        (None, true)
+    } else {
+        let pool = db::get_db_pool().await;
+        let lu: Option<String> = sqlx::query_scalar("SELECT linux_user FROM user WHERE id = ?")
+            .bind(claims.id as i64)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .filter(|u: &String| !u.trim().is_empty());
+        (lu, false)
+    };
+
     let resp = crate::zapexec::call(Request::AppDeploy {
         site_id,
         name: name.clone(),
@@ -699,6 +715,8 @@ pub async fn app_deploy(
         install_deps,
         owner_user: ctx.owner.clone(),
         log_dir: ctx.log_root.clone(),
+        requester,
+        skip_owner_check,
     })
     .await?;
     if resp.code != 0 {

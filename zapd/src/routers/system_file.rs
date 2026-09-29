@@ -258,16 +258,18 @@ pub(crate) async fn list_local_dir(
     requested: &str,
 ) -> Result<serde_json::Value, ZapError> {
     let (home, tmp) = user_private_prefixes(claims).await;
+    // 执行身份：普通用户以自己的 Linux 账号运行（zapexec 侧再卡一道路径沙箱），
+    // 管理员跳过属主校验。无绑定系统账号的普通用户在此直接拒绝，避免以 root 裸跑。
+    let (as_user, skip_owner_check) = actor_identity(claims).await?;
     let raw_path = resolve_list_target(is_admin(claims), requested, &home);
     let resolved = resolve_path(&raw_path)?;
     check_access(claims, &resolved, &home, &tmp)?;
 
     // 首次访问自己的 home 时自动创建（以该用户名义创建，属主即本人）
     if !is_admin(claims) && resolved.as_path() == Path::new(&home) && !resolved.exists() {
-        let (as_user, skip_owner_check) = actor_identity(claims).await?;
         let _ = crate::zapexec::call(Request::FileMkdir {
             path: home.clone(),
-            as_user,
+            as_user: as_user.clone(),
             skip_owner_check,
         })
         .await;
@@ -283,6 +285,8 @@ pub(crate) async fn list_local_dir(
 
     let resp = crate::zapexec::call(Request::FileList {
         path: resolved.to_string_lossy().to_string(),
+        as_user,
+        skip_owner_check,
     })
     .await?;
     if resp.code != 0 {
@@ -317,9 +321,12 @@ pub async fn file_read(
     let (home, tmp) = user_private_prefixes(&claims).await;
     let resolved = resolve_path(raw_path)?;
     check_access(&claims, &resolved, &home, &tmp)?;
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
 
     let resp = crate::zapexec::call(Request::FileRead {
         path: resolved.to_string_lossy().to_string(),
+        as_user,
+        skip_owner_check,
     })
     .await?;
     if resp.code != 0 {
@@ -724,9 +731,12 @@ pub async fn file_download(
     let (home, tmp) = user_private_prefixes(&claims).await;
     let resolved = resolve_path(raw_path)?;
     check_access(&claims, &resolved, &home, &tmp)?;
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
 
     let resp = crate::zapexec::call(Request::FileDownload {
         path: resolved.to_string_lossy().to_string(),
+        as_user,
+        skip_owner_check,
     })
     .await?;
     if resp.code != 0 {
@@ -877,9 +887,12 @@ pub async fn file_info(claims: Claims, Query(query): Query<PathQuery>) -> ZapJso
     let (home, tmp) = user_private_prefixes(&claims).await;
     let resolved = resolve_path(raw_path)?;
     check_access(&claims, &resolved, &home, &tmp)?;
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
 
     let resp = crate::zapexec::call(Request::FileInfo {
         path: resolved.to_string_lossy().to_string(),
+        as_user,
+        skip_owner_check,
     })
     .await?;
     if resp.code != 0 {
