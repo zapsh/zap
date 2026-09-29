@@ -166,6 +166,13 @@ async fn main() {
         std::process::exit(code)
     }
 
+    // fail-closed：JWT 签名密钥若为内置默认值/空，或轮换后无法落盘，拒绝启动，
+    // 避免以已知默认密钥或临时随机密钥（重启即失效）提供服务。
+    if let Err(e) = config::init_config() {
+        error!("配置初始化失败，zapd 拒绝启动：{e}");
+        std::process::exit(1);
+    }
+
     // Ensure TLS certificates exist (generate self-signed if missing)
     // 面板只提供 HTTPS（HTTP 请求一律 301 跳转），没有证书就无法建立 TLS acceptor，
     // 因此这里直接以明确错误退出，而不是带着坏证书继续跑成崩溃重启循环。

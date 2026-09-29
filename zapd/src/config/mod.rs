@@ -5,7 +5,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ZapConfig {
@@ -75,6 +75,10 @@ impl Default for DbConfig {
 }
 
 const DEFAULT_JWT_SECURE: &str = "secure-key-zap-default";
+
+/// 全局配置（惰性初始化一次）。`get_config` 兜底加载；`init_config` 在服务器启动期
+/// 先行做 fail-closed 校验并写入，避免以默认/临时密钥运行。
+static GLOBAL_ZAP_CONFIG: OnceLock<RwLock<ZapConfig>> = OnceLock::new();
 
 /// 规范化 URL 前缀：去掉首尾空白与斜杠，并过滤掉空白段。
 ///
@@ -155,10 +159,9 @@ fn needs_jwt_rotation(secret: &str) -> bool {
     secret == DEFAULT_JWT_SECURE || secret.is_empty()
 }
 
-fn write_config_to_file(config: &ZapConfig) {
-    if let Err(e) = save_config(config) {
-        info!("failed to write config: {}", e);
-    }
+/// 持久化配置到 zap.yaml；返回写盘结果（失败原因），交由调用方决定 fail-closed 行为。
+fn write_config_to_file(config: &ZapConfig) -> Result<(), String> {
+    save_config(config)
 }
 
 /// 写回 zap.yaml 时附带的字段说明。
@@ -205,61 +208,114 @@ pub fn mutate_config<F: FnOnce(&mut ZapConfig)>(f: F) -> Result<(), String> {
     save_config(&guard)
 }
 
-pub fn get_config() -> &'static RwLock<ZapConfig> {
-    static GLOBAL_ZAP_CONFIG: OnceLock<RwLock<ZapConfig>> = OnceLock::new();
-    GLOBAL_ZAP_CONFIG.get_or_init(|| {
-        let mut default_conf = new();
-        let mut needs_write = false;
+/// 加载配置：读取 zap.yaml，必要时把 JWT 默认密钥轮换为随机值。
+///
+/// 返回配置本身，以及「需要落盘但失败」的错误（若有）。服务器启动期的 [`init_config`]
+/// 据此选择 fail-closed 拒绝启动；其余只读场景（zapexec 等）走 [`get_config`] 的兜底，
+/// 仅在写失败时告警、尽量继续运行。
+fn load_config() -> (ZapConfig, Option<String>) {
+    let mut default_conf = new();
+    let mut needs_write = false;
 
-        // 只读方式读取：运行用户（如 zapadm）对 zap.yaml 可能只有读权限，
-        // 若按 read+write 打开，打不开就会静默退回默认配置，
-        // 表现为"配置改了没生效"（端口 / 证书路径 / url_prefix 全部走默认值）。
-        let path = config_path();
-        match fs::read_to_string(&path) {
-            Ok(buffer) => {
-                match serde_yaml::from_str::<ZapConfig>(&buffer) {
-                    Ok(cnf) => {
-                        default_conf.server.address = cnf.server.address;
-                        default_conf.server.port = cnf.server.port;
-                        default_conf.server.cert_file = cnf.server.cert_file;
-                        default_conf.server.key_file = cnf.server.key_file;
-                        default_conf.server.url_prefix =
-                            normalize_url_prefix(&cnf.server.url_prefix);
-                        default_conf.exec = cnf.exec;
+    // 只读方式读取：运行用户（如 zapadm）对 zap.yaml 可能只有读权限，
+    // 若按 read+write 打开，打不开就会静默退回默认配置，
+    // 表现为"配置改了没生效"（端口 / 证书路径 / url_prefix 全部走默认值）。
+    let path = config_path();
+    match fs::read_to_string(&path) {
+        Ok(buffer) => {
+            match serde_yaml::from_str::<ZapConfig>(&buffer) {
+                Ok(cnf) => {
+                    default_conf.server.address = cnf.server.address;
+                    default_conf.server.port = cnf.server.port;
+                    default_conf.server.cert_file = cnf.server.cert_file;
+                    default_conf.server.key_file = cnf.server.key_file;
+                    default_conf.server.url_prefix =
+                        normalize_url_prefix(&cnf.server.url_prefix);
+                    default_conf.exec = cnf.exec;
 
-                        // Rotate JWT secret if still using default
-                        if needs_jwt_rotation(&cnf.jwt.jwt_secure) {
-                            let new_secret = generate_random_hex(32);
-                            info!("JWT secret was using default value, generated new random key");
-                            default_conf.jwt.jwt_secure = new_secret;
-                            needs_write = true;
-                        } else {
-                            default_conf.jwt.jwt_secure = cnf.jwt.jwt_secure;
-                        }
-                        default_conf.jwt.jwt_expire = cnf.jwt.jwt_expire;
-                        default_conf.db = cnf.db;
-                    }
-                    Err(e) => {
-                        info!("failed to parse {} ({}), using defaults", path.display(), e);
-                        // Generate random JWT secret for fresh config
-                        default_conf.jwt.jwt_secure = generate_random_hex(32);
+                    // Rotate JWT secret if still using default
+                    if needs_jwt_rotation(&cnf.jwt.jwt_secure) {
+                        let new_secret = generate_random_hex(32);
+                        info!("JWT secret was using default value, generated new random key");
+                        default_conf.jwt.jwt_secure = new_secret;
                         needs_write = true;
+                    } else {
+                        default_conf.jwt.jwt_secure = cnf.jwt.jwt_secure;
                     }
+                    default_conf.jwt.jwt_expire = cnf.jwt.jwt_expire;
+                    default_conf.db = cnf.db;
+                }
+                Err(e) => {
+                    info!("failed to parse {} ({}), using defaults", path.display(), e);
+                    // Generate random JWT secret for fresh config
+                    default_conf.jwt.jwt_secure = generate_random_hex(32);
+                    needs_write = true;
                 }
             }
-            Err(e) => {
-                info!("unable to read {} ({}), using defaults", path.display(), e);
-                // Generate random JWT secret for new installation
-                default_conf.jwt.jwt_secure = generate_random_hex(32);
-                needs_write = true;
-            }
-        };
-
-        // Persist updated config if changes were made
-        if needs_write {
-            write_config_to_file(&default_conf);
         }
+        Err(e) => {
+            info!("unable to read {} ({}), using defaults", path.display(), e);
+            // Generate random JWT secret for new installation
+            default_conf.jwt.jwt_secure = generate_random_hex(32);
+            needs_write = true;
+        }
+    };
 
-        RwLock::new(default_conf)
+    // 需要落盘时尝试写入；失败只记录原因，由调用方决定 fail-closed。
+    let write_err = if needs_write {
+        write_config_to_file(&default_conf).err()
+    } else {
+        None
+    };
+
+    (default_conf, write_err)
+}
+
+pub fn get_config() -> &'static RwLock<ZapConfig> {
+    GLOBAL_ZAP_CONFIG.get_or_init(|| {
+        let (conf, write_err) = load_config();
+        if let Some(e) = write_err {
+            warn!(
+                "配置文件写入失败（JWT 密钥可能无法持久化，重启后会话失效）: {e}"
+            );
+        }
+        RwLock::new(conf)
     })
+}
+
+/// 启动期 fail-closed 校验：仅由 `zapd` 主流程在绑端口前调用。
+///
+/// - JWT 签名密钥若为内置默认值或为空（[`needs_jwt_rotation`]），视为可被伪造，拒绝启动；
+/// - 若启动时轮换了密钥却无法写入配置文件（如 zap.yaml 只读），拒绝以「临时随机密钥」
+///   启动（重启即失效、且排查困难），应修复写权限后重启。
+///
+/// 返回 `Err` 时调用方应直接退出进程。
+pub fn init_config() -> Result<(), String> {
+    if GLOBAL_ZAP_CONFIG.get().is_some() {
+        // 已由 get_config 兜底初始化（一般不应先于 init_config 发生）
+        return Ok(());
+    }
+
+    let (conf, write_err) = load_config();
+
+    if needs_jwt_rotation(&conf.jwt.jwt_secure) {
+        return Err(
+            "JWT 签名密钥仍为内置默认值或为空，存在被伪造风险，zapd 拒绝启动。\
+             请在 zap.yaml 中设置随机 jwt_secure（或删除该字段让首次启动自动生成）后重启。"
+                .to_string(),
+        );
+    }
+
+    if let Some(e) = write_err {
+        let path = config_path();
+        return Err(format!(
+            "JWT 密钥已轮换但无法写入配置文件 {}：{e}。zapd 拒绝以临时密钥启动（重启即失效），\
+             请修复 zap.yaml 写权限后重启。",
+            path.display()
+        ));
+    }
+
+    GLOBAL_ZAP_CONFIG
+        .set(RwLock::new(conf))
+        .map_err(|_| "配置重复初始化（不应发生）".to_string())
 }
