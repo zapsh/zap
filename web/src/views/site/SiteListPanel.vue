@@ -2974,6 +2974,7 @@ onMounted(() => {
                   t('site.addLocation')
                 }}</el-button>
               </div>
+              </div>
             </el-form-item>
             <el-empty v-else :image-size="70" :description="t('site.advancedGated')" />
           </el-tab-pane>
