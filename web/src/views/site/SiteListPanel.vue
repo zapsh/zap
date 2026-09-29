@@ -10,6 +10,7 @@ import {
   watch,
 } from 'vue'
 import {
+  ArrowDown,
   ArrowRight,
   Delete,
   Edit,
@@ -848,21 +849,19 @@ function blankUpstream(): UpstreamSpec {
   return { name: '', balance: '', servers_ext: [blankServer()] }
 }
 /** 保证站点存在一条「根 location /」：
- *  - proxy 站点：proxy_pass 兜底（新建时默认）；
- *  - php/static 站点：把后端自动渲染的默认根 location 显式呈现为可编辑的 raw 类型，
- *    用户在默认根上追加 rewrite / 静态规则等，保存后由执行端合并进默认块（保留 root 继承与伪静态路由），
- *    避免出现「php 选了静态规则、又在高级里加 location /」时覆盖默认根导致 404 的情况。 */
+ *  - 仅反向代理站点需要显式兜底：proxy_pass 必须给出目标，后端无法臆测，
+ *    故新建 / 切换类型时默认写入一条根 location（用户在面板填写目标）；
+ *  - php / static 站点不再强制写入根 location：列表默认为空即可，由执行端按类型自动生成
+ *    默认根（static → try_files；php → php 处理器 + try_files）。用户配置了 location / 时覆盖默认行为：
+ *    proxy/alias/redirect/deny 整段替换默认根；raw 类型在默认根上追加规则（保留 root 继承与伪静态路由）。 */
 function ensureRootLocation() {
+  if (form.site_type !== 'proxy') return
   const hasRoot = form.locations.some((l) => l.path.trim() === '/')
   if (hasRoot) return
-  if (form.site_type === 'proxy') {
-    form.locations.push(blankLocation('/'))
-  } else {
-    const l = blankLocation('/')
-    l.kind = 'raw'
-    l.raw = ''
-    form.locations.push(l)
-  }
+  const idx = form.locations.length
+  form.locations.push(blankLocation('/'))
+  // 若当前没有任何展开的卡片，则展开新增的根 location（保持至少一条展开）
+  if (!expandedLocs.value.length) expandedLocs.value = [idx]
 }
 function addLocationRow() {
   const l = blankLocation(form.locations.length ? '/api' : '/')
@@ -877,6 +876,34 @@ function addLocationRow() {
     onLocationKindChange(l)
   }
   form.locations.push(l)
+  // 新增：折叠其余，展开并聚焦当前新增的规则
+  expandedLocs.value = [form.locations.length - 1]
+}
+/** Location 卡片折叠状态（索引集合）：始终保持至少一条展开 */
+const expandedLocs = ref<number[]>([])
+function isLocExpanded(i: number) {
+  return expandedLocs.value.includes(i)
+}
+function toggleLoc(i: number) {
+  if (expandedLocs.value.includes(i)) {
+    const next = expandedLocs.value.filter((x) => x !== i)
+    if (next.length === 0) return // 至少保留一条展开
+    expandedLocs.value = next
+  } else {
+    expandedLocs.value = [...expandedLocs.value, i]
+  }
+}
+/** 重置为仅展开第一条（保持至少一条展开） */
+function resetExpanded() {
+  expandedLocs.value = form.locations.length ? [0] : []
+}
+function removeLocation(i: number) {
+  removeAt(form.locations, i)
+  let next = expandedLocs.value
+    .filter((x) => x !== i)
+    .map((x) => (x > i ? x - 1 : x))
+  if (form.locations.length && next.length === 0) next = [0]
+  expandedLocs.value = next
 }
 const locDirectives = ref<LocDirectiveSpec[]>([])
 async function loadLocDirectives() {
@@ -1003,7 +1030,8 @@ watch(
       legacyDocRoot.value = ''
     }
     if (v !== 'php') form.php_instance = ''
-    // 切换类型后保证存在一条默认根 location /（proxy 用 proxy_pass，php/static 用可编辑 raw）
+    // 切换类型后：反代站点需要保证一条 proxy_pass 根 location；php/static 留空，
+    // 由执行端按类型自动生成默认根（try_files / php 处理器）
     ensureRootLocation()
   },
 )
@@ -1140,6 +1168,7 @@ function openAdd() {
   // 新建态也要拉安全能力位（WAF 能不能开），否则安全 tab 一直显示"接口不可用"
   loadSecurity()
   ensureRootLocation()
+  resetExpanded()
   formVisible.value = true
 }
 
@@ -1233,6 +1262,7 @@ function openEdit(row: SiteItem) {
     form.locations.push(blankLocation('/'))
   }
   ensureRootLocation()
+  resetExpanded()
   form.ssl_cert_id = row.ssl_cert_id || null
   form.force_https = !!row.force_https
   form.ssl_protocols = row.ssl_protocols || 'TLSv1.2 TLSv1.3'
@@ -2246,372 +2276,6 @@ onMounted(() => {
             </el-form-item>
           </el-tab-pane>
 
-          <!-- SSL/TLS -->
-          <el-tab-pane label="SSL / TLS" name="ssl">
-            <el-alert
-              v-if="staleCertId"
-              type="error"
-              :closable="false"
-              show-icon
-              :title="t('site.certStaleTitle')"
-              :description="staleCertIdLabel"
-              class="ssl-alert"
-            />
-            <el-form-item :label="t('site.formCert')">
-              <el-select
-                v-model="form.ssl_cert_id"
-                clearable
-                filterable
-                :loading="certsLoading"
-                :placeholder="
-                  visibleCertOptions.length
-                    ? t('site.certPlaceholder')
-                    : t('site.certNonePlaceholder')
-                "
-                style="width: 100%"
-              >
-                <el-option
-                  v-for="c in visibleCertOptions"
-                  :key="c.id"
-                  :value="c.id"
-                  :label="
-                    t('site.certOptionLabel', {
-                      name: c.name,
-                      domains: certDomainList(c).join(' ') || t('site.certNoDomains'),
-                    })
-                  "
-                />
-                <el-option
-                  v-if="staleCertId"
-                  :value="staleCertId"
-                  :label="staleCertIdLabel"
-                  disabled
-                />
-              </el-select>
-              <div class="form-tip">
-                {{ t('site.certTip') }}
-              </div>
-            </el-form-item>
-
-            <el-form-item v-if="selectedCert" :label="t('site.certInfo')">
-              <div class="ssl-cert-box">
-                <div class="ssl-cert-row">
-                  <span class="ssl-cert-key">{{ t('site.certName') }}</span>
-                  <span>{{ selectedCert.name }}</span>
-                </div>
-                <div class="ssl-cert-row">
-                  <span class="ssl-cert-key">{{ t('site.certDomains') }}</span>
-                  <span>{{ certDomainList(selectedCert).join('、') || '-' }}</span>
-                </div>
-                <div class="ssl-cert-row">
-                  <span class="ssl-cert-key">{{ t('site.certValidity') }}</span>
-                  <span :class="{ 'ssl-cert-expired': certExpired(selectedCert) }">
-                    {{ fmtTime(selectedCert.not_before) }} ~ {{ fmtTime(selectedCert.not_after) }}
-                    {{ certExpired(selectedCert) ? t('site.certExpired') : '' }}
-                  </span>
-                </div>
-              </div>
-              <div v-if="certMissDomains.length" class="form-tip ssl-miss-tip">
-                {{ t('site.certMissTip', { domains: certMissDomains.join('、') }) }}
-              </div>
-            </el-form-item>
-
-            <el-form-item :label="t('site.formForceHttps')">
-              <el-switch
-                v-model="form.force_https"
-                :disabled="!selectedCert"
-                inline-prompt
-                :active-text="t('site.on')"
-                :inactive-text="t('site.off')"
-              />
-              <div class="form-tip">
-                {{ t('site.forceHttpsTip') }}
-              </div>
-            </el-form-item>
-
-            <template v-if="selectedCert">
-              <el-divider content-position="left">{{ t('site.tlsAdvanced') }}</el-divider>
-
-              <el-form-item :label="t('site.tlsProtocols')">
-                <el-checkbox-group v-model="tlsProtocolList">
-                  <el-checkbox value="TLSv1.3">TLSv1.3</el-checkbox>
-                  <el-checkbox value="TLSv1.2">TLSv1.2</el-checkbox>
-                  <el-checkbox value="TLSv1.1">TLSv1.1{{ t('site.notRecommended') }}</el-checkbox>
-                </el-checkbox-group>
-                <div class="form-tip">
-                  {{ t('site.tlsProtocolsTip') }}
-                </div>
-              </el-form-item>
-
-              <el-form-item :label="t('site.http2')">
-                <el-switch
-                  v-model="form.ssl_http2"
-                  inline-prompt
-                  :active-text="t('site.on')"
-                  :inactive-text="t('site.off')"
-                />
-                <div class="form-tip">
-                  {{ t('site.http2Tip') }}
-                </div>
-              </el-form-item>
-
-              <el-form-item :label="t('site.preferServerCiphers')">
-                <el-switch
-                  v-model="form.ssl_prefer_server_ciphers"
-                  inline-prompt
-                  :active-text="t('site.on')"
-                  :inactive-text="t('site.off')"
-                />
-                <div class="form-tip">
-                  {{ t('site.preferServerCiphersTip') }}
-                </div>
-              </el-form-item>
-
-              <el-form-item :label="t('site.ciphers')">
-                <el-radio-group v-model="cipherPreset">
-                  <el-radio v-for="p in TLS_CIPHER_PRESETS" :key="p.value" :value="p.value">
-                    {{ p.label }}
-                  </el-radio>
-                </el-radio-group>
-                <el-input
-                  v-if="cipherIsCustom"
-                  v-model="form.ssl_ciphers"
-                  :placeholder="t('site.ciphersPlaceholder')"
-                  maxlength="600"
-                  style="margin-top: 8px"
-                />
-                <div class="form-tip">
-                  {{ t('site.ciphersTip') }}
-                </div>
-              </el-form-item>
-            </template>
-          </el-tab-pane>
-
-          <!-- 安全：WAF / 限速 / 限并发 -->
-          <el-tab-pane :label="t('site.tabSecurity')" name="security">
-            <el-alert
-              v-if="!secLoaded"
-              type="warning"
-              :closable="false"
-              :title="t('site.secLoadFailed')"
-              style="margin-bottom: 12px"
-            />
-            <el-alert
-              v-else-if="!wafReady"
-              type="warning"
-              :closable="false"
-              :title="t('site.secWafNotReady')"
-              :description="capsBlockers.join('；')"
-              style="margin-bottom: 12px"
-            />
-            <el-alert
-              v-else
-              type="info"
-              :closable="false"
-              :title="t('site.secSaveWithSite')"
-              style="margin-bottom: 12px"
-            />
-            <el-form-item :label="t('site.secWaf')">
-              <el-switch
-                v-model="sec.waf_enable"
-                :disabled="!secLoaded || !wafReady || !wafAllowed"
-              />
-              <span class="form-hint">
-                {{
-                  !secLoaded
-                    ? t('site.secLoadFailed')
-                    : !wafReady
-                      ? t('site.secWafNotReady')
-                      : !wafAllowed
-                        ? t('site.secWafNotAllowed')
-                        : t('site.secWafHint')
-                }}
-              </span>
-            </el-form-item>
-            <template v-if="sec.waf_enable">
-              <el-form-item :label="t('site.secWafMode')">
-                <el-select v-model="sec.waf_mode" style="width: 260px">
-                  <el-option :label="t('site.secWafModeOn')" :value="1" />
-                  <el-option :label="t('site.secWafModeDetect')" :value="2" />
-                  <el-option :label="t('site.secWafModeGlobal')" :value="0" />
-                </el-select>
-                <span class="form-hint">{{ t('site.secWafModeHint') }}</span>
-              </el-form-item>
-              <el-form-item :label="t('site.secWafAudit')">
-                <el-switch v-model="sec.waf_audit" />
-                <span class="form-hint">{{ t('site.secWafAuditHint') }}</span>
-              </el-form-item>
-              <el-form-item :label="t('site.secWafRules')">
-                <el-input
-                  v-model="sec.waf_rules"
-                  type="textarea"
-                  :rows="6"
-                  :disabled="!isAdmin"
-                  :placeholder="t('site.secWafRulesHint')"
-                  style="width: 100%"
-                />
-                <span class="form-hint">
-                  {{ isAdmin ? t('site.secWafRulesHint') : t('site.secWafRulesAdminOnly') }}
-                </span>
-              </el-form-item>
-            </template>
-            <el-form-item :label="t('site.secLimitReq')">
-              <el-switch v-model="sec.limit_req_enable" />
-              <span class="form-hint">{{ t('site.secLimitReqHint') }}</span>
-            </el-form-item>
-            <template v-if="sec.limit_req_enable">
-              <el-form-item :label="t('site.secReqRate')">
-                <el-input-number v-model="sec.limit_req_rate" :min="1" :max="100000" />
-                <span class="form-hint">{{ t('site.secReqRateHint') }}</span>
-              </el-form-item>
-              <el-form-item :label="t('site.secReqBurst')">
-                <el-input-number v-model="sec.limit_req_burst" :min="0" :max="100000" />
-                <span class="form-hint">{{ t('site.secReqBurstHint') }}</span>
-              </el-form-item>
-            </template>
-            <el-form-item v-if="sec.limit_req_enable" :label="t('site.secDryRun')">
-              <el-switch v-model="sec.limit_dry_run" />
-              <span class="form-hint">{{ t('site.secDryRunHint') }}</span>
-            </el-form-item>
-            <el-form-item :label="t('site.secWhitelist')">
-              <el-input
-                v-model="sec.whitelist"
-                type="textarea"
-                :rows="2"
-                :placeholder="t('site.secWhitelistPh')"
-                style="width: 100%"
-              />
-              <div class="form-tip">{{ t('site.secWhitelistHint') }}</div>
-            </el-form-item>
-            <el-form-item :label="t('site.secLimitConn')">
-              <el-switch v-model="sec.limit_conn_enable" />
-              <span class="form-hint">{{ t('site.secLimitConnHint') }}</span>
-            </el-form-item>
-            <el-form-item v-if="sec.limit_conn_enable" :label="t('site.secConnNum')">
-              <el-input-number v-model="sec.limit_conn_num" :min="1" :max="100000" />
-              <span class="form-hint">{{ t('site.secConnNumHint') }}</span>
-            </el-form-item>
-          </el-tab-pane>
-
-          <!-- 反向代理（需套餐开放 allow_proxy） -->
-          <el-tab-pane v-if="showProxyPanel" :label="t('site.tabProxy')" name="proxy">
-            <el-form-item :label="t('site.quickTemplate')">
-              <el-select
-                :model-value="proxyPresetModel"
-                filterable
-                clearable
-                :placeholder="t('site.presetPlaceholder')"
-                style="width: 100%"
-                @change="
-                  (v: string) => {
-                    applyProxyPreset(proxyPresets.find((p) => p.key === v) || null)
-                    proxyPresetModel = ''
-                  }
-                "
-              >
-                <el-option v-for="p in proxyPresets" :key="p.key" :value="p.key" :label="p.label">
-                  <span>{{ p.label }}</span>
-                  <span class="preset-desc">{{ p.desc }}</span>
-                </el-option>
-              </el-select>
-              <div class="form-tip">
-                {{ t('site.presetTip') }}
-              </div>
-            </el-form-item>
-
-            <el-form-item :label="t('site.upstreamGroup')">
-              <div class="proxy-block">
-                <div class="proxy-label">
-                  {{ t('site.upstreamLabel') }}
-                </div>
-                <div v-if="form.upstreams.length" class="up-list">
-                  <div v-for="(u, i) in form.upstreams" :key="i" class="up-card">
-                    <div class="up-head">
-                      <el-input
-                        v-model="u.name"
-                        :placeholder="t('site.upGroupNamePlaceholder')"
-                        class="up-name"
-                      />
-                      <el-select
-                        v-model="u.balance"
-                        class="up-bal"
-                        :placeholder="t('site.upBalancePlaceholder')"
-                      >
-                        <el-option
-                          v-for="b in balanceOptions"
-                          :key="b.value"
-                          :value="b.value"
-                          :label="b.label"
-                        />
-                      </el-select>
-                      <el-button
-                        link
-                        type="danger"
-                        :icon="Delete"
-                        @click="removeAt(form.upstreams, i)"
-                      />
-                    </div>
-                    <div v-for="(s, j) in u.servers_ext" :key="j" class="up-server">
-                      <el-input
-                        v-model="s.addr"
-                        :placeholder="t('site.upAddrPlaceholder')"
-                        class="us-addr"
-                      />
-                      <el-tooltip :content="t('site.upWeightTip')" placement="top">
-                        <el-input-number
-                          v-model="s.weight"
-                          :min="0"
-                          :max="1000"
-                          controls-position="right"
-                          :placeholder="t('site.upWeight')"
-                          class="us-num"
-                        />
-                      </el-tooltip>
-                      <el-tooltip :content="t('site.upMaxFailsTip')" placement="top">
-                        <el-input-number
-                          v-model="s.max_fails"
-                          :min="0"
-                          :max="100"
-                          controls-position="right"
-                          :placeholder="t('site.upMaxFails')"
-                          class="us-num"
-                        />
-                      </el-tooltip>
-                      <el-tooltip :content="t('site.upFailTimeoutTip')" placement="top">
-                        <el-input-number
-                          v-model="s.fail_timeout"
-                          :min="0"
-                          :max="3600"
-                          controls-position="right"
-                          :placeholder="t('site.upFailTimeout')"
-                          class="us-num"
-                        />
-                      </el-tooltip>
-                      <el-checkbox v-model="s.backup" :title="t('site.upBackupTip')"
-                        >backup</el-checkbox
-                      >
-                      <el-checkbox v-model="s.down" :title="t('site.upDownTip')"
-                        >down</el-checkbox
-                      >
-                      <el-button
-                        link
-                        type="danger"
-                        :icon="Delete"
-                        @click="removeAt(u.servers_ext, j)"
-                      />
-                    </div>
-                    <el-button size="small" :icon="Plus" @click="addServerRow(u)">{{
-                      t('site.addServer')
-                    }}</el-button>
-                  </div>
-                </div>
-                <el-button size="small" :icon="Plus" :disabled="!showProxyPanel" @click="addUpstreamRow">{{
-                  t('site.addUpstream')
-                }}</el-button>
-              </div>
-            </el-form-item>
-          </el-tab-pane>
-
           <!-- Location 规则（php / 静态 / 反代 通用） -->
           <el-tab-pane :label="t('site.tabLocation')" name="location">
             <el-alert
@@ -2630,6 +2294,12 @@ onMounted(() => {
                 <div v-if="form.locations.length" class="loc-list">
                   <div v-for="(loc, i) in form.locations" :key="i" class="loc-card">
                     <div class="loc-head">
+                      <el-button
+                        text
+                        :icon="isLocExpanded(i) ? ArrowDown : ArrowRight"
+                        :title="isLocExpanded(i) ? t('site.collapse') : t('site.expand')"
+                        @click="toggleLoc(i)"
+                      />
                       <el-input
                         v-model="loc.path"
                         :placeholder="t('site.locPathPlaceholder')"
@@ -2705,9 +2375,10 @@ onMounted(() => {
                         link
                         type="danger"
                         :icon="Delete"
-                        @click="removeAt(form.locations, i)"
+                        @click="removeLocation(i)"
                       />
                     </div>
+                    <div v-show="isLocExpanded(i)" class="loc-body">
                     <!-- 静态目录：alias（替换路径）/ root（拼接路径）两种挂载方式 -->
                     <div v-if="loc.kind === 'alias'" class="loc-static">
                       <span class="adv-label">{{ t('site.staticMount') }}</span>
@@ -3019,13 +2690,384 @@ onMounted(() => {
                     </div>
                   </div>
                 </div>
+                </div>
+                </div>
+                <div v-if="!form.locations.length" class="loc-empty form-tip">
+                  {{ t('site.locEmpty') }}
+                </div>
                 <el-button size="small" :icon="Plus" @click="addLocationRow">{{
                   t('site.addLocation')
                 }}</el-button>
               </div>
+            </el-form-item>
+          </el-tab-pane>
+
+          <!-- 反向代理（需套餐开放 allow_proxy） -->
+          <el-tab-pane v-if="showProxyPanel" :label="t('site.tabProxy')" name="proxy">
+            <el-form-item :label="t('site.quickTemplate')">
+              <el-select
+                :model-value="proxyPresetModel"
+                filterable
+                clearable
+                :placeholder="t('site.presetPlaceholder')"
+                style="width: 100%"
+                @change="
+                  (v: string) => {
+                    applyProxyPreset(proxyPresets.find((p) => p.key === v) || null)
+                    proxyPresetModel = ''
+                  }
+                "
+              >
+                <el-option v-for="p in proxyPresets" :key="p.key" :value="p.key" :label="p.label">
+                  <span>{{ p.label }}</span>
+                  <span class="preset-desc">{{ p.desc }}</span>
+                </el-option>
+              </el-select>
+              <div class="form-tip">
+                {{ t('site.presetTip') }}
+              </div>
+            </el-form-item>
+
+            <el-form-item :label="t('site.upstreamGroup')">
+              <div class="proxy-block">
+                <div class="proxy-label">
+                  {{ t('site.upstreamLabel') }}
+                </div>
+                <div v-if="form.upstreams.length" class="up-list">
+                  <div v-for="(u, i) in form.upstreams" :key="i" class="up-card">
+                    <div class="up-head">
+                      <el-input
+                        v-model="u.name"
+                        :placeholder="t('site.upGroupNamePlaceholder')"
+                        class="up-name"
+                      />
+                      <el-select
+                        v-model="u.balance"
+                        class="up-bal"
+                        :placeholder="t('site.upBalancePlaceholder')"
+                      >
+                        <el-option
+                          v-for="b in balanceOptions"
+                          :key="b.value"
+                          :value="b.value"
+                          :label="b.label"
+                        />
+                      </el-select>
+                      <el-button
+                        link
+                        type="danger"
+                        :icon="Delete"
+                        @click="removeAt(form.upstreams, i)"
+                      />
+                    </div>
+                    <div v-for="(s, j) in u.servers_ext" :key="j" class="up-server">
+                      <el-input
+                        v-model="s.addr"
+                        :placeholder="t('site.upAddrPlaceholder')"
+                        class="us-addr"
+                      />
+                      <el-tooltip :content="t('site.upWeightTip')" placement="top">
+                        <el-input-number
+                          v-model="s.weight"
+                          :min="0"
+                          :max="1000"
+                          controls-position="right"
+                          :placeholder="t('site.upWeight')"
+                          class="us-num"
+                        />
+                      </el-tooltip>
+                      <el-tooltip :content="t('site.upMaxFailsTip')" placement="top">
+                        <el-input-number
+                          v-model="s.max_fails"
+                          :min="0"
+                          :max="100"
+                          controls-position="right"
+                          :placeholder="t('site.upMaxFails')"
+                          class="us-num"
+                        />
+                      </el-tooltip>
+                      <el-tooltip :content="t('site.upFailTimeoutTip')" placement="top">
+                        <el-input-number
+                          v-model="s.fail_timeout"
+                          :min="0"
+                          :max="3600"
+                          controls-position="right"
+                          :placeholder="t('site.upFailTimeout')"
+                          class="us-num"
+                        />
+                      </el-tooltip>
+                      <el-checkbox v-model="s.backup" :title="t('site.upBackupTip')"
+                        >backup</el-checkbox
+                      >
+                      <el-checkbox v-model="s.down" :title="t('site.upDownTip')"
+                        >down</el-checkbox
+                      >
+                      <el-button
+                        link
+                        type="danger"
+                        :icon="Delete"
+                        @click="removeAt(u.servers_ext, j)"
+                      />
+                    </div>
+                    <el-button size="small" :icon="Plus" @click="addServerRow(u)">{{
+                      t('site.addServer')
+                    }}</el-button>
+                  </div>
+                </div>
+                <el-button size="small" :icon="Plus" :disabled="!showProxyPanel" @click="addUpstreamRow">{{
+                  t('site.addUpstream')
+                }}</el-button>
               </div>
             </el-form-item>
           </el-tab-pane>
+
+          <!-- SSL/TLS -->
+          <el-tab-pane label="SSL / TLS" name="ssl">
+            <el-alert
+              v-if="staleCertId"
+              type="error"
+              :closable="false"
+              show-icon
+              :title="t('site.certStaleTitle')"
+              :description="staleCertIdLabel"
+              class="ssl-alert"
+            />
+            <el-form-item :label="t('site.formCert')">
+              <el-select
+                v-model="form.ssl_cert_id"
+                clearable
+                filterable
+                :loading="certsLoading"
+                :placeholder="
+                  visibleCertOptions.length
+                    ? t('site.certPlaceholder')
+                    : t('site.certNonePlaceholder')
+                "
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="c in visibleCertOptions"
+                  :key="c.id"
+                  :value="c.id"
+                  :label="
+                    t('site.certOptionLabel', {
+                      name: c.name,
+                      domains: certDomainList(c).join(' ') || t('site.certNoDomains'),
+                    })
+                  "
+                />
+                <el-option
+                  v-if="staleCertId"
+                  :value="staleCertId"
+                  :label="staleCertIdLabel"
+                  disabled
+                />
+              </el-select>
+              <div class="form-tip">
+                {{ t('site.certTip') }}
+              </div>
+            </el-form-item>
+
+            <el-form-item v-if="selectedCert" :label="t('site.certInfo')">
+              <div class="ssl-cert-box">
+                <div class="ssl-cert-row">
+                  <span class="ssl-cert-key">{{ t('site.certName') }}</span>
+                  <span>{{ selectedCert.name }}</span>
+                </div>
+                <div class="ssl-cert-row">
+                  <span class="ssl-cert-key">{{ t('site.certDomains') }}</span>
+                  <span>{{ certDomainList(selectedCert).join('、') || '-' }}</span>
+                </div>
+                <div class="ssl-cert-row">
+                  <span class="ssl-cert-key">{{ t('site.certValidity') }}</span>
+                  <span :class="{ 'ssl-cert-expired': certExpired(selectedCert) }">
+                    {{ fmtTime(selectedCert.not_before) }} ~ {{ fmtTime(selectedCert.not_after) }}
+                    {{ certExpired(selectedCert) ? t('site.certExpired') : '' }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="certMissDomains.length" class="form-tip ssl-miss-tip">
+                {{ t('site.certMissTip', { domains: certMissDomains.join('、') }) }}
+              </div>
+            </el-form-item>
+
+            <el-form-item :label="t('site.formForceHttps')">
+              <el-switch
+                v-model="form.force_https"
+                :disabled="!selectedCert"
+                inline-prompt
+                :active-text="t('site.on')"
+                :inactive-text="t('site.off')"
+              />
+              <div class="form-tip">
+                {{ t('site.forceHttpsTip') }}
+              </div>
+            </el-form-item>
+
+            <template v-if="selectedCert">
+              <el-divider content-position="left">{{ t('site.tlsAdvanced') }}</el-divider>
+
+              <el-form-item :label="t('site.tlsProtocols')">
+                <el-checkbox-group v-model="tlsProtocolList">
+                  <el-checkbox value="TLSv1.3">TLSv1.3</el-checkbox>
+                  <el-checkbox value="TLSv1.2">TLSv1.2</el-checkbox>
+                  <el-checkbox value="TLSv1.1">TLSv1.1{{ t('site.notRecommended') }}</el-checkbox>
+                </el-checkbox-group>
+                <div class="form-tip">
+                  {{ t('site.tlsProtocolsTip') }}
+                </div>
+              </el-form-item>
+
+              <el-form-item :label="t('site.http2')">
+                <el-switch
+                  v-model="form.ssl_http2"
+                  inline-prompt
+                  :active-text="t('site.on')"
+                  :inactive-text="t('site.off')"
+                />
+                <div class="form-tip">
+                  {{ t('site.http2Tip') }}
+                </div>
+              </el-form-item>
+
+              <el-form-item :label="t('site.preferServerCiphers')">
+                <el-switch
+                  v-model="form.ssl_prefer_server_ciphers"
+                  inline-prompt
+                  :active-text="t('site.on')"
+                  :inactive-text="t('site.off')"
+                />
+                <div class="form-tip">
+                  {{ t('site.preferServerCiphersTip') }}
+                </div>
+              </el-form-item>
+
+              <el-form-item :label="t('site.ciphers')">
+                <el-radio-group v-model="cipherPreset">
+                  <el-radio v-for="p in TLS_CIPHER_PRESETS" :key="p.value" :value="p.value">
+                    {{ p.label }}
+                  </el-radio>
+                </el-radio-group>
+                <el-input
+                  v-if="cipherIsCustom"
+                  v-model="form.ssl_ciphers"
+                  :placeholder="t('site.ciphersPlaceholder')"
+                  maxlength="600"
+                  style="margin-top: 8px"
+                />
+                <div class="form-tip">
+                  {{ t('site.ciphersTip') }}
+                </div>
+              </el-form-item>
+            </template>
+          </el-tab-pane>
+
+          <!-- 安全：WAF / 限速 / 限并发 -->
+          <el-tab-pane :label="t('site.tabSecurity')" name="security">
+            <el-alert
+              v-if="!secLoaded"
+              type="warning"
+              :closable="false"
+              :title="t('site.secLoadFailed')"
+              style="margin-bottom: 12px"
+            />
+            <el-alert
+              v-else-if="!wafReady"
+              type="warning"
+              :closable="false"
+              :title="t('site.secWafNotReady')"
+              :description="capsBlockers.join('；')"
+              style="margin-bottom: 12px"
+            />
+            <el-alert
+              v-else
+              type="info"
+              :closable="false"
+              :title="t('site.secSaveWithSite')"
+              style="margin-bottom: 12px"
+            />
+            <el-form-item :label="t('site.secWaf')">
+              <el-switch
+                v-model="sec.waf_enable"
+                :disabled="!secLoaded || !wafReady || !wafAllowed"
+              />
+              <span class="form-hint">
+                {{
+                  !secLoaded
+                    ? t('site.secLoadFailed')
+                    : !wafReady
+                      ? t('site.secWafNotReady')
+                      : !wafAllowed
+                        ? t('site.secWafNotAllowed')
+                        : t('site.secWafHint')
+                }}
+              </span>
+            </el-form-item>
+            <template v-if="sec.waf_enable">
+              <el-form-item :label="t('site.secWafMode')">
+                <el-select v-model="sec.waf_mode" style="width: 260px">
+                  <el-option :label="t('site.secWafModeOn')" :value="1" />
+                  <el-option :label="t('site.secWafModeDetect')" :value="2" />
+                  <el-option :label="t('site.secWafModeGlobal')" :value="0" />
+                </el-select>
+                <span class="form-hint">{{ t('site.secWafModeHint') }}</span>
+              </el-form-item>
+              <el-form-item :label="t('site.secWafAudit')">
+                <el-switch v-model="sec.waf_audit" />
+                <span class="form-hint">{{ t('site.secWafAuditHint') }}</span>
+              </el-form-item>
+              <el-form-item :label="t('site.secWafRules')">
+                <el-input
+                  v-model="sec.waf_rules"
+                  type="textarea"
+                  :rows="6"
+                  :disabled="!isAdmin"
+                  :placeholder="t('site.secWafRulesHint')"
+                  style="width: 100%"
+                />
+                <span class="form-hint">
+                  {{ isAdmin ? t('site.secWafRulesHint') : t('site.secWafRulesAdminOnly') }}
+                </span>
+              </el-form-item>
+            </template>
+            <el-form-item :label="t('site.secLimitReq')">
+              <el-switch v-model="sec.limit_req_enable" />
+              <span class="form-hint">{{ t('site.secLimitReqHint') }}</span>
+            </el-form-item>
+            <template v-if="sec.limit_req_enable">
+              <el-form-item :label="t('site.secReqRate')">
+                <el-input-number v-model="sec.limit_req_rate" :min="1" :max="100000" />
+                <span class="form-hint">{{ t('site.secReqRateHint') }}</span>
+              </el-form-item>
+              <el-form-item :label="t('site.secReqBurst')">
+                <el-input-number v-model="sec.limit_req_burst" :min="0" :max="100000" />
+                <span class="form-hint">{{ t('site.secReqBurstHint') }}</span>
+              </el-form-item>
+            </template>
+            <el-form-item v-if="sec.limit_req_enable" :label="t('site.secDryRun')">
+              <el-switch v-model="sec.limit_dry_run" />
+              <span class="form-hint">{{ t('site.secDryRunHint') }}</span>
+            </el-form-item>
+            <el-form-item :label="t('site.secWhitelist')">
+              <el-input
+                v-model="sec.whitelist"
+                type="textarea"
+                :rows="2"
+                :placeholder="t('site.secWhitelistPh')"
+                style="width: 100%"
+              />
+              <div class="form-tip">{{ t('site.secWhitelistHint') }}</div>
+            </el-form-item>
+            <el-form-item :label="t('site.secLimitConn')">
+              <el-switch v-model="sec.limit_conn_enable" />
+              <span class="form-hint">{{ t('site.secLimitConnHint') }}</span>
+            </el-form-item>
+            <el-form-item v-if="sec.limit_conn_enable" :label="t('site.secConnNum')">
+              <el-input-number v-model="sec.limit_conn_num" :min="1" :max="100000" />
+              <span class="form-hint">{{ t('site.secConnNumHint') }}</span>
+            </el-form-item>
+          </el-tab-pane>
+
         </el-tabs>
       </el-form>
       <template #footer>
@@ -3607,6 +3649,14 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   width: 100%;
+}
+.loc-head .el-button {
+  flex-shrink: 0;
+}
+.loc-body {
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px dashed var(--el-border-color-lighter);
 }
 .loc-path {
   width: 140px;
