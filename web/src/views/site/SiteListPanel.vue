@@ -545,8 +545,10 @@ const gates = computed(() => {
   if (siteFeature.value) return siteFeature.value.gates
   return { proxy: canManageAll.value }
 })
-/** 是否展示「反代 / 高级规则」能力（proxy 站点必须；php/static 站点可选叠加） */
-const showProxyPanel = computed(() => gates.value.proxy || form.site_type === 'proxy')
+/** 是否开放「反向代理」能力（依角色 + 套餐而定）。控制 proxy 站点类型、
+ *  location 的 proxy_pass 类型、以及 upstream 后端组的可用性；
+ *  php/static 站点即便未开放反代，仍可在「反代 / 高级」里添加普通 location / 规则 / 静态目录。 */
+const showProxyPanel = computed(() => gates.value.proxy)
 
 async function loadFeature() {
   try {
@@ -559,8 +561,10 @@ async function loadFeature() {
 
 // ── 表单（添加 / 编辑共用，弹窗内左侧 Tab 分段）────────────────
 const formVisible = ref(false)
-/** 弹窗左侧 Tab：base / domains / php / dir / advanced */
+/** 弹窗左侧 Tab：base / location / proxy / ssl / security */
 const activeTab = ref('base')
+/** 基础设置里「站点信息」折叠默认展开 */
+const baseInfoOpen = ref<string[]>(['info'])
 const formMode = ref<'add' | 'edit'>('add')
 const formLoading = ref(false)
 const isEdit = computed(() => formMode.value === 'edit')
@@ -843,8 +847,35 @@ function blankLocation(path = '/'): LocationSpec {
 function blankUpstream(): UpstreamSpec {
   return { name: '', balance: '', servers_ext: [blankServer()] }
 }
+/** 保证站点存在一条「根 location /」：
+ *  - proxy 站点：proxy_pass 兜底（新建时默认）；
+ *  - php/static 站点：把后端自动渲染的默认根 location 显式呈现为可编辑的 raw 类型，
+ *    用户在默认根上追加 rewrite / 静态规则等，保存后由执行端合并进默认块（保留 root 继承与伪静态路由），
+ *    避免出现「php 选了静态规则、又在高级里加 location /」时覆盖默认根导致 404 的情况。 */
+function ensureRootLocation() {
+  const hasRoot = form.locations.some((l) => l.path.trim() === '/')
+  if (hasRoot) return
+  if (form.site_type === 'proxy') {
+    form.locations.push(blankLocation('/'))
+  } else {
+    const l = blankLocation('/')
+    l.kind = 'raw'
+    l.raw = ''
+    form.locations.push(l)
+  }
+}
 function addLocationRow() {
   const l = blankLocation(form.locations.length ? '/api' : '/')
+  if (form.site_type !== 'proxy') {
+    // php/static：默认普通类型（raw 自由指令），便于写 rewrite / 静态规则；
+    // 有反代权限时也可在类型下拉里切到 proxy_pass
+    l.kind = 'raw'
+    onLocationKindChange(l)
+  } else if (!gates.value.proxy) {
+    // 反代站点但未开放反代权限：不允许 proxy_pass，默认 redirect
+    l.kind = 'redirect'
+    onLocationKindChange(l)
+  }
   form.locations.push(l)
 }
 const locDirectives = ref<LocDirectiveSpec[]>([])
@@ -952,13 +983,17 @@ function onLocationKindChange(loc: LocationSpec) {
 watch(
   () => form.site_type,
   (v, o) => {
+    // 未开放反代权限时禁止切换到反代站点类型
+    if (v === 'proxy' && !gates.value.proxy) {
+      form.site_type = (o as SiteType) || 'php'
+      return
+    }
     if (v === 'proxy') {
       // 反代站点不落文档目录：清掉可能遗留的“已有目录”，目录回到自动
       form.php_instance = ''
       form.web_root_custom = false
       form.web_root_sub = ''
       legacyDocRoot.value = ''
-      if (!form.locations.length) form.locations.push(blankLocation('/'))
     } else if (o === 'proxy') {
       // 离开反代：清理反代专属配置，站点目录回到自动
       form.upstreams = []
@@ -968,6 +1003,8 @@ watch(
       legacyDocRoot.value = ''
     }
     if (v !== 'php') form.php_instance = ''
+    // 切换类型后保证存在一条默认根 location /（proxy 用 proxy_pass，php/static 用可编辑 raw）
+    ensureRootLocation()
   },
 )
 
@@ -1102,6 +1139,7 @@ function openAdd() {
   loadFeature()
   // 新建态也要拉安全能力位（WAF 能不能开），否则安全 tab 一直显示"接口不可用"
   loadSecurity()
+  ensureRootLocation()
   formVisible.value = true
 }
 
@@ -1194,6 +1232,7 @@ function openEdit(row: SiteItem) {
   if (form.site_type === 'proxy' && !form.locations.length) {
     form.locations.push(blankLocation('/'))
   }
+  ensureRootLocation()
   form.ssl_cert_id = row.ssl_cert_id || null
   form.force_https = !!row.force_https
   form.ssl_protocols = row.ssl_protocols || 'TLSv1.2 TLSv1.3'
@@ -1249,6 +1288,12 @@ function validateForm(): string {
   if (canManageAll.value && !form.user_id) return t('site.selectOwner')
   const dup = domainConflictMsg(domains)
   if (dup) return dup
+  // 套餐未开放反向代理：禁止反代站点类型、proxy_pass location 与 upstream 后端组
+  if (!gates.value.proxy) {
+    if (form.site_type === 'proxy') return t('site.proxyGated')
+    if (form.locations.some((l) => l.kind === 'proxy')) return t('site.proxyGated')
+    if (form.upstreams.some((u) => u.name.trim())) return t('site.proxyGated')
+  }
   if (form.site_type === 'proxy') {
     if (!form.locations.length) return t('site.valProxyNeedLocation')
     if (!form.locations.some((l) => l.path.trim() === '/')) return t('site.valProxyNeedRoot')
@@ -2005,7 +2050,7 @@ onMounted(() => {
     >
       <el-form label-width="118px" class="site-form site-tabs-form" @submit.prevent>
         <el-tabs v-model="activeTab" type="border-card" class="site-tabs">
-          <!-- 基础信息 -->
+          <!-- 基础设置 -->
           <el-tab-pane :label="t('site.tabBase')" name="base">
             <el-form-item v-if="canManageAll" :label="t('site.colOwner')" required>
               <el-select
@@ -2048,14 +2093,32 @@ onMounted(() => {
               </div>
             </el-form-item>
 
-            <el-form-item :label="t('site.formSiteName')">
-              <el-input
-                v-model="form.name"
-                :placeholder="t('site.siteNamePlaceholder')"
-                maxlength="120"
-                clearable
-              />
-            </el-form-item>
+            <!-- 站点信息折叠：站点名称排第一，其次运行状态与备注 -->
+            <el-collapse v-model="baseInfoOpen" class="base-info-collapse">
+              <el-collapse-item name="info">
+                <template #title>
+                  <span class="collapse-title">{{ t('site.baseInfoTitle') }}</span>
+                  <span class="collapse-sub">{{ t('site.baseInfoDesc') }}</span>
+                </template>
+                <el-form-item :label="t('site.formSiteName')">
+                  <el-input
+                    v-model="form.name"
+                    :placeholder="t('site.siteNamePlaceholder')"
+                    maxlength="120"
+                    clearable
+                  />
+                </el-form-item>
+                <el-form-item :label="t('site.colStatus')">
+                  <el-radio-group v-model="form.status">
+                    <el-radio :value="1">{{ t('site.pillRunning') }}</el-radio>
+                    <el-radio :value="0">{{ t('site.pillStopped') }}</el-radio>
+                  </el-radio-group>
+                </el-form-item>
+                <el-form-item :label="t('site.colRemark')">
+                  <el-input v-model="form.remark" type="textarea" :rows="2" maxlength="500" />
+                </el-form-item>
+              </el-collapse-item>
+            </el-collapse>
 
             <el-form-item :label="t('site.formDomains')" required>
               <el-select
@@ -2127,20 +2190,8 @@ onMounted(() => {
               </div>
             </el-form-item>
 
-            <el-form-item :label="t('site.colStatus')">
-              <el-radio-group v-model="form.status">
-                <el-radio :value="1">{{ t('site.pillRunning') }}</el-radio>
-                <el-radio :value="0">{{ t('site.pillStopped') }}</el-radio>
-              </el-radio-group>
-            </el-form-item>
-            <el-form-item :label="t('site.colRemark')">
-              <el-input v-model="form.remark" type="textarea" :rows="2" maxlength="500" />
-            </el-form-item>
-          </el-tab-pane>
-
-          <!-- PHP 与伪静态 -->
-          <el-tab-pane v-if="form.site_type === 'php'" :label="t('site.tabPhp')" name="php">
-            <el-form-item :label="t('site.colPhpVersion')">
+            <!-- PHP 版本：基础设置里直接选择（php 站点） -->
+            <el-form-item v-if="form.site_type === 'php'" :label="t('site.colPhpVersion')">
               <el-select
                 v-model="form.php_instance"
                 clearable
@@ -2166,7 +2217,9 @@ onMounted(() => {
                 {{ t('site.phpNoneTip') }}
               </div>
             </el-form-item>
-            <el-form-item :label="t('site.formPseudo')">
+
+            <!-- 伪静态规则：预设 + 自定义 -->
+            <el-form-item v-if="form.site_type === 'php'" :label="t('site.formPseudo')">
               <el-select v-model="form.pseudo_static" style="width: 100%">
                 <el-option
                   v-for="o in pseudoOptions"
@@ -2440,141 +2493,136 @@ onMounted(() => {
             </el-form-item>
           </el-tab-pane>
 
-          <!-- 反代 / 高级 -->
-          <el-tab-pane
-            :label="t('site.tabAdvanced')"
-            name="advanced"
-            :disabled="form.site_type !== 'proxy' && !showProxyPanel"
-          >
-            <template v-if="form.site_type === 'proxy'">
-              <el-form-item :label="t('site.quickTemplate')">
-                <el-select
-                  :model-value="proxyPresetModel"
-                  filterable
-                  clearable
-                  :placeholder="t('site.presetPlaceholder')"
-                  style="width: 100%"
-                  @change="
-                    (v: string) => {
-                      applyProxyPreset(proxyPresets.find((p) => p.key === v) || null)
-                      proxyPresetModel = ''
-                    }
-                  "
-                >
-                  <el-option v-for="p in proxyPresets" :key="p.key" :value="p.key" :label="p.label">
-                    <span>{{ p.label }}</span>
-                    <span class="preset-desc">{{ p.desc }}</span>
-                  </el-option>
-                </el-select>
-                <div class="form-tip">
-                  {{ t('site.presetTip') }}
-                </div>
-              </el-form-item>
+          <!-- 反向代理（需套餐开放 allow_proxy） -->
+          <el-tab-pane v-if="showProxyPanel" :label="t('site.tabProxy')" name="proxy">
+            <el-form-item :label="t('site.quickTemplate')">
+              <el-select
+                :model-value="proxyPresetModel"
+                filterable
+                clearable
+                :placeholder="t('site.presetPlaceholder')"
+                style="width: 100%"
+                @change="
+                  (v: string) => {
+                    applyProxyPreset(proxyPresets.find((p) => p.key === v) || null)
+                    proxyPresetModel = ''
+                  }
+                "
+              >
+                <el-option v-for="p in proxyPresets" :key="p.key" :value="p.key" :label="p.label">
+                  <span>{{ p.label }}</span>
+                  <span class="preset-desc">{{ p.desc }}</span>
+                </el-option>
+              </el-select>
+              <div class="form-tip">
+                {{ t('site.presetTip') }}
+              </div>
+            </el-form-item>
 
-              <el-form-item :label="t('site.upstreamGroup')">
-                <div class="proxy-block">
-                  <div class="proxy-label">
-                    {{ t('site.upstreamLabel') }}
-                  </div>
-                  <div v-if="form.upstreams.length" class="up-list">
-                    <div v-for="(u, i) in form.upstreams" :key="i" class="up-card">
-                      <div class="up-head">
-                        <el-input
-                          v-model="u.name"
-                          :placeholder="t('site.upGroupNamePlaceholder')"
-                          class="up-name"
+            <el-form-item :label="t('site.upstreamGroup')">
+              <div class="proxy-block">
+                <div class="proxy-label">
+                  {{ t('site.upstreamLabel') }}
+                </div>
+                <div v-if="form.upstreams.length" class="up-list">
+                  <div v-for="(u, i) in form.upstreams" :key="i" class="up-card">
+                    <div class="up-head">
+                      <el-input
+                        v-model="u.name"
+                        :placeholder="t('site.upGroupNamePlaceholder')"
+                        class="up-name"
+                      />
+                      <el-select
+                        v-model="u.balance"
+                        class="up-bal"
+                        :placeholder="t('site.upBalancePlaceholder')"
+                      >
+                        <el-option
+                          v-for="b in balanceOptions"
+                          :key="b.value"
+                          :value="b.value"
+                          :label="b.label"
                         />
-                        <el-select
-                          v-model="u.balance"
-                          class="up-bal"
-                          :placeholder="t('site.upBalancePlaceholder')"
-                        >
-                          <el-option
-                            v-for="b in balanceOptions"
-                            :key="b.value"
-                            :value="b.value"
-                            :label="b.label"
-                          />
-                        </el-select>
-                        <el-button
-                          link
-                          type="danger"
-                          :icon="Delete"
-                          @click="removeAt(form.upstreams, i)"
-                        />
-                      </div>
-                      <div v-for="(s, j) in u.servers_ext" :key="j" class="up-server">
-                        <el-input
-                          v-model="s.addr"
-                          :placeholder="t('site.upAddrPlaceholder')"
-                          class="us-addr"
-                        />
-                        <el-tooltip :content="t('site.upWeightTip')" placement="top">
-                          <el-input-number
-                            v-model="s.weight"
-                            :min="0"
-                            :max="1000"
-                            controls-position="right"
-                            :placeholder="t('site.upWeight')"
-                            class="us-num"
-                          />
-                        </el-tooltip>
-                        <el-tooltip :content="t('site.upMaxFailsTip')" placement="top">
-                          <el-input-number
-                            v-model="s.max_fails"
-                            :min="0"
-                            :max="100"
-                            controls-position="right"
-                            :placeholder="t('site.upMaxFails')"
-                            class="us-num"
-                          />
-                        </el-tooltip>
-                        <el-tooltip :content="t('site.upFailTimeoutTip')" placement="top">
-                          <el-input-number
-                            v-model="s.fail_timeout"
-                            :min="0"
-                            :max="3600"
-                            controls-position="right"
-                            :placeholder="t('site.upFailTimeout')"
-                            class="us-num"
-                          />
-                        </el-tooltip>
-                        <el-checkbox v-model="s.backup" :title="t('site.upBackupTip')"
-                          >backup</el-checkbox
-                        >
-                        <el-checkbox v-model="s.down" :title="t('site.upDownTip')"
-                          >down</el-checkbox
-                        >
-                        <el-button
-                          link
-                          type="danger"
-                          :icon="Delete"
-                          @click="removeAt(u.servers_ext, j)"
-                        />
-                      </div>
-                      <el-button size="small" :icon="Plus" @click="addServerRow(u)">{{
-                        t('site.addServer')
-                      }}</el-button>
+                      </el-select>
+                      <el-button
+                        link
+                        type="danger"
+                        :icon="Delete"
+                        @click="removeAt(form.upstreams, i)"
+                      />
                     </div>
+                    <div v-for="(s, j) in u.servers_ext" :key="j" class="up-server">
+                      <el-input
+                        v-model="s.addr"
+                        :placeholder="t('site.upAddrPlaceholder')"
+                        class="us-addr"
+                      />
+                      <el-tooltip :content="t('site.upWeightTip')" placement="top">
+                        <el-input-number
+                          v-model="s.weight"
+                          :min="0"
+                          :max="1000"
+                          controls-position="right"
+                          :placeholder="t('site.upWeight')"
+                          class="us-num"
+                        />
+                      </el-tooltip>
+                      <el-tooltip :content="t('site.upMaxFailsTip')" placement="top">
+                        <el-input-number
+                          v-model="s.max_fails"
+                          :min="0"
+                          :max="100"
+                          controls-position="right"
+                          :placeholder="t('site.upMaxFails')"
+                          class="us-num"
+                        />
+                      </el-tooltip>
+                      <el-tooltip :content="t('site.upFailTimeoutTip')" placement="top">
+                        <el-input-number
+                          v-model="s.fail_timeout"
+                          :min="0"
+                          :max="3600"
+                          controls-position="right"
+                          :placeholder="t('site.upFailTimeout')"
+                          class="us-num"
+                        />
+                      </el-tooltip>
+                      <el-checkbox v-model="s.backup" :title="t('site.upBackupTip')"
+                        >backup</el-checkbox
+                      >
+                      <el-checkbox v-model="s.down" :title="t('site.upDownTip')"
+                        >down</el-checkbox
+                      >
+                      <el-button
+                        link
+                        type="danger"
+                        :icon="Delete"
+                        @click="removeAt(u.servers_ext, j)"
+                      />
+                    </div>
+                    <el-button size="small" :icon="Plus" @click="addServerRow(u)">{{
+                      t('site.addServer')
+                    }}</el-button>
                   </div>
-                  <el-button size="small" :icon="Plus" @click="addUpstreamRow">{{
-                    t('site.addUpstream')
-                  }}</el-button>
                 </div>
-              </el-form-item>
-            </template>
+                <el-button size="small" :icon="Plus" :disabled="!showProxyPanel" @click="addUpstreamRow">{{
+                  t('site.addUpstream')
+                }}</el-button>
+              </div>
+            </el-form-item>
+          </el-tab-pane>
 
-            <template v-else-if="showProxyPanel">
-              <el-alert
-                type="info"
-                :closable="false"
-                show-icon
-                :title="t('site.extraLocTitle')"
-                :description="t('site.extraLocDesc')"
-              />
-            </template>
+          <!-- Location 规则（php / 静态 / 反代 通用） -->
+          <el-tab-pane :label="t('site.tabLocation')" name="location">
+            <el-alert
+              type="info"
+              :closable="false"
+              show-icon
+              :title="t('site.extraLocTitle')"
+              :description="t('site.locTabDesc')"
+            />
 
-            <el-form-item v-if="showProxyPanel" :label="t('site.locationRules')">
+            <el-form-item :label="t('site.locationRules')">
               <div class="proxy-block">
                 <div v-if="form.site_type === 'proxy'" class="form-tip" style="margin-bottom: 6px">
                   {{ t('site.locOrderTip') }}
@@ -2609,6 +2657,7 @@ onMounted(() => {
                           :key="k.value"
                           :value="k.value"
                           :label="k.label"
+                          :disabled="k.value === 'proxy' && !showProxyPanel"
                         />
                       </el-select>
                       <el-input
@@ -2976,7 +3025,6 @@ onMounted(() => {
               </div>
               </div>
             </el-form-item>
-            <el-empty v-else :image-size="70" :description="t('site.advancedGated')" />
           </el-tab-pane>
         </el-tabs>
       </el-form>
@@ -3460,6 +3508,29 @@ onMounted(() => {
 }
 .site-tabs .el-form-item {
   margin-bottom: 14px;
+}
+.base-info-collapse {
+  margin: 4px 0 14px;
+  border: none;
+  border-top: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.base-info-collapse :deep(.el-collapse-item__header) {
+  height: 38px;
+  background: transparent;
+}
+.base-info-collapse :deep(.el-collapse-item__wrap) {
+  background: transparent;
+  border: none;
+}
+.collapse-title {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.collapse-sub {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .preset-desc {
   float: right;

@@ -1490,10 +1490,12 @@ async fn validate_advanced_inputs(
         }
     }
     norm_pseudo(pseudo_static, pseudo_custom, op)?;
-    if (!upstreams.is_empty() || !locations.is_empty()) && !g_proxy {
+    // upstream 后端组需要反向代理能力；proxy_pass location 在下方逐条校验。
+    // 普通 location（重定向 / 禁用 / 静态目录 / 自由指令）即使未开放反代也允许使用。
+    if !upstreams.is_empty() && !g_proxy {
         return Err(ZapError::New(
             -1,
-            "自定义 upstream / location 未对当前账号开放，请联系管理员在「系统 → 套餐」中开启「反向代理」".to_string(),
+            "upstream 后端组未对当前账号开放，请联系管理员在「系统 → 套餐」中开启「反向代理」".to_string(),
         ));
     }
     if t == "proxy" && locations.is_empty() {
@@ -1573,6 +1575,12 @@ async fn validate_advanced_inputs(
             ));
         }
         let k = l.kind.trim().to_lowercase();
+        if k == "proxy" && !g_proxy {
+            return Err(ZapError::New(
+                -1,
+                "反向代理（proxy_pass）未对当前账号开放，请联系管理员在「系统 → 套餐」中开启「反向代理」".to_string(),
+            ));
+        }
         if l.target.len() > 400 || l.target.contains('{') || l.target.contains('}') {
             return Err(ZapError::New(
                 -1,

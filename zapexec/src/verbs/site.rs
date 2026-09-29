@@ -1002,6 +1002,17 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
     }
     // 端口内容体（root / 日志 / 伪静态 / PHP / location），80 与 443 共用一份
     let mut core = String::new();
+    // 默认 location / 的「根替换 / 根追加」判定（函数级，供下方 locations 循环去重使用）：
+    //   - proxy / alias / redirect / deny 视为「整段替换」默认根，跳过默认块；
+    //   - raw 视为「在默认根上追加规则」，默认块照常生成并追加用户 raw 指令（php/static 场景）。
+    let root_replace = locations.iter().any(|l| {
+        let p = l.path.trim();
+        p == "/" && matches!(l.kind.trim().to_lowercase().as_str(), "proxy" | "alias" | "redirect" | "deny")
+    });
+    let root_augment = locations.iter().find(|l| {
+        l.path.trim() == "/" && l.kind.trim().to_lowercase() == "raw"
+    });
+    let merge_root_raw = root_augment.is_some() && !root_replace && s_type != "proxy";
     // ACME HTTP-01：所有站点一律带上验证路径（含反代站点），
     // 面板随时可签发证书，不必先建 CA 无关的临时站点
     core.push_str(&render_acme_location());
@@ -1018,19 +1029,38 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         } else {
             core.push_str("    index index.html;\n");
         }
-        // 默认 location /：伪静态预设覆盖默认 try_files
-        core.push_str("\n    location / {\n");
-        match pseudo_location_body(pseudo_static, pseudo_custom) {
-            Some(body) => {
-                for line in body.lines() {
-                    core.push_str("        ");
-                    core.push_str(line);
+        // 默认 location /：伪静态预设覆盖默认 try_files。
+        // 若用户已自定义 `location /`：
+        //   - proxy / alias / redirect / deny 视为「整段替换」，跳过默认块（用户完全掌控 root 行为）；
+        //   - raw 视为「在默认根上追加规则」（典型用途：php 选了静态规则后，在高级里再加 rewrite /
+        //     静态目录指令），默认块照常生成（保留 root 继承与伪静态路由），用户 raw 指令原样追加到
+        //     末尾，既不会因丢失 root / try_files 而 404，也避免重复生成 `location /`（nginx 会报错）。
+        if !root_replace {
+            core.push_str("\n    location / {\n");
+            match pseudo_location_body(pseudo_static, pseudo_custom) {
+                Some(body) => {
+                    for line in body.lines() {
+                        core.push_str("        ");
+                        core.push_str(line);
+                        core.push('\n');
+                    }
+                }
+                None => core.push_str("        try_files $uri $uri/ =404;\n"),
+            }
+            // raw 追加规则（php/static 在默认根上加 rewrite / 静态指令等）
+            if let Some(l) = root_augment {
+                let raw = l.raw.trim();
+                if !raw.is_empty() {
                     core.push('\n');
+                    for line in raw.lines() {
+                        core.push_str("        ");
+                        core.push_str(line);
+                        core.push('\n');
+                    }
                 }
             }
-            None => core.push_str("        try_files $uri $uri/ =404;\n"),
+            core.push_str("    }\n");
         }
-        core.push_str("    }\n");
         if let Some(sock) = php_socket {
             core.push_str("\n    # PHP 实例联动\n");
             core.push_str("    location ~ \\.php$ {\n");
@@ -1050,6 +1080,10 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
     for (i, l) in locations.iter().enumerate() {
         let path = l.path.trim();
         if !path.starts_with('/') {
+            continue;
+        }
+        // raw 的 `location /` 已并入默认根块（root 继承 + 伪静态 + 用户 raw），避免重复生成
+        if merge_root_raw && path == "/" && l.kind.trim().to_lowercase() == "raw" {
             continue;
         }
         let body = render_location_body(l, i, site_id, super::waf::waf_ready(), dry_run_ok);
@@ -3357,6 +3391,48 @@ mod tests {
         assert!(s.contains("root /home/u/www/s-1;"));
         assert!(s.contains("try_files $uri $uri/ =404;"));
         assert!(!s.contains("fastcgi"), "静态站点不应有 PHP location");
+    }
+
+    #[test]
+    fn render_php_raw_root_augments_default() {
+        // php/static 在「反代/高级」里加一条 raw 的 `location /`（典型：额外 rewrite 规则），
+        // 不应整段替换默认根，否则会丢失 try_files/伪静态路由导致 404；
+        // 同时默认块只生成一次（不能出现两个 `location /`）。
+        let locs = vec![LocationSpec {
+            path: "/".into(),
+            kind: "raw".into(),
+            raw: "rewrite ^/old/(.*)$ /new/$1 permanent;".into(),
+            ..Default::default()
+        }];
+        let s = render_vhost_full(VhostRenderSpec {
+            security: None,
+            site_id: 7,
+            name: "aug",
+            domains: &["aug.com".into()],
+            root: "/home/u/www/aug-7",
+            php_socket: Some("unix:/run/php.sock"),
+            access_log: None,
+            error_log: None,
+            waf_log: None,
+            dry_run_ok: true,
+            site_type: "php",
+            pseudo_static: "none",
+            pseudo_custom: "",
+            upstreams: &[],
+            locations: &locs,
+            ssl_files: None,
+            force_https: false,
+            ssl_tls: None,
+            listen_ipv4: "",
+            listen_ipv6: "",
+        });
+        assert_eq!(s.matches("location / {").count(), 1, "默认根只能出现一次");
+        assert!(s.contains("try_files $uri $uri/ =404;"), "应保留默认 try_files 路由");
+        assert!(
+            s.contains("rewrite ^/old/(.*)$ /new/$1 permanent;"),
+            "用户 raw 规则应追加进默认根"
+        );
+        assert!(s.contains("root /home/u/www/aug-7;"), "server 级 root 必须保留");
     }
 
     #[test]
