@@ -20,6 +20,7 @@ import {
   Plus,
   Refresh,
   Search,
+  Setting,
 } from '@/icons'
 import { useRouter } from 'vue-router'
 import { Folder } from '@/icons'
@@ -247,47 +248,6 @@ const balanceOptions = [
   { value: 'least_conn', label: t('site.balanceLeastConn') },
   { value: 'ip_hash', label: t('site.balanceIpHash') },
 ] as const
-
-// ── 常用应用反代模板（纯前端预填 proxy location）──
-interface ProxyPreset {
-  key: string
-  label: string
-  desc: string
-  port: number
-  ws: boolean
-}
-const proxyPresets: ProxyPreset[] = [
-  {
-    key: 'node',
-    label: t('site.presetNode'),
-    desc: t('site.presetNodeDesc'),
-    port: 3000,
-    ws: true,
-  },
-  {
-    key: 'next',
-    label: t('site.presetNext'),
-    desc: t('site.presetNextDesc'),
-    port: 3000,
-    ws: true,
-  },
-  {
-    key: 'vite',
-    label: t('site.presetVite'),
-    desc: t('site.presetViteDesc'),
-    port: 5173,
-    ws: true,
-  },
-  { key: 'java', label: 'Java Spring Boot', desc: t('site.presetJavaDesc'), port: 8080, ws: false },
-  {
-    key: 'python',
-    label: 'Python uvicorn / gunicorn',
-    desc: t('site.presetPythonDesc'),
-    port: 8000,
-    ws: false,
-  },
-  { key: 'go', label: t('site.presetGo'), desc: t('site.presetGoDesc'), port: 8080, ws: false },
-]
 
 const userStore = useUserStore()
 // admin 管理全部、reseller 管理所属客户 → 需要归属用户列/下拉；普通用户只看/归属自己
@@ -955,35 +915,6 @@ function removeAt<T>(arr: T[], i: number) {
   arr.splice(i, 1)
 }
 
-/** 应用反代模板：把「/」location 的目标与 WebSocket 预填为所选应用默认端口 */
-function applyProxyPreset(p: ProxyPreset | null) {
-  if (!p) return
-  const root = form.locations.find((l) => l.path.trim() === '/')
-  if (root) {
-    if (root.kind !== 'proxy') {
-      root.kind = 'proxy'
-      root.target = ''
-    }
-    root.target = `http://127.0.0.1:${p.port}`
-    root.ws = p.ws
-  } else {
-    const l = blankLocation('/')
-    l.target = `http://127.0.0.1:${p.port}`
-    l.ws = p.ws
-    form.locations.unshift(l)
-  }
-  // 若不存在反代用的 upstream 组，自动补一组（名字取自域名，可改）
-  if (!form.upstreams.length) {
-    const u = blankUpstream()
-    const dn = dirNameFromDomain(form.domains[0] || 'backend')
-    u.name = (dn || 'backend').replace(/[^a-zA-Z0-9_-]/g, '_')
-    u.servers_ext[0].addr = `127.0.0.1:${p.port}`
-    form.upstreams.push(u)
-  }
-  ElMessage.success(t('site.presetApplied', { name: p.label, port: p.port }))
-}
-const proxyPresetModel = ref<string>('')
-
 /** location 类型切换：按类型给出友好默认值 */
 function onLocationKindChange(loc: LocationSpec) {
   if (loc.kind === 'deny') {
@@ -1156,7 +1087,6 @@ function openAdd() {
   lastAutoDir.value = ''
   legacyDocRoot.value = ''
   activeTab.value = 'base'
-  proxyPresetModel.value = ''
   if (canManageAll.value) {
     const me = ownerOptions.value.find((o) => o.id === userStore.userInfo.id)
     form.user_id = me ? me.id : (ownerOptions.value[0]?.id ?? null)
@@ -1208,7 +1138,6 @@ function openEdit(row: SiteItem) {
   lastAutoDir.value = form.web_root_sub
   activeTab.value = 'base'
   loadSecurity()
-  proxyPresetModel.value = ''
   // upstream：一律以表单化 servers_ext 行加载；无任何 server 行时补一个空行待填
   form.upstreams = (row.upstreams || []).map((u) => ({
     name: u.name || '',
@@ -2278,15 +2207,7 @@ onMounted(() => {
 
           <!-- Location 规则（php / 静态 / 反代 通用） -->
           <el-tab-pane :label="t('site.tabLocation')" name="location">
-            <el-alert
-              type="info"
-              :closable="false"
-              show-icon
-              :title="t('site.extraLocTitle')"
-              :description="t('site.locTabDesc')"
-            />
-
-            <el-form-item :label="t('site.locationRules')">
+            <el-form-item label-width="0">
               <div class="proxy-block">
                 <div v-if="form.site_type === 'proxy'" class="form-tip" style="margin-bottom: 6px">
                   {{ t('site.locOrderTip') }}
@@ -2367,10 +2288,10 @@ onMounted(() => {
                         link
                         type="primary"
                         size="small"
+                        :icon="Setting"
+                        :title="loc.adv ? t('site.collapseAdv') : t('site.expandAdv')"
                         @click="loc.adv = !loc.adv"
-                      >
-                        {{ loc.adv ? t('site.collapseAdv') : t('site.expandAdv') }}
-                      </el-button>
+                      />
                       <el-button
                         link
                         type="danger"
@@ -2704,35 +2625,8 @@ onMounted(() => {
 
           <!-- 反向代理（需套餐开放 allow_proxy） -->
           <el-tab-pane v-if="showProxyPanel" :label="t('site.tabProxy')" name="proxy">
-            <el-form-item :label="t('site.quickTemplate')">
-              <el-select
-                :model-value="proxyPresetModel"
-                filterable
-                clearable
-                :placeholder="t('site.presetPlaceholder')"
-                style="width: 100%"
-                @change="
-                  (v: string) => {
-                    applyProxyPreset(proxyPresets.find((p) => p.key === v) || null)
-                    proxyPresetModel = ''
-                  }
-                "
-              >
-                <el-option v-for="p in proxyPresets" :key="p.key" :value="p.key" :label="p.label">
-                  <span>{{ p.label }}</span>
-                  <span class="preset-desc">{{ p.desc }}</span>
-                </el-option>
-              </el-select>
-              <div class="form-tip">
-                {{ t('site.presetTip') }}
-              </div>
-            </el-form-item>
-
             <el-form-item :label="t('site.upstreamGroup')">
               <div class="proxy-block">
-                <div class="proxy-label">
-                  {{ t('site.upstreamLabel') }}
-                </div>
                 <div v-if="form.upstreams.length" class="up-list">
                   <div v-for="(u, i) in form.upstreams" :key="i" class="up-card">
                     <div class="up-head">
