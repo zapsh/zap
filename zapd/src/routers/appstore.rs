@@ -198,7 +198,7 @@ async fn provision_for(
         );
         env.insert(
             "DB_PORT".into(),
-            crate::routers::database::db_port().to_string(),
+            crate::routers::database::db_port().await.to_string(),
         );
     }
 

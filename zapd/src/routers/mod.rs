@@ -299,7 +299,7 @@ fn api_routers() -> Router {
         .route("/system/package/list", get(package::package_list))
         .route("/system/package/add", post(package::package_add))
         .route("/system/package/update", post(package::package_update))
-        // 数据库管理（MySQL / MariaDB，zapadm 凭据 + 本机 mysql 客户端）
+        // 数据库管理（MySQL / MariaDB，zapadm 凭据 + sqlx 纯 Rust MySQL 驱动）
         .route("/database/status", get(database::status))
         .route("/database/list", get(database::list))
         .route("/database/create", post(database::create))

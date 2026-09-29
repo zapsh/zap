@@ -1,7 +1,9 @@
 //! 数据库管理（MySQL / MariaDB）。
 //!
-//! 通过本机 `mysql` 客户端 + `zapadm` 凭据（由 zap-crypto 从
-//! /etc/zap/credentials 解密读取）执行管理操作，**不使用 root 账号**：
+//! 通过 **sqlx 的 MySQL 驱动**（纯 Rust 实现，不依赖 `mysql` 客户端、
+//! libmysqlclient 或 OpenSSL）直连本机实例：优先走 unix socket，取不到再回落
+//! 回环 TCP。连接身份为 `zapadm` 凭据（由 zap-crypto 从 /etc/zap/credentials
+//! 解密读取），**不使用 root 账号**：
 //!
 //! - GET  /api/database/status          服务状态与版本
 //! - GET  /api/database/list            库列表（含大小 / 表数 / 字符集）
@@ -18,13 +20,15 @@
 //! 创建库时会自动补上该前缀；管理员不受限制。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Command;
 
 use axum::Json;
 use axum::extract::Query;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::Connection;
+use sqlx::Row;
+use sqlx::ValueRef;
+use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlRow};
 
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
@@ -40,13 +44,6 @@ pub(crate) const DB_HOST: &str = "127.0.0.1";
 /// 服务端口取不到时的兜底值
 const DEFAULT_PORT: u16 = 3306;
 
-/// mysql 客户端候选路径（按优先级）
-const MYSQL_BINS: &[&str] = &[
-    "/usr/local/mysql/bin/mysql",
-    "/usr/local/apps/mysql-8.4/bin/mysql",
-    "/usr/bin/mysql",
-];
-
 /// 本机 socket 候选（本地连接优先走 socket，无需开 TCP）
 const SOCKETS: &[&str] = &[
     "/tmp/mysql.sock",
@@ -58,19 +55,6 @@ const SOCKETS: &[&str] = &[
 const SYSTEM_SCHEMAS: &[&str] = &["information_schema", "mysql", "performance_schema", "sys"];
 
 // ── 连接与执行 ──────────────────────────────────────────────
-
-fn mysql_bin() -> Result<PathBuf, ZapError> {
-    MYSQL_BINS
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.exists())
-        .ok_or_else(|| {
-            ZapError::New(
-                -1,
-                "未找到 mysql 客户端，请先安装 MySQL / MariaDB".to_string(),
-            )
-        })
-}
 
 fn socket_path() -> Option<&'static str> {
     SOCKETS
@@ -90,41 +74,89 @@ fn zapadm_password() -> Result<String, ZapError> {
         .map_err(|e| ZapError::New(-1, format!("读取数据库凭据失败：{e}")))
 }
 
-/// 执行 SQL，返回「无表头 + TAB 分隔」的输出。
+/// 建立一条管理连接：优先 unix socket，没有则回落回环 TCP。
 ///
-/// 密码通过 `MYSQL_PWD` 环境变量传递，避免出现在进程命令行里。
-fn run_sql(sql: &str) -> Result<String, ZapError> {
-    let bin = mysql_bin()?;
+/// sqlx 的 MySQL 驱动是纯 Rust 的，`caching_sha2_password`（MySQL 8 默认）
+/// 会在需要时向服务端取 RSA 公钥加密口令，无需 TLS 也能完成认证。
+async fn connect() -> Result<MySqlConnection, ZapError> {
     let pwd = zapadm_password()?;
-
-    let mut cmd = Command::new(bin);
-    cmd.env("MYSQL_PWD", &pwd);
-    if let Some(sock) = socket_path() {
-        cmd.arg("--socket").arg(sock);
+    let opts = match socket_path() {
+        Some(sock) => MySqlConnectOptions::new().socket(sock),
+        None => MySqlConnectOptions::new().host(DB_HOST).port(DEFAULT_PORT),
     }
-    cmd.arg("-u")
-        .arg(CRED_USER)
-        .arg("-N")
-        .arg("-B")
-        .arg("-e")
-        .arg(sql);
+    .username(CRED_USER)
+    .password(&pwd);
 
-    let out = cmd
-        .output()
-        .map_err(|e| ZapError::New(-1, format!("执行数据库命令失败：{e}")))?;
-
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(ZapError::New(-1, format!("数据库操作失败：{err}")))
-    }
+    MySqlConnection::connect_with(&opts)
+        .await
+        .map_err(|e| ZapError::New(-1, format!("连接数据库失败：{e}")))
 }
 
-/// 执行若干条语句（用分号分隔，内部自行转义标识符）。
-fn run_sqls(sqls: &[String]) -> Result<(), ZapError> {
-    let joined = sqls.join("; ");
-    run_sql(&joined).map(|_| ())
+/// 把一列值转成展示用的文本：字符串原样、整型转十进制、NULL 为空串。
+///
+/// 统一走文本后，上层解析逻辑与列的实际类型（VARCHAR / BIGINT / UNSIGNED …）
+/// 解耦，不会因为 MySQL 返回的列类型变化而解码失败。
+fn cell_text(row: &MySqlRow, i: usize) -> String {
+    if let Ok(v) = row.try_get_raw(i) {
+        if v.is_null() {
+            return String::new();
+        }
+    }
+    if let Ok(v) = row.try_get::<String, _>(i) {
+        return v;
+    }
+    if let Ok(v) = row.try_get::<i64, _>(i) {
+        return v.to_string();
+    }
+    if let Ok(v) = row.try_get::<u64, _>(i) {
+        return v.to_string();
+    }
+    if let Ok(v) = row.try_get::<f64, _>(i) {
+        return format!("{v:.0}");
+    }
+    if let Ok(v) = row.try_get::<Vec<u8>, _>(i) {
+        return String::from_utf8_lossy(&v).into_owned();
+    }
+    String::new()
+}
+
+/// 在已有连接上执行查询，返回「行 → 列（文本）」。
+async fn rows_of(conn: &mut MySqlConnection, sql: &str) -> Result<Vec<Vec<String>>, ZapError> {
+    let rows = sqlx::query(sql)
+        .fetch_all(conn)
+        .await
+        .map_err(|e| ZapError::New(-1, format!("数据库查询失败：{e}")))?;
+    Ok(rows
+        .iter()
+        .map(|r| (0..r.len()).map(|i| cell_text(r, i)).collect())
+        .collect())
+}
+
+/// 开一条连接执行单条查询（用完即关）。
+async fn query_rows(sql: &str) -> Result<Vec<Vec<String>>, ZapError> {
+    let mut conn = connect().await?;
+    rows_of(&mut conn, sql).await
+}
+
+/// 在已有连接上依次执行若干条语句（MySQL 不支持预编译参数化 DDL，
+/// 标识符与字面量仍由调用方按规则校验 / 转义后拼进 SQL）。
+async fn exec_on(conn: &mut MySqlConnection, sqls: &[String]) -> Result<(), ZapError> {
+    for sql in sqls {
+        sqlx::query(sql)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| ZapError::New(-1, format!("数据库操作失败：{e}")))?;
+    }
+    Ok(())
+}
+
+/// 执行若干条语句（开一条连接，按序执行后关闭）。
+async fn run_sqls(sqls: &[String]) -> Result<(), ZapError> {
+    if sqls.is_empty() {
+        return Ok(());
+    }
+    let mut conn = connect().await?;
+    exec_on(&mut conn, sqls).await
 }
 
 // ── 校验与转义 ──────────────────────────────────────────────
@@ -206,14 +238,17 @@ pub(crate) fn schema_prefix_of(username: &str) -> String {
 /// 统计库数量：`prefixes` 为空表示统计全部非系统库（admin）。
 ///
 /// MySQL 不可用 / 未配置时返回 0（不阻断仪表盘渲染）。
-pub(crate) fn count_schemas(prefixes: &[String]) -> i64 {
-    let Ok(out) = run_sql("SELECT s.SCHEMA_NAME FROM information_schema.SCHEMATA s") else {
+pub(crate) async fn count_schemas(prefixes: &[String]) -> i64 {
+    let Ok(rows) = query_rows("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA").await else {
         return 0;
     };
     let mut n = 0i64;
-    for line in out.lines() {
-        let name = line.trim();
-        if name.is_empty() || SYSTEM_SCHEMAS.contains(&name) {
+    for row in rows {
+        let name = row
+            .first()
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if name.is_empty() || SYSTEM_SCHEMAS.contains(&name.as_str()) {
             continue;
         }
         if !prefixes.is_empty() && !prefixes.iter().any(|p| name.starts_with(p.as_str())) {
@@ -330,20 +365,22 @@ fn ok(data: Value) -> ZapJsonResult {
 
 /// GET /api/database/status：服务状态与版本。
 pub async fn status(_claims: ValidatedClaims) -> ZapJsonResult {
-    let version = run_sql("SELECT VERSION()")?
-        .trim()
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    let mut conn = connect().await?;
+    let cols = rows_of(
+        &mut conn,
+        "SELECT VERSION(), IFNULL(@@global.sql_mode, ''), @@port",
+    )
+    .await?
+    .into_iter()
+    .next()
+    .unwrap_or_default();
+    let version = cols.first().cloned().unwrap_or_default();
     // SQL 模式便于排障（严格模式会拦截隐式截断、非法日期等写法）
-    let sql_mode = run_sql("SELECT @@global.sql_mode")
-        .map(|s| s.trim().lines().next().unwrap_or_default().to_string())
-        .unwrap_or_default();
+    let sql_mode = cols.get(1).cloned().unwrap_or_default();
     // 监听端口：管理操作走 socket，但客户端连接需要 `host:port`
-    let port: u16 = run_sql("SELECT @@port")
-        .ok()
-        .and_then(|s| s.trim().lines().next()?.trim().parse().ok())
+    let port: u16 = cols
+        .get(2)
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(DEFAULT_PORT);
     ok(json!({
         "ok": true,
@@ -371,10 +408,14 @@ async fn ensure_db_quota(claims: &jwt::Claims) -> Result<(), ZapError> {
     if pkg.max_mysql_dbs <= 0 {
         return Ok(());
     }
-    let out = run_sql("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA")?;
-    let used = out
-        .lines()
-        .filter(|l| l.starts_with(prefix.as_str()))
+    let rows = query_rows("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA").await?;
+    let used = rows
+        .iter()
+        .filter(|r| {
+            r.first()
+                .map(|s| s.starts_with(prefix.as_str()))
+                .unwrap_or(false)
+        })
         .count() as i64;
     if used >= pkg.max_mysql_dbs {
         return Err(ZapError::New(
@@ -403,7 +444,7 @@ pub async fn list(claims: ValidatedClaims, Query(q): Query<ListQuery>) -> ZapJso
         "SELECT s.SCHEMA_NAME, \
          COALESCE(s.DEFAULT_CHARACTER_SET_NAME,''), \
          COALESCE(s.DEFAULT_COLLATION_NAME,''), \
-         COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0), \
+         CAST(COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS UNSIGNED), \
          COUNT(t.TABLE_NAME) \
          FROM information_schema.SCHEMATA s \
          LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME \
@@ -411,33 +452,34 @@ pub async fn list(claims: ValidatedClaims, Query(q): Query<ListQuery>) -> ZapJso
          ORDER BY s.SCHEMA_NAME"
     };
 
-    let out = run_sql(sql)?;
+    let mut conn = connect().await?;
+    let out = rows_of(&mut conn, sql).await?;
     let prefix = schema_prefix(&claims);
 
     // 每库可访问账号数：mysql.db 记录库级授权（读不到就显示 0，不影响主流程）
     let mut user_counts: HashMap<String, u64> = HashMap::new();
     if !light
-        && let Ok(privs) = run_sql(
+        && let Ok(privs) = rows_of(
+            &mut conn,
             "SELECT Db, COUNT(DISTINCT User) FROM mysql.db \
              WHERE Db NOT IN ('mysql','sys','performance_schema','information_schema') \
              GROUP BY Db",
         )
+        .await
     {
-        for line in privs.lines() {
-            let mut cols = line.split('\t');
-            if let (Some(db), Some(count)) = (cols.next(), cols.next()) {
-                user_counts.insert(db.to_string(), count.parse().unwrap_or(0));
+        for row in privs {
+            if let (Some(db), Some(count)) = (row.first(), row.get(1)) {
+                user_counts.insert(db.clone(), count.parse().unwrap_or(0));
             }
         }
     }
 
     let mut items: Vec<Value> = Vec::new();
-    for line in out.lines() {
-        let cols: Vec<&str> = line.split('\t').collect();
+    for cols in out {
         if cols.len() < 3 {
             continue;
         }
-        let name = cols[0].to_string();
+        let name = cols[0].clone();
         if SYSTEM_SCHEMAS.contains(&name.as_str()) {
             continue;
         }
@@ -502,7 +544,7 @@ pub(crate) async fn create_schema(
         check_ident(req.charset.trim(), "字符集")?
     };
 
-    run_sqls(&[format!("CREATE DATABASE `{name}` CHARACTER SET {charset}")])?;
+    run_sqls(&[format!("CREATE DATABASE `{name}` CHARACTER SET {charset}")]).await?;
 
     if !req.create_user {
         return Ok(CreatedDb {
@@ -531,7 +573,7 @@ pub(crate) async fn create_schema(
     let password = match req.password.as_deref().map(str::trim) {
         Some(p) if !p.is_empty() => {
             if p.len() < 8 {
-                let _ = run_sqls(&[format!("DROP DATABASE `{name}`")]);
+                let _ = run_sqls(&[format!("DROP DATABASE `{name}`")]).await;
                 return Err(ZapError::New(-1, "密码长度不能少于 8 位".to_string()));
             }
             p.to_string()
@@ -541,6 +583,7 @@ pub(crate) async fn create_schema(
 
     // 逐个来源建号并授权：任何一个失败，只回滚**本次新建**的账号，
     // 不动同名的既有账号（那可能是用户自己建的，删掉会误伤）。
+    let mut conn = connect().await?;
     let mut created: Vec<String> = Vec::new();
     for h in &hosts {
         let sqls = [
@@ -550,19 +593,19 @@ pub(crate) async fn create_schema(
             ),
             format!("GRANT ALL PRIVILEGES ON `{name}`.* TO '{user}'@'{h}'"),
         ];
-        if let Err(e) = run_sqls(&sqls) {
+        if let Err(e) = exec_on(&mut conn, &sqls).await {
             let mut undo: Vec<String> = created
                 .iter()
                 .map(|c| format!("DROP USER '{user}'@'{c}'"))
                 .collect();
             undo.push(format!("DROP DATABASE `{name}`"));
             undo.push("FLUSH PRIVILEGES".to_string());
-            let _ = run_sqls(&undo);
+            let _ = exec_on(&mut conn, &undo).await;
             return Err(e);
         }
         created.push(h.clone());
     }
-    let _ = run_sqls(&["FLUSH PRIVILEGES".to_string()]);
+    let _ = exec_on(&mut conn, &["FLUSH PRIVILEGES".to_string()]).await;
 
     Ok(CreatedDb {
         name,
@@ -593,29 +636,26 @@ pub async fn create(claims: ValidatedClaims, Json(req): Json<CreateDbReq>) -> Za
 // ── AppStore provision：为建站包分配数据库 ──────────────────
 
 /// 库是否已存在（用于 provision 自动避让重名）。
-fn schema_exists(name: &str) -> bool {
+async fn schema_exists(name: &str) -> bool {
     let sql = format!(
         "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{}'",
         escape_literal(name)
     );
-    run_sql(&sql)
-        .map(|s| s.trim().lines().next().unwrap_or_default().trim() == name)
+    query_rows(&sql)
+        .await
+        .map(|rows| {
+            rows.iter()
+                .any(|r| r.first().map(|s| s == name).unwrap_or(false))
+        })
         .unwrap_or(false)
 }
 
 /// 数据库服务端口（脚本连接用；取不到时用 3306 兜底）。
-pub(crate) fn db_port() -> u16 {
-    run_sql("SELECT @@port")
+pub(crate) async fn db_port() -> u16 {
+    query_rows("SELECT @@port")
+        .await
         .ok()
-        .and_then(|s| {
-            s.trim()
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .parse()
-                .ok()
-        })
+        .and_then(|rows| rows.into_iter().next()?.first()?.trim().parse().ok())
         .unwrap_or(DEFAULT_PORT)
 }
 
@@ -659,7 +699,7 @@ pub(crate) async fn provision_db(
             Some(p) if !raw.starts_with(p.as_str()) => format!("{p}{raw}"),
             _ => raw.clone(),
         };
-        if schema_exists(&full) {
+        if schema_exists(&full).await {
             continue;
         }
         let req = CreateDbReq {
@@ -681,13 +721,18 @@ pub(crate) async fn provision_db(
 /// POST /api/database/drop：删除数据库。
 pub async fn drop_db(claims: ValidatedClaims, Json(req): Json<SchemaReq>) -> ZapJsonResult {
     let name = ensure_owned(&claims, req.name.trim())?;
-    run_sqls(&[format!("DROP DATABASE `{name}`")])?;
+    run_sqls(&[format!("DROP DATABASE `{name}`")]).await?;
     ok(json!({ "ok": true, "name": name }))
 }
 
 /// GET /api/database/users：数据库用户列表（含授权）。
 pub async fn users(claims: ValidatedClaims) -> ZapJsonResult {
-    let out = run_sql("SELECT user, host FROM mysql.user ORDER BY user, host")?;
+    let mut conn = connect().await?;
+    let out = rows_of(
+        &mut conn,
+        "SELECT user, host FROM mysql.user ORDER BY user, host",
+    )
+    .await?;
     let skip = [
         "root",
         "mysql.session",
@@ -699,13 +744,12 @@ pub async fn users(claims: ValidatedClaims) -> ZapJsonResult {
     let prefix = schema_prefix(&claims);
 
     let mut items: Vec<Value> = Vec::new();
-    for line in out.lines() {
-        let cols: Vec<&str> = line.split('\t').collect();
+    for cols in out {
         if cols.len() < 2 {
             continue;
         }
-        let user = cols[0].to_string();
-        let host = cols[1].to_string();
+        let user = cols[0].clone();
+        let host = cols[1].clone();
         if skip.contains(&user.as_str()) {
             continue;
         }
@@ -714,11 +758,24 @@ pub async fn users(claims: ValidatedClaims) -> ZapJsonResult {
         {
             continue;
         }
-        let grants = run_sql(&format!("SHOW GRANTS FOR '{user}'@'{host}'")).unwrap_or_default();
+        let grants = show_grants(&mut conn, &user, &host).await;
         items.push(json!({ "user": user, "host": host, "grants": grants }));
     }
 
     ok(json!({ "ok": true, "list": items }))
+}
+
+/// `SHOW GRANTS FOR`：多行授权语句拼成一段文本（取不到返回空串，不影响主流程）。
+async fn show_grants(conn: &mut MySqlConnection, user: &str, host: &str) -> String {
+    let sql = format!("SHOW GRANTS FOR '{user}'@'{host}'");
+    match rows_of(conn, &sql).await {
+        Ok(rows) => rows
+            .iter()
+            .filter_map(|r| r.first().cloned())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Err(_) => String::new(),
+    }
 }
 
 /// POST /api/database/user/create：创建用户（可选授权到某个库）。
@@ -746,7 +803,7 @@ pub async fn user_create(claims: ValidatedClaims, Json(req): Json<UserCreateReq>
         ));
     }
     sqls.push("FLUSH PRIVILEGES".to_string());
-    run_sqls(&sqls)?;
+    run_sqls(&sqls).await?;
 
     ok(json!({ "ok": true, "user": user, "host": host }))
 }
@@ -763,23 +820,28 @@ pub async fn user_drop(claims: ValidatedClaims, Json(req): Json<UserDropReq>) ->
     run_sqls(&[
         format!("DROP USER '{user}'@'{host}'"),
         "FLUSH PRIVILEGES".to_string(),
-    ])?;
+    ])
+    .await?;
     ok(json!({ "ok": true, "user": user }))
 }
 
 /// GET /api/database/remote：远程访问授权列表（host 不是本机来源的账号）。
 pub async fn remote_list(claims: ValidatedClaims) -> ZapJsonResult {
-    let out = run_sql("SELECT user, host FROM mysql.user ORDER BY user, host")?;
+    let mut conn = connect().await?;
+    let out = rows_of(
+        &mut conn,
+        "SELECT user, host FROM mysql.user ORDER BY user, host",
+    )
+    .await?;
     let prefix = schema_prefix(&claims);
 
     let mut items: Vec<Value> = Vec::new();
-    for line in out.lines() {
-        let cols: Vec<&str> = line.split('\t').collect();
+    for cols in out {
         if cols.len() < 2 {
             continue;
         }
-        let user = cols[0].to_string();
-        let host = cols[1].to_string();
+        let user = cols[0].clone();
+        let host = cols[1].clone();
         // 远程授权：host 不是 localhost / 127.0.0.1 / ::1
         if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1") {
             continue;
@@ -789,7 +851,7 @@ pub async fn remote_list(claims: ValidatedClaims) -> ZapJsonResult {
         {
             continue;
         }
-        let grants = run_sql(&format!("SHOW GRANTS FOR '{user}'@'{host}'")).unwrap_or_default();
+        let grants = show_grants(&mut conn, &user, &host).await;
         items.push(json!({ "user": user, "host": host, "grants": grants }));
     }
 
@@ -811,10 +873,13 @@ pub async fn remote_grant(
     }
 
     let ident = format!("'{user}'@'{host}'");
-    let exists = run_sql(&format!(
-        "SELECT 1 FROM mysql.user WHERE user = '{user}' AND host = '{host}'"
-    ))
-    .map(|s| !s.trim().is_empty())
+    let mut conn = connect().await?;
+    let exists = rows_of(
+        &mut conn,
+        &format!("SELECT 1 FROM mysql.user WHERE user = '{user}' AND host = '{host}'"),
+    )
+    .await
+    .map(|rows| !rows.is_empty())
     .unwrap_or(false);
 
     let mut sqls = Vec::new();
@@ -839,7 +904,7 @@ pub async fn remote_grant(
     }
     sqls.push(format!("GRANT ALL PRIVILEGES ON `{db}`.* TO {ident}"));
     sqls.push("FLUSH PRIVILEGES".to_string());
-    run_sqls(&sqls)?;
+    exec_on(&mut conn, &sqls).await?;
 
     ok(json!({ "ok": true, "user": user, "host": host, "schema": db }))
 }
@@ -862,8 +927,9 @@ pub async fn remote_revoke(claims: ValidatedClaims, Json(req): Json<UserDropReq>
     run_sqls(&[
         format!("DROP USER '{user}'@'{host}'"),
         "FLUSH PRIVILEGES".to_string(),
-    ])?;
-    ok(json!({ "ok": true, "user": user, "host": host }))
+    ])
+    .await?;
+    ok(json!({ "ok": true, "user": user }))
 }
 
 #[cfg(test)]

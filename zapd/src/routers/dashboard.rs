@@ -69,7 +69,7 @@ pub async fn counts(claims: ValidatedClaims) -> ZapJsonResult {
 
     // ── 数据库数量（按「用户名_」前缀归属）────────────────────
     let databases: i64 = if admin {
-        crate::routers::database::count_schemas(&[])
+        crate::routers::database::count_schemas(&[]).await
     } else {
         // reseller：自己 + 名下客户；普通用户：自己
         let names: Vec<String> = if reseller {
@@ -94,7 +94,7 @@ pub async fn counts(claims: ValidatedClaims) -> ZapJsonResult {
             .iter()
             .map(|n| crate::routers::database::schema_prefix_of(n))
             .collect();
-        crate::routers::database::count_schemas(&prefixes)
+        crate::routers::database::count_schemas(&prefixes).await
     };
 
     Ok(Json(json!({
