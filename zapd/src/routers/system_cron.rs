@@ -81,7 +81,7 @@ pub struct CronTogglePayload {
 pub async fn cron_list(claims: ValidatedClaims) -> ZapJsonResult {
     ensure_admin(&claims)?;
     let jobs = script_cron::list(&claims.sub).await?;
-    Ok(Json(json!({ "code": 0, "data": { "jobs": jobs } })))
+    crate::zap::api_ok(json!({ "jobs": jobs }))
 }
 
 /// POST /system/cron/add

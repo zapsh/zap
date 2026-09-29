@@ -267,7 +267,7 @@ pub async fn list_connections(claims: ValidatedClaims) -> ZapJsonResult {
     .await?;
 
     let connections: Vec<SshConnection> = rows.iter().map(row_to_conn).collect();
-    Ok(Json(json!({ "code": 0, "data": connections })))
+    crate::zap::api_ok(connections)
 }
 
 pub async fn get_connection(claims: ValidatedClaims, Path(id): Path<i64>) -> ZapJsonResult {
@@ -286,7 +286,7 @@ pub async fn get_connection(claims: ValidatedClaims, Path(id): Path<i64>) -> Zap
         Some(r) => {
             let mut conn = row_to_conn(&r);
             conn.password = String::new(); // 脱敏
-            Ok(Json(json!({ "code": 0, "data": conn })))
+            crate::zap::api_ok(conn)
         }
         None => Err(ZapError::New(-1, "连接不存在".to_string())),
     }

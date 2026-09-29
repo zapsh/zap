@@ -447,21 +447,15 @@ pub async fn env_get(claims: ValidatedClaims) -> ZapJsonResult {
         match probe_payload().await {
             Ok(v) => {
                 let t = save_snapshot(&v);
-                Ok(Json(
-                    json!({ "code": 0, "data": build_env_data(Some(v), t, true, None) }),
-                ))
+                crate::zap::api_ok(build_env_data(Some(v), t, true, None))
             }
             Err(e) => {
                 let msg = e.to_string();
-                Ok(Json(
-                    json!({ "code": 0, "data": build_env_data(payload, detected_at, false, Some(msg)) }),
-                ))
+                crate::zap::api_ok(build_env_data(payload, detected_at, false, Some(msg)))
             }
         }
     } else {
-        Ok(Json(
-            json!({ "code": 0, "data": build_env_data(payload, detected_at, false, None) }),
-        ))
+        crate::zap::api_ok(build_env_data(payload, detected_at, false, None))
     }
 }
 

@@ -4,6 +4,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use serde_json::json;
 
 pub mod acme;
 pub mod admin_bootstrap;
@@ -96,4 +97,26 @@ impl ZapError {
     pub fn new(code: i64, message: String) -> ZapJsonResult {
         Err(ZapError::New(code, message))
     }
+}
+
+/// 统一成功响应信封：`{ code: 0, message: "ok", data }`。
+///
+/// 全站响应应统一走这几个 helper，避免各处手写 `json!({code})` 导致信封字段缺失/不一致。
+pub fn api_ok(data: impl Serialize) -> ZapJsonResult {
+    Ok(Json(json!({ "code": 0, "message": "ok", "data": data })))
+}
+
+/// 统一成功响应（无 data 载荷）：`{ code: 0, message }`。
+pub fn api_ok_msg(message: impl Into<String>) -> ZapJsonResult {
+    Ok(Json(json!({ "code": 0, "message": message.into() })))
+}
+
+/// 统一成功响应（自定义 message + data）：`{ code: 0, message, data }`。
+pub fn api_ok_data(message: impl Into<String>, data: impl Serialize) -> ZapJsonResult {
+    Ok(Json(json!({ "code": 0, "message": message.into(), "data": data })))
+}
+
+/// 统一错误响应：`{ code, message }`（等价于 `ZapError::new`，便于与 `api_ok` 配对）。
+pub fn api_err(code: i64, message: impl Into<String>) -> ZapJsonResult {
+    ZapError::new(code, message.into())
 }

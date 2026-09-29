@@ -122,7 +122,7 @@ pub async fn cron_exec_users(claims: ValidatedClaims) -> ZapJsonResult {
         return Err(ZapError::New(-1, "权限不足，仅管理员可使用".to_string()));
     }
     let users = user_cron::list_exec_users().await?;
-    Ok(Json(json!({ "code": 0, "data": { "users": users } })))
+    crate::zap::api_ok(json!({ "users": users }))
 }
 
 /// POST /terminal/crontab/add

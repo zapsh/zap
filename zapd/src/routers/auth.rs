@@ -511,14 +511,10 @@ pub async fn totp_setup(claims: ValidatedClaims) -> ZapJsonResult {
             .execute(pool)
             .await;
         let url = totp::otpauth_url(&secret, &claims.sub);
-        return Ok(Json(
-            json!({ "code": 0, "data": { "secret": secret, "otpauth_url": url } }),
-        ));
+        return crate::zap::api_ok(json!({ "secret": secret, "otpauth_url": url }));
     }
     let url = totp::otpauth_url(&existing, &claims.sub);
-    Ok(Json(
-        json!({ "code": 0, "data": { "secret": existing, "otpauth_url": url } }),
-    ))
+    crate::zap::api_ok(json!({ "secret": existing, "otpauth_url": url }))
 }
 
 /// POST /auth/totp/verify — 校验验证码并启用两步验证。
@@ -599,7 +595,5 @@ pub async fn totp_status(claims: ValidatedClaims) -> ZapJsonResult {
         .bind(claims.id as i64)
         .fetch_one(pool)
         .await?;
-    Ok(Json(
-        json!({ "code": 0, "data": { "enabled": enabled == 1 } }),
-    ))
+    crate::zap::api_ok(json!({ "enabled": enabled == 1 }))
 }

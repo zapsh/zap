@@ -41,7 +41,7 @@ pub async fn get_time(claims: ValidatedClaims) -> ZapJsonResult {
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "data": resp.data })))
+    crate::zap::api_ok(resp.data)
 }
 
 /// Sync time via NTP
@@ -82,7 +82,7 @@ pub async fn list_timezones(claims: ValidatedClaims) -> ZapJsonResult {
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "data": resp.data })))
+    crate::zap::api_ok(resp.data)
 }
 
 // ── SSH ────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ pub async fn ssh_status(claims: ValidatedClaims) -> ZapJsonResult {
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "data": resp.data })))
+    crate::zap::api_ok(resp.data)
 }
 
 /// Restart SSH server
@@ -116,7 +116,7 @@ pub async fn list_services(claims: ValidatedClaims) -> ZapJsonResult {
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "data": resp.data })))
+    crate::zap::api_ok(resp.data)
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,7 +156,7 @@ pub async fn list_processes(claims: ValidatedClaims) -> ZapJsonResult {
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "data": resp.data })))
+    crate::zap::api_ok(resp.data)
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,7 +261,7 @@ pub async fn network_get(claims: ValidatedClaims) -> ZapJsonResult {
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "data": resp.data })))
+    crate::zap::api_ok(resp.data)
 }
 
 #[derive(Debug, Deserialize)]
@@ -327,9 +327,7 @@ pub async fn network_set_resolver(
 /// 当前下载源与可选预设（管理员）。
 pub async fn mirror_get(claims: ValidatedClaims) -> ZapJsonResult {
     require_admin(&claims)?;
-    Ok(Json(
-        json!({ "code": 0, "data": crate::zap::mirror::info() }),
-    ))
+    crate::zap::api_ok(crate::zap::mirror::info())
 }
 
 #[derive(Debug, Deserialize)]
@@ -349,5 +347,5 @@ pub async fn mirror_set(
     let base = crate::zap::mirror::save(&payload.pkg_mirror).map_err(|e| ZapError::New(-1, e))?;
     audit::log(Some(&claims), None, "system_mirror_set", &base, "").await;
     info!(mirror = %base, "包下载源已更新");
-    Ok(Json(json!({ "code": 0, "data": { "pkgMirror": base } })))
+    crate::zap::api_ok(json!({ "pkgMirror": base }))
 }

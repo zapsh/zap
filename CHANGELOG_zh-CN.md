@@ -27,4 +27,6 @@
 
 - **#9 写入路径 `unwrap_or(false)` 掩盖唯一性检查（Medium）** —— `system_stream.rs:968/1139` 端口重复检查失败被默认成"不重复"，可能让两条规则绑定同一 `listen_ip:port`，导致 `nginx -t` 失败、状态不一致；现已改为用 `?` 传播数据库错误，检查失败即返回错误而非默认放行。
 
+- **#12 响应信封不一致（Medium）** —— 约 35 处 `json!({code})` 形态各异（部分缺失 `message`、`database.rs` 用私有 `ok()` 且无 `message`、部分 `data` 内嵌 `ok:true`）。新增统一信封 helper `zap::api_ok` / `api_ok_msg` / `api_ok_data` / `api_err`（成功固定 `{code:0,message,data}`、错误 `{code,message}`），并把 `database.rs` 的私有 `ok()` 改为 `api_ok`、无 `message` 的 `code:0,data` 成功响应统一改用 `api_ok`。注：`database` 响应 `data.ok` 字段因前端 `DbStatus.ok` 等类型契约仍保留，未删除。
+
 - （同系列）JWT 默认密钥缺失时启动即失败（fail-closed）；高级反代 `raw` 体与自定义 `rewrite` 规则防止 `include` / 系统路径 / 云元数据注入。

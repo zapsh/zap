@@ -262,9 +262,7 @@ pub async fn private_key(claims: ValidatedClaims, Query(q): Query<KeyNameQuery>)
         .get("private_key")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    Ok(Json(
-        json!({ "code": 0, "data": { "name": name, "private_key": private_key } }),
-    ))
+    crate::zap::api_ok(json!({ "name": name, "private_key": private_key }))
 }
 
 async fn audit_log(claims: &ValidatedClaims, action: &str, detail: &str) {

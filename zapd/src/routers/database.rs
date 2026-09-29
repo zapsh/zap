@@ -669,10 +669,6 @@ pub struct RemoteGrantReq {
     pub password: Option<String>,
 }
 
-/// 成功返回：与其它模块保持一致的 `{ code: 0, data: ... }` 包装。
-fn ok(data: Value) -> ZapJsonResult {
-    Ok(Json(json!({ "code": 0, "data": data })))
-}
 
 // ── handlers ────────────────────────────────────────────────
 
@@ -695,7 +691,7 @@ pub async fn status(_claims: ValidatedClaims) -> ZapJsonResult {
         .get(2)
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(DEFAULT_PORT);
-    ok(json!({
+    crate::zap::api_ok(json!({
         "ok": true,
         "version": version,
         "user": CRED_USER,
@@ -814,7 +810,7 @@ pub async fn list(claims: ValidatedClaims, Query(q): Query<ListQuery>) -> ZapJso
         }));
     }
 
-    ok(json!({ "ok": true, "list": items, "prefix": prefix, "light": light }))
+    crate::zap::api_ok(json!({ "ok": true, "list": items, "prefix": prefix, "light": light }))
 }
 
 /// POST /api/database/create：创建数据库。
@@ -943,7 +939,7 @@ pub async fn create(claims: ValidatedClaims, Json(req): Json<CreateDbReq>) -> Za
         // 明文密码仅在创建响应中返回一次，请提示用户立即保存
         data["password"] = json!(p);
     }
-    ok(data)
+    crate::zap::api_ok(data)
 }
 
 // ── AppStore provision：为建站包分配数据库 ──────────────────
@@ -1035,7 +1031,7 @@ pub(crate) async fn provision_db(
 pub async fn drop_db(claims: ValidatedClaims, Json(req): Json<SchemaReq>) -> ZapJsonResult {
     let name = ensure_owned(&claims, req.name.trim())?;
     run_sqls(&[format!("DROP DATABASE `{name}`")]).await?;
-    ok(json!({ "ok": true, "name": name }))
+    crate::zap::api_ok(json!({ "ok": true, "name": name }))
 }
 
 /// GET /api/database/users：数据库用户列表（含授权）。
@@ -1075,7 +1071,7 @@ pub async fn users(claims: ValidatedClaims) -> ZapJsonResult {
         items.push(json!({ "user": user, "host": host, "grants": grants }));
     }
 
-    ok(json!({ "ok": true, "list": items }))
+    crate::zap::api_ok(json!({ "ok": true, "list": items }))
 }
 
 /// `SHOW GRANTS FOR`：多行授权语句拼成一段文本（取不到返回空串，不影响主流程）。
@@ -1118,7 +1114,7 @@ pub async fn user_create(claims: ValidatedClaims, Json(req): Json<UserCreateReq>
     sqls.push("FLUSH PRIVILEGES".to_string());
     run_sqls(&sqls).await?;
 
-    ok(json!({ "ok": true, "user": user, "host": host }))
+    crate::zap::api_ok(json!({ "ok": true, "user": user, "host": host }))
 }
 
 /// POST /api/database/user/drop：删除用户。
@@ -1135,7 +1131,7 @@ pub async fn user_drop(claims: ValidatedClaims, Json(req): Json<UserDropReq>) ->
         "FLUSH PRIVILEGES".to_string(),
     ])
     .await?;
-    ok(json!({ "ok": true, "user": user }))
+    crate::zap::api_ok(json!({ "ok": true, "user": user }))
 }
 
 /// GET /api/database/remote：远程访问授权列表（host 不是本机来源的账号）。
@@ -1168,7 +1164,7 @@ pub async fn remote_list(claims: ValidatedClaims) -> ZapJsonResult {
         items.push(json!({ "user": user, "host": host, "grants": grants }));
     }
 
-    ok(json!({ "ok": true, "list": items }))
+    crate::zap::api_ok(json!({ "ok": true, "list": items }))
 }
 
 /// POST /api/database/remote/grant：授权某主机远程访问某库。
@@ -1219,7 +1215,7 @@ pub async fn remote_grant(
     sqls.push("FLUSH PRIVILEGES".to_string());
     exec_on(&mut conn, &sqls).await?;
 
-    ok(json!({ "ok": true, "user": user, "host": host, "schema": db }))
+    crate::zap::api_ok(json!({ "ok": true, "user": user, "host": host, "schema": db }))
 }
 
 /// POST /api/database/remote/revoke：撤销远程授权（删除该 host 下的账号）。
@@ -1242,7 +1238,7 @@ pub async fn remote_revoke(claims: ValidatedClaims, Json(req): Json<UserDropReq>
         "FLUSH PRIVILEGES".to_string(),
     ])
     .await?;
-    ok(json!({ "ok": true, "user": user }))
+    crate::zap::api_ok(json!({ "ok": true, "user": user }))
 }
 
 #[cfg(test)]
