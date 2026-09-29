@@ -14,17 +14,20 @@ env:
   PROJECT_NAME: zap-rs
 
 jobs:
-  build-linux:
-    name: Linux ${{ matrix.target }}
+  build:
+    name: Build ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
+            arch: amd64
           - target: aarch64-unknown-linux-musl
+            arch: arm64
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
@@ -34,31 +37,59 @@ jobs:
       - name: Install cross (pinned)
         run: cargo install cross --version 0.2.5 --locked
 
-      - name: Build
+      # 前端必须先在 cargo build 之前构建：zapd 通过 rust-embed 在编译期把 ../web/dist 打进二进制。
+      # 否则 GitHub Release 的二进制只会内嵌陈旧/空的 web/dist（与 build.sh 行为一致）。
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web frontend
+        working-directory: web
+        run: |
+          export ZAP_VERSION="${GITHUB_REF_NAME#v}"
+          npm ci
+          npm run build:prod
+
+      - name: Build release binaries
         run: cross build --release --target ${{ matrix.target }} --locked
 
-      - name: Package artifact
+      # 按 build.sh 的完整布局打包（zap/ 目录：四个二进制 + scripts + data），
+      # 产物名 zap-v<version>-linux-<arch>.tar.gz，与 scripts/install.sh 期望一致。
+      - name: Package artifact (build.sh layout)
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
           chmod +x scripts/release/package.sh
-          bash scripts/release/package.sh package "${{ matrix.target }}" "target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}" "dist"
+          bash scripts/release/package.sh package-full "${{ matrix.arch }}" "${{ matrix.target }}" "target/${{ matrix.target }}/release" "dist"
 
       - name: Upload tar.gz
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: linux-${{ matrix.target }}
+          name: linux-${{ matrix.arch }}
           path: dist/*.tar.gz
+          if-no-files-found: error
 
   release:
     name: GitHub Release
-    needs: [build-linux]
+    needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist
+
+      # download-artifact 会把每个 matrix 产物放进各自子目录，先拍平到 dist/ 下。
+      - name: Flatten artifacts
+        run: |
+          find dist -type f -name '*.tar.gz' -exec mv -t dist {} +
+          find dist -mindepth 1 -type d -empty -delete
 
       - name: Generate sha256
         run: |
