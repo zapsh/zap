@@ -1,9 +1,10 @@
 //! 数据库管理（MySQL / MariaDB）。
 //!
 //! 通过 **sqlx 的 MySQL 驱动**（纯 Rust 实现，不依赖 `mysql` 客户端、
-//! libmysqlclient 或 OpenSSL）直连本机实例：优先走 unix socket，取不到再回落
-//! 回环 TCP。连接身份为 `zapadm` 凭据（由 zap-crypto 从 /etc/zap/credentials
-//! 解密读取），**不使用 root 账号**：
+//! libmysqlclient 或 OpenSSL）直连本机实例：依次尝试本机 socket 与回环 TCP，
+//! 取第一个能过鉴权的入口（两个入口的来源字符串不同：socket = `localhost`、
+//! TCP = `127.0.0.1`）。连接身份为 `zapadm` 凭据（由 zap-crypto 从
+//! /etc/zap/credentials 解密读取），**不使用 root 账号**：
 //!
 //! - GET  /api/database/status          服务状态与版本
 //! - GET  /api/database/list            库列表（含大小 / 表数 / 字符集）
@@ -20,6 +21,8 @@
 //! 创建库时会自动补上该前缀；管理员不受限制。
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use axum::Json;
 use axum::extract::Query;
@@ -74,23 +77,76 @@ fn zapadm_password() -> Result<String, ZapError> {
         .map_err(|e| ZapError::New(-1, format!("读取数据库凭据失败：{e}")))
 }
 
-/// 建立一条管理连接：优先 unix socket，没有则回落回环 TCP。
+/// 账号连接选项（主机 / socket 由各入口另行指定）
+fn base_opts(pwd: &str) -> MySqlConnectOptions {
+    MySqlConnectOptions::new().username(CRED_USER).password(pwd)
+}
+
+/// 候选连接入口（按优先级）。
+///
+/// MySQL 的账号是 `user@host` **按来源字符串精确匹配**的，而本机连接的来源
+/// 字符串取决于入口：unix socket → `localhost`，回环 TCP → `127.0.0.1`
+/// （实例开了 `skip-name-resolve` 时不会再被反解成 localhost）。
+/// zapadm 只授权了其中一个（安装脚本建的是 `@localhost`，手工建库常见
+/// `@127.0.0.1`），走另一个入口就会被拒 —— 所以本机 socket 与回环 TCP
+/// 都列进来，逐个试到能过鉴权的那个为止。
+fn connect_targets(pwd: &str) -> Vec<MySqlConnectOptions> {
+    let mut targets: Vec<MySqlConnectOptions> = SOCKETS
+        .iter()
+        .filter(|s| std::path::Path::new(s).exists())
+        .map(|s| base_opts(pwd).socket(s))
+        .collect();
+    // 兜底：socket 不可用 / 该来源未授权时走回环 TCP（IPv4 / IPv6 各来一次，
+    // 与建库时给应用账号展开的 `localhost` / `127.0.0.1` / `::1` 三种来源对齐）
+    targets.push(base_opts(pwd).host(DB_HOST).port(DEFAULT_PORT));
+    targets.push(base_opts(pwd).host("::1").port(DEFAULT_PORT));
+    targets
+}
+
+/// 建立一条管理连接：依次尝试候选入口，取第一个能过鉴权的。
 ///
 /// sqlx 的 MySQL 驱动是纯 Rust 的，`caching_sha2_password`（MySQL 8 默认）
 /// 会在需要时向服务端取 RSA 公钥加密口令，无需 TLS 也能完成认证。
+///
+/// 命中过的入口会被记住，下次从它开始试（避免每次请求都先撞一次拒绝）。
 async fn connect() -> Result<MySqlConnection, ZapError> {
     let pwd = zapadm_password()?;
-    let opts = match socket_path() {
-        Some(sock) => MySqlConnectOptions::new().socket(sock),
-        None => MySqlConnectOptions::new().host(DB_HOST).port(DEFAULT_PORT),
-    }
-    .username(CRED_USER)
-    .password(&pwd);
+    let targets = connect_targets(&pwd);
+    let start = LAST_OK.load(Ordering::Relaxed).min(targets.len() - 1);
 
-    MySqlConnection::connect_with(&opts)
-        .await
-        .map_err(|e| ZapError::New(-1, format!("连接数据库失败：{e}")))
+    // 鉴权失败（连上了但账号/来源不匹配）比连不上更值得上报
+    let mut denied: Option<String> = None;
+    let mut last: Option<String> = None;
+    for k in 0..targets.len() {
+        let i = (start + k) % targets.len();
+        match MySqlConnection::connect_with(&targets[i]).await {
+            Ok(conn) => {
+                LAST_OK.store(i, Ordering::Relaxed);
+                return Ok(conn);
+            }
+            Err(e) => {
+                tracing::debug!("数据库连接入口 #{i} 失败：{e}");
+                if denied.is_none() && e.to_string().contains("Access denied") {
+                    denied = Some(e.to_string());
+                }
+                last = Some(e.to_string());
+            }
+        }
+    }
+
+    Err(ZapError::New(
+        -1,
+        format!(
+            "连接数据库失败：{}",
+            denied
+                .or(last)
+                .unwrap_or_else(|| "没有可用的连接入口".to_string())
+        ),
+    ))
 }
+
+/// 上一次连接成功的入口下标（候选顺序固定，故可直接复用）
+static LAST_OK: AtomicUsize = AtomicUsize::new(0);
 
 /// 把一列值转成展示用的文本：字符串原样、整型转十进制、NULL 为空串。
 ///
