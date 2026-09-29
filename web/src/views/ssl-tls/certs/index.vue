@@ -1205,6 +1205,7 @@ function openLetsEncrypt() {
 }
 
 let pollTimer: ReturnType<typeof setInterval> | undefined
+let clockTimer: ReturnType<typeof setInterval> | undefined
 function stopPoll() {
   if (pollTimer) {
     clearInterval(pollTimer)
@@ -1406,13 +1407,14 @@ onMounted(() => {
   loadList()
   loadOwners()
   loadOrders()
-  setInterval(() => {
+  clockTimer = setInterval(() => {
     nowTs.value = Math.floor(Date.now() / 1000)
   }, 30000)
 })
 
 onBeforeUnmount(() => {
   if (parseTimer) clearTimeout(parseTimer)
+  if (clockTimer) clearInterval(clockTimer)
   stopPoll()
 })
 </script>
