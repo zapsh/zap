@@ -14,7 +14,6 @@
 //! - POST /system/config/zap               保存（按 Tab 部分提交）
 //! - POST /system/config/zap/ssl/self-sign 重新生成自签证书
 
-use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
@@ -84,9 +83,9 @@ async fn cert_options() -> Vec<CertOption> {
 }
 
 /// 读取证书 / 私钥文件，解析出页面上展示的证书信息。
-fn inspect_ssl(cert_file: &str, key_file: &str) -> serde_json::Value {
-    let cert_pem = fs::read_to_string(cert_file).unwrap_or_default();
-    let key_pem = fs::read_to_string(key_file).unwrap_or_default();
+async fn inspect_ssl(cert_file: &str, key_file: &str) -> serde_json::Value {
+    let cert_pem = tokio::fs::read_to_string(cert_file).await.unwrap_or_default();
+    let key_pem = tokio::fs::read_to_string(key_file).await.unwrap_or_default();
     let exists = !cert_pem.trim().is_empty() && !key_pem.trim().is_empty();
 
     let mut info = json!({
@@ -146,7 +145,7 @@ pub async fn zap_get(claims: ValidatedClaims) -> ZapJsonResult {
     let (address, port, url_prefix, cert_file, key_file) =
         server_snapshot().map_err(|e| ZapError::New(-1, e))?;
     let path = crate::config::config_path();
-    let content = fs::read_to_string(&path).unwrap_or_default();
+    let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
 
     let source = conf_get(K_SSL_SOURCE);
     let source = if source.is_empty() {
@@ -173,7 +172,7 @@ pub async fn zap_get(claims: ValidatedClaims) -> ZapJsonResult {
                 "source": source,
                 "cert_id": cert_id,
                 // 当前面板实际加载的证书信息（来自 cert_file/key_file）
-                "current": inspect_ssl(&cert_file, &key_file),
+                "current": inspect_ssl(&cert_file, &key_file).await,
             },
             "certs": cert_options().await,
         }
@@ -303,21 +302,23 @@ fn normalize_path(raw: &str, label: &str) -> Result<String, String> {
 }
 
 /// 写 PEM 文件（自动建目录；私钥落 600，证书落 644）。
-fn write_pem(path: &str, content: &str, secret: bool) -> Result<(), String> {
+async fn write_pem(path: &str, content: &str, secret: bool) -> Result<(), String> {
     if let Some(parent) = Path::new(path).parent()
         && !parent.as_os_str().is_empty()
-        && let Err(e) = fs::create_dir_all(parent)
+        && let Err(e) = tokio::fs::create_dir_all(parent).await
     {
         return Err(format!("创建目录失败 {}: {e}", parent.display()));
     }
     let mut text = content.trim_end().to_string();
     text.push('\n');
-    fs::write(path, text).map_err(|e| format!("写入 {path} 失败: {e}"))?;
+    tokio::fs::write(path, text)
+        .await
+        .map_err(|e| format!("写入 {path} 失败: {e}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = if secret { 0o600 } else { 0o644 };
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+        let _ = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await;
     }
     Ok(())
 }
@@ -351,8 +352,8 @@ async fn resolve_ssl(
             if !crate::zap::certmgr::ensure_certs(&cert_file, &key_file) {
                 return Err("自签证书生成失败，请检查目标目录是否可写".to_string());
             }
-            let cert = fs::read_to_string(&cert_file).unwrap_or_default();
-            let key = fs::read_to_string(&key_file).unwrap_or_default();
+            let cert = tokio::fs::read_to_string(&cert_file).await.unwrap_or_default();
+            let key = tokio::fs::read_to_string(&key_file).await.unwrap_or_default();
             if cert.trim().is_empty() || key.trim().is_empty() {
                 return Err("自签证书生成后仍读取不到内容，请检查文件权限".to_string());
             }
@@ -438,8 +439,8 @@ pub async fn zap_save(
     if let Some(s) = &payload.ssl {
         let (cert_file, key_file, cert, key, source, cert_id) =
             resolve_ssl(s).await.map_err(|e| ZapError::New(-1, e))?;
-        write_pem(&cert_file, &cert, false).map_err(|e| ZapError::New(-1, e))?;
-        write_pem(&key_file, &key, true).map_err(|e| ZapError::New(-1, e))?;
+        write_pem(&cert_file, &cert, false).await.map_err(|e| ZapError::New(-1, e))?;
+        write_pem(&key_file, &key, true).await.map_err(|e| ZapError::New(-1, e))?;
         crate::config::mutate_config(|c| {
             c.server.cert_file = cert_file.clone();
             c.server.key_file = key_file.clone();
@@ -492,8 +493,8 @@ pub async fn ssl_self_sign(
         return Err(ZapError::New(-1, "仅管理员可操作面板证书".to_string()));
     }
     let (_, _, _, cert_file, key_file) = server_snapshot().map_err(|e| ZapError::New(-1, e))?;
-    let _ = fs::remove_file(&cert_file);
-    let _ = fs::remove_file(&key_file);
+    let _ = tokio::fs::remove_file(&cert_file).await;
+    let _ = tokio::fs::remove_file(&key_file).await;
     if !crate::zap::certmgr::ensure_certs(&cert_file, &key_file) {
         return Err(ZapError::New(
             -1,

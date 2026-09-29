@@ -130,9 +130,10 @@ fn sanitize_relative(name: &str) -> String {
 }
 
 /// 上传临时文件目录（面板数据盘）：大文件边收边落盘，收完由 zapexec 搬走。
-fn upload_tmp_dir() -> Result<PathBuf, ZapError> {
+async fn upload_tmp_dir() -> Result<PathBuf, ZapError> {
     let dir = crate::zap::appstore::data_dir().join("tmp").join("upload");
-    std::fs::create_dir_all(&dir)
+    tokio::fs::create_dir_all(&dir)
+        .await
         .map_err(|e| ZapError::New(-1, format!("创建上传临时目录失败: {}", e)))?;
     Ok(dir)
 }
@@ -509,7 +510,8 @@ pub async fn file_chmod(
     let mut mode = payload.mode;
     if !is_admin(&claims) {
         use std::os::unix::fs::PermissionsExt;
-        let current_mode = std::fs::metadata(&resolved)
+        let current_mode = tokio::fs::metadata(&resolved)
+            .await
             .map_err(|e| ZapError::New(-1, format!("读取当前权限失败：{e}")))?
             .permissions()
             .mode();
@@ -782,7 +784,7 @@ pub async fn file_upload(
 
     // 边收边写盘：早先是 `field.bytes()` 把整个文件读进内存再 base64 放大 1.33 倍，
     // 大文件会把 zapd 撑爆。落盘目录放在面板数据盘（不是 /tmp，避免大文件撑满内存盘）。
-    let run_dir = upload_tmp_dir()?.join(format!(
+    let run_dir = upload_tmp_dir().await?.join(format!(
         "{}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

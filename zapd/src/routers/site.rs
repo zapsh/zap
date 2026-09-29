@@ -605,7 +605,7 @@ pub async fn migrate_log_roots() {
         let old = std::path::Path::new(&old_s);
         let new = std::path::Path::new(&want);
         if old.is_dir() && !new.exists() {
-            match std::fs::rename(old, new) {
+            match tokio::fs::rename(old, new).await {
                 Ok(()) => info!("站点 {} 日志目录迁移: {} -> {}", id, old_s, want),
                 Err(e) => {
                     warn!(

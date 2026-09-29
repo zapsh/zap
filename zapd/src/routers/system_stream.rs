@@ -1275,7 +1275,9 @@ async fn write_cert_files(rows: &[StreamRow]) -> Result<(), String> {
         return Ok(());
     }
     let dir = cert_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建证书目录失败: {e}"))?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("创建证书目录失败: {e}"))?;
     let pool = db::get_db_pool().await;
     for r in &need {
         let pem: Option<(String, String)> =
@@ -1298,18 +1300,23 @@ async fn write_cert_files(rows: &[StreamRow]) -> Result<(), String> {
         }
         let crt = cert_file(r.id, "crt");
         let key_path = cert_file(r.id, "key");
-        std::fs::write(&crt, cert).map_err(|e| format!("写入证书文件失败: {e}"))?;
-        std::fs::write(&key_path, key).map_err(|e| format!("写入私钥文件失败: {e}"))?;
+        tokio::fs::write(&crt, cert)
+            .await
+            .map_err(|e| format!("写入证书文件失败: {e}"))?;
+        tokio::fs::write(&key_path, key)
+            .await
+            .map_err(|e| format!("写入私钥文件失败: {e}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
+            let _ = tokio::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+                .await;
         }
     }
     // 规则删掉 / 关掉之后别把私钥留在盘上
     let keep: std::collections::HashSet<i64> = need.iter().map(|r| r.id).collect();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
+    if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+        while let Ok(Some(e)) = entries.next_entry().await {
             let name = e.file_name().to_string_lossy().to_string();
             let Some(rest) = name.strip_prefix("zap-stream-") else {
                 continue;
@@ -1320,7 +1327,7 @@ async fn write_cert_files(rows: &[StreamRow]) -> Result<(), String> {
                 .parse::<i64>()
                 .unwrap_or(-1);
             if id > 0 && !keep.contains(&id) {
-                let _ = std::fs::remove_file(e.path());
+                let _ = tokio::fs::remove_file(e.path()).await;
             }
         }
     }

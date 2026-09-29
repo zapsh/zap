@@ -9,6 +9,11 @@
   - **App deploy ownership check**: `AppDeploy` carries the requester identity; `deploy` requires a non-admin user's `owner_user` to equal the requester, preventing apps from being launched as another site's account (cross-tenant tampering / privilege escalation). Admin is exempt (`skip_owner_check`); site ownership still enforced by `zapd`.
   - Non-admin users without a bound system account are now rejected instead of running as root.
 
+- **#7 Blocking I/O inside async handlers (High)** — a blocking `std::fs` call on a tokio worker stalls the whole async pool:
+  - Replaced every blocking file op in `routers/**` (site log-dir `rename`; appstore `provision`/`info.yaml` reads and script-tree traversal; phpMyAdmin FPM socket probe `read_dir`/`metadata`/`canonicalize`; stream-cert `create_dir_all`/`write`/`set_permissions`/`read_dir`/`remove_file`; Zap settings cert read/self-sign/delete; MySQL `my.cnf` parse; upload tmp-dir create and chmod current-mode read) with `tokio::fs` (async path) or `tokio::task::spawn_blocking`.
+  - `parse_mycnf` is now async and cached via `tokio::sync::OnceCell`; recursive reads go through `tokio::fs`.
+  - Added a clippy guard: root `clippy.toml` uses `disallowed-types` to forbid `routers/**` from directly using the blocking `std::fs` I/O types (`File`/`OpenOptions`/`ReadDir`/`DirEntry`/`FileType`), enforced by `#![deny(clippy::disallowed_types)]` at the top of `routers/mod.rs` (test builds exempt). `Metadata`/`Permissions` are intentionally allowed since they are returned/required by `tokio::fs`.
+
 - (same series) JWT startup fails when the default key is missing (fail-closed); advanced proxy `raw` body and custom `rewrite` rules are hardened against `include` / system-path / cloud-metadata injection.
 
 ## [v1.0.10] - Release Date : 2026-9-14

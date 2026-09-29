@@ -69,27 +69,32 @@ struct MysqlConf {
     ports: Vec<u16>,
 }
 
+use tokio::sync::OnceCell;
+
 /// 读 MySQL 配置：一次解析后缓住（改了 my.cnf 需要重启面板生效）。
 ///
 /// `mysql` 客户端之所以直接登得上，是因为它按 my.cnf 找 socket / port；
 /// 面板若只认硬编码候选，遇到自定义安装路径（如 /usr/local/apps/mysql-*/…）
 /// 会连到另一个实例或连不上 —— 症状就是「CLI 登得上、面板报 1045」。
-fn mysql_conf() -> &'static MysqlConf {
-    static CONF: std::sync::OnceLock<MysqlConf> = std::sync::OnceLock::new();
-    CONF.get_or_init(|| {
+///
+/// 解析走 `tokio::fs`（异步），避免阻塞 tokio worker（安全审计 #7）。
+static CONF: OnceCell<MysqlConf> = OnceCell::const_new();
+async fn mysql_conf() -> &'static MysqlConf {
+    CONF.get_or_init(|| async {
         let mut c = MysqlConf::default();
         for f in MYCNF {
-            parse_mycnf(std::path::Path::new(f), &mut c, 0);
+            parse_mycnf(std::path::Path::new(f), &mut c, 0).await;
         }
         c
     })
+    .await
 }
 
-fn parse_mycnf(path: &std::path::Path, out: &mut MysqlConf, depth: usize) {
+async fn parse_mycnf(path: &std::path::Path, out: &mut MysqlConf, depth: usize) {
     if depth > 3 {
         return;
     }
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = tokio::fs::read_to_string(path).await else {
         return;
     };
     let mut in_section = false;
@@ -112,16 +117,20 @@ fn parse_mycnf(path: &std::path::Path, out: &mut MysqlConf, depth: usize) {
         {
             let arg = arg.trim().trim_matches('\'').trim_matches('"');
             match directive.trim() {
-                "include" => parse_mycnf(std::path::Path::new(arg), out, depth + 1),
+                "include" => {
+                    Box::pin(parse_mycnf(std::path::Path::new(arg), out, depth + 1)).await
+                }
                 "includedir" => {
-                    let Ok(rd) = std::fs::read_dir(arg) else {
-                        continue;
-                    };
-                    let mut files: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-                    files.sort();
-                    for f in files {
-                        if f.is_file() {
-                            parse_mycnf(&f, out, depth + 1);
+                    if let Ok(mut rd) = tokio::fs::read_dir(arg).await {
+                        let mut files: Vec<_> = Vec::new();
+                        while let Ok(Some(e)) = rd.next_entry().await {
+                            files.push(e.path());
+                        }
+                        files.sort();
+                        for f in files {
+                            if f.is_file() {
+                                Box::pin(parse_mycnf(&f, out, depth + 1)).await;
+                            }
                         }
                     }
                 }
@@ -151,9 +160,10 @@ fn parse_mycnf(path: &std::path::Path, out: &mut MysqlConf, depth: usize) {
 }
 
 /// 候选 socket（配置里指明的优先，均按存在性过滤并去重）
-fn socket_candidates() -> Vec<String> {
+async fn socket_candidates() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in mysql_conf()
+        .await
         .sockets
         .iter()
         .map(|s| s.as_str())
@@ -167,9 +177,9 @@ fn socket_candidates() -> Vec<String> {
 }
 
 /// 候选端口（配置端口优先，最后兜默认端口）
-fn port_candidates() -> Vec<u16> {
+async fn port_candidates() -> Vec<u16> {
     let mut out: Vec<u16> = Vec::new();
-    for p in mysql_conf().ports.iter().copied().chain([DEFAULT_PORT]) {
+    for p in mysql_conf().await.ports.iter().copied().chain([DEFAULT_PORT]) {
         if !out.contains(&p) {
             out.push(p);
         }
@@ -190,8 +200,8 @@ const SYSTEM_SCHEMAS: &[&str] = &["information_schema", "mysql", "performance_sc
 // ── 连接与执行 ──────────────────────────────────────────────
 
 /// 面板实际在用的 socket（状态页展示用）
-fn socket_path() -> Option<String> {
-    socket_candidates().into_iter().next()
+async fn socket_path() -> Option<String> {
+    socket_candidates().await.into_iter().next()
 }
 
 /// 从 /etc/zap/credentials 解密读取 zapadm 密码
@@ -235,8 +245,8 @@ fn tls_opts(opts: MySqlConnectOptions) -> MySqlConnectOptions {
 /// zapadm 只授权了其中一个（安装脚本建的是 `@localhost`，手工建库常见
 /// `@127.0.0.1`），走另一个入口就会被拒 —— 所以本机 socket 与回环 TCP
 /// 都列进来，逐个试到能过鉴权的那个为止。
-fn connect_targets(user: &str, pwd: &str) -> Vec<MySqlConnectOptions> {
-    let socks = socket_candidates();
+async fn connect_targets(user: &str, pwd: &str) -> Vec<MySqlConnectOptions> {
+    let socks = socket_candidates().await;
     // 先 TLS、后明文：完整认证在明文 socket 上必然 1045（见 `tls_opts` 的说明）
     let mut targets: Vec<MySqlConnectOptions> = socks
         .iter()
@@ -245,7 +255,7 @@ fn connect_targets(user: &str, pwd: &str) -> Vec<MySqlConnectOptions> {
     targets.extend(socks.into_iter().map(|s| base_opts(user, pwd).socket(s)));
     // 兜底：socket 连不上时走回环 TCP（IPv4 / IPv6 × 各候选端口，与建库时给应用
     // 账号展开的 `localhost` / `127.0.0.1` / `::1` 三种来源对齐）
-    for port in port_candidates() {
+    for port in port_candidates().await {
         targets.push(tls_opts(base_opts(user, pwd).host(DB_HOST).port(port)));
         targets.push(tls_opts(base_opts(user, pwd).host("::1").port(port)));
         // 明文 TCP：服务端在这个入口上会下发 RSA 公钥，完整认证同样能过
@@ -266,7 +276,7 @@ async fn connect_as(
     pwd: &str,
     start: usize,
 ) -> Result<(MySqlConnection, usize), String> {
-    let targets = connect_targets(user, pwd);
+    let targets = connect_targets(user, pwd).await;
     let start = start.min(targets.len() - 1);
 
     // 鉴权失败（连上了但账号/来源不匹配）比连不上更值得上报
@@ -299,7 +309,7 @@ async fn root_conn() -> Result<MySqlConnection, ZapError> {
     {
         return Ok(conn);
     }
-    for sock in socket_candidates() {
+    for sock in socket_candidates().await {
         let opts = base_opts(ROOT_USER, "").socket(sock);
         if let Ok(conn) = MySqlConnection::connect_with(&opts).await {
             return Ok(conn);
@@ -692,7 +702,7 @@ pub async fn status(_claims: ValidatedClaims) -> ZapJsonResult {
         "host": DB_HOST,
         "port": port,
         "addr": format!("{DB_HOST}:{port}"),
-        "socket": socket_path(),
+        "socket": socket_path().await,
         "sql_mode": sql_mode,
     }))
 }
@@ -1250,8 +1260,8 @@ mod tests {
         assert_eq!(host_targets(" LocalHost "), all);
     }
 
-    #[test]
-    fn mycnf_parses_socket_port_and_includes() {
+    #[tokio::test]
+    async fn mycnf_parses_socket_port_and_includes() {
         let dir = std::env::temp_dir().join(format!("zap-mycnf-{}", std::process::id()));
         let conf_d = dir.join("conf.d");
         std::fs::create_dir_all(&conf_d).unwrap();
@@ -1275,7 +1285,7 @@ mod tests {
         std::fs::write(conf_d.join("zap.cnf"), "[mysqld]\nport=3308\n").unwrap();
 
         let mut c = MysqlConf::default();
-        parse_mycnf(&main, &mut c, 0);
+        parse_mycnf(&main, &mut c, 0).await;
         assert_eq!(
             c.sockets,
             vec!["/tmp/from-main.sock", "/tmp/from-client.sock"]

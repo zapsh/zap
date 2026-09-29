@@ -82,23 +82,23 @@ fn slot_dir_of(pkg_path: &str, instance: Option<&str>) -> PathBuf {
 /// info.yaml（0644）里取站点 / 库字段。info.yaml 没有密码，卸载脚本会自动
 /// 跳过备份与删库，但仍能正确清理站点文件 —— 比直接报「缺少 SITE_ROOT」
 /// 把卸载卡死要好。
-pub(crate) fn load_provision(
+pub(crate) async fn load_provision(
     pkg_path: &str,
     instance: Option<&str>,
 ) -> Option<BTreeMap<String, String>> {
-    if let Ok(content) = std::fs::read_to_string(provision_file(pkg_path, instance))
+    if let Ok(content) = tokio::fs::read_to_string(provision_file(pkg_path, instance)).await
         && let Ok(env) = serde_json::from_str::<BTreeMap<String, String>>(&content)
         && !env.is_empty()
     {
         return Some(env);
     }
-    provision_from_info(pkg_path, instance)
+    provision_from_info(pkg_path, instance).await
 }
 
 /// 从脚本登记的 info.yaml 还原站点 / 数据库字段（不含密码）。
-fn provision_from_info(pkg_path: &str, instance: Option<&str>) -> Option<BTreeMap<String, String>> {
+async fn provision_from_info(pkg_path: &str, instance: Option<&str>) -> Option<BTreeMap<String, String>> {
     let content =
-        std::fs::read_to_string(slot_dir_of(pkg_path, instance).join("info.yaml")).ok()?;
+        tokio::fs::read_to_string(slot_dir_of(pkg_path, instance).join("info.yaml")).await.ok()?;
     let v: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     for (key, dst) in [
@@ -687,7 +687,7 @@ pub async fn uninstall(
     let run_mode = system_env::VHOST_MODE.to_string();
 
     // 回传安装时的编排结果（站点 / 数据库），供 uninstall.sh 先备份数据再删文件
-    let provision = load_provision(&payload.pkg_path, payload.instance.as_deref());
+    let provision = load_provision(&payload.pkg_path, payload.instance.as_deref()).await;
     let resp = zapexec::call(Request::AppstoreUninstall {
         pkg_path: payload.pkg_path.clone(),
         options,
@@ -771,7 +771,7 @@ pub async fn upgrade(
         action: payload.action.clone(),
         options,
         instance: payload.instance.clone(),
-        provision: load_provision(&payload.pkg_path, payload.instance.as_deref()),
+        provision: load_provision(&payload.pkg_path, payload.instance.as_deref()).await,
         user: Some(claims.sub.clone()),
         run_mode: Some(system_env::VHOST_MODE.to_string()),
         run_id: run_id.clone(),
@@ -823,15 +823,15 @@ pub async fn upgrade(
 // ── 脚本管理 ────────────────────────────────────────────────
 
 /// 递归构建自定义脚本树（路径相对 custom/）。
-fn build_script_tree(dir: &std::path::Path, rel_base: &std::path::Path) -> Value {
+async fn build_script_tree(dir: &std::path::Path, rel_base: &std::path::Path) -> Value {
     let name = dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let mut dirs = Vec::new();
     let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
+    if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
             let path = entry.path();
             if path.is_dir() {
                 dirs.push(entry);
@@ -844,7 +844,7 @@ fn build_script_tree(dir: &std::path::Path, rel_base: &std::path::Path) -> Value
     files.sort_by_key(|e| e.file_name());
     let mut children: Vec<Value> = Vec::new();
     for entry in dirs {
-        children.push(build_script_tree(&entry.path(), rel_base));
+        children.push(Box::pin(build_script_tree(&entry.path(), rel_base)).await);
     }
     for entry in files {
         let path = entry.path();
@@ -877,15 +877,11 @@ pub async fn scripts_tree(claims: ValidatedClaims) -> ZapJsonResult {
     tokio::fs::create_dir_all(&root)
         .await
         .map_err(|e| ZapError::New(-1, format!("创建脚本目录失败: {e}")))?;
-    let tree = tokio::task::spawn_blocking(move || {
-        if root.is_dir() {
-            build_script_tree(&root, &base)
-        } else {
-            Value::Null
-        }
-    })
-    .await
-    .unwrap_or(Value::Null);
+    let tree = if root.is_dir() {
+        build_script_tree(&root, &base).await
+    } else {
+        Value::Null
+    };
     Ok(Json(
         json!({ "code": 0, "message": "OK", "data": { "tree": tree } }),
     ))

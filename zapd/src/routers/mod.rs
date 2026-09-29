@@ -1,3 +1,7 @@
+// 安全加固（#7）：routers 模块内禁止直接使用 std::fs 阻塞 I/O 类型，
+// 一律改用 `tokio::fs`（async 路径）或 `tokio::task::spawn_blocking`。
+#![cfg_attr(not(test), deny(clippy::disallowed_types))]
+
 use axum::{
     Json, Router,
     body::Body,

@@ -429,10 +429,10 @@ async fn resolve_fpm_socket() -> Result<String, (StatusCode, String)> {
     let mut seen: Vec<PathBuf> = Vec::new();
 
     for dir in ["/run", "/var/run"] {
-        let Ok(rd) = std::fs::read_dir(dir) else {
+        let Ok(mut rd) = tokio::fs::read_dir(dir).await else {
             continue;
         };
-        for e in rd.flatten() {
+        while let Ok(Some(e)) = rd.next_entry().await {
             let name = e.file_name().to_string_lossy().into_owned();
             // 非「系统默认 pool」：用户 pool 单独记录，便于报错时说明为什么不用它
             let Some(ver) = system_pool_ver(&name) else {
@@ -444,14 +444,17 @@ async fn resolve_fpm_socket() -> Result<String, (StatusCode, String)> {
                 }
                 continue;
             };
-            let is_socket = std::fs::metadata(e.path())
+            let is_socket = tokio::fs::metadata(e.path())
+                .await
                 .map(|m| m.file_type().is_socket())
                 .unwrap_or(false);
             if !is_socket {
                 continue;
             }
             // /run 与 /var/run 通常指向同一处，按真实路径去重
-            let real = std::fs::canonicalize(e.path()).unwrap_or_else(|_| e.path());
+            let real = tokio::fs::canonicalize(e.path())
+                .await
+                .unwrap_or_else(|_| e.path());
             if seen.contains(&real) {
                 continue;
             }
