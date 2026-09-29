@@ -4,6 +4,6 @@ repos:
   url: https://github.com/zapsh/zap-appstore.git
   builtin: true
   enabled: true
-  version: 5097c0d
-  commit: 5097c0dea52c840b26da8cd65dc9729eec0bc4cf
-  updated_at: 1788612210
+  version: e2c8873
+  commit: e2c8873e33dcd266b06462f7e91749d0e885e962
+  updated_at: 1790685734
