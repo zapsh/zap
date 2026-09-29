@@ -27,15 +27,15 @@ pub fn mask_secret(plain: &str) -> String {
     format!("{head}****{tail}")
 }
 
-/// 密码加密入口（加密失败时返回原文并告警，避免服务不可用）。
-pub fn encrypt_password(pwd: &str) -> String {
-    match encrypt(pwd) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("SSH 密码加密失败: {e}");
-            pwd.to_string()
-        }
-    }
+/// 密码加密入口。
+///
+/// **绝不回退明文**：加密失败时返回 `Err`，调用侧据此拒绝落库（而不是把明文写进
+/// 数据库）。明文存储会让任何能读库/备份的人直接拿到凭据，故这里 fail-closed。
+pub fn encrypt_password(pwd: &str) -> Result<String, String> {
+    encrypt(pwd).map_err(|e| {
+        warn!("密码加密失败，已拒绝以明文保存: {e}");
+        format!("密码加密失败：{e}（请检查主密钥文件 /etc/zap/secret.key 权限）")
+    })
 }
 
 /// 密码解密入口（解密失败返回空串并告警，调用侧应拒绝使用空密码继续）。
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn is_encrypted_detects_ciphertext() {
-        let enc = encrypt_password("secret");
+        let enc = encrypt_password("secret").unwrap();
         assert!(is_encrypted(&enc));
         assert!(!is_encrypted("plain-password"));
         assert!(!is_encrypted(""));

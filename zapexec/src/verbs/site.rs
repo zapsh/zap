@@ -1861,6 +1861,72 @@ mod loc_extra_tests {
     }
 }
 
+/// 校验单个站点域名是否合法（用于 Nginx `server_name` 渲染前的 fail-closed 检查）。
+///
+/// 严格白名单，拒绝任何可能把 `a.com; proxy_pass ...` 注入成 server 块指令的字符：
+/// - 不允许空白、`;` `"` `'` `$` `{` `}` `#` 以及 `/ \ %` 等；
+/// - 不允许前导/尾随点，不允许 `..`；
+/// - 每个标签为 RFC 1123 风格（字母/数字/`-`，不以 `-` 起止，长度 1..=63）；
+/// - 最左侧允许整段 `*` 通配（`*.example.com`），不支持其它位置的 `*`；
+/// - 允许 FQDN 的单一尾点（无害）；整体长度 ≤ 253。
+fn valid_domain(d: &str) -> bool {
+    let raw = d.trim();
+    if raw.is_empty() || raw.len() > 253 {
+        return false;
+    }
+    // FQDN 尾点（如 `example.com.`）无害，先剥离再校验
+    let d = raw.strip_suffix('.').unwrap_or(raw);
+    if d.is_empty() || d.contains("..") || d.starts_with('.') || d.ends_with('.') {
+        return false;
+    }
+    if d.chars().any(|c| {
+        c.is_control()
+            || matches!(
+                c,
+                ';' | '"' | '\'' | '$' | '{' | '}' | '#' | ' ' | '\t' | '/' | '\\' | '%'
+            )
+    }) {
+        return false;
+    }
+    for (i, lab) in d.split('.').enumerate() {
+        if lab.is_empty() || lab.len() > 63 {
+            return false;
+        }
+        // 最左侧允许整段 `*`（通配符），其余标签必须 [A-Za-z0-9-] 且不以 `-` 起止
+        if i == 0 && lab == "*" {
+            continue;
+        }
+        if !lab
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            || lab.starts_with('-')
+            || lab.ends_with('-')
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// 站点域名整体校验：空列表合法（`server_name` 回退 `_`），
+/// 任一非空域名非法即整体拒绝（fail-closed），杜绝配置注入与目录/模板污染。
+fn validate_domains(domains: &[String]) -> Result<(), String> {
+    if domains.len() > 200 {
+        return Err("站点域名数量超过上限（200）".to_string());
+    }
+    for d in domains {
+        if d.trim().is_empty() {
+            continue;
+        }
+        if !valid_domain(d) {
+            return Err(format!(
+                "非法域名：{d}（仅允许字母/数字/-，支持 *. 通配，且不含 ; \" $ {{ }} # 等字符）"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_vhost_cfg(
     site_type: &str,
     pseudo_static: &str,
@@ -2373,6 +2439,10 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
             None,
         ));
     }
+
+    // 域名严格校验（fail-closed）：在渲染 server_name / 生成 index.html / 创建目录之前，
+    // 拒绝可注入 server 块指令的非法域名。
+    validate_domains(domains)?;
 
     // 维护态：只发布维护页 vhost，不触碰业务目录与 PHP
     if state == "maintenance" {
@@ -3662,6 +3732,51 @@ mod tests {
             ".. 应拒绝"
         );
         assert!(!path_under(base, Path::new("/etc")), "站外路径应拒绝");
+    }
+
+    #[test]
+    fn domain_validation_rejects_injection_and_accepts_valid() {
+        // 合法域名
+        for ok in [
+            "a.com",
+            "www.example.com",
+            "sub.domain.co.uk",
+            "x-n.example.com",
+            "example.com.", // FQDN 尾点
+            "*.example.com", // 最左整段通配
+            "*.a.com",      // 通配子域
+            "localhost",     // 单标签
+            "xn--fsqu00a.xn--3lr804guic", // punycode
+        ] {
+            assert!(valid_domain(ok), "应为合法域名：{ok}");
+        }
+        // 非法：注入 server 块指令 / 非法字符 / 非法结构
+        for bad in [
+            "a.com; proxy_pass http://evil;",
+            "a.com\nproxy_pass http://evil;",
+            "a.com } location / { return 500;",
+            "a.com\"#",
+            "a.com $x",
+            "a.com{b}",
+            "../evil",
+            ".example.com",
+            "a..com",
+            "-bad.example.com",
+            "bad-.example.com",
+            "a.*.com", // 非最左通配
+            "",
+            "  ",
+            "a.com;", // 含分号
+        ] {
+            assert!(!valid_domain(bad), "应为非法域名：{bad}");
+        }
+        // 整体校验：含一个非法即拒绝（fail-closed），空列表放行
+        assert!(validate_domains(&[]).is_ok());
+        assert!(
+            validate_domains(&["a.com".into(), "b.com; evil".into()]).is_err(),
+            "含注入域名的列表必须被拒绝"
+        );
+        assert!(validate_domains(&["www.example.com".into()]).is_ok());
     }
 
     #[test]

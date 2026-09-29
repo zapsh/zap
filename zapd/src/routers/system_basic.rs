@@ -75,12 +75,10 @@ fn mail_password_view(conf: &HashMap<String, String>) -> (bool, String) {
         return (false, String::new());
     }
     if !crypto::is_encrypted(&stored) {
-        // 历史明文：就地升级为密文
-        server_env::conf_set(
-            K_MAIL_PASSWORD,
-            &crypto::encrypt_password(&stored),
-            "面板基础设置",
-        );
+        // 历史明文：就地升级为密文；加密失败时不回写（保留原值，绝不落明文）
+        if let Ok(enc) = crypto::encrypt_password(&stored) {
+            server_env::conf_set(K_MAIL_PASSWORD, &enc, "面板基础设置");
+        }
     }
     let plain = crypto::decrypt_password(&stored);
     if plain.is_empty() {
@@ -281,8 +279,11 @@ pub async fn basic_save(
                         "「mail.password」长度超限（最大 256 字符）".to_string(),
                     ));
                 }
-                // 敏感项：密文入库（{data}/server_env.yaml 只存 v1: 密文）
-                upserts.push((K_MAIL_PASSWORD.to_string(), crypto::encrypt_password(&p)));
+                // 敏感项：密文入库（{data}/server_env.yaml 只存 v1: 密文）；
+                // 加密失败直接报错，不落明文
+                let enc = crypto::encrypt_password(&p)
+                    .map_err(|e| ZapError::New(-1, e))?;
+                upserts.push((K_MAIL_PASSWORD.to_string(), enc));
             }
         }
     }

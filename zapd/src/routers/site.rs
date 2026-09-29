@@ -3024,6 +3024,16 @@ async fn sync_one_site_inner(
             domains.push(d);
         }
     }
+    // 防御性二次校验：即便 DB 内域名（如绕过保存接口直接写入）也必须在发给
+    // root 守护进程渲染 server_name 前通过严格校验，杜绝 Nginx 配置注入。
+    for d in &domains {
+        if !valid_domain(d) {
+            return Err(ZapError::New(
+                -1,
+                format!("站点域名 {d} 格式非法，已拦截同步（疑似数据被篡改，请检查站点配置）"),
+            ));
+        }
+    }
 
     // 站点扩展档案（类型 / 伪静态 / 自定义目录 / upstream / location）
     let prof = load_profile(id).await;
