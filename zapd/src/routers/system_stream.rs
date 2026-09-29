@@ -964,8 +964,7 @@ pub async fn add(
     .bind(listen_port)
     .bind(&protocol)
     .fetch_one(pool)
-    .await
-    .unwrap_or(false);
+    .await?;
     if dup {
         return Err(ZapError::New(
             -1,
@@ -1135,8 +1134,7 @@ pub async fn update(
     .bind(&protocol)
     .bind(body.id)
     .fetch_one(pool)
-    .await
-    .unwrap_or(false);
+    .await?;
     if dup {
         return Err(ZapError::New(
             -1,

@@ -14,6 +14,8 @@
   - `parse_mycnf` is now async and cached via `tokio::sync::OnceCell`; recursive reads go through `tokio::fs`.
   - Added a clippy guard: root `clippy.toml` uses `disallowed-types` to forbid `routers/**` from directly using the blocking `std::fs` I/O types (`File`/`OpenOptions`/`ReadDir`/`DirEntry`/`FileType`), enforced by `#![deny(clippy::disallowed_types)]` at the top of `routers/mod.rs` (test builds exempt). `Metadata`/`Permissions` are intentionally allowed since they are returned/required by `tokio::fs`.
 
+- **#9 Write-path `unwrap_or(false)` masks uniqueness check (Medium)** — at `system_stream.rs:968/1139` a failed duplicate-port check defaulted to "not duplicate", allowing two rules to bind the same `listen_ip:port` and causing `nginx -t` failure / inconsistent state; the DB error is now propagated with `?` so a check failure returns an error instead of silently allowing the write.
+
 - (same series) JWT startup fails when the default key is missing (fail-closed); advanced proxy `raw` body and custom `rewrite` rules are hardened against `include` / system-path / cloud-metadata injection.
 
 ## [v1.0.10] - Release Date : 2026-9-14

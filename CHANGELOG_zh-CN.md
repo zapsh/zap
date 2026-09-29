@@ -25,4 +25,6 @@
   - MySQL 配置解析（`parse_mycnf`）改为异步并通过 `tokio::sync::OnceCell` 缓存，递归读取走 `tokio::fs`。
   - 新增 clippy 守卫：根目录 `clippy.toml` 用 `disallowed-types` 禁止 `routers/**` 直接使用 `std::fs` 阻塞 I/O 类型（`File`/`OpenOptions`/`ReadDir`/`DirEntry`/`FileType`），并在 `routers/mod.rs` 顶部 `#![deny(clippy::disallowed_types)]`（测试构建豁免）防止回归；`Metadata`/`Permissions` 因是 `tokio::fs` 返回/所需类型而特意放行。
 
+- **#9 写入路径 `unwrap_or(false)` 掩盖唯一性检查（Medium）** —— `system_stream.rs:968/1139` 端口重复检查失败被默认成"不重复"，可能让两条规则绑定同一 `listen_ip:port`，导致 `nginx -t` 失败、状态不一致；现已改为用 `?` 传播数据库错误，检查失败即返回错误而非默认放行。
+
 - （同系列）JWT 默认密钥缺失时启动即失败（fail-closed）；高级反代 `raw` 体与自定义 `rewrite` 规则防止 `include` / 系统路径 / 云元数据注入。
