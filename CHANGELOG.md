@@ -20,6 +20,8 @@
 
 - **#15 CI noise / gaps (Medium)** — `ci.yml`: removed the dead step that created a `zappro` placeholder `mod.rs` (no `Cargo.toml` references it and CI never enables the `commercial` feature); `web/tsconfig.node.json`: dropped the dangling `eslint.config.*` (no eslint dependency in the project); `release.yml`: pinned `cross` to the published `0.2.5` instead of git HEAD, and pinned all third-party actions (`checkout`, `setup-node`, `cache`, `rust-toolchain`, `upload-artifact`, `download-artifact`, `action-gh-release`) to their full commit SHAs (supply-chain hardening).
 
+- **#19 README out of sync with code (Low)** — the README listed Docker container management and the app-store plugin ecosystem as Roadmap, but both are already shipped (`routers/docker.rs` with container/image/network/Compose management plus Docker/Podman runtime awareness, and a full `web/src/views/docker/` UI; the App Store is documented in `docs/api/appstore.md`). The README core-features bullet and Roadmap section now reflect the delivered state.
+
 - (same series) JWT startup fails when the default key is missing (fail-closed); advanced proxy `raw` body and custom `rewrite` rules are hardened against `include` / system-path / cloud-metadata injection.
 
 ## [v1.0.10] - Release Date : 2026-9-14

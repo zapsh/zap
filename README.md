@@ -25,7 +25,7 @@ ZAP 将**网站、SSL 证书、数据库、Docker、文件与服务器运维**�
 - **站点与域名**：站点全生命周期管理、多域名 / 多 IP 绑定、Nginx 配置在线编辑、PHP-FPM 多版本
 - **SSL / TLS**：手动导入、一键自签、Let's Encrypt 自动签发（HTTP-01 / DNS-01 含泛域名）、到期预警
 - **服务器运维**：实时监控、文件管理、Web SSH 终端、计划任务、防火墙统一抽象（firewalld / ufw / nftables / iptables）
-- **数据库与 Docker**：MySQL / MariaDB 可视化管理；Docker 容器管理（Roadmap）
+- **数据库与 Docker**：MySQL / MariaDB 可视化管理；Docker 容器 / 镜像 / 网络 / Compose 编排一站式操作（Docker 与 Podman 运行时感知）
 - **多用户体系**：RBAC 角色、套餐与分销、TOTP 两步验证、审计日志
 - **升级与备份**：面板 / 命令行 / 安装脚本三种升级入口，备份 → 原子替换 → 自动回滚
 
@@ -91,8 +91,8 @@ git clone https://github.com/zapsh/zap.git && cd zap
 - [x] 站点、SSL、应用商店、Web 终端、文件管理、计划任务、防火墙
 - [x] 多用户 / 角色 / 套餐 / 分销、TOTP、审计日志
 - [x] 集群管理（Zap Pro）：多机纳管、一键 SSH、主控主动拉取
-- [ ] Docker 容器管理：镜像、容器、网络、Compose 编排
-- [ ] 应用市场插件生态
+- [x] Docker 容器管理：镜像 / 容器 / 网络 / Compose 编排，Docker 与 Podman 运行时感知
+- [x] 应用商店插件生态：GitHub 一键上架应用、可配下载源
 
 ## 参与贡献
 

@@ -31,4 +31,6 @@
 
 - **#15 CI 噪声/缺口（Medium）** —— `ci.yml` 删除为商业模块 `zappro` 建占位 `mod.rs` 的死步骤（无任何 `Cargo.toml` 引用、CI 也不启用 `commercial` feature）；`web/tsconfig.node.json` 移除不存在的 `eslint.config.*` 引用（项目无 eslint 依赖）；`release.yml` 将 `cross` 由 git HEAD 固定到已发布版本 `0.2.5`，并把 `checkout` / `setup-node` / `cache` / `rust-toolchain` / `upload-artifact` / `download-artifact` / `action-gh-release` 等第三方 action 全部固定到 commit SHA（供应链加固）。
 
+- **#19 README 与代码不符（Low）** —— README 将 Docker 容器管理与应用商店插件生态列为 Roadmap，但二者均已落地（`routers/docker.rs` 实现容器/镜像/网络/Compose 编排并感知 Docker/Podman 运行时，配套完整 `web/src/views/docker/` 前端；应用商店已在 `docs/api/appstore.md` 文档化）。核心特性与 Roadmap 现已更正为已交付状态。
+
 - （同系列）JWT 默认密钥缺失时启动即失败（fail-closed）；高级反代 `raw` 体与自定义 `rewrite` 规则防止 `include` / 系统路径 / 云元数据注入。
