@@ -164,7 +164,7 @@ pub async fn cancel(
     if t.status == task::STATUS_PENDING {
         let _ = task::finish(&t.task_id, task::STATUS_CANCELED, -1).await;
     } else {
-        if t.kind == task::KIND_APPSTORE {
+        if t.kind == task::KIND_APPSTORE || t.kind == task::KIND_PHP {
             match zapexec::call(Request::AppstoreScriptStop {
                 run_id: t.task_id.clone(),
             })

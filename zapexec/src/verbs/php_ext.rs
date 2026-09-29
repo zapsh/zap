@@ -18,7 +18,9 @@
 //! 只有「拼接好的构建脚本」会进 bash -c，且脚本里的变量值均来自本文件常量或
 //! 已校验的扩展名。
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Stdio};
 
 use serde_json::{Value, json};
 use zap_proto::Response;
@@ -494,7 +496,7 @@ fn install_script(c: &PhpCtx, pkg: &str, version: &str, pie: bool, pecl: bool) -
         } else {
             format!(" --with-php-config={php_config}")
         };
-        return format!("pie install {target}{with_cfg}");
+        return format!("pie -v install {target}{with_cfg}");
     }
     if pecl {
         // pecl 会交互式询问若干编译选项，用空回车把全部选项走默认值
@@ -531,6 +533,85 @@ fn install_script(c: &PhpCtx, pkg: &str, version: &str, pie: bool, pecl: bool) -
     )
 }
 
+/// 安装任务硬超时（秒）：源码编译可能很久，给足 2 小时，超时按进程组强杀。
+const PHP_EXT_TIMEOUT_SECS: u64 = 7200;
+
+/// 从日志路径反推 run_id（logs/<task_id>.log → task_id）。
+fn run_id_of(log_path: &str) -> String {
+    Path::new(log_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// 以独立进程组（setsid）启动安装脚本，输出实时写日志，pid 写入 run-{run_id}.pid，
+/// 供取消 / 超时按进程组 `kill(-pid)` 终止。
+fn spawn_install_child(run_id: &str, log: &str, script: &str) -> Option<Child> {
+    let pid_path = crate::verbs::appstore::logs_dir().join(format!("run-{run_id}.pid"));
+    let log_file = match std::fs::OpenOptions::new().create(true).append(true).open(log) {
+        Ok(f) => f,
+        Err(e) => {
+            super::log_line(log, &format!("打开日志失败: {e}"));
+            return None;
+        }
+    };
+    let mut cmd = root_cmd(crate::verbs::platform::SHELL);
+    cmd.args(["-c", script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file.try_clone().expect("clone log")))
+        .stderr(Stdio::from(log_file));
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    match cmd.spawn() {
+        Ok(child) => {
+            let _ = std::fs::write(&pid_path, child.id().to_string());
+            Some(child)
+        }
+        Err(e) => {
+            super::log_line(log, &format!("启动安装进程失败: {e}"));
+            None
+        }
+    }
+}
+
+/// 等待安装子进程；超时向进程组发 SIGTERM，宽限 5 秒再 SIGKILL。
+fn wait_killable(child: &mut Child, log: &str) -> i32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(PHP_EXT_TIMEOUT_SECS);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.code().unwrap_or(-1),
+            Ok(None) => {
+                if std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    continue;
+                }
+                let pid = child.id() as i32;
+                super::log_line(
+                    log,
+                    &format!("\n── 执行超过 {PHP_EXT_TIMEOUT_SECS} 秒，终止进程组 {pid} ──"),
+                );
+                unsafe { libc::kill(-pid, libc::SIGTERM) };
+                for _ in 0..5 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    if let Ok(Some(_)) = child.try_wait() {
+                        break;
+                    }
+                }
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
+                return child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+            }
+            Err(e) => {
+                super::log_line(log, &format!("等待子进程失败: {e}"));
+                return -1;
+            }
+        }
+    }
+}
+
 /// 实例自带的构建工具（phpize / php-config），没有则回落到 PATH。
 fn php_inst_bin(c: &PhpCtx, name: &str) -> String {
     c.bin
@@ -541,7 +622,8 @@ fn php_inst_bin(c: &PhpCtx, name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-/// `php_ext.install`：后台编译安装，日志写 `log_path`，立即返回（zapd 盯日志收尾）。
+/// `php_ext.install`：后台编译安装，日志写 `log_path`；安装进程以独立进程组运行
+/// （pid 写入 run-{run_id}.pid），可被取消 / 超时按进程组强杀，立即返回。
 pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) -> Response {
     let svc = svc.to_string();
     let package = package.to_string();
@@ -583,6 +665,7 @@ pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) ->
         super::finish_log(&log_path, 1);
         return Response::ok("ok", Some(json!({ "started": false, "reason": e })));
     }
+    let run_id = run_id_of(&log_path);
     super::log_line(
         &log_path,
         &format!(
@@ -599,7 +682,9 @@ pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) ->
         ),
     );
     std::thread::spawn(move || {
-        let code = install_inner(&c, &package, &version, &log_path, pie, pecl);
+        let code = install_inner(&c, &package, &version, &log_path, pie, pecl, &run_id);
+        // 收尾：清理 pid 文件、写完成标记与退出码（.ret 为权威来源）
+        let _ = std::fs::remove_file(crate::verbs::appstore::logs_dir().join(format!("run-{run_id}.pid")));
         super::finish_log(&log_path, code);
     });
     Response::ok("ok", Some(json!({ "started": true })))
@@ -613,13 +698,20 @@ fn install_inner(
     log: &str,
     pie: bool,
     pecl: bool,
+    run_id: &str,
 ) -> i32 {
     // 短名：PIE 的 `vendor/pkg` 取末段（redis / imagick），pecl 与源码都用短名
     let short = package.rsplit('/').next().unwrap_or(package).to_string();
     let script = install_script(c, package, version, pie, pecl);
-    if super::run_step(log, "编译安装", &script) != 0 {
+    // 以可取消的进程组运行编译；输出实时写日志，取消时按进程组 SIGTERM
+    let mut child = match spawn_install_child(run_id, log, &script) {
+        Some(ch) => ch,
+        None => return 1,
+    };
+    let code = wait_killable(&mut child, log);
+    if code != 0 {
         super::log_line(log, "安装失败：见上方输出");
-        return 1;
+        return code;
     }
     // 装完的 .so 落在扩展目录（pecl / 源码都会 make install 到这里）
     let so = c.ext_dir.join(format!("{short}.so"));

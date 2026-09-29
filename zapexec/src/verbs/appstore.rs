@@ -281,7 +281,7 @@ pub(crate) fn registered_apps() -> Vec<AppRegistration> {
     out
 }
 
-fn logs_dir() -> PathBuf {
+pub(crate) fn logs_dir() -> PathBuf {
     appstore_dir().join("logs")
 }
 
