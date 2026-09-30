@@ -15,7 +15,7 @@ data/appstore/cache/*
 data/appstore/custom/*
 # 内置 AppStore 源（zap-appstore）作为独立 git 仓库维护，不纳入 zap 主仓库跟踪；
 # 由 build.sh 全量打包其 .git（首次更新走 fetch 而非整仓 clone）。
-data/appstore/repos/zap-appstore/
+#data/appstore/repos/zap-appstore/
 data/apps/*/
 data/sites/*
 data/pro/*

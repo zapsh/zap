@@ -954,9 +954,10 @@ export default {
     recursive: '递归修改（包含子目录与文件）',
 
     dirName: '目录名',
-    dirNamePlaceholder: '请输入目录名',
+    dirNamePlaceholder: '目录名，如 sub/dir（中间目录会自动创建）',
     fileName: '文件名',
-    fileNamePlaceholder: '请输入文件名',
+    fileNamePlaceholder: '文件名，如 sub/dir/file.txt（中间目录会自动创建）',
+    pathHint: '支持「目录/目录/文件名」形式，中间目录不存在会自动创建',
     newName: '新名称',
     newNamePlaceholder: '请输入新名称',
     dupName: '副本名称',
@@ -980,6 +981,7 @@ export default {
     ownNote: '需填写系统已存在的 Linux 用户名 / 用户组名；该操作仅管理员可用。',
 
     openInEditor: '使用编辑器打开',
+    openInEditorAfter: '创建后用编辑器打开',
     editTitle: '编辑: {name}',
     editorPlaceholder: '文件内容',
     editorTip: '提示：按 {key} 可直接保存（未保存的修改在关闭后不会保留）',
