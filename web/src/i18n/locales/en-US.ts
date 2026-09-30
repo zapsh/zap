@@ -3957,9 +3957,9 @@ const enUS: Messages = {
     selectOwner: 'Please select the site owner first',
     dirSelected: 'Site directory selected: {path}',
     domainDup:
-      'Duplicate domain: {domain} conflicts with {other} (a.com and www.a.com count as one domain)',
+      'Duplicate domain: {domain} conflicts with {other} (identical domain cannot be added twice)',
     domainTaken:
-      'Domain {domain} is already used by site "{holder}" (a.com and www.a.com count as one domain); choose another',
+      'Domain {domain} is already used by site "{holder}"; choose another or contact the admin',
     valNameOrDomain:
       'Please enter a site name or at least one domain (the first domain is used if the name is empty)',
     valProxyNeedLocation: 'A reverse proxy site needs at least one location',

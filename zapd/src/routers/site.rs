@@ -628,16 +628,10 @@ pub async fn migrate_log_roots() {
     }
 }
 
-/// 判重用键：除自身外，`a.com` 与 `www.a.com` 互为冲突键（同站点内允许共存，
-/// 跨站点一律判冲突，避免 nginx 最长匹配带来的"看起来绑上了、实际不生效"）。
+/// 判重用键：域名按原串精确匹配（忽略大小写）。`www.a.com` 与 `a.com` 视为两个
+/// 独立域名，可分别绑定到不同站点；全局唯一性由 `idx_site_domain_domain` 索引保证。
 fn domain_match_keys(d: &str) -> Vec<String> {
-    let mut keys = vec![d.to_string()];
-    if let Some(bare) = d.strip_prefix("www.") {
-        keys.push(bare.to_string());
-    } else if !d.starts_with("*.") {
-        keys.push(format!("www.{d}"));
-    }
-    keys
+    vec![d.to_string()]
 }
 
 /// 泛域名 `*.suffix` 是否覆盖 `domain`（两个泛域名覆盖范围相交也算冲突）。
@@ -691,10 +685,9 @@ fn conflict_err(input: &str, hit: &str, site_id: i64, is_admin: bool) -> ZapErro
 }
 
 /// 严格模式域名冲突检查（多租户：跨用户同样判冲突）：
-/// 1. 完全相同
-/// 2. `a.com` ↔ `www.a.com`
-/// 3. 已存在的泛域名覆盖本次域名（如 `*.a.com` 覆盖 `b.a.com`）
-/// 4. 本次提交的是泛域名，且覆盖了别人的精确域名
+/// 1. 完全相同（精确域名全局唯一，`www.a.com` 与 `a.com` 是两个独立域名）
+/// 2. 已存在的泛域名覆盖本次域名（如 `*.a.com` 覆盖 `b.a.com`）
+/// 3. 本次提交的是泛域名，且覆盖了别人的精确域名
 ///
 /// `exclude_site` 用于更新时排除自身；`is_admin` 决定错误信息是否暴露占用方。
 async fn ensure_domains_unique(
@@ -712,7 +705,7 @@ async fn ensure_domains_unique(
     .await?;
 
     for d in domains {
-        // 1) + 2) 精确匹配与 www 变体（走唯一索引）
+        // 1) 跨站点精确匹配（域名全局唯一，www 变体视为独立域名）
         for key in domain_match_keys(d) {
             let exists: Option<(i64,)> =
                 sqlx::query_as("SELECT site_id FROM site_domain WHERE domain = ? AND site_id != ?")
@@ -4111,14 +4104,11 @@ mod tests {
 
     #[test]
     fn conflict_keys_and_wildcards() {
-        // a.com 与 www.a.com 互为冲突键
-        assert_eq!(
-            domain_match_keys("a.com"),
-            vec!["a.com".to_string(), "www.a.com".to_string()]
-        );
+        // 域名按原串精确匹配：www.a.com 与 a.com 是两个独立域名
+        assert_eq!(domain_match_keys("a.com"), vec!["a.com".to_string()]);
         assert_eq!(
             domain_match_keys("www.a.com"),
-            vec!["www.a.com".to_string(), "a.com".to_string()]
+            vec!["www.a.com".to_string()]
         );
 
         // 泛域名覆盖：*.a.com 覆盖 a.com / b.a.com / x.b.a.com，不覆盖 b.com

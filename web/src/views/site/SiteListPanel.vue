@@ -1322,16 +1322,16 @@ function openEdit(row: SiteItem) {
   formVisible.value = true
 }
 
-/** 域名占用键：`a.com` 与 `www.a.com` 互为同一域名（与后端 domain_match_keys 一致） */
+/**
+ * 域名占用键：`www.a.com` 与 `a.com` 视为两个独立域名，按原串（忽略大小写）精确匹配。
+ */
 function domainKeys(d: string): string[] {
-  const s = d.trim().toLowerCase()
-  if (s.startsWith('www.')) return [s, s.slice(4)]
-  if (s.startsWith('*.')) return [s]
-  return [s, `www.${s}`]
+  return [d.trim().toLowerCase()]
 }
 
-/** 域名查重：表单内重复 + 与其他站点已绑定域名冲突，返回提示文案（无冲突返回空串） */
+/** 域名查重：表单内精确重复 + 与其他站点已绑定域名（精确）冲突，返回提示文案（无冲突返回空串） */
 function domainConflictMsg(domains: string[]): string {
+  // 跨站点占用键：www.a.com 与 a.com 视为两个独立域名，按原串精确匹配
   const taken = new Map<string, string>() // 占用键 → 占用方域名
   for (const it of list.value) {
     if (isEdit.value && it.id === form.id) continue
@@ -1339,12 +1339,15 @@ function domainConflictMsg(domains: string[]): string {
       for (const k of domainKeys(d)) taken.set(k, d)
     }
   }
-  const seen = new Map<string, string>() // 本次提交内已出现的键 → 对应域名
+  // 本次提交内：精确域名（忽略大小写）不能重复
+  const seen = new Map<string, string>() // 本次提交内已出现的精确域名（小写） → 原始域名
   for (const d of domains) {
+    const lower = d.trim().toLowerCase()
+    const self = seen.get(lower)
+    if (self) return t('site.domainDup', { domain: d, other: self })
+    seen.set(lower, d)
+    // 跨站点精确冲突检查
     for (const k of domainKeys(d)) {
-      const self = seen.get(k)
-      if (self) return t('site.domainDup', { domain: d, other: self })
-      seen.set(k, d)
       const holder = taken.get(k)
       if (holder) return t('site.domainTaken', { domain: d, holder })
     }

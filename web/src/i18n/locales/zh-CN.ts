@@ -3895,9 +3895,9 @@ export default {
     dirReadFailed: '目录读取失败',
     selectOwner: '请先选择站点的归属用户',
     dirSelected: '已选择站点目录：{path}',
-    domainDup: '域名重复：{domain} 与 {other} 冲突（a.com 与 www.a.com 视为同一域名）',
+    domainDup: '域名重复：{domain} 与 {other} 冲突（同一域名不可重复添加）',
     domainTaken:
-      '域名 {domain} 已被站点「{holder}」占用（a.com 与 www.a.com 视为同一域名），请更换',
+      '域名 {domain} 已被站点「{holder}」占用，请更换或联系管理员',
     valNameOrDomain: '请填写站点名称或至少一个域名（名称留空默认使用域名）',
     valProxyNeedLocation: '反向代理站点至少需要一个 location',
     valProxyNeedRoot: '反向代理站点需要配置一个 location / 作为默认转发路径',
