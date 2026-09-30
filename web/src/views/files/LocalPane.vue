@@ -74,33 +74,49 @@
               <el-icon><Grid /></el-icon>
             </el-button>
           </el-button-group>
-          <el-upload :show-file-list="false" :http-request="handleUpload" multiple>
-            <el-button size="small" :loading="uploadBusy">
+          <!-- 上传：文件 / 目录 收进同一按钮组，省横向空间 -->
+          <el-button-group class="upload-group">
+            <el-button size="small" :loading="uploadBusy" @click="triggerUpload(false)">
               <el-icon><Upload /></el-icon>
               {{ t('filesLocal.uploadFile') }}
             </el-button>
-          </el-upload>
-          <el-upload :show-file-list="false" :http-request="handleUpload" multiple directory>
-            <el-button size="small" :loading="uploadBusy">
+            <el-button size="small" :loading="uploadBusy" @click="triggerUpload(true)">
               <el-icon><FolderOpened /></el-icon>
               {{ t('filesLocal.uploadDir') }}
             </el-button>
-          </el-upload>
-          <el-button size="small" @click="showMkdirDialog">
-            <el-icon><FolderAdd /></el-icon>
-            {{ t('filesLocal.newDir') }}
-          </el-button>
-          <el-button size="small" @click="showNewFileDialog">
-            <el-icon><DocumentAdd /></el-icon>
-            {{ t('filesLocal.newFile') }}
-          </el-button>
+          </el-button-group>
+          <el-upload
+            ref="uploadFileRef"
+            :show-file-list="false"
+            :http-request="handleUpload"
+            multiple
+            style="display: none"
+          />
+          <el-upload
+            ref="uploadDirRef"
+            :show-file-list="false"
+            :http-request="handleUpload"
+            multiple
+            directory
+            style="display: none"
+          />
+          <!-- 新建：目录 / 文件 收进同一按钮组 -->
+          <el-button-group class="create-group">
+            <el-button size="small" @click="showMkdirDialog">
+              <el-icon><FolderAdd /></el-icon>
+              {{ t('filesLocal.newDir') }}
+            </el-button>
+            <el-button size="small" @click="showNewFileDialog">
+              <el-icon><DocumentAdd /></el-icon>
+              {{ t('filesLocal.newFile') }}
+            </el-button>
+          </el-button-group>
           <el-button size="small" @click="refreshList" :loading="loading">
             <el-icon><Refresh /></el-icon>
           </el-button>
-          <!-- 打开常驻编辑器浮窗：已打开时复用同一实例（可能正缩成图标） -->
-          <el-button size="small" @click="openInEditor()">
+          <!-- 打开常驻编辑器浮窗：已打开时复用同一实例（可能正缩成图标）；图标按钮 -->
+          <el-button size="small" :title="t('filesLocal.openInEditor')" @click="openInEditor()">
             <el-icon><Edit /></el-icon>
-            {{ t('filesLocal.openInEditor') }}
           </el-button>
         </div>
       </div>
@@ -386,6 +402,7 @@
             @keydown.enter.prevent="onEnterConfirm($event, doMkdir)"
           />
         </el-form-item>
+        <p class="fm-dialog-hint">{{ t('filesLocal.pathHint') }}</p>
       </el-form>
       <template #footer>
         <el-button @click="mkdirVisible = false">{{ t('common.cancel') }}</el-button>
@@ -403,6 +420,10 @@
             @keydown.enter.prevent="onEnterConfirm($event, doNewFile)"
           />
         </el-form-item>
+        <p class="fm-dialog-hint">{{ t('filesLocal.pathHint') }}</p>
+        <el-checkbox v-model="openAfterCreate" class="fm-dialog-opt">
+          {{ t('filesLocal.openInEditorAfter') }}
+        </el-checkbox>
       </el-form>
       <template #footer>
         <el-button @click="newFileVisible = false">{{ t('common.cancel') }}</el-button>
@@ -909,6 +930,8 @@ const mkdirVisible = ref(false)
 const mkdirName = ref('')
 const newFileVisible = ref(false)
 const newFileName = ref('')
+/** 新建文件后是否用编辑器打开 */
+const openAfterCreate = ref(false)
 const renameVisible = ref(false)
 const renameTarget = ref<FileEntry | null>(null)
 const renameName = ref('')
@@ -1378,6 +1401,7 @@ async function doMkdir() {
 
 function showNewFileDialog() {
   newFileName.value = ''
+  openAfterCreate.value = false
   newFileVisible.value = true
 }
 
@@ -1392,6 +1416,10 @@ async function doNewFile() {
     ElMessage.success(t('filesLocal.fileCreated'))
     newFileVisible.value = false
     loadFileList()
+    // 勾选了「创建后用编辑器打开」：直接打开刚建的文件
+    if (openAfterCreate.value) {
+      openInEditor({ path: fullPath } as FileEntry)
+    }
   } catch {
     // handled
   }
@@ -1532,6 +1560,9 @@ interface UploadJob {
 const uploadPanelVisible = ref(false)
 const uploadPanelCollapsed = ref(false)
 const uploadBusy = ref(false)
+/** 隐藏的 el-upload 实例：上传按钮组用普通按钮触发，避免破坏 el-button-group 的连接样式 */
+const uploadFileRef = ref()
+const uploadDirRef = ref()
 /** 拖拽目录时正在递归遍历 entry（还没开始传），用于显示「读取中」 */
 const uploadScanning = ref(false)
 
@@ -1757,6 +1788,12 @@ async function handleDrop(e: DragEvent) {
 
 async function handleUpload(options: any) {
   await enqueueUpload(currentPath.value, options.file as File)
+}
+
+/** 通过隐藏的 el-upload 触发「上传文件 / 上传目录」系统选择框 */
+function triggerUpload(isDir: boolean) {
+  const inst = (isDir ? uploadDirRef.value : uploadFileRef.value) as any
+  inst?.$el?.querySelector('input')?.click()
 }
 
 // ── selection actions ────────────────────────────────────────
@@ -2378,6 +2415,20 @@ watch(viewMode, async (mode) => {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+/* 新建目录 / 新建文件对话框里的提示与「用编辑器打开」选项 */
+.fm-dialog-hint {
+  margin: -4px 0 2px;
+  padding-left: 2px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
+}
+
+.fm-dialog-opt {
+  margin-top: 2px;
+  margin-left: 2px;
 }
 
 .fm-toolbar {

@@ -935,9 +935,10 @@ const enUS: Messages = {
     recursive: 'Apply recursively (including subdirectories and files)',
 
     dirName: 'Directory Name',
-    dirNamePlaceholder: 'Enter a directory name',
+    dirNamePlaceholder: 'Directory name, e.g. sub/dir (missing parents are created)',
     fileName: 'File Name',
-    fileNamePlaceholder: 'Enter a file name',
+    fileNamePlaceholder: 'File name, e.g. sub/dir/file.txt (missing parents are created)',
+    pathHint: 'Supports "dir/dir/name" form; missing intermediate directories are created automatically',
     newName: 'New Name',
     newNamePlaceholder: 'Enter a new name',
     dupName: 'Copy Name',
@@ -963,6 +964,7 @@ const enUS: Messages = {
       'The Linux user / group must already exist on the system; only administrators can perform this action.',
 
     openInEditor: 'Open in Editor',
+    openInEditorAfter: 'Open in editor after creating',
     editTitle: 'Edit: {name}',
     editorPlaceholder: 'File content',
     editorTip: 'Tip: press {key} to save (unsaved changes are lost when you close)',
