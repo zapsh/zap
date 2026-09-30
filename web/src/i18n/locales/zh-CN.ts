@@ -4010,7 +4010,7 @@ export default {
     tabPhp: 'PHP 与伪静态',
     tabLocation: 'Location 规则',
     tabProxy: '负载均衡',
-    baseInfoTitle: '站点信息',
+    baseInfoTitle: '更多',
     baseInfoDesc: '站点名称、运行状态与备注',
     locEmpty: '暂无 Location 规则，点击下方按钮新增（如 rewrite、静态目录、自定义 location 等）。',
     expand: '展开',

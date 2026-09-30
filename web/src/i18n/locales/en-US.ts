@@ -4075,7 +4075,7 @@ const enUS: Messages = {
     tabPhp: 'PHP & Pseudo-static',
     tabLocation: 'Location Rules',
     tabProxy: 'Load Balancing',
-    baseInfoTitle: 'Site Info',
+    baseInfoTitle: 'More',
     baseInfoDesc: 'Site name, run status and remark',
     locEmpty: 'No location rules yet. Click the button below to add one (e.g. rewrite, static dir, custom location).',
     expand: 'Expand',

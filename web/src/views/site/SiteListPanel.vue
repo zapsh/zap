@@ -21,6 +21,7 @@ import {
   Refresh,
   Search,
   Setting,
+  MoreFilled,
 } from '@/icons'
 import { useRouter } from 'vue-router'
 import { Folder } from '@/icons'
@@ -196,10 +197,10 @@ interface SiteFeature {
 
 const { t } = useI18n()
 
-// 站点类型（与后端 php/static/proxy 一致）
+// 站点类型（与后端 php/static/proxy 一致）：默认顺序 纯静态 / PHP / 反向代理
 const siteTypeOptions = [
-  { value: 'php', label: t('site.typePhp'), desc: t('site.typePhpDesc') },
   { value: 'static', label: t('site.typeStatic'), desc: t('site.typeStaticDesc') },
+  { value: 'php', label: t('site.typePhp'), desc: t('site.typePhpDesc') },
   { value: 'proxy', label: t('site.typeProxy'), desc: t('site.typeProxyDesc') },
 ] as const
 type SiteType = (typeof siteTypeOptions)[number]['value']
@@ -524,8 +525,8 @@ async function loadFeature() {
 const formVisible = ref(false)
 /** 弹窗左侧 Tab：base / location / proxy / ssl / security */
 const activeTab = ref('base')
-/** 基础设置里「站点信息」折叠默认展开 */
-const baseInfoOpen = ref<string[]>(['info'])
+/** 基础设置里「更多」折叠默认收起 */
+const baseInfoOpen = ref<string[]>([])
 const formMode = ref<'add' | 'edit'>('add')
 const formLoading = ref(false)
 const isEdit = computed(() => formMode.value === 'edit')
@@ -2052,33 +2053,6 @@ onMounted(() => {
               </div>
             </el-form-item>
 
-            <!-- 站点信息折叠：站点名称排第一，其次运行状态与备注 -->
-            <el-collapse v-model="baseInfoOpen" class="base-info-collapse">
-              <el-collapse-item name="info">
-                <template #title>
-                  <span class="collapse-title">{{ t('site.baseInfoTitle') }}</span>
-                  <span class="collapse-sub">{{ t('site.baseInfoDesc') }}</span>
-                </template>
-                <el-form-item :label="t('site.formSiteName')">
-                  <el-input
-                    v-model="form.name"
-                    :placeholder="t('site.siteNamePlaceholder')"
-                    maxlength="120"
-                    clearable
-                  />
-                </el-form-item>
-                <el-form-item :label="t('site.colStatus')">
-                  <el-radio-group v-model="form.status">
-                    <el-radio :value="1">{{ t('site.pillRunning') }}</el-radio>
-                    <el-radio :value="0">{{ t('site.pillStopped') }}</el-radio>
-                  </el-radio-group>
-                </el-form-item>
-                <el-form-item :label="t('site.colRemark')">
-                  <el-input v-model="form.remark" type="textarea" :rows="2" maxlength="500" />
-                </el-form-item>
-              </el-collapse-item>
-            </el-collapse>
-
             <el-form-item :label="t('site.formDomains')" required>
               <el-select
                 v-model="form.domains"
@@ -2203,6 +2177,34 @@ onMounted(() => {
                 :placeholder="t('site.pseudoCustomPlaceholder')"
               />
             </el-form-item>
+
+            <!-- 站点信息折叠：放到最后，作为「更多」展开 -->
+            <el-collapse v-model="baseInfoOpen" class="base-info-collapse">
+              <el-collapse-item name="info">
+                <template #title>
+                  <el-icon class="more-icon"><MoreFilled /></el-icon>
+                  <span class="collapse-title">{{ t('site.baseInfoTitle') }}</span>
+                  <span class="collapse-sub">{{ t('site.baseInfoDesc') }}</span>
+                </template>
+                <el-form-item :label="t('site.formSiteName')">
+                  <el-input
+                    v-model="form.name"
+                    :placeholder="t('site.siteNamePlaceholder')"
+                    maxlength="120"
+                    clearable
+                  />
+                </el-form-item>
+                <el-form-item :label="t('site.colStatus')">
+                  <el-radio-group v-model="form.status">
+                    <el-radio :value="1">{{ t('site.pillRunning') }}</el-radio>
+                    <el-radio :value="0">{{ t('site.pillStopped') }}</el-radio>
+                  </el-radio-group>
+                </el-form-item>
+                <el-form-item :label="t('site.colRemark')">
+                  <el-input v-model="form.remark" type="textarea" :rows="2" maxlength="500" />
+                </el-form-item>
+              </el-collapse-item>
+            </el-collapse>
           </el-tab-pane>
 
           <!-- Location 规则（php / 静态 / 反代 通用） -->
@@ -3466,6 +3468,10 @@ onMounted(() => {
 .collapse-sub {
   margin-left: 10px;
   font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.more-icon {
+  margin-right: 6px;
   color: var(--el-text-color-secondary);
 }
 .preset-desc {
