@@ -27,6 +27,7 @@ import { useRouter } from 'vue-router'
 import { Folder } from '@/icons'
 import { ElCheckbox, ElMessage, ElMessageBox } from 'element-plus'
 import { http } from '@/utils/request'
+import PluginSlot from '@/components/PluginSlot.vue'
 import { useUserStore } from '@/stores/user'
 import type { InstalledApp } from '@/api/appstore'
 import { getInstalledApps } from '@/api/appstore'
@@ -3087,6 +3088,10 @@ onMounted(() => {
               <el-input-number v-model="sec.limit_conn_num" :min="1" :max="100000" />
               <span class="form-hint">{{ t('site.secConnNumHint') }}</span>
             </el-form-item>
+          </el-tab-pane>
+
+          <el-tab-pane v-if="form.id" label="插件" name="plugins">
+            <PluginSlot slot="site.detail" :site-id="form.id" />
           </el-tab-pane>
 
         </el-tabs>

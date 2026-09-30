@@ -79,6 +79,7 @@ declare module 'vue' {
     MonitorRangePicker: typeof import('./src/components/MonitorRangePicker.vue')['default']
     NavPillPanels: typeof import('./src/components/NavPillPanels.vue')['default']
     Permission: typeof import('./src/components/Permission/index.vue')['default']
+    PluginSlot: typeof import('./src/components/PluginSlot.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SystemMonitor: typeof import('./src/components/SystemMonitor.vue')['default']

@@ -1,0 +1,25 @@
+name: composer-create
+title: 创建 Composer 项目
+scope: site
+# placement 决定前端入口出现在哪个白名单槽位；目前支持：
+#   site.detail  —— 站点详情页「插件」Tab
+#   site.row     —— （规划中）站点列表每行快捷操作
+ui:
+  placement: site.detail
+  label: 创建 Composer 项目
+  icon: Box
+  tab: 应用
+options:
+  - name: PACKAGE
+    label: 包名
+    type: string
+    required: true
+    placeholder: laravel/laravel
+    desc: 例如 laravel/laravel、symfony/skeleton
+  - name: TARGET
+    label: 目标子目录
+    type: string
+    default: ""
+    desc: 留空则直接建在站点根目录；填 public 则建到站点根/public
+actions:
+  run: 创建

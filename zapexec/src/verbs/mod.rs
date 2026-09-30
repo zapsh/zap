@@ -1,6 +1,7 @@
 mod acme;
 mod app;
 mod appstore;
+mod plugin;
 mod cred;
 mod cron;
 mod docker;
@@ -269,6 +270,25 @@ pub async fn dispatch(req: Request) -> Response {
             appstore::run_retry(run_id, new_run_id).await
         }
         Request::AppstoreInstalled => appstore::installed().await,
+        Request::PluginList {
+            actor,
+            home,
+            slot,
+            scope,
+        } => plugin::plugin_list(actor, home, slot, scope).await,
+        Request::PluginRun {
+            name,
+            actor,
+            home,
+            site_id,
+            site_root,
+            site_linux_user,
+            action,
+            options,
+        } => {
+            plugin::plugin_run(name, actor, home, site_id, site_root, site_linux_user, action, options)
+                .await
+        }
         Request::AppstoreInstanceAction {
             pkg_path,
             instance,

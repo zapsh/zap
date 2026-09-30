@@ -46,6 +46,7 @@ async fn demo_readonly_guard(req: Request, next: Next) -> Result<Response, Respo
 pub mod access;
 pub mod app;
 pub mod appstore;
+pub mod plugins;
 pub mod auth;
 pub mod cloud;
 pub mod dashboard;
@@ -825,6 +826,8 @@ fn api_routers() -> Router {
         .route("/docs/{name}", get(docs::docs_get))
         // Zap Pro（商业模块）：接口挂 /api/pro/**，与内置模块共用同一套鉴权 /
         // 演示只读守卫 / 超时 / 压缩（它们在下面的 layer 里统一加）。
+        .route("/plugin/list", get(plugins::plugin_list))
+        .route("/plugin/run", post(plugins::plugin_run))
         .nest("/pro", pro_api_routers())
         // 统一角色门禁（最后添加的 layer 最外层、最先执行）：
         // 路径 → 所需角色见 `access::RULES`，未登记的接口默认要求 admin。

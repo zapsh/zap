@@ -1549,6 +1549,32 @@ pub enum Request {
     /// 同样是长会话：连接期间持续推送事件，断开即结束，因此也走 `Message::StreamOpen`。
     #[serde(rename = "docker.events")]
     DockerEvents,
+    /// 列出可用插件（系统级 + 当前用户级），按 placement 槽位与 scope 过滤
+    #[serde(rename = "plugin.list")]
+    PluginList {
+        actor: String,
+        home: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+    },
+    /// 运行插件：scope=site 时以站点 Linux 账号执行，scope=system 以 root 执行
+    #[serde(rename = "plugin.run")]
+    PluginRun {
+        name: String,
+        actor: String,
+        home: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site_id: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site_root: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site_linux_user: Option<String>,
+        action: String,
+        #[serde(default)]
+        options: std::collections::HashMap<String, String>,
+    },
 }
 
 /// `zapexec` -> `zapd` 的响应。
