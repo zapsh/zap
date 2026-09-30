@@ -3,7 +3,7 @@ import { http } from '@/utils/request'
 export interface PluginOption {
   name: string
   label: string
-  type: 'string' | 'number' | 'bool' | 'select' | 'multiselect'
+  type: 'string' | 'number' | 'bool' | 'select' | 'multiselect' | 'dir'
   default?: string
   required?: boolean
   placeholder?: string

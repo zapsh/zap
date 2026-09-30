@@ -46,6 +46,18 @@
               :value="c.value"
             />
           </el-select>
+          <div v-else-if="opt.type === 'dir'" class="dir-opt">
+            <el-input
+              v-model="form[opt.name]"
+              :placeholder="opt.placeholder || '留空 = 站点根目录'"
+              readonly
+              style="flex: 1"
+            >
+              <template #append>
+                <el-button @click="openDir(opt)">选择目录</el-button>
+              </template>
+            </el-input>
+          </div>
           <div v-if="opt.desc" class="form-tip">{{ opt.desc }}</div>
         </el-form-item>
       </el-form>
@@ -55,15 +67,23 @@
         <el-button type="primary" :loading="running" @click="run">{{ runLabel(current) }}</el-button>
       </template>
     </el-dialog>
+
+    <DirPicker
+      v-model="dirVisible"
+      :start-path="dirStartPath"
+      title="选择目标目录"
+      @confirm="onDirConfirm"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { pluginList, pluginRun, type PluginInfo } from '@/api/plugin'
+import DirPicker from '@/components/DirPicker.vue'
+import { pluginList, pluginRun, type PluginInfo, type PluginOption } from '@/api/plugin'
 
-const props = defineProps<{ placementSlot: string; siteId?: number }>()
+const props = defineProps<{ placementSlot: string; siteId?: number; webRoot?: string }>()
 
 const loading = ref(false)
 const plugins = ref<PluginInfo[]>([])
@@ -75,6 +95,26 @@ const current = ref<PluginInfo | null>(null)
 const form = reactive<Record<string, string>>({})
 const boolVal = reactive<Record<string, boolean>>({})
 const multiVal = reactive<Record<string, string[]>>({})
+
+// 目录选择器：从站点根（webRoot）出发选目录，返回相对于站点根的相对路径，
+// 与插件 main.lua 里 `site_root .. "/" .. target` 的语义一致；无 webRoot 时返回绝对路径。
+const dirVisible = ref(false)
+const dirTarget = ref('')
+const dirStartPath = ref('')
+function openDir(opt: PluginOption) {
+  dirTarget.value = opt.name
+  dirStartPath.value = props.webRoot || ''
+  dirVisible.value = true
+}
+function onDirConfirm(absPath: string) {
+  const root = props.webRoot
+  let rel = absPath
+  if (root && absPath.startsWith(root)) {
+    rel = absPath.slice(root.length).replace(/^\/+/, '')
+  }
+  form[dirTarget.value] = rel
+  dirVisible.value = false
+}
 
 type Choice = { label: string; value: string }
 function normChoices(c?: (string | Choice)[]): Choice[] {
@@ -162,6 +202,10 @@ onMounted(async () => {
   color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 4px;
+}
+.dir-opt {
+  display: flex;
+  width: 100%;
 }
 .plugin-log {
   background: var(--el-fill-color-light);

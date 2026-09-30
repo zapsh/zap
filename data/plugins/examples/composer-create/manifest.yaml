@@ -18,8 +18,8 @@ options:
     desc: 例如 laravel/laravel、symfony/skeleton
   - name: TARGET
     label: 目标子目录
-    type: string
+    type: dir
     default: ""
-    desc: 留空则直接建在站点根目录；填 public 则建到站点根/public
+    desc: 留空则直接建在站点根目录；用「选择目录」从站点根下挑一个子目录（返回相对路径）
 actions:
   run: 创建
