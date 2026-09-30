@@ -63,7 +63,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { pluginList, pluginRun, type PluginInfo } from '@/api/plugin'
 
-const props = defineProps<{ slot: string; siteId?: number }>()
+const props = defineProps<{ placementSlot: string; siteId?: number }>()
 
 const loading = ref(false)
 const plugins = ref<PluginInfo[]>([])
@@ -130,7 +130,7 @@ async function run() {
 onMounted(async () => {
   loading.value = true
   try {
-    const r: any = await pluginList({ slot: props.slot, site_id: props.siteId })
+    const r: any = await pluginList({ slot: props.placementSlot, site_id: props.siteId })
     const data = r?.data?.data ?? r?.data
     plugins.value = Array.isArray(data) ? data : []
   } catch {

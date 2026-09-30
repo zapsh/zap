@@ -3091,7 +3091,7 @@ onMounted(() => {
           </el-tab-pane>
 
           <el-tab-pane v-if="form.id" label="插件" name="plugins">
-            <PluginSlot slot="site.detail" :site-id="form.id" />
+            <PluginSlot placement-slot="site.detail" :site-id="form.id" />
           </el-tab-pane>
 
         </el-tabs>

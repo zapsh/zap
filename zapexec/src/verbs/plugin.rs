@@ -296,11 +296,9 @@ fn run_capture(user: Option<&str>, program: &str, args: &[String]) -> Result<Str
             let (uid, gid) = (acc.uid, acc.gid);
             let _ = unsafe {
                 c.pre_exec(move || {
-                    unsafe {
-                        libc::setsid();
-                        super::cloexec_inherited_fds();
-                        super::drop_privileges(uid, gid)?;
-                    }
+                    libc::setsid();
+                    super::cloexec_inherited_fds();
+                    super::drop_privileges(uid, gid)?;
                     Ok(())
                 })
             };

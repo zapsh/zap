@@ -94,11 +94,35 @@ async fn load_user_home(uid: i64) -> Result<(String, String), ZapError> {
             .bind(uid)
             .fetch_optional(pool)
             .await?;
-    let (home, lu) = row.ok_or_else(|| ZapError::New(-1, "用户不存在".to_string()))?;
+    let (mut home, lu) = row.ok_or_else(|| ZapError::New(-1, "用户不存在".to_string()))?;
+    if home.trim().is_empty() {
+        // 回退：用 Linux 账号的 OS home（getent passwd 第 6 字段），覆盖 home_dir 未配置的情况
+        if let Some(h) = os_home_of(&lu).await {
+            home = h;
+        }
+    }
     if home.trim().is_empty() {
         return Err(ZapError::New(-1, "用户家目录未配置".to_string()));
     }
     Ok((home, lu))
+}
+
+/// 取 Linux 账号的真实家目录（getent passwd 第 6 字段），用于 home_dir 为空时的回退。
+async fn os_home_of(linux_user: &str) -> Option<String> {
+    if linux_user.is_empty() {
+        return None;
+    }
+    let out = tokio::process::Command::new("getent")
+        .args(["passwd", linux_user])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout);
+    let field = line.split(':').nth(5)?.trim().to_string();
+    if field.is_empty() { None } else { Some(field) }
 }
 
 async fn load_site_ctx(site_id: i64) -> Result<(String, String), ZapError> {
