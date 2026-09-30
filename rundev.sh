@@ -272,9 +272,6 @@ trap cleanup EXIT INT TERM
 
 # ── 4. 启动 zapexec (root) ──────────────────────────────────
 info "启动 zapexec (root)：socket=$EXEC_SOCKET client-user=$DEV_USER"
-# 注入 ZAP_PATH 使 zapexec 数据目录（$ZAP_PATH/data）与 zapd 配置 db.path 的父目录保持一致，
-# 否则 zapexec 默认 /usr/local/zap 会导致日志/源/安装目录错位。
-# 软件安装根：默认 /usr/local/apps；若用户在 shell export 了 ZAP_APPS_DIR 则透传。
 ZAPEXEC_ENVS=(env ZAP_PATH="$ROOT_DIR")
 if [ -n "${ZAP_APPS_DIR:-}" ]; then
   ZAPEXEC_ENVS+=(ZAP_APPS_DIR="$ZAP_APPS_DIR")
@@ -295,7 +292,10 @@ if [ ! -f "$ROOT_DIR/data/zap.db" ]; then
   ZAP_CONFIG="$DEV_CONF" "$BIN_DIR/zapd" --init-admin "$ADMIN_USER" \
     --admin-password "$ADMIN_PASS"
 fi
-ZAP_CONFIG="$DEV_CONF" "$BIN_DIR/zapd" &
+# zapd 也要注入同一个 ZAP_PATH：否则其数据目录回退到默认 /usr/local/zap，
+# 与 zapexec（已注入 ZAP_PATH=$ROOT_DIR）错位 —— 典型表现就是异步插件日志流
+# 打开失败（「非法日志路径」：zapexec 把日志写到 $ROOT_DIR/...，zapd 却只白名单 /usr/local/zap/...）。
+ZAP_PATH="$ROOT_DIR" ZAP_CONFIG="$DEV_CONF" "$BIN_DIR/zapd" &
 ZAPD_PID=$!
 
 echo ""
