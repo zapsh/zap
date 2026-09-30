@@ -1,28 +1,26 @@
 <template>
   <div class="files-page">
-    <el-tabs v-model="activeTab" class="files-tabs">
-      <!-- 本地存储：服务器本地目录（原文件管理） -->
-      <el-tab-pane name="local">
-        <template #label>
-          <span class="files-tab-label">
-            <el-icon><Monitor /></el-icon>
-            {{ t('files.tabLocal') }}
-          </span>
-        </template>
-        <LocalPane />
-      </el-tab-pane>
+    <!-- 顶部菜单：本地存储 / 云存储 切换（nav pill 按钮组） -->
+    <div class="files-topbar">
+      <el-radio-group v-model="activeTab" class="files-switch">
+        <el-radio-button value="local">
+          <el-icon><Monitor /></el-icon>
+          <span>{{ t('files.tabLocal') }}</span>
+        </el-radio-button>
+        <el-radio-button value="cloud">
+          <el-icon><Cloud /></el-icon>
+          <span>{{ t('files.tabCloud') }}</span>
+        </el-radio-button>
+      </el-radio-group>
+    </div>
 
-      <!-- 云存储：对象存储（S3 / OSS / COS / S3 兼容），首次切换时才挂载 -->
-      <el-tab-pane name="cloud" lazy>
-        <template #label>
-          <span class="files-tab-label">
-            <el-icon><Cloud /></el-icon>
-            {{ t('files.tabCloud') }}
-          </span>
-        </template>
-        <CloudPane />
-      </el-tab-pane>
-    </el-tabs>
+    <div class="files-body">
+      <!-- 本地存储：服务器本地目录（原文件管理），常驻挂载保留当前目录 -->
+      <LocalPane v-show="activeTab === 'local'" class="files-pane" />
+
+      <!-- 云存储：对象存储（S3 / OSS / COS / S3 兼容），首次切到云存储时才挂载 -->
+      <CloudPane v-if="cloudMounted" v-show="activeTab === 'cloud'" class="files-pane" />
+    </div>
   </div>
 </template>
 
@@ -54,9 +52,12 @@ function resolveInitialTab(): TabName {
 }
 
 const activeTab = ref<TabName>(resolveInitialTab())
+/** 云存储首访后才挂载，之后常驻（等价于原 el-tab-pane 的 lazy + keep-alive） */
+const cloudMounted = ref(activeTab.value === 'cloud')
 
 watch(activeTab, (value) => {
   sessionStorage.setItem(STORAGE_KEY, value)
+  if (value === 'cloud') cloudMounted.value = true
 })
 </script>
 
@@ -74,31 +75,56 @@ export default { name: 'FileManager' }
   flex-direction: column;
 }
 
-.files-tabs {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-
-  :deep(.el-tabs__header) {
-    margin-bottom: 10px;
-  }
-
-  /* 让标签页内容撑满剩余高度，子面板才能用 height: 100% 拿到确定高度 */
-  :deep(.el-tabs__content) {
-    flex: 1;
-    min-height: 0;
-  }
-
-  :deep(.el-tab-pane) {
-    height: 100%;
-  }
+/* 顶部菜单：本地/云 切换条 */
+.files-topbar {
+  margin-bottom: 10px;
 }
 
-.files-tab-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
+/* 内容区：撑满剩余高度，子面板用 height: 100% 拿到确定高度 */
+.files-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.files-pane {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+/* nav pill 样式：把 el-radio-button 渲染成独立的圆角药丸按钮 */
+.files-switch {
+  :deep(.el-radio-button__inner) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--el-border-color);
+    border-radius: 999px;
+    margin: 0 4px;
+    box-shadow: none;
+    transition:
+      color 0.2s,
+      background-color 0.2s,
+      border-color 0.2s;
+  }
+
+  /* 去掉首尾按钮的特殊圆角（默认连成一段），统一成药丸 */
+  :deep(.el-radio-button:first-child .el-radio-button__inner),
+  :deep(.el-radio-button:last-child .el-radio-button__inner) {
+    border-radius: 999px;
+  }
+
+  /* 选中态：主色填充成药丸 */
+  :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+    color: #fff;
+    background-color: var(--el-color-primary);
+    border-color: var(--el-color-primary);
+    box-shadow: none;
+  }
+
+  :deep(.el-radio-button__original-radio:focus-visible + .el-radio-button__inner) {
+    box-shadow: 0 0 0 2px var(--el-color-primary-light-5);
+  }
 }
 </style>
