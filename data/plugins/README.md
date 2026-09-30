@@ -6,7 +6,7 @@
 ## 目录约定（自动发现，无需编译注册）
 
 - **系统级**：`$ZAP_PATH/plugins/<name>/`（对所有用户/站点可用；由 admin 放置或经应用商店 `plugin` 分类安装）
-- **用户级**：`$HOME/plugins/<name>/`（仅该面板用户可见，作用于自己的站点与家目录；直接放置/上传即用，零安装）
+- **用户级**：`$HOME/.zap/plugins/<name>/`（仅该面板用户可见，作用于自己的站点与家目录；直接放置/上传即用，零安装）
 
 每个插件是一个目录，含：
 
@@ -41,8 +41,8 @@
 
 ## 最小闭环示例
 
-把 `examples/composer-create/` 复制到某个用户的家目录即可在对应站点详情页出现入口：
+把 `examples/composer-create/` 复制到某个用户的 `.zap` 目录下即可在对应站点详情页出现入口：
 
 ```sh
-cp -r data/plugins/examples/composer-create ~/<user>/plugins/composer-create
+cp -r data/plugins/examples/composer-create ~/<user>/.zap/plugins/composer-create
 ```

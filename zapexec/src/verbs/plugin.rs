@@ -54,7 +54,11 @@ pub async fn plugin_list(
     scope: Option<String>,
 ) -> Response {
     let zap = zap_path();
-    let bases = vec![zap.join("plugins"), Path::new(&home).join("plugins")];
+    // 用户级插件目录固定为 <home>/.zap/plugins；系统级为 <zap>/plugins
+    let bases = vec![
+        zap.join("plugins"),
+        Path::new(&home).join(".zap").join("plugins"),
+    ];
     let mut items = Vec::new();
     for base in &bases {
         let Ok(rd) = std::fs::read_dir(base) else { continue };
@@ -76,8 +80,14 @@ pub async fn plugin_list(
                     continue;
                 }
             }
+            let placement = m
+                .get("ui")
+                .and_then(|u| u.get("placement"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if let Some(sl) = &slot {
-                if m.get("placement").and_then(|v| v.as_str()) != Some(sl.as_str()) {
+                if &placement != sl {
                     continue;
                 }
             }
@@ -93,7 +103,7 @@ pub async fn plugin_list(
                 "name": name,
                 "title": m.get("title").and_then(|v| v.as_str()).unwrap_or(&name),
                 "scope": m.get("scope").and_then(|v| v.as_str()).unwrap_or("system"),
-                "placement": m.get("placement").and_then(|v| v.as_str()).unwrap_or(""),
+                "placement": placement,
                 "label": m.get("ui").and_then(|u| u.get("label")).and_then(|v| v.as_str())
                     .unwrap_or(&name),
                 "icon": m.get("ui").and_then(|u| u.get("icon")).and_then(|v| v.as_str()).unwrap_or(""),
@@ -121,15 +131,18 @@ pub async fn plugin_run(
         return Response::err(-1, "非法插件名");
     }
     let zap = zap_path();
-    let user_dir = Path::new(&home).join("plugins").join(&name);
-    let sys_dir = zap.join("plugins").join(&name);
-    let dir = if user_dir.is_dir() {
-        user_dir
-    } else if sys_dir.is_dir() {
-        sys_dir
-    } else {
+    let home_path = Path::new(&home);
+    let candidates = [
+        home_path.join(".zap").join("plugins").join(&name),
+        zap.join("plugins").join(&name),
+    ];
+    let dir = candidates
+        .into_iter()
+        .find(|p| p.is_dir())
+        .unwrap_or_else(|| home_path.join(".zap").join("plugins").join(&name));
+    if !dir.is_dir() {
         return Response::err(-1, format!("插件不存在: {name}"));
-    };
+    }
     let manifest = match read_manifest(&dir) {
         Ok(m) => m,
         Err(e) => return Response::err(-1, e),
