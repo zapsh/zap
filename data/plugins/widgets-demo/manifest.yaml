@@ -52,7 +52,7 @@ options:
     label: 目标目录
     type: dir
     default: ""
-    desc: 目录选择器；站点上下文下从站点根出发选，回传相对站点根的路径（空 = 站点根）
+    desc: 目录选择器；回传绝对路径（空 = 站点根），插件内直接当作目标路径使用，无需再拼接站点根
   - name: SRC
     label: 源文件
     type: file

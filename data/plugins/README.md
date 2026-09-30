@@ -22,30 +22,37 @@
 | `scope` | `site`（以站点 Linux 账号运行，需站点上下文）/ `system`（以 root 运行） |
 | `ui.placement` | 前端入口槽位：`site.detail`（站点详情页「插件」Tab）等 |
 | `ui.label` / `ui.icon` / `ui.tab` | 按钮文案 / 图标 / 分组 |
-| `options` | 运行选项（结构同应用商店 `app.yaml` 的 `options`：`name`/`label`/`type`/`default`/`required`/`choices`…）。`type` 支持 `string`/`number`/`bool`/`select`/`multiselect`，以及插件扩展的 **`dir`**（目录选择器）、**`file`**（单文件选择器）、**`files`**（多文件选择器）。`dir` 在站点详情场景会从站点根出发选目录并裁成相对路径；`file`/`files` 回传**绝对路径**（多选以空格连接成单个字符串） |
+| `options` | 运行选项（结构同应用商店 `app.yaml` 的 `options`：`name`/`label`/`type`/`default`/`required`/`choices`…）。`type` 支持 `string`/`number`/`bool`/`select`/`multiselect`，以及插件扩展的 **`dir`**（目录选择器）、**`file`**（单文件选择器）、**`files`**（多文件选择器）。`dir`/`file`/`files` 都回传**绝对路径**（多选以空格连接成单个字符串）；`dir` 留空表示站点根 |
 | `actions` | 动作键 → 按钮文案，如 `run: 创建`；`on_run` 收到 `ctx.action` |
 | `async` | 可选（`true`/`false`，默认 `false`）。`true` 时插件**异步执行**：`/plugin/run` 立即返回 `task_id` + `log_path`，前端用 SSE（`/plugin/watch`）实时收日志流；收尾时 zapexec 写入 `__ZAP_DONE__ <code>` 哨兵。适合联网下载、编译等耗时任务（避免前端请求超时）。轻量任务省略即可，走同步（一次性返回 `log`）。异步插件支持**运行中取消**：前端调 `POST /plugin/cancel`（`{token, task_id}`），zapexec 看门狗杀掉子进程（组），任务以退出码 `-2`（已取消）收尾并通过 SSE 推送「任务已取消」 |
 
 ### `dir` 类型选项示例
 
-`dir` 渲染为一个「只读输入框 + 选择目录按钮」，点开目录选择器。它最适合**站点作用域**插件里"站点根下的某个子目录"这类输入——回传的是**相对站点根的路径**，与 `main.lua` 里 `site_root .. "/" .. target` 的拼法天然契合：
+`dir` 渲染为一个「只读输入框 + 选择目录按钮」，点开目录选择器，回传**绝对路径**（与 `file`/`files` 一致）。留空表示站点根。插件里直接把它当目标路径用即可，**不要**再和 `site_root` 拼接（否则绝对路径会被重复拼一次）：
+
+```lua
+-- main.lua
+local dest = zap.option("TARGET")
+if dest == "" then dest = zap.site_root() end   -- 留空回落到站点根
+-- dest 已是绝对路径，可直接传给 zap.exec_as_user
+```
 
 ```yaml
 options:
   - name: TARGET
-    label: 目标子目录
-    type: dir          # ← 目录选择器
+    label: 目标目录
+    type: dir          # ← 目录选择器，回传绝对路径
     default: ""        # 空 = 站点根目录本身
-    desc: 留空则直接建在站点根目录；用「选择目录」从站点根下挑一个子目录
+    desc: 目录选择器；回传绝对路径（留空 = 站点根）
 ```
 
 行为约定：
 
-- 选中站点根下的 `public/` → 回传 `public`；直接选站点根本身 → 回传空串（=`site_root`）。
-- 站点详情页会把它从 `web_root` 出发选目录，并自动裁掉 `web_root` 前缀；`PluginSlot` 通过 `:web-root` 拿到该值。
-- 非站点上下文（拿不到 `web_root`）时，选择器从用户家目录出发，回传**绝对路径**。
+- 选中 `/home/xxx/site/public` → 回传该绝对路径；不选择 → 回传空串（=`site_root`）。
+- 目录选择器从站点根（无站点上下文时从用户家目录）出发浏览，但回传值始终是绝对路径。
+- 隔离规则与文件管理一致：管理员可一路向上，普通用户出不了自己的 `home`。
 
-> 注意：`dir` 回传的是字符串，在 `main.lua` 里仍用 `zap.option("TARGET")` 读取，插件无需为它做特殊处理。
+> 注意：`dir` 回传的是字符串，在 `main.lua` 里用 `zap.option("TARGET")` 读取；因为回传的是绝对路径，插件无需再拼站点根。
 
 ### `file` / `files` 类型选项示例
 
@@ -66,7 +73,7 @@ options:
 行为约定：
 
 - 两者都回传字符串；`files` 多选时把路径用**空格**拼成一个字符串（与 `multiselect` 一致），在 `main.lua` 里用 `zap.option("SRCS")` 拿到后用 `split(" ")` 拆开即可。
-- 路径是绝对路径（与 `dir` 的相对路径不同），插件可直接 `zap.exec_as_user("cat", { path })` 之类使用，无需再拼站点根。
+- 路径是绝对路径（与 `dir` 一致），插件可直接 `zap.exec_as_user("cat", { path })` 之类使用，无需再拼站点根。
 - 隔离规则与文件管理一致：管理员可一路向上，普通用户出不了自己的 `home`。
 
 ## main.lua 可用能力（全局表 `zap`）

@@ -17,7 +17,11 @@ function on_run(ctx)
   zap.log("SRC    (file)        = [" .. zap.option("SRC") .. "]")
   zap.log("SRCS   (files)       = [" .. zap.option("SRCS") .. "]")
   zap.log("--------------------------------------------------")
-  zap.log("TARGET 最终路径        = " .. zap.site_root() .. "/" .. zap.option("TARGET"))
+  -- 目录选择器回传的是绝对路径，直接用它即可，不要再和 site_root 拼接（否则会重复）。
+  -- 留空时回落到站点根。
+  local target = zap.option("TARGET")
+  if target == "" then target = zap.site_root() end
+  zap.log("TARGET 最终路径        = " .. target)
 
   -- 多文件：把空格连接的串拆开，逐个打印（selected 的路径必然存在）
   local raw = zap.option("SRCS")

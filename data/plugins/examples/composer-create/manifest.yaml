@@ -20,9 +20,9 @@ options:
     placeholder: laravel/laravel
     desc: 例如 laravel/laravel、symfony/skeleton
   - name: TARGET
-    label: 目标子目录
+    label: 目标目录
     type: dir
     default: ""
-    desc: 留空则直接建在站点根目录；用「选择目录」从站点根下挑一个子目录（返回相对路径）
+    desc: 目录选择器；回传绝对路径（留空 = 站点根），插件内直接当作目标目录使用，无需再拼接站点根
 actions:
   run: 创建

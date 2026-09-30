@@ -9,11 +9,9 @@ function on_run(ctx)
   end
 
   local target = zap.option("TARGET")
-  local root = zap.site_root()
-  local dest = root
-  if target ~= "" then
-    dest = root .. "/" .. target
-  end
+  -- dir 控件回传绝对路径，直接当目标目录用；留空则落到站点根（不要再和 site_root 拼接，否则会重复）
+  local dest = target
+  if dest == "" then dest = zap.site_root() end
 
   zap.log("在 " .. dest .. " 创建 Composer 项目：" .. pkg)
   zap.log("运行身份：" .. zap.site_linux_user())
