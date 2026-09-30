@@ -69,8 +69,6 @@ interface SiteItem {
   updated_at: number
   // ── 站点扩展档案（site_profile）──
   site_type?: SiteType
-  pseudo_static?: string
-  pseudo_custom?: string
   web_root_custom?: boolean
   upstreams?: UpstreamSpec[]
   locations?: LocationSpec[]
@@ -213,28 +211,14 @@ const typeTagInfo: Record<string, { label: string; tag: 'primary' | 'info' | 'wa
 const typeMeta = (v?: string) =>
   typeTagInfo[v || 'php'] ?? { label: 'PHP', tag: 'primary' as const }
 
-// 伪静态预设（location / 里的规则，仅 PHP 站点生效）
-const pseudoOptions = [
-  { value: 'none', label: t('site.pseudoNone'), desc: t('site.pseudoNoneDesc') },
-  { value: 'wordpress', label: 'WordPress', desc: 'try_files $uri $uri/ /index.php?$query_string' },
-  { value: 'laravel', label: 'Laravel', desc: t('site.pseudoLaravelDesc') },
-  { value: 'thinkphp', label: 'ThinkPHP', desc: t('site.pseudoThinkphpDesc') },
-  { value: 'codeigniter', label: 'CodeIgniter', desc: t('site.pseudoCodeigniterDesc') },
-  { value: 'custom', label: t('site.pseudoCustom'), desc: t('site.pseudoCustomDesc') },
-]
-const pseudoLabel = (v?: string) =>
-  pseudoOptions.find((o) => o.value === (v || 'none'))?.label ?? (v || 'none')
-const pseudoMeta = (v?: string) =>
-  pseudoOptions.find((o) => o.value === (v || 'none')) ?? pseudoOptions[0]
-
 // location 类型
 /** location 匹配方式：直接用 nginx 写法当选项，所见即所得 */
 const locMatchOptions = [
   { value: '', label: '/path', desc: t('site.matchPrefix') },
   { value: 'exact', label: '= /path', desc: t('site.matchExact') },
   { value: 'prefer', label: '^~ /path', desc: t('site.matchPrefer') },
-  { value: 'regex', label: '~ /regex', desc: t('site.matchRegex') },
-  { value: 'regex_nocase', label: '~* /regex', desc: t('site.matchRegexNocase') },
+  { value: 'regex', label: '~ 正则', desc: t('site.matchRegex') },
+  { value: 'regex_nocase', label: '~* 正则', desc: t('site.matchRegexNocase') },
 ] as const
 /** 是否为正则匹配模式（路径按正则填写） */
 const isRegexMode = (m: string) => m === 'regex' || m === 'regex_nocase'
@@ -545,8 +529,6 @@ interface SiteForm {
   remark: string
   php_instance: string
   site_type: SiteType
-  pseudo_static: string
-  pseudo_custom: string
   web_root_custom: boolean
   /** 家目录前缀下的相对子路径（如 example.com）；「已有目录」与「自动创建」共用该输入 */
   web_root_sub: string
@@ -575,8 +557,6 @@ const blankForm = (): SiteForm => ({
   remark: '',
   php_instance: '',
   site_type: 'static',
-  pseudo_static: 'none',
-  pseudo_custom: '',
   web_root_custom: false,
   web_root_sub: '',
   upstreams: [],
@@ -842,6 +822,140 @@ function addLocationRow() {
   }
   form.locations.push(l)
   // 新增：折叠其余，展开并聚焦当前新增的规则
+  expandedLocs.value = [form.locations.length - 1]
+}
+// ── Location 规则「示例 / 模板」：一键生成常用规则 ──────────
+type LocPresetCat = 'pseudo' | 'loc'
+interface LocPreset {
+  key: string
+  cat: LocPresetCat
+  labelKey: string
+  build: () => LocationSpec
+}
+const locPresets: LocPreset[] = [
+  // PHP 伪静态（主流框架）：生成 location / raw，执行端会用它替换默认根 try_files
+  {
+    key: 'thinkphp',
+    cat: 'pseudo',
+    labelKey: 'site.presetThinkphp',
+    build: () => {
+      const l = blankLocation('/')
+      l.kind = 'raw'
+      l.raw = 'try_files $uri $uri/ /index.php?s=$uri;'
+      return l
+    },
+  },
+  {
+    key: 'codeigniter',
+    cat: 'pseudo',
+    labelKey: 'site.presetCodeigniter',
+    build: () => {
+      const l = blankLocation('/')
+      l.kind = 'raw'
+      l.raw = 'try_files $uri $uri/ /index.php$uri;'
+      return l
+    },
+  },
+  {
+    key: 'laravel',
+    cat: 'pseudo',
+    labelKey: 'site.presetLaravel',
+    build: () => {
+      const l = blankLocation('/')
+      l.kind = 'raw'
+      l.raw = 'try_files $uri $uri/ /index.php?$query_string;'
+      return l
+    },
+  },
+  {
+    key: 'wordpress',
+    cat: 'pseudo',
+    labelKey: 'site.presetWordpress',
+    build: () => {
+      const l = blankLocation('/')
+      l.kind = 'raw'
+      l.raw = 'try_files $uri $uri/ /index.php?$query_string;'
+      return l
+    },
+  },
+  // 常用 Location 规则：直接生成对应 location 条目
+  {
+    key: 'staticCache',
+    cat: 'loc',
+    labelKey: 'site.presetStaticCache',
+    build: () => {
+      const l = blankLocation('\\.(jpg|jpeg|png|gif|ico|css|js|svg|woff2?|webp)$')
+      l.match_mode = 'regex_nocase'
+      l.kind = 'raw'
+      l.raw = 'expires 30d;\naccess_log off;'
+      return l
+    },
+  },
+  {
+    key: 'denyHidden',
+    cat: 'loc',
+    labelKey: 'site.presetDenyHidden',
+    build: () => {
+      const l = blankLocation('/\\.(git|svn|env|htaccess|htpasswd)')
+      l.match_mode = 'regex'
+      l.kind = 'deny'
+      l.code = 403
+      return l
+    },
+  },
+  {
+    key: 'denyUploadPhp',
+    cat: 'loc',
+    labelKey: 'site.presetDenyUploadPhp',
+    build: () => {
+      const l = blankLocation('/(uploads|files|assets)/.*\\.php$')
+      l.match_mode = 'regex_nocase'
+      l.kind = 'deny'
+      l.code = 403
+      return l
+    },
+  },
+  {
+    key: 'proxyApi',
+    cat: 'loc',
+    labelKey: 'site.presetProxyApi',
+    build: () => {
+      const l = blankLocation('/api')
+      l.kind = 'proxy'
+      l.target = 'http://127.0.0.1:8080'
+      l.ws = false
+      l.strip_prefix = false
+      return l
+    },
+  },
+]
+const locPresetGroups = computed(() => {
+  const groups: { cat: LocPresetCat; label: string; items: LocPreset[] }[] = [
+    { cat: 'pseudo', label: t('site.presetCatPseudo'), items: [] },
+    { cat: 'loc', label: t('site.presetCatLoc'), items: [] },
+  ]
+  for (const p of locPresets) {
+    // 伪静态仅 PHP 站点有意义
+    if (p.cat === 'pseudo' && form.site_type !== 'php') continue
+    // 反代类示例需套餐开放反向代理
+    if (p.key === 'proxyApi' && !showProxyPanel.value) continue
+    groups.find((g) => g.cat === p.cat)!.items.push(p)
+  }
+  return groups.filter((g) => g.items.length)
+})
+function addLocationPreset(p: LocPreset) {
+  const l = p.build()
+  // 伪静态类：若已有 location / raw，则替换其 raw 内容；否则追加一条
+  if (p.cat === 'pseudo') {
+    const idx = form.locations.findIndex((x) => x.path.trim() === '/' && x.kind === 'raw')
+    if (idx >= 0) {
+      form.locations[idx].raw = l.raw
+      expandedLocs.value = [idx]
+      return
+    }
+  }
+  form.locations.push(l)
+  // 展开并聚焦当前新增的规则
   expandedLocs.value = [form.locations.length - 1]
 }
 /** Location 卡片折叠状态（索引集合）：始终保持至少一条展开 */
@@ -1119,8 +1233,6 @@ function openEdit(row: SiteItem) {
   form.remark = row.remark
   form.php_instance = row.php_instance || ''
   form.site_type = (row.site_type as SiteType) || 'php'
-  form.pseudo_static = row.pseudo_static || 'none'
-  form.pseudo_custom = row.pseudo_custom || ''
   form.web_root_custom = !!row.web_root_custom
   // 把已有文档根还原为「家目录前缀下的相对子路径」供编辑（已有目录 / 自动目录统一展示）
   form.web_root_sub = ''
@@ -1263,7 +1375,14 @@ function validateForm(): string {
     if (!form.locations.some((l) => l.path.trim() === '/')) return t('site.valProxyNeedRoot')
     for (const l of form.locations) {
       const p = l.path.trim()
-      if (!p || !p.startsWith('/')) return t('site.valLocPath', { path: p || t('site.empty') })
+      const regex = isRegexMode(l.match_mode)
+      if (!p) return t('site.valLocPath', { path: t('site.empty') })
+      if (regex) {
+        if (p.includes('{') || p.includes('}') || p.includes(';'))
+          return t('site.valLocRegex', { path: p })
+      } else if (!p.startsWith('/')) {
+        return t('site.valLocPath', { path: p })
+      }
       if (l.kind === 'proxy' && !l.target.trim()) return t('site.valLocTarget', { path: p })
       if (l.kind === 'raw' && !l.raw.trim()) return t('site.valLocRaw', { path: p })
       if (l.raw.trim() && (l.raw.includes('{') || l.raw.includes('}')))
@@ -1305,7 +1424,6 @@ async function submitForm() {
     return
   }
   const domains = form.domains.map((s) => s.trim()).filter((s) => s)
-  const pseudo = form.pseudo_static || 'none'
   const payload: Record<string, unknown> = {
     name: form.name.trim(),
     domains,
@@ -1314,8 +1432,6 @@ async function submitForm() {
     remark: form.remark.trim(),
     php_instance: form.site_type === 'php' ? form.php_instance : '',
     site_type: form.site_type,
-    pseudo_static: pseudo,
-    pseudo_custom: pseudo === 'custom' ? form.pseudo_custom : '',
     web_root_custom: form.web_root_custom,
     web_root: form.web_root_custom ? formAbsDir() : '',
     web_root_sub: form.web_root_custom ? '' : form.web_root_sub.trim(),
@@ -1346,7 +1462,12 @@ async function submitForm() {
     locations: form.locations
       .filter((l) => l.path.trim())
       .map((l) => ({
-        path: l.path.trim(),
+        // 正则模式的修饰符（~ / ~*）由 match_mode 决定，路径只需表达式本体；
+        // 兜底去掉用户手填时可能带上的 ~ / ~* 前缀，避免渲染成 `location ~* ~* ...`
+        path: isRegexMode(l.match_mode || '')
+          ? l.path.trim().replace(/^~\*?\s*/, '')
+          : l.path.trim(),
+        match_mode: l.match_mode || '',
         kind: l.kind,
         target:
           l.kind === 'redirect' || l.kind === 'proxy' || l.kind === 'alias' ? l.target.trim() : '',
@@ -1696,13 +1817,6 @@ onMounted(() => {
                   <span class="info-label">{{ t('site.formSiteType') }}</span>
                   <div class="info-value">
                     {{ typeMeta(row.site_type).label }}
-                    <template
-                      v-if="
-                        row.site_type === 'php' && row.pseudo_static && row.pseudo_static !== 'none'
-                      "
-                    >
-                      / {{ pseudoLabel(row.pseudo_static) }}
-                    </template>
                   </div>
                 </div>
                 <div v-if="row.site_type === 'php'" class="info-item">
@@ -2153,33 +2267,6 @@ onMounted(() => {
               <div v-if="!phpOptions.length && !stalePhpInstance" class="form-tip">
                 {{ t('site.phpNoneTip') }}
               </div>
-            </el-form-item>
-
-            <!-- 伪静态规则：预设 + 自定义 -->
-            <el-form-item v-if="form.site_type === 'php'" :label="t('site.formPseudo')">
-              <el-select v-model="form.pseudo_static" style="width: 100%">
-                <el-option
-                  v-for="o in pseudoOptions"
-                  :key="o.value"
-                  :value="o.value"
-                  :label="o.label"
-                  :disabled="o.value === 'custom' && !canManageAll"
-                />
-              </el-select>
-              <div class="form-tip">
-                {{ pseudoMeta(form.pseudo_static).desc }}
-                <template v-if="form.pseudo_static === 'custom' && !canManageAll">
-                  {{ t('site.pseudoCustomAdminOnly') }}
-                </template>
-              </div>
-              <el-input
-                v-if="form.pseudo_static === 'custom'"
-                v-model="form.pseudo_custom"
-                type="textarea"
-                :rows="4"
-                class="pseudo-custom"
-                :placeholder="t('site.pseudoCustomPlaceholder')"
-              />
             </el-form-item>
 
             <!-- 站点信息折叠：放到最后，作为「更多」展开 -->
@@ -2633,9 +2720,29 @@ onMounted(() => {
                 <div v-if="!form.locations.length" class="loc-empty form-tip">
                   {{ t('site.locEmpty') }}
                 </div>
-                <el-button size="small" :icon="Plus" @click="addLocationRow">{{
-                  t('site.addLocation')
-                }}</el-button>
+                <div class="loc-actions">
+                  <el-button size="small" :icon="Plus" @click="addLocationRow">{{
+                    t('site.addLocation')
+                  }}</el-button>
+                  <el-dropdown v-if="locPresetGroups.length" size="small" @command="addLocationPreset">
+                    <el-button size="small" type="primary">
+                      {{ t('site.locPresetsTitle') }}<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <template v-for="grp in locPresetGroups" :key="grp.cat">
+                          <el-dropdown-item v-if="grp.items.length" disabled>{{ grp.label }}</el-dropdown-item>
+                          <el-dropdown-item
+                            v-for="p in grp.items"
+                            :key="p.key"
+                            :command="p"
+                            >{{ t(p.labelKey) }}</el-dropdown-item
+                          >
+                        </template>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
               </div>
             </el-form-item>
           </el-tab-pane>
@@ -3184,10 +3291,6 @@ onMounted(() => {
   flex-wrap: wrap;
   gap: 8px;
 }
-.pseudo-custom {
-  margin-top: 8px;
-  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
-}
 .name-cell {
   display: flex;
   flex-wrap: wrap;
@@ -3551,6 +3654,12 @@ onMounted(() => {
   margin-bottom: 10px;
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+.loc-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
 }
 .loc-card {

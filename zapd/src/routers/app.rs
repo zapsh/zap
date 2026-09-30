@@ -252,8 +252,6 @@ async fn create_proxy_site(
         remark: Some(format!("应用 {name} 的反代站点（由应用部署自动创建）")),
         php_instance: None,
         site_type: "proxy".to_string(),
-        pseudo_static: "none".to_string(),
-        pseudo_custom: String::new(),
         web_root_custom: false,
         web_root: None,
         web_root_sub: None,

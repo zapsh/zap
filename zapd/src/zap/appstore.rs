@@ -772,7 +772,9 @@ pub struct SiteProvision {
     pub mode: Option<String>,
     /// PHP 实例标识（缺省取面板默认 PHP）
     pub php: Option<String>,
-    /// 伪静态预设（none / wordpress / thinkphp / laravel / codeigniter）
+    /// 路由规则预设：映射到「location /」内的 raw 自定义指令
+    /// （thinkphp / codeigniter / laravel / wordpress / drupal / typecho / none）。
+    /// 缺省或 none 不追加自定义规则，仅用默认 try_files。
     pub rewrite: Option<String>,
 }
 

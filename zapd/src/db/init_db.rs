@@ -1234,8 +1234,6 @@ async fn init_site_profile_table() {
     CREATE TABLE IF NOT EXISTS site_profile (
         site_id INTEGER NOT NULL PRIMARY KEY,
         site_type TEXT NOT NULL DEFAULT 'php',
-        pseudo_static TEXT NOT NULL DEFAULT 'none',
-        pseudo_custom TEXT NOT NULL DEFAULT '',
         web_root_custom INTEGER NOT NULL DEFAULT 0,
         upstreams TEXT NOT NULL DEFAULT '[]',
         locations TEXT NOT NULL DEFAULT '[]',

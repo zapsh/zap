@@ -855,12 +855,6 @@ pub enum Request {
         /// proxy 类型忽略 web_root/php，按 locations 渲染反代规则。
         #[serde(default)]
         site_type: String,
-        /// 伪静态预设 key：none / thinkphp / laravel / codeigniter / wordpress / custom
-        #[serde(default)]
-        pseudo_static: String,
-        /// 伪静态自定义规则（多行 nginx 指令，pseudo_static=custom 时使用；仅 root/admin 可提交）
-        #[serde(default)]
-        pseudo_custom: String,
         /// web_root 是否为用户在归属家目录下选择的「已有目录」：
         /// true 时不自动创建目录、不写入默认 index.html
         #[serde(default)]
@@ -1861,8 +1855,6 @@ mod tests {
                 log_root: None,
                 owner_user: None,
                 site_type: "php".into(),
-                pseudo_static: "none".into(),
-                pseudo_custom: String::new(),
                 web_root_custom: false,
                 upstreams: vec![],
                 locations: vec![],
@@ -1878,7 +1870,7 @@ mod tests {
                 security: None,
             })
             .unwrap(),
-            r#"{"verb":"site.vhost_sync","site_id":1,"name":"blog","domains":["a.com","b.com"],"enabled":true,"php_socket":"unix:/var/run/php-fpm-8.3.sock","site_type":"php","pseudo_static":"none","pseudo_custom":"","web_root_custom":false,"force_https":false}"#
+            r#"{"verb":"site.vhost_sync","site_id":1,"name":"blog","domains":["a.com","b.com"],"enabled":true,"php_socket":"unix:/var/run/php-fpm-8.3.sock","site_type":"php","web_root_custom":false,"force_https":false}"#
         );
         assert_eq!(
             serde_json::to_string(&Request::SiteVhostRemove {
@@ -1914,8 +1906,6 @@ mod tests {
             log_root: Some("/home/zap/logs/1-blog".into()),
             owner_user: Some("zap".into()),
             site_type: "php".into(),
-            pseudo_static: "none".into(),
-            pseudo_custom: String::new(),
             web_root_custom: false,
             upstreams: vec![],
             locations: vec![],
@@ -1933,7 +1923,7 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(
             json,
-            r#"{"verb":"site.vhost_sync","site_id":1,"name":"blog","domains":["a.com"],"enabled":true,"web_root":"/home/zap/www/blog-1","log_root":"/home/zap/logs/1-blog","owner_user":"zap","site_type":"php","pseudo_static":"none","pseudo_custom":"","web_root_custom":false,"force_https":false}"#
+            r#"{"verb":"site.vhost_sync","site_id":1,"name":"blog","domains":["a.com"],"enabled":true,"web_root":"/home/zap/www/blog-1","log_root":"/home/zap/logs/1-blog","owner_user":"zap","site_type":"php","web_root_custom":false,"force_https":false}"#
         );
         // 老版本 JSON（无 web_root/log_root）也能反序列化成功 → None
         let old: Request =

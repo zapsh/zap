@@ -314,42 +314,12 @@ fn ensure_web_root(
 
 /// 站点类型白名单
 const SITE_TYPES: [&str; 3] = ["php", "static", "proxy"];
-/// 伪静态预设 key（custom = 使用自定义规则文本）
-const PSEUDO_PRESETS: [&str; 6] = [
-    "none",
-    "thinkphp",
-    "laravel",
-    "wordpress",
-    "codeigniter",
-    "custom",
-];
 
 fn norm_site_type(t: &str) -> &'static str {
     match t.trim().to_lowercase().as_str() {
         "static" => "static",
         "proxy" => "proxy",
         _ => "php",
-    }
-}
-
-/// 伪静态规则 → `location /` 内的指令（None = 走默认 try_files）。
-/// kind 只匹配白名单预设；custom 使用面板提交的多行指令原文。
-fn pseudo_location_body(kind: &str, custom: &str) -> Option<String> {
-    match kind.trim().to_lowercase().as_str() {
-        "thinkphp" => Some(
-            "if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php?s=$1 last;\n}".to_string(),
-        ),
-        "codeigniter" => Some(
-            "if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php/$1 last;\n}".to_string(),
-        ),
-        "laravel" | "wordpress" | "drupal" | "typecho" => {
-            Some("try_files $uri $uri/ /index.php?$query_string;".to_string())
-        }
-        "custom" => {
-            let c = custom.trim();
-            (!c.is_empty()).then(|| c.to_string())
-        }
-        _ => None,
     }
 }
 
@@ -638,7 +608,6 @@ fn nginx_http2_on_syntax(bin: &std::path::Path) -> bool {
 
 /// 完整 vhost 渲染（纯函数）：
 /// - site_type：php（默认，PHP/PHP+静态）/ static / proxy（反向代理，忽略 root/PHP）
-/// - 伪静态预设只影响默认 `location /`（php/static 类型）
 /// - upstreams 渲染到 server 块之前；locations 按序渲染进 server（nginx 最长前缀匹配覆盖默认规则）
 ///
 /// 入参全部为借用/复制字段，聚合为 [`VhostRenderSpec`] 传递（避免 15 个平铺参数）。
@@ -657,8 +626,6 @@ struct VhostRenderSpec<'a> {
     /// nginx ≥ 1.17.1：支持 `limit_req_dry_run`（老版本不渲染该指令）
     dry_run_ok: bool,
     site_type: &'a str,
-    pseudo_static: &'a str,
-    pseudo_custom: &'a str,
     upstreams: &'a [UpstreamSpec],
     locations: &'a [LocationSpec],
     /// (证书 fullchain 路径, 私钥路径)；None = 不启用 HTTPS
@@ -929,8 +896,6 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         waf_log,
         dry_run_ok,
         site_type,
-        pseudo_static,
-        pseudo_custom,
         upstreams,
         locations,
         ssl_files,
@@ -1004,10 +969,21 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
     let mut core = String::new();
     // 默认 location / 的「根替换 / 根追加」判定（函数级，供下方 locations 循环去重使用）：
     //   - proxy / alias / redirect / deny 视为「整段替换」默认根，跳过默认块；
-    //   - raw 视为「在默认根上追加规则」，默认块照常生成并追加用户 raw 指令（php/static 场景）。
+    //   - PHP 站点的 raw `location /` 也视为整段替换：伪静态规则迁移到 Location 规则后，
+    //     用户通过示例生成的 `location /` raw 需要完全接管默认根（try_files），而不是在
+    //     默认 try_files 后面追加；否则 ThinkPHP/CodeIgniter 类的 rewrite 会被 try_files =404 截断。
+    //   - 静态站点的 raw `location /` 维持「追加」语义，便于在默认 try_files 上加 rewrite。
     let root_replace = locations.iter().any(|l| {
         let p = l.path.trim();
-        p == "/" && matches!(l.kind.trim().to_lowercase().as_str(), "proxy" | "alias" | "redirect" | "deny")
+        let k = l.kind.trim().to_lowercase();
+        if p != "/" {
+            return false;
+        }
+        if matches!(k.as_str(), "proxy" | "alias" | "redirect" | "deny") {
+            return true;
+        }
+        // PHP 站点：raw location / 替换默认根
+        s_type == "php" && k == "raw"
     });
     let root_augment = locations.iter().find(|l| {
         l.path.trim() == "/" && l.kind.trim().to_lowercase() == "raw"
@@ -1032,21 +1008,12 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         // 默认 location /：伪静态预设覆盖默认 try_files。
         // 若用户已自定义 `location /`：
         //   - proxy / alias / redirect / deny 视为「整段替换」，跳过默认块（用户完全掌控 root 行为）；
-        //   - raw 视为「在默认根上追加规则」（典型用途：php 选了静态规则后，在高级里再加 rewrite /
-        //     静态目录指令），默认块照常生成（保留 root 继承与伪静态路由），用户 raw 指令原样追加到
-        //     末尾，既不会因丢失 root / try_files 而 404，也避免重复生成 `location /`（nginx 会报错）。
+        //   - PHP 站点的 raw `location /` 也视为「整段替换」：伪静态规则迁移到 Location 规则后，
+        //     用户 raw 需要完全接管默认根（如 try_files /index.php），避免默认 try_files =404 截断 rewrite；
+        //   - 静态站点的 raw `location /` 维持「在默认根上追加规则」，默认块照常生成，用户 raw 追加到末尾。
         if !root_replace {
             core.push_str("\n    location / {\n");
-            match pseudo_location_body(pseudo_static, pseudo_custom) {
-                Some(body) => {
-                    for line in body.lines() {
-                        core.push_str("        ");
-                        core.push_str(line);
-                        core.push('\n');
-                    }
-                }
-                None => core.push_str("        try_files $uri $uri/ =404;\n"),
-            }
+            core.push_str("        try_files $uri $uri/ =404;\n");
             // raw 追加规则（php/static 在默认根上加 rewrite / 静态指令等）
             if let Some(l) = root_augment {
                 let raw = l.raw.trim();
@@ -1631,7 +1598,7 @@ mod loc_extra_tests {
     }
 
     fn validate(locs: Vec<LocationSpec>) -> Result<(), String> {
-        validate_vhost_cfg("proxy", "none", "", false, None, &[], &locs)
+        validate_vhost_cfg("proxy", false, None, &[], &locs)
     }
 
     /// 静态目录两种挂载方式：alias 替换 location 路径，root 拼在目录之后。
@@ -1684,8 +1651,6 @@ mod loc_extra_tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "proxy",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &[],
             locations: &locs,
             ssl_files: None,
@@ -1755,8 +1720,6 @@ mod loc_extra_tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "proxy",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &[],
             locations: &locs,
             ssl_files: None,
@@ -1971,8 +1934,6 @@ mod loc_extra_tests {
         ];
         let err = validate_vhost_cfg(
             "static",
-            "none",
-            "",
             false,
             Some(Path::new("/home/u/www/p-1")),
             &[],
@@ -2051,8 +2012,6 @@ fn validate_domains(domains: &[String]) -> Result<(), String> {
 
 fn validate_vhost_cfg(
     site_type: &str,
-    pseudo_static: &str,
-    pseudo_custom: &str,
     web_root_custom: bool,
     root: Option<&Path>,
     upstreams: &[UpstreamSpec],
@@ -2065,25 +2024,6 @@ fn validate_vhost_cfg(
         ));
     }
     let s_type = norm_site_type(site_type);
-    let pseudo = pseudo_static.trim().to_lowercase();
-    if !PSEUDO_PRESETS.contains(&pseudo.as_str()) {
-        return Err(format!("伪静态预设不支持：{pseudo_static}"));
-    }
-    if !pseudo_custom.trim().is_empty() && pseudo != "custom" {
-        return Err("已填写自定义伪静态规则，但伪静态预设不是 custom".to_string());
-    }
-    if pseudo == "custom" {
-        let c = pseudo_custom;
-        if c.contains("server") || c.contains("location ") {
-            return Err("自定义伪静态规则中不允许出现 server / location 指令".to_string());
-        }
-        if c.matches('{').count() != c.matches('}').count() {
-            return Err("自定义伪静态规则花括号不配对".to_string());
-        }
-        if c.lines().any(|l| !l.trim().is_empty() && l.contains('#')) {
-            return Err("自定义伪静态规则中不允许使用 # 注释".to_string());
-        }
-    }
     if web_root_custom {
         let r = root.ok_or_else(|| "自定义站点目录缺少目录参数".to_string())?;
         if !r.is_dir() {
@@ -2442,8 +2382,6 @@ pub(super) struct SiteConfig {
     pub(super) log_root: Option<String>,
     pub(super) owner_user: Option<String>,
     pub(super) site_type: String,
-    pub(super) pseudo_static: String,
-    pub(super) pseudo_custom: String,
     pub(super) web_root_custom: bool,
     pub(super) upstreams: Vec<UpstreamSpec>,
     pub(super) locations: Vec<LocationSpec>,
@@ -2526,8 +2464,6 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         log_root,
         owner_user,
         site_type,
-        pseudo_static,
-        pseudo_custom,
         web_root_custom,
         upstreams,
         locations,
@@ -2652,11 +2588,9 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
             ensure_web_root(r, site_id, name, domains)?;
         }
     }
-    // 高级配置校验（类型 / 伪静态 / upstream / location 等）：失败即中止发布
+    // 高级配置校验（类型 / upstream / location 等）：失败即中止发布
     validate_vhost_cfg(
         &site_type,
-        &pseudo_static,
-        &pseudo_custom,
         web_root_custom,
         root.as_deref(),
         &upstreams,
@@ -2733,8 +2667,6 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         waf_log: waf_log.as_deref(),
         dry_run_ok: nginx_dry_run_ok(&bin),
         site_type: &site_type,
-        pseudo_static: &pseudo_static,
-        pseudo_custom: &pseudo_custom,
         upstreams: &upstreams,
         locations: &locations,
         ssl_files: ssl_refs,
@@ -2750,7 +2682,6 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         "name": name,
         "domains": domains,
         "site_type": s_type,
-        "pseudo_static": pseudo_static,
         "web_root_custom": web_root_custom,
         "web_root": root.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         "log_root": log_root,
@@ -3225,8 +3156,6 @@ mod tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "php",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &[],
             locations: &[],
             ssl_files: Some(("/a/fullchain.pem", "/a/key.pem")),
@@ -3256,8 +3185,6 @@ mod tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "php",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &[],
             locations: &[],
             ssl_files: None,
@@ -3358,8 +3285,6 @@ mod tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "php",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &[],
             locations: &[],
             ssl_files: None,
@@ -3489,8 +3414,6 @@ mod tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "static",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &[],
             locations: &[],
             ssl_files: None,
@@ -3505,14 +3428,14 @@ mod tests {
     }
 
     #[test]
-    fn render_php_raw_root_augments_default() {
-        // php/static 在「反代/高级」里加一条 raw 的 `location /`（典型：额外 rewrite 规则），
-        // 不应整段替换默认根，否则会丢失 try_files/伪静态路由导致 404；
-        // 同时默认块只生成一次（不能出现两个 `location /`）。
+    fn render_php_raw_root_replaces_default() {
+        // PHP 站点的 raw `location /` 视为整段替换默认根：
+        // 伪静态规则迁移到 Location 规则后，用户通过示例生成的 `location /` raw
+        // 需要完全接管默认根，而不是在默认 try_files 后面追加。
         let locs = vec![LocationSpec {
             path: "/".into(),
             kind: "raw".into(),
-            raw: "rewrite ^/old/(.*)$ /new/$1 permanent;".into(),
+            raw: "try_files $uri $uri/ /index.php?$query_string;".into(),
             ..Default::default()
         }];
         let s = render_vhost_full(VhostRenderSpec {
@@ -3527,8 +3450,6 @@ mod tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "php",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &[],
             locations: &locs,
             ssl_files: None,
@@ -3537,71 +3458,16 @@ mod tests {
             listen_ipv4: "",
             listen_ipv6: "",
         });
-        assert_eq!(s.matches("location / {").count(), 1, "默认根只能出现一次");
-        assert!(s.contains("try_files $uri $uri/ =404;"), "应保留默认 try_files 路由");
+        assert_eq!(s.matches("location / {").count(), 1, "只能出现一个 location /");
         assert!(
-            s.contains("rewrite ^/old/(.*)$ /new/$1 permanent;"),
-            "用户 raw 规则应追加进默认根"
+            !s.contains("try_files $uri $uri/ =404;"),
+            "默认 try_files 应被替换"
+        );
+        assert!(
+            s.contains("try_files $uri $uri/ /index.php?$query_string;"),
+            "用户 raw 应成为 location / 内容"
         );
         assert!(s.contains("root /home/u/www/aug-7;"), "server 级 root 必须保留");
-    }
-
-    #[test]
-    fn render_pseudo_thinkphp_and_laravel() {
-        let s = render_vhost_full(VhostRenderSpec {
-            security: None,
-            site_id: 1,
-            name: "tp",
-            domains: &["tp.com".into()],
-            root: "/home/u/www/tp-1",
-            php_socket: Some("unix:/run/php.sock"),
-            access_log: None,
-            error_log: None,
-            waf_log: None,
-            dry_run_ok: true,
-            site_type: "php",
-            pseudo_static: "thinkphp",
-            pseudo_custom: "",
-            upstreams: &[],
-            locations: &[],
-            ssl_files: None,
-            force_https: false,
-            ssl_tls: None,
-            listen_ipv4: "",
-            listen_ipv6: "",
-        });
-        assert!(
-            s.contains("rewrite ^(.*)$ /index.php?s=$1 last;"),
-            "thinkphp 伪静态规则应渲染进 location /"
-        );
-
-        let s2 = render_vhost_full(VhostRenderSpec {
-            security: None,
-            site_id: 2,
-            name: "lv",
-            domains: &["lv.com".into()],
-            root: "/home/u/www/lv-2",
-            php_socket: Some("unix:/run/php.sock"),
-            access_log: None,
-            error_log: None,
-            waf_log: None,
-            dry_run_ok: true,
-            site_type: "php",
-            pseudo_static: "laravel",
-            pseudo_custom: "",
-            upstreams: &[],
-            locations: &[],
-            ssl_files: None,
-            force_https: false,
-            ssl_tls: None,
-            listen_ipv4: "",
-            listen_ipv6: "",
-        });
-        assert!(s2.contains("try_files $uri $uri/ /index.php?$query_string;"));
-        assert!(
-            !s2.contains("rewrite"),
-            "laravel 用 try_files 实现，不应出现 rewrite"
-        );
     }
 
     #[test]
@@ -3649,8 +3515,6 @@ mod tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "proxy",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &ups,
             locations: &locs,
             ssl_files: None,
@@ -3732,8 +3596,6 @@ mod tests {
                 waf_log: None,
                 dry_run_ok: true,
                 site_type: "proxy",
-                pseudo_static: "none",
-                pseudo_custom: "",
                 upstreams: &ups,
                 locations: &locs,
                 ssl_files: None,
@@ -3762,7 +3624,7 @@ mod tests {
             ws: false,
             ..Default::default()
         }];
-        let e = validate_vhost_cfg("proxy", "none", "", false, None, &ups, &locs);
+        let e = validate_vhost_cfg("proxy", false, None, &ups, &locs);
         assert!(e.is_err());
         assert!(e.unwrap_err().contains("location /"));
 
@@ -3785,7 +3647,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        assert!(validate_vhost_cfg("proxy", "none", "", false, None, &ups, &locs2).is_ok());
+        assert!(validate_vhost_cfg("proxy", false, None, &ups, &locs2).is_ok());
     }
 
     #[test]
@@ -3793,7 +3655,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("zap-rs-validate-cfg");
         let _ = std::fs::create_dir_all(&tmp);
         // 未知站点类型
-        assert!(validate_vhost_cfg("hack", "none", "", false, Some(&tmp), &[], &[]).is_err());
+        assert!(validate_vhost_cfg("hack", false, Some(&tmp), &[], &[]).is_err());
         // proxy_pass 指向不存在的 upstream 组
         let ups = vec![UpstreamSpec {
             name: "ok".into(),
@@ -3808,7 +3670,7 @@ mod tests {
             ws: false,
             ..Default::default()
         }];
-        assert!(validate_vhost_cfg("proxy", "none", "", false, None, &ups, &locs).is_err());
+        assert!(validate_vhost_cfg("proxy", false, None, &ups, &locs).is_err());
         // proxy_pass 注入分号/花括号
         let locs2 = vec![LocationSpec {
             path: "/".into(),
@@ -3818,7 +3680,7 @@ mod tests {
             ws: false,
             ..Default::default()
         }];
-        assert!(validate_vhost_cfg("proxy", "none", "", false, None, &ups, &locs2).is_err());
+        assert!(validate_vhost_cfg("proxy", false, None, &ups, &locs2).is_err());
         // alias 越出站点目录（php / static 仍然拦）
         let locs3 = vec![LocationSpec {
             path: "/x".into(),
@@ -3828,7 +3690,7 @@ mod tests {
             ws: false,
             ..Default::default()
         }];
-        assert!(validate_vhost_cfg("php", "none", "", false, Some(&tmp), &[], &locs3).is_err());
+        assert!(validate_vhost_cfg("php", false, Some(&tmp), &[], &locs3).is_err());
 
         // 反代站点没有文档根：静态资源可 alias 到应用目录（站点目录之外）。
         // 反代站点本身仍需一条兜底 `location /` 转发
@@ -3850,7 +3712,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        assert!(validate_vhost_cfg("proxy", "none", "", false, None, &[], &locs4).is_ok());
+        assert!(validate_vhost_cfg("proxy", false, None, &[], &locs4).is_ok());
         // 但越界（..）与注入字符照旧拒绝
         for bad in ["/home/u/../../etc", "/home/u/www/{}", "/home/u/www/a;b"] {
             let l = vec![LocationSpec {
@@ -3862,36 +3724,10 @@ mod tests {
                 ..Default::default()
             }];
             assert!(
-                validate_vhost_cfg("proxy", "none", "", false, None, &[], &l).is_err(),
+                validate_vhost_cfg("proxy", false, None, &[], &l).is_err(),
                 "应拒绝：{bad}"
             );
         }
-        // 自定义伪静态花括号不配对
-        assert!(
-            validate_vhost_cfg(
-                "php",
-                "custom",
-                "if (x) { rewrite ^ y last;",
-                false,
-                Some(&tmp),
-                &[],
-                &[]
-            )
-            .is_err()
-        );
-        // 自定义伪静态禁止 location
-        assert!(
-            validate_vhost_cfg(
-                "php",
-                "custom",
-                "location /x {}",
-                false,
-                Some(&tmp),
-                &[],
-                &[]
-            )
-            .is_err()
-        );
         // deny 状态码白名单
         let locs4 = vec![LocationSpec {
             path: "/".into(),
@@ -3901,7 +3737,7 @@ mod tests {
             ws: false,
             ..Default::default()
         }];
-        assert!(validate_vhost_cfg("php", "none", "", false, Some(&tmp), &[], &locs4).is_err());
+        assert!(validate_vhost_cfg("php", false, Some(&tmp), &[], &locs4).is_err());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -4009,8 +3845,6 @@ mod tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "php",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &[],
             locations: &[],
             ssl_files: Some(("/etc/zap/ssl/fullchain.pem", "/etc/zap/ssl/key.pem")),
@@ -4049,8 +3883,6 @@ mod tests {
             waf_log: None,
             dry_run_ok: true,
             site_type: "static",
-            pseudo_static: "none",
-            pseudo_custom: "",
             upstreams: &[],
             locations: &[],
             ssl_files: Some(("/a/fullchain.pem", "/a/key.pem")),

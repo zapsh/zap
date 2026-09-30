@@ -101,12 +101,6 @@ pub struct SiteAddPayload {
     /// 站点类型：php（默认，PHP/PHP+静态）/ static（纯静态）/ proxy（反向代理）
     #[serde(default)]
     pub site_type: String,
-    /// 伪静态预设：none / thinkphp / laravel / wordpress / codeigniter / custom
-    #[serde(default)]
-    pub pseudo_static: String,
-    /// 伪静态自定义规则（多行指令，仅 preset=custom 时使用；仅运营者可提交）
-    #[serde(default)]
-    pub pseudo_custom: String,
     /// true = 站点目录使用归属用户家目录下已存在的自定义目录（需同时给 web_root）
     #[serde(default)]
     pub web_root_custom: bool,
@@ -178,10 +172,6 @@ pub struct SiteUpdatePayload {
     /// 以下为站点扩展档案：None 表示保持不变（整体覆盖式提交时全量给出）
     #[serde(default)]
     pub site_type: Option<String>,
-    #[serde(default)]
-    pub pseudo_static: Option<String>,
-    #[serde(default)]
-    pub pseudo_custom: Option<String>,
     /// Some(true)=切换为「选择已有目录」模式（需同时给 web_root）；
     /// Some(false)=切回面板自动目录
     #[serde(default)]
@@ -766,15 +756,6 @@ async fn ensure_domains_unique(
 
 /// 站点类型白名单（与 zapexec 保持一致）
 const SITE_TYPES: [&str; 3] = ["php", "static", "proxy"];
-/// 伪静态预设 key 白名单
-const PSEUDO_PRESETS: [&str; 6] = [
-    "none",
-    "thinkphp",
-    "laravel",
-    "wordpress",
-    "codeigniter",
-    "custom",
-];
 
 fn is_operator(claims: &jwt::Claims) -> bool {
     jwt::is_admin(claims) || jwt::is_reseller(claims)
@@ -839,55 +820,9 @@ fn norm_site_type(t: &str) -> Result<&'static str, ZapError> {
     }
 }
 
-/// 伪静态预设配套校验：白名单 + custom 时的规则文本约束。
-/// 空 preset 视为「未改动」，此时不允许附带自定义规则文本。
-fn norm_pseudo(preset: &str, custom: &str, allow_custom: bool) -> Result<(), ZapError> {
-    let p = preset.trim().to_lowercase();
-    if p.is_empty() {
-        if !custom.trim().is_empty() {
-            return Err(ZapError::New(
-                -1,
-                "未选择伪静态预设，不能附带自定义规则文本".to_string(),
-            ));
-        }
-        return Ok(());
-    }
-    if !PSEUDO_PRESETS.contains(&p.as_str()) {
-        return Err(ZapError::New(-1, format!("伪静态预设不支持：{preset}")));
-    }
-    if p == "custom" {
-        if !allow_custom {
-            return Err(ZapError::New(
-                -1,
-                "自定义伪静态规则仅向管理员 / 代理商开放".to_string(),
-            ));
-        }
-        if custom.trim().is_empty() {
-            return Err(ZapError::New(
-                -1,
-                "请填写自定义伪静态规则（预设选 custom 时必填）".to_string(),
-            ));
-        }
-        if custom.contains('#') {
-            return Err(ZapError::New(
-                -1,
-                "自定义伪静态规则中不允许使用 # 注释".to_string(),
-            ));
-        }
-    } else if !custom.trim().is_empty() {
-        return Err(ZapError::New(
-            -1,
-            "预设不是 custom，不能附带自定义规则文本".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 /// 站点扩展档案（与 site_profile 列一一对应；ssl_cert_id>0 = 绑定证书库证书启用 HTTPS）
-/// 8..11：TLS 高级设置（ssl_protocols / ssl_ciphers / ssl_prefer_server_ciphers / ssl_http2）
+/// 6..9：TLS 高级设置（ssl_protocols / ssl_ciphers / ssl_prefer_server_ciphers / ssl_http2）
 type ProfileRow = (
-    String,
-    String,
     String,
     bool,
     String,
@@ -902,8 +837,6 @@ type ProfileRow = (
 
 /// load_profile 的原始查询行（列序见 SQL；i64 为 SQLite 原生整数，映射时转 bool）
 type ProfileRowRaw = (
-    String,
-    String,
     String,
     i64,
     String,
@@ -920,7 +853,7 @@ type ProfileRowRaw = (
 pub(crate) async fn load_profile(site_id: i64) -> ProfileRow {
     let pool = db::get_db_pool().await;
     let row: Option<ProfileRowRaw> = sqlx::query_as(
-        "SELECT site_type, pseudo_static, pseudo_custom, web_root_custom, upstreams, locations, \
+        "SELECT site_type, web_root_custom, upstreams, locations, \
                 ssl_cert_id, force_https, ssl_protocols, ssl_ciphers, \
                 ssl_prefer_server_ciphers, ssl_http2 \
          FROM site_profile WHERE site_id = ?",
@@ -930,11 +863,9 @@ pub(crate) async fn load_profile(site_id: i64) -> ProfileRow {
     .await
     .ok()
     .flatten();
-    row.map(|(t, p, pc, wc, u, l, ssl, fh, pr, ci, pp, h2)| {
+    row.map(|(t, wc, u, l, ssl, fh, pr, ci, pp, h2)| {
         (
             t,
-            p,
-            pc,
             wc != 0,
             u,
             l,
@@ -949,8 +880,6 @@ pub(crate) async fn load_profile(site_id: i64) -> ProfileRow {
     .unwrap_or_else(|| {
         (
             "php".into(),
-            "none".into(),
-            String::new(),
             false,
             "[]".into(),
             "[]".into(),
@@ -969,8 +898,6 @@ pub(crate) async fn load_profile(site_id: i64) -> ProfileRow {
 async fn save_profile(
     site_id: i64,
     site_type: &str,
-    pseudo_static: &str,
-    pseudo_custom: &str,
     web_root_custom: bool,
     upstreams: &[UpstreamSpec],
     locations: &[LocationSpec],
@@ -986,13 +913,12 @@ async fn save_profile(
     let u = serde_json::to_string(upstreams).unwrap_or_else(|_| "[]".to_string());
     let l = serde_json::to_string(locations).unwrap_or_else(|_| "[]".to_string());
     sqlx::query(
-        "INSERT INTO site_profile (site_id, site_type, pseudo_static, pseudo_custom, \
-         web_root_custom, upstreams, locations, ssl_cert_id, force_https, \
+        "INSERT INTO site_profile (site_id, site_type, web_root_custom, \
+         upstreams, locations, ssl_cert_id, force_https, \
          ssl_protocols, ssl_ciphers, ssl_prefer_server_ciphers, ssl_http2, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(site_id) DO UPDATE SET \
-           site_type = excluded.site_type, pseudo_static = excluded.pseudo_static, \
-           pseudo_custom = excluded.pseudo_custom, web_root_custom = excluded.web_root_custom, \
+           site_type = excluded.site_type, web_root_custom = excluded.web_root_custom, \
            upstreams = excluded.upstreams, locations = excluded.locations, \
            ssl_cert_id = excluded.ssl_cert_id, force_https = excluded.force_https, \
            ssl_protocols = excluded.ssl_protocols, ssl_ciphers = excluded.ssl_ciphers, \
@@ -1002,8 +928,6 @@ async fn save_profile(
     )
     .bind(site_id)
     .bind(site_type)
-    .bind(pseudo_static)
-    .bind(pseudo_custom)
     .bind(if web_root_custom { 1i64 } else { 0i64 })
     .bind(&u)
     .bind(&l)
@@ -1114,11 +1038,14 @@ fn pick_app_location(
         .position(|l| l.app_name.is_empty() && (l.target == target || l.path == path))
 }
 
-/// location 匹配方式归一化：只放行前缀 / 精确 / 优先前缀，其余按前缀处理
+/// location 匹配方式归一化：前缀 / 精确 / 优先前缀 / 正则（区分 / 不区分大小写）。
+/// 其余（含空串）按前缀处理。
 pub(crate) fn normalize_match_mode(raw: &str) -> String {
     match raw.trim() {
         "exact" => "exact".to_string(),
         "prefer" => "prefer".to_string(),
+        "regex" => "regex".to_string(),
+        "regex_nocase" => "regex_nocase".to_string(),
         _ => String::new(),
     }
 }
@@ -1137,7 +1064,7 @@ pub(crate) async fn ensure_app_location(
     // 只监听 `/`，不剥离就会收到 `/njs/xxx` 而 404
     let strip = strip_prefix.unwrap_or(path != "/");
     let prof = load_profile(site_id).await;
-    let mut locs: Vec<LocationSpec> = parse_specs(&prof.5);
+    let mut locs: Vec<LocationSpec> = parse_specs(&prof.3);
     let target = format!("http://127.0.0.1:{port}");
 
     // 目标挂载点是否已被别的应用占用（本应用自己的旧挂载不算冲突）
@@ -1161,10 +1088,9 @@ pub(crate) async fn ensure_app_location(
             l.strip_prefix = v;
         }
         l.app_name = app_name.to_string();
-        let ups: Vec<UpstreamSpec> = parse_specs(&prof.4);
+        let ups: Vec<UpstreamSpec> = parse_specs(&prof.2);
         save_profile(
-            site_id, &prof.0, &prof.1, &prof.2, prof.3, &ups, &locs, prof.6, prof.7, &prof.8,
-            &prof.9, prof.10, prof.11,
+            site_id, &prof.0, prof.1, &ups, &locs, prof.4, prof.5, &prof.6, &prof.7, prof.8, prof.9,
         )
         .await?;
         return Ok(Some(path));
@@ -1189,10 +1115,9 @@ pub(crate) async fn ensure_app_location(
         app_name: app_name.to_string(),
         ..Default::default()
     });
-    let ups: Vec<UpstreamSpec> = parse_specs(&prof.4);
+    let ups: Vec<UpstreamSpec> = parse_specs(&prof.2);
     save_profile(
-        site_id, &prof.0, &prof.1, &prof.2, prof.3, &ups, &locs, prof.6, prof.7, &prof.8, &prof.9,
-        prof.10, prof.11,
+        site_id, &prof.0, prof.1, &ups, &locs, prof.4, prof.5, &prof.6, &prof.7, prof.8, prof.9,
     )
     .await?;
     Ok(Some(path))
@@ -1201,7 +1126,7 @@ pub(crate) async fn ensure_app_location(
 /// 站点上各应用的挂载点：`(应用名, 挂载路径, 匹配方式)`，供应用列表展示
 pub(crate) async fn app_mounts(site_id: i64) -> Vec<(String, String, String)> {
     let prof = load_profile(site_id).await;
-    parse_specs::<LocationSpec>(&prof.5)
+    parse_specs::<LocationSpec>(&prof.3)
         .into_iter()
         .filter(|l| !l.app_name.is_empty())
         .map(|l| (l.app_name.clone(), l.path.clone(), l.match_mode.clone()))
@@ -1470,12 +1395,9 @@ fn validate_raw_body(path: &str, raw: &str) -> Result<(), ZapError> {
 async fn validate_advanced_inputs(
     claims: &jwt::Claims,
     site_type: &str,
-    pseudo_static: &str,
-    pseudo_custom: &str,
     upstreams: &[UpstreamSpec],
     locations: &[LocationSpec],
 ) -> Result<(), ZapError> {
-    let op = is_operator(claims);
     let g_proxy = gates_for(claims).await;
     let t = site_type.trim().to_lowercase();
     // 未指定类型（增量编辑）跳过类型相关门禁
@@ -1489,7 +1411,6 @@ async fn validate_advanced_inputs(
             ));
         }
     }
-    norm_pseudo(pseudo_static, pseudo_custom, op)?;
     // upstream 后端组需要反向代理能力；proxy_pass location 在下方逐条校验。
     // 普通 location（重定向 / 禁用 / 静态目录 / 自由指令）即使未开放反代也允许使用。
     if !upstreams.is_empty() && !g_proxy {
@@ -1562,7 +1483,20 @@ async fn validate_advanced_inputs(
     }
     for l in locations {
         let p = l.path.trim();
-        if !p.starts_with('/') {
+        let is_regex = matches!(l.match_mode.trim(), "regex" | "regex_nocase");
+        if p.is_empty() {
+            return Err(ZapError::New(-1, "location 路径不能为空".to_string()));
+        }
+        if is_regex {
+            // 正则 location 的路径是正则表达式，未必以 / 开头（如 ~* \.(gif|jpg|png)$ 文件名匹配）；
+            // 只做轻量安全拦截，真正的 nginx 语法校验由执行端 nginx -t 兜底。
+            if p.contains('{') || p.contains('}') || p.contains(';') {
+                return Err(ZapError::New(
+                    -1,
+                    format!("正则 location 路径非法：{}（不能含 {{ }} ;）", l.path),
+                ));
+            }
+        } else if !p.starts_with('/') {
             return Err(ZapError::New(
                 -1,
                 format!("location 路径必须以 / 开头：{}", l.path),
@@ -1721,7 +1655,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
     let mut disk_stat_map: HashMap<i64, i64> = HashMap::new();
     // 站点本月流量（字节，定时任务解析 access.log；列表列展示用）
     let mut traffic_map: HashMap<i64, i64> = HashMap::new();
-    // 站点扩展档案（类型 / 伪静态 / 自定义目录 / upstream / location）
+    // 站点扩展档案（类型 / 自定义目录 / upstream / location / SSL 绑定 / TLS 高级）
     let mut pf_map: HashMap<i64, ProfileRow> = HashMap::new();
     // 归属用户的 Linux 系统账号（system 模式下 PHP pool 按此账号隔离）
     let mut lu_map: HashMap<i64, String> = HashMap::new();
@@ -1785,9 +1719,9 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
             disk_stat_map.insert(sid, ds_at);
             traffic_map.insert(sid, tmon);
         }
-        // 站点扩展档案（类型 / 伪静态 / 自定义目录 / upstream / location / SSL 绑定 / TLS 高级）
+        // 站点扩展档案（类型 / 自定义目录 / upstream / location / SSL 绑定 / TLS 高级）
         let psql2 = format!(
-            "SELECT site_id, site_type, pseudo_static, pseudo_custom, web_root_custom, \
+            "SELECT site_id, site_type, web_root_custom, \
              upstreams, locations, ssl_cert_id, force_https, ssl_protocols, ssl_ciphers, \
              ssl_prefer_server_ciphers, ssl_http2 \
              FROM site_profile WHERE site_id IN ({})",
@@ -1797,8 +1731,6 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
             _,
             (
                 i64,
-                String,
-                String,
                 String,
                 i64,
                 String,
@@ -1814,13 +1746,11 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
         for id in &ids {
             pq2 = pq2.bind(id);
         }
-        for (sid, t, p, pc, wc, u, l, ssl, fh, pr, ci, pp, h2) in pq2.fetch_all(pool).await? {
+        for (sid, t, wc, u, l, ssl, fh, pr, ci, pp, h2) in pq2.fetch_all(pool).await? {
             pf_map.insert(
                 sid,
                 (
                     t,
-                    p,
-                    pc,
                     wc != 0,
                     u,
                     l,
@@ -1852,7 +1782,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
 
     // 站点绑定证书的显示名（仅 SSL 启用的站点；证书被删后保持空名，前端可提示已失效）
     let mut ssl_name_map: HashMap<i64, String> = HashMap::new();
-    let cert_ids: Vec<i64> = pf_map.values().map(|p| p.6).filter(|c| *c > 0).collect();
+    let cert_ids: Vec<i64> = pf_map.values().map(|p| p.4).filter(|c| *c > 0).collect();
     if !cert_ids.is_empty() {
         let phc = cert_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let csql = format!("SELECT id, name FROM ssl_cert WHERE id IN ({})", phc);
@@ -1935,18 +1865,16 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
                 "disk_stat_at": disk_stat_map.get(&r.0).copied().unwrap_or(0),
                 "traffic_month_bytes": traffic_map.get(&r.0).copied().unwrap_or(0),
                 "site_type": pf_map.get(&r.0).map(|p| p.0.clone()).unwrap_or_else(|| "php".into()),
-                "pseudo_static": pf_map.get(&r.0).map(|p| p.1.clone()).unwrap_or_else(|| "none".into()),
-                "pseudo_custom": pf_map.get(&r.0).map(|p| p.2.clone()).unwrap_or_default(),
-                "web_root_custom": pf_map.get(&r.0).map(|p| p.3).unwrap_or(false),
-                "upstreams": pf_map.get(&r.0).map(|p| serde_json::from_str::<Value>(&p.4).unwrap_or_else(|_| json!([]))).unwrap_or_else(|| json!([])),
-                "locations": pf_map.get(&r.0).map(|p| serde_json::from_str::<Value>(&p.5).unwrap_or_else(|_| json!([]))).unwrap_or_else(|| json!([])),
-                "ssl_cert_id": pf_map.get(&r.0).map(|p| p.6).unwrap_or(0),
-                "force_https": pf_map.get(&r.0).map(|p| p.7).unwrap_or(false),
-                "ssl_protocols": pf_map.get(&r.0).map(|p| p.8.clone()).unwrap_or_default(),
-                "ssl_ciphers": pf_map.get(&r.0).map(|p| p.9.clone()).unwrap_or_default(),
-                "ssl_prefer_server_ciphers": pf_map.get(&r.0).map(|p| p.10).unwrap_or(true),
-                "ssl_http2": pf_map.get(&r.0).map(|p| p.11).unwrap_or(true),
-                "ssl_cert_name": pf_map.get(&r.0).and_then(|p| ssl_name_map.get(&p.6)).cloned().unwrap_or_default(),
+                "web_root_custom": pf_map.get(&r.0).map(|p| p.1).unwrap_or(false),
+                "upstreams": pf_map.get(&r.0).map(|p| serde_json::from_str::<Value>(&p.2).unwrap_or_else(|_| json!([]))).unwrap_or_else(|| json!([])),
+                "locations": pf_map.get(&r.0).map(|p| serde_json::from_str::<Value>(&p.3).unwrap_or_else(|_| json!([]))).unwrap_or_else(|| json!([])),
+                "ssl_cert_id": pf_map.get(&r.0).map(|p| p.4).unwrap_or(0),
+                "force_https": pf_map.get(&r.0).map(|p| p.5).unwrap_or(false),
+                "ssl_protocols": pf_map.get(&r.0).map(|p| p.6.clone()).unwrap_or_default(),
+                "ssl_ciphers": pf_map.get(&r.0).map(|p| p.7.clone()).unwrap_or_default(),
+                "ssl_prefer_server_ciphers": pf_map.get(&r.0).map(|p| p.8).unwrap_or(true),
+                "ssl_http2": pf_map.get(&r.0).map(|p| p.9).unwrap_or(true),
+                "ssl_cert_name": pf_map.get(&r.0).and_then(|p| ssl_name_map.get(&p.4)).cloned().unwrap_or_default(),
                 "remark": r.4,
                 "created_at": r.5,
                 "updated_at": r.6,
@@ -2188,15 +2116,9 @@ pub async fn site_add(
         validate_sec(&claims, s).await?;
         require_admin_for_sec_fields(&claims, 0, s).await?;
     }
-    let pseudo_static = {
-        let p = payload.pseudo_static.trim().to_lowercase();
-        if p.is_empty() { "none".to_string() } else { p }
-    };
     validate_advanced_inputs(
         &claims,
         &payload.site_type,
-        &pseudo_static,
-        &payload.pseudo_custom,
         &payload.upstreams,
         &payload.locations,
     )
@@ -2298,12 +2220,10 @@ pub async fn site_add(
     }
     tx.commit().await?;
 
-    // 站点扩展档案（类型 / 伪静态 / upstream / location / 自定义目录标记 / SSL）
+    // 站点扩展档案（类型 / upstream / location / 自定义目录标记 / SSL）
     if let Err(e) = save_profile(
         id,
         site_type,
-        &pseudo_static,
-        &payload.pseudo_custom,
         payload.web_root_custom,
         &payload.upstreams,
         &payload.locations,
@@ -2332,14 +2252,13 @@ pub async fn site_add(
         "site_create",
         &format!("id={}", id),
         &format!(
-            "user_id={} name={} domains={} ips={} php_instance={} site_type={} pseudo={} web_root_custom={} waf={} req={} conn={}",
+            "user_id={} name={} domains={} ips={} php_instance={} site_type={} web_root_custom={} waf={} req={} conn={}",
             owner,
             name,
             domains.join(","),
             ips.join(","),
             php_instance,
             site_type,
-            pseudo_static,
             payload.web_root_custom,
             sec.as_ref().map(|s| s.waf_enable).unwrap_or(false),
             sec.as_ref().map(|s| s.limit_req_enable).unwrap_or(false),
@@ -2384,45 +2303,29 @@ pub async fn site_update(
     let eff_type_raw = payload.site_type.clone().unwrap_or_else(|| prof.0.clone());
     let eff_type = norm_site_type(&eff_type_raw)?;
     require_php_allowed(&claims, eff_type).await?;
-    // 空预设归一为 none（老档案/空提交不再显示空字符串）
-    let eff_pseudo = {
-        let v = payload
-            .pseudo_static
-            .clone()
-            .unwrap_or_else(|| prof.1.clone());
-        if v.trim().is_empty() {
-            "none".to_string()
-        } else {
-            v
-        }
-    };
-    let eff_pseudo_custom = payload
-        .pseudo_custom
-        .clone()
-        .unwrap_or_else(|| prof.2.clone());
-    let eff_custom = payload.web_root_custom.unwrap_or(prof.3);
+    let eff_custom = payload.web_root_custom.unwrap_or(prof.1);
     let eff_upstreams: Vec<UpstreamSpec> = match &payload.upstreams {
         Some(v) => v.clone(),
-        None => parse_specs(&prof.4),
+        None => parse_specs(&prof.2),
     };
     let eff_locations: Vec<LocationSpec> = match &payload.locations {
         Some(v) => v.clone(),
-        None => parse_specs(&prof.5),
+        None => parse_specs(&prof.3),
     };
     // SSL 绑定：None = 保持现值；Some(0) = 解绑；Some(id) = 绑定证书库证书
-    let eff_ssl_cert_id = payload.ssl_cert_id.unwrap_or(prof.6).max(0);
-    let eff_force_https = payload.force_https.unwrap_or(prof.7);
+    let eff_ssl_cert_id = payload.ssl_cert_id.unwrap_or(prof.4).max(0);
+    let eff_force_https = payload.force_https.unwrap_or(prof.5);
     // TLS 高级设置：None = 保持现值；空串 = 面板默认（协议 TLSv1.2+TLSv1.3 / 不输出套件）
     let eff_ssl_protocols = payload
         .ssl_protocols
         .clone()
-        .unwrap_or_else(|| prof.8.clone());
+        .unwrap_or_else(|| prof.6.clone());
     let eff_ssl_ciphers = payload
         .ssl_ciphers
         .clone()
-        .unwrap_or_else(|| prof.9.clone());
-    let eff_ssl_prefer = payload.ssl_prefer_server_ciphers.unwrap_or(prof.10);
-    let eff_ssl_http2 = payload.ssl_http2.unwrap_or(prof.11);
+        .unwrap_or_else(|| prof.7.clone());
+    let eff_ssl_prefer = payload.ssl_prefer_server_ciphers.unwrap_or(prof.8);
+    let eff_ssl_http2 = payload.ssl_http2.unwrap_or(prof.9);
 
     // 归属转移
     let new_owner = if let Some(nid) = payload.user_id {
@@ -2544,8 +2447,6 @@ pub async fn site_update(
     validate_advanced_inputs(
         &claims,
         payload.site_type.as_deref().unwrap_or(""),
-        payload.pseudo_static.as_deref().unwrap_or(""),
-        payload.pseudo_custom.as_deref().unwrap_or(""),
         payload.upstreams.as_deref().unwrap_or_default(),
         payload.locations.as_deref().unwrap_or_default(),
     )
@@ -2578,7 +2479,7 @@ pub async fn site_update(
         )
     };
     // 目录需要刷新：进入/退出自定义模式、切属主、改名、自定义路径 / 子路径变化
-    let dir_changed = eff_custom != prof.3
+    let dir_changed = eff_custom != prof.1
         || new_owner != uid
         || name != old_name
         || (eff_custom && new_custom_root.as_deref() != Some(old_web_root.as_str()))
@@ -2664,8 +2565,6 @@ pub async fn site_update(
     if let Err(e) = save_profile(
         payload.id,
         eff_type,
-        &eff_pseudo,
-        &eff_pseudo_custom,
         eff_custom,
         &eff_upstreams,
         &eff_locations,
@@ -3177,13 +3076,13 @@ async fn sync_one_site_inner(
         RUN_STOPPED
     });
 
-    // SSL/TLS：站点绑定证书库证书（prof.6 = cert id / prof.7 = force_https）。
+    // SSL/TLS：站点绑定证书库证书（prof.4 = cert id / prof.5 = force_https）。
     // 证书缺失或材料不全时降级为不启用 HTTPS（记 warn），不阻塞站点 HTTP 服务。
-    let (ssl_fullchain, ssl_key) = if prof.6 > 0 {
+    let (ssl_fullchain, ssl_key) = if prof.4 > 0 {
         let cert: Option<(String, String, String)> = sqlx::query_as(
             "SELECT cert_content, key_content, ca_bundle FROM ssl_cert WHERE id = ?",
         )
-        .bind(prof.6)
+        .bind(prof.4)
         .fetch_optional(pool)
         .await?;
         match cert {
@@ -3234,18 +3133,16 @@ async fn sync_one_site_inner(
         log_root: log_root_opt,
         owner_user,
         site_type: prof.0,
-        pseudo_static: prof.1,
-        pseudo_custom: prof.2,
-        web_root_custom: prof.3,
-        upstreams: parse_specs(&prof.4),
-        locations: parse_specs(&prof.5),
+        web_root_custom: prof.1,
+        upstreams: parse_specs(&prof.2),
+        locations: parse_specs(&prof.3),
         ssl_fullchain,
         ssl_key,
-        force_https: prof.7,
-        ssl_protocols: prof.8,
-        ssl_ciphers: prof.9,
-        ssl_prefer_server_ciphers: prof.10,
-        ssl_http2: prof.11,
+        force_https: prof.5,
+        ssl_protocols: prof.6,
+        ssl_ciphers: prof.7,
+        ssl_prefer_server_ciphers: prof.8,
+        ssl_http2: prof.9,
         listen_ipv4,
         listen_ipv6,
         security,
@@ -3821,13 +3718,32 @@ pub(crate) async fn provision_site(
 
     let name = fallback_name("", &domains);
     let php = normalize_php_instance(php_instance);
-    let pseudo = rewrite
+    // 建站包声明的 rewrite 预设 → 转换为「location /」内的 raw 自定义指令
+    // （旧的伪静态预设概念已移除，统一走 location 机制）
+    let provision_locs: Vec<LocationSpec> = rewrite
         .map(|r| r.trim().to_ascii_lowercase())
-        .filter(|r| !r.is_empty())
-        .unwrap_or_else(|| "none".to_string());
-    if !PSEUDO_PRESETS.contains(&pseudo.as_str()) {
-        return Err(ZapError::New(-1, format!("伪静态预设不支持：{pseudo}")));
-    }
+        .filter(|r| !r.is_empty() && r != "none")
+        .and_then(|r| match r.as_str() {
+            "thinkphp" => Some(
+                "if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php?s=$1 last;\n}",
+            ),
+            "codeigniter" => Some(
+                "if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php/$1 last;\n}",
+            ),
+            "laravel" | "wordpress" | "drupal" | "typecho" => {
+                Some("try_files $uri $uri/ /index.php?$query_string;")
+            }
+            _ => None,
+        })
+        .map(|raw| {
+            vec![LocationSpec {
+                path: "/".to_string(),
+                kind: "raw".to_string(),
+                raw: raw.to_string(),
+                ..Default::default()
+            }]
+        })
+        .unwrap_or_default();
     let now = chrono::Local::now().timestamp();
     let mut tx = pool.begin().await?;
     ensure_domains_unique(&mut tx, &domains, 0, jwt::is_admin(claims)).await?;
@@ -3866,11 +3782,9 @@ pub(crate) async fn provision_site(
     let _ = save_profile(
         id,
         "php",
-        &pseudo,
-        "",
         false,
         &[],
-        &[],
+        &provision_locs,
         0,
         false,
         "",
