@@ -19,6 +19,9 @@ use std::collections::HashMap;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tracing::{info, warn};
@@ -127,6 +130,7 @@ pub async fn plugin_list(
             items.push(json!({
                 "name": name,
                 "title": m.get("title").and_then(|v| v.as_str()).unwrap_or(&name),
+                "async": m.get("async").and_then(|v| v.as_bool()).unwrap_or(false),
                 "scope": m.get("scope").and_then(|v| v.as_str()).unwrap_or("system"),
                 "placement": placement,
                 "label": m.get("ui").and_then(|u| u.get("label")).and_then(|v| v.as_str())
@@ -192,8 +196,96 @@ pub async fn plugin_run(
         Err(e) => return Response::err(-1, format!("读取插件脚本失败: {e}")),
     };
 
+    // 异步模式：后台执行，日志实时落盘，立即返回 task_id + log_path，由前端 SSE 订阅
+    let is_async = manifest
+        .get("async")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if is_async {
+        let task_id = format!("{name}-{}", chrono::Utc::now().timestamp_millis());
+        let log_dir = zap.join("data/plugins/logs");
+        if let Some(p) = log_dir.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join(format!("{task_id}.log"));
+        // 取消哨兵文件：前端经 zapd 写 <log>.cancel，看门狗线程轮询到就杀掉子进程
+        let cancel_path = log_path.with_extension("log.cancel");
+        let lp = log_path.clone();
+        // 取消标志 + 当前子进程 pid（exec_as_user 走 setsid，pid 即进程组号，可整组杀）
+        let cancel = Arc::new(AtomicBool::new(false));
+        let child_pid: Arc<std::sync::Mutex<Option<(u32, bool)>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let cancel_flag = cancel.clone();
+        let child_pid_w = child_pid.clone();
+        let cancel_path_w = cancel_path.clone();
+        std::thread::spawn(move || loop {
+            if cancel_path_w.exists() || cancel_flag.load(Ordering::SeqCst) {
+                cancel_flag.store(true, Ordering::SeqCst);
+                if let Some((pid, session_leader)) = child_pid_w.lock().unwrap().take() {
+                    unsafe {
+                        // session_leader（setsid 过）= 杀整个进程组；否则只杀单进程，避免误伤 zapexec
+                        if session_leader {
+                            libc::kill(-(pid as i32), libc::SIGKILL);
+                        } else {
+                            libc::kill(pid as i32, libc::SIGKILL);
+                        }
+                    }
+                }
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        tokio::task::spawn_blocking(move || {
+            let res = run_lua(
+                &code,
+                &scope,
+                run_user.as_deref(),
+                run_root.as_deref(),
+                &options,
+                &action,
+                Some(lp.clone()),
+                cancel.clone(),
+                child_pid.clone(),
+            );
+            let cancelled = cancel.load(Ordering::SeqCst);
+            // 清掉取消哨兵文件（若存在）
+            let _ = std::fs::remove_file(&cancel_path);
+            match res {
+                Ok(_) => super::finish_log(lp.to_str().unwrap_or(""), 0),
+                Err(e) => {
+                    if cancelled {
+                        super::log_line(lp.to_str().unwrap_or(""), "任务已取消");
+                        super::finish_log(lp.to_str().unwrap_or(""), -2);
+                    } else {
+                        super::log_line(lp.to_str().unwrap_or(""), &format!("插件执行失败: {e}"));
+                        super::finish_log(lp.to_str().unwrap_or(""), -1);
+                    }
+                }
+            }
+        });
+        return Response::ok(
+            "ok",
+            Some(json!({
+                "task_id": task_id,
+                "log_path": log_path.display().to_string(),
+                "async": true,
+            })),
+        );
+    }
+
     let out = tokio::task::spawn_blocking(move || -> Result<String, String> {
-        run_lua(&code, &scope, run_user.as_deref(), run_root.as_deref(), &options, &action)
+        run_lua(
+            &code,
+            &scope,
+            run_user.as_deref(),
+            run_root.as_deref(),
+            &options,
+            &action,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(std::sync::Mutex::new(None)),
+        )
     })
     .await
     .unwrap_or_else(|e| Err(format!("插件执行线程崩溃: {e}")));
@@ -212,9 +304,23 @@ fn run_lua(
     run_root: Option<&str>,
     options: &HashMap<String, String>,
     action: &str,
+    log_file: Option<std::path::PathBuf>,
+    cancel: Arc<AtomicBool>,
+    child_pid: Arc<std::sync::Mutex<Option<(u32, bool)>>>,
 ) -> Result<String, String> {
     let lua = mlua::Lua::new();
     let log = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    // 异步模式：日志同时落盘（zapexec 既有的长任务日志协议）；exec 输出也实时 tee 到同一文件，
+    // 这样前端 SSE 能边跑边看 composer 等命令的进度，而不是等到结束才一次性灌出来。
+    let logf: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> = log_file.and_then(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .ok()
+            .map(std::sync::Mutex::new)
+            .map(std::sync::Arc::new)
+    });
     let zap_tbl = lua
         .create_table()
         .map_err(|e| format!("创建 zap 表失败: {e}"))?;
@@ -222,9 +328,15 @@ fn run_lua(
     // zap.log
     {
         let log = log.clone();
+        let logf = logf.clone();
         let f = lua.create_function(move |_, msg: String| {
             log.borrow_mut().push_str(&msg);
             log.borrow_mut().push('\n');
+            if let Some(f) = logf.as_ref() {
+                use std::io::Write;
+                let _ = f.lock().unwrap().write_all(msg.as_bytes());
+                let _ = f.lock().unwrap().write_all(b"\n");
+            }
             Ok(())
         });
         zap_tbl
@@ -245,22 +357,44 @@ fn run_lua(
     {
         let scope = scope.to_string();
         let run_user = run_user.map(|s| s.to_string());
+        let logf_exec = logf.clone();
+        // 每个闭包各持一份 cancel / child_pid 的 clone（Arc 不 Copy，不能共享同一个绑定）
+        let cancel_exec = cancel.clone();
+        let cancel_user = cancel.clone();
+        let child_pid_exec = child_pid.clone();
+        let child_pid_user = child_pid.clone();
         let f_exec = lua.create_function(move |_, (prog, args): (String, mlua::Table)| {
             if scope == "site" {
                 return Err(mlua::Error::RuntimeError(
                     "site 作用域禁止 zap.exec，请改用 zap.exec_as_user".into(),
                 ));
             }
-            run_capture(None, &prog, &table_to_vec(&args)).map_err(mlua::Error::RuntimeError)
+            run_capture(
+                None,
+                &prog,
+                &table_to_vec(&args),
+                logf_exec.clone(),
+                cancel_exec.clone(),
+                child_pid_exec.clone(),
+            )
+            .map_err(mlua::Error::RuntimeError)
         });
         zap_tbl
             .set("exec", f_exec.map_err(|e| format!("exec 注册失败: {e}"))?)
             .map_err(|e| format!("{e}"))?;
         let run_user2 = run_user.clone();
+        let logf_user = logf.clone();
         let f_user = lua.create_function(move |_, (prog, args): (String, mlua::Table)| match &run_user2
         {
-            Some(u) => run_capture(Some(u), &prog, &table_to_vec(&args))
-                .map_err(mlua::Error::RuntimeError),
+            Some(u) => run_capture(
+                Some(u),
+                &prog,
+                &table_to_vec(&args),
+                logf_user.clone(),
+                cancel_user.clone(),
+                child_pid_user.clone(),
+            )
+            .map_err(mlua::Error::RuntimeError),
             None => Err(mlua::Error::RuntimeError("site 作用域插件未提供运行账号".into())),
         });
         zap_tbl
@@ -315,7 +449,21 @@ fn table_to_vec(t: &mlua::Table) -> Vec<String> {
 }
 
 /// 以指定身份执行命令并捕获合并输出（stdout + stderr）。
-fn run_capture(user: Option<&str>, program: &str, args: &[String]) -> Result<String, String> {
+///
+/// `logf` 非空时（异步插件），子进程的标准输出/错误会被实时 tee 到该日志文件，
+/// 这样前端 SSE 能边跑边看进度；同步插件传 `None`，行为与原来一致（结束一次性返回）。
+/// `cancel` / `child_pid` 用于异步插件的运行中取消：被取消时看门狗会杀掉本进程（组），
+/// 这里检测标志后提前结束拷贝循环。
+fn run_capture(
+    user: Option<&str>,
+    program: &str,
+    args: &[String],
+    logf: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>>,
+    cancel: Arc<AtomicBool>,
+    child_pid: Arc<std::sync::Mutex<Option<(u32, bool)>>>,
+) -> Result<String, String> {
+    use std::io::{Read, Write};
+    let session_leader = user.is_some(); // exec_as_user 走 setsid，pid 即进程组号
     let mut cmd = match user {
         Some(u) => {
             let (mut c, acc) = super::user_cmd(program, u).map_err(|e| format!("降权失败: {e}"))?;
@@ -332,18 +480,64 @@ fn run_capture(user: Option<&str>, program: &str, args: &[String]) -> Result<Str
         }
         None => super::root_cmd(program),
     };
-    let out = cmd
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::null())
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("执行 {program} 失败: {e}"))?;
-    let mut s = String::new();
-    s.push_str(&String::from_utf8_lossy(&out.stdout));
-    s.push_str(&String::from_utf8_lossy(&out.stderr));
-    if !out.status.success() {
+    // 登记 pid，供取消看门狗杀进程（组）
+    *child_pid.lock().unwrap() = Some((child.id(), session_leader));
+
+    // 两个线程分别把 stdout / stderr 拷进缓冲区，并（异步时）实时落盘
+    let copy =
+        |r: Option<Box<dyn std::io::Read + Send>>,
+         logf: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>>,
+         cancel: Arc<AtomicBool>|
+         -> String {
+        let mut s = String::new();
+        if let Some(mut r) = r {
+            let mut buf = [0u8; 4096];
+            loop {
+                if cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                match r.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                        s.push_str(&chunk);
+                        if let Some(f) = &logf {
+                            let _ = f.lock().unwrap().write_all(chunk.as_bytes());
+                            let _ = f.lock().unwrap().flush();
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        s
+    };
+    let logf_out = logf.clone();
+    let cancel_out = cancel.clone();
+    let stdout: Option<Box<dyn std::io::Read + Send>> =
+        child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>);
+    let stderr: Option<Box<dyn std::io::Read + Send>> =
+        child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>);
+    let t_out = std::thread::spawn(move || copy(stdout, logf_out, cancel_out));
+    let t_err = std::thread::spawn(move || copy(stderr, logf.clone(), cancel.clone()));
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("等待 {program} 失败: {e}"))?;
+    let mut s = t_out.join().unwrap_or_default();
+    s.push_str(&t_err.join().unwrap_or_default());
+
+    if !status.success() {
         return Err(format!(
             "命令退出码 {}:\n{}",
-            out.status.code().unwrap_or(-1),
+            status.code().unwrap_or(-1),
             s
         ));
     }

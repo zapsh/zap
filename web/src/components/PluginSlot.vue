@@ -76,6 +76,13 @@
       <pre v-if="result" class="plugin-log">{{ result }}</pre>
       <template #footer>
         <el-button @click="dialog = false">关闭</el-button>
+        <el-button
+          v-if="running && current?.async"
+          :loading="cancelling"
+          @click="cancelRun"
+        >
+          取消
+        </el-button>
         <el-button type="primary" :loading="running" @click="run">{{ runLabel(current) }}</el-button>
       </template>
     </el-dialog>
@@ -102,7 +109,9 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import DirPicker from '@/components/DirPicker.vue'
 import FilePicker from '@/components/FilePicker.vue'
-import { pluginList, pluginRun, type PluginInfo, type PluginOption } from '@/api/plugin'
+import { pluginList, pluginRun, pluginCancel, type PluginInfo, type PluginOption } from '@/api/plugin'
+import { getToken } from '@/utils/auth'
+import { API_BASE } from '@/utils/base'
 
 const props = defineProps<{ placementSlot: string; siteId?: number; webRoot?: string }>()
 
@@ -113,6 +122,8 @@ const dialog = ref(false)
 const running = ref(false)
 const result = ref('')
 const current = ref<PluginInfo | null>(null)
+const currentTaskId = ref('') // 异步任务的 task_id，用于取消
+const cancelling = ref(false) // 取消请求进行中
 const form = reactive<Record<string, string>>({})
 const boolVal = reactive<Record<string, boolean>>({})
 const multiVal = reactive<Record<string, string[]>>({})
@@ -188,6 +199,7 @@ async function run() {
       options[opt.name] = (multiVal[opt.name] || []).join(' ')
     else options[opt.name] = form[opt.name] || ''
   }
+  let isAsync = false
   try {
     const r: any = await pluginRun({
       name: current.value.name,
@@ -195,15 +207,79 @@ async function run() {
       site_id: props.siteId,
       options,
     })
-    const data = r?.data?.data ?? r?.data
-    result.value = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
-    ElMessage.success('执行完成')
+    const payload = r?.data?.data ?? r?.data
+    // 异步插件：开 SSE 订阅日志流（实时逐行显示），running 由流收尾，这里不重置
+    if (payload && payload.async) {
+      isAsync = true
+      currentTaskId.value = payload.task_id || ''
+      cancelling.value = false
+      watchLog(payload.log_path)
+    } else {
+      // 同步插件：一次性拿回结果
+      result.value =
+        typeof payload?.log === 'string'
+          ? payload.log
+          : typeof payload === 'string'
+            ? payload
+            : JSON.stringify(payload, null, 2)
+      ElMessage.success('执行完成')
+    }
   } catch (e: any) {
     result.value = e?.message || String(e)
     ElMessage.error('执行失败')
   } finally {
-    running.value = false
+    // 异步插件的 running 由 watchLog 在流结束时关闭，这里只收尾同步分支
+    if (!isAsync) running.value = false
   }
+}
+
+/// 通过 SSE 订阅异步插件的日志流，逐行追加到 result。
+function watchLog(logPath: string) {
+  const url = `${API_BASE}/plugin/watch?token=${encodeURIComponent(getToken())}&log_path=${encodeURIComponent(logPath)}`
+  const es = new EventSource(url)
+  es.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data)
+      if (d.type === 'done') {
+        es.close()
+        running.value = false
+        currentTaskId.value = ''
+        cancelling.value = false
+        if (d.code === 0) ElMessage.success('执行完成')
+        else if (d.code === -2) ElMessage.warning('任务已取消')
+        else ElMessage.error('执行失败')
+      } else if (d.type === 'log') {
+        result.value += d.line + '\n'
+      }
+    } catch {
+      result.value += ev.data + '\n'
+    }
+  }
+  es.onerror = () => {
+    // 网络中断或流异常结束
+    es.close()
+    if (running.value) {
+      running.value = false
+      currentTaskId.value = ''
+      cancelling.value = false
+      ElMessage.error('日志流连接中断')
+    }
+  }
+}
+
+/// 取消正在运行的异步插件。
+function cancelRun() {
+  if (!currentTaskId.value) return
+  cancelling.value = true
+  pluginCancel(currentTaskId.value)
+    .then(() => {
+      // 实际结束（含「任务已取消」日志）由 SSE 流推送，这里只等流收尾
+      ElMessage.info('正在取消…')
+    })
+    .catch((e: any) => {
+      cancelling.value = false
+      ElMessage.error(e?.message || '取消请求失败')
+    })
 }
 onMounted(async () => {
   loading.value = true

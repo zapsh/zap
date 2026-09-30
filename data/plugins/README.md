@@ -24,6 +24,7 @@
 | `ui.label` / `ui.icon` / `ui.tab` | 按钮文案 / 图标 / 分组 |
 | `options` | 运行选项（结构同应用商店 `app.yaml` 的 `options`：`name`/`label`/`type`/`default`/`required`/`choices`…）。`type` 支持 `string`/`number`/`bool`/`select`/`multiselect`，以及插件扩展的 **`dir`**（目录选择器）、**`file`**（单文件选择器）、**`files`**（多文件选择器）。`dir` 在站点详情场景会从站点根出发选目录并裁成相对路径；`file`/`files` 回传**绝对路径**（多选以空格连接成单个字符串） |
 | `actions` | 动作键 → 按钮文案，如 `run: 创建`；`on_run` 收到 `ctx.action` |
+| `async` | 可选（`true`/`false`，默认 `false`）。`true` 时插件**异步执行**：`/plugin/run` 立即返回 `task_id` + `log_path`，前端用 SSE（`/plugin/watch`）实时收日志流；收尾时 zapexec 写入 `__ZAP_DONE__ <code>` 哨兵。适合联网下载、编译等耗时任务（避免前端请求超时）。轻量任务省略即可，走同步（一次性返回 `log`）。异步插件支持**运行中取消**：前端调 `POST /plugin/cancel`（`{token, task_id}`），zapexec 看门狗杀掉子进程（组），任务以退出码 `-2`（已取消）收尾并通过 SSE 推送「任务已取消」 |
 
 ### `dir` 类型选项示例
 

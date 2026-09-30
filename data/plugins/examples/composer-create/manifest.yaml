@@ -1,6 +1,9 @@
 name: composer-create
 title: 创建 Composer 项目
 scope: site
+# async: 联网下载依赖，耗时可能数分钟 —— 设为异步后前端用 SSE 日志流实时看进度，
+# 不会卡在请求超时上。普通轻量任务可省略此字段（默认同步，一次性返回结果）。
+async: true
 # placement 决定前端入口出现在哪个白名单槽位；目前支持：
 #   site.detail  —— 站点详情页「插件」Tab
 #   site.row     —— （规划中）站点列表每行快捷操作
