@@ -23,8 +23,6 @@ pub struct PluginListQuery {
     pub slot: Option<String>,
     #[serde(default)]
     pub scope: Option<String>,
-    #[serde(default)]
-    pub site_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -149,6 +147,6 @@ async fn load_site_ctx(site_id: i64) -> Result<(String, String), ZapError> {
 
 pub fn routers() -> Router {
     Router::new()
-        .route("/plugin/list", get(plugin_list))
-        .route("/plugin/run", post(plugin_run))
+        .route("/list", get(plugin_list))
+        .route("/run", post(plugin_run))
 }

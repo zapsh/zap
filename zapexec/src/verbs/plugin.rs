@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use serde_json::{Value, json};
+use tracing::{info, warn};
 use zap_proto::Response;
 
 fn zap_path() -> PathBuf {
@@ -59,9 +60,19 @@ pub async fn plugin_list(
         zap.join("plugins"),
         Path::new(&home).join(".zap").join("plugins"),
     ];
+    info!(
+        "plugin_list: home={home:?} slot={slot:?} scope={scope:?} zap={}",
+        zap.display()
+    );
+    for base in &bases {
+        info!("  base={} exists={}", base.display(), base.exists());
+    }
     let mut items = Vec::new();
     for base in &bases {
-        let Ok(rd) = std::fs::read_dir(base) else { continue };
+        let Ok(rd) = std::fs::read_dir(base) else {
+            warn!("  read_dir 失败（跳过）: {}", base.display());
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if !p.is_dir() {
@@ -72,25 +83,39 @@ pub async fn plugin_list(
                 None => continue,
             };
             if !is_plugin_name(&name) {
+                warn!("  跳过非法插件名: {name}");
                 continue;
             }
-            let Ok(m) = read_manifest(&p) else { continue };
-            if let Some(sc) = &scope {
-                if m.get("scope").and_then(|v| v.as_str()) != Some(sc.as_str()) {
-                    continue;
+            let Ok(m) = read_manifest(&p) else {
+                warn!("  插件 {name} 读取 manifest 失败（跳过）: {}", p.display());
+                if let Err(e) = read_manifest(&p) {
+                    warn!("    manifest 错误: {e}");
                 }
-            }
+                continue;
+            };
+            let pl_scope = m.get("scope").and_then(|v| v.as_str()).unwrap_or("system");
             let placement = m
                 .get("ui")
                 .and_then(|u| u.get("placement"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            if let Some(sl) = &slot {
-                if &placement != sl {
+            info!(
+                "  插件 {name}: scope={pl_scope} placement={placement:?} slot={slot:?} scope_filter={scope:?}"
+            );
+            if let Some(sc) = &scope {
+                if pl_scope != sc.as_str() {
+                    warn!("    -> 被 scope 过滤丢弃");
                     continue;
                 }
             }
+            if let Some(sl) = &slot {
+                if &placement != sl {
+                    warn!("    -> 被 slot 过滤丢弃 (want {sl:?})");
+                    continue;
+                }
+            }
+            info!("    -> 命中，加入列表");
             let options = serde_json::to_value(
                 m.get("options").cloned().unwrap_or(serde_yaml::Value::Null),
             )
@@ -113,6 +138,7 @@ pub async fn plugin_list(
             }));
         }
     }
+    info!("plugin_list 完成: 返回 {} 个插件", items.len());
     Response::ok("ok", Some(json!(items)))
 }
 

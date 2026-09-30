@@ -28,7 +28,7 @@ export interface PluginInfo {
 }
 
 export function pluginList(params: { slot?: string; scope?: string; site_id?: number }) {
-  return http.get('/api/plugin/list', { params })
+  return http.get('/plugin/list', { params })
 }
 
 export function pluginRun(payload: {
@@ -37,5 +37,5 @@ export function pluginRun(payload: {
   site_id?: number
   options?: Record<string, string>
 }) {
-  return http.post('/api/plugin/run', payload)
+  return http.post('/plugin/run', payload)
 }
