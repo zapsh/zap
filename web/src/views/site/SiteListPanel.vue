@@ -230,10 +230,14 @@ const pseudoMeta = (v?: string) =>
 // location 类型
 /** location 匹配方式：直接用 nginx 写法当选项，所见即所得 */
 const locMatchOptions = [
-  { value: '', label: '/path' },
-  { value: 'exact', label: '= /path' },
-  { value: 'prefer', label: '^~ /path' },
+  { value: '', label: '/path', desc: t('site.matchPrefix') },
+  { value: 'exact', label: '= /path', desc: t('site.matchExact') },
+  { value: 'prefer', label: '^~ /path', desc: t('site.matchPrefer') },
+  { value: 'regex', label: '~ /regex', desc: t('site.matchRegex') },
+  { value: 'regex_nocase', label: '~* /regex', desc: t('site.matchRegexNocase') },
 ] as const
+/** 是否为正则匹配模式（路径按正则填写） */
+const isRegexMode = (m: string) => m === 'regex' || m === 'regex_nocase'
 
 const locKindOptions = [
   { value: 'proxy', label: t('site.locKindProxy') },
@@ -2225,7 +2229,11 @@ onMounted(() => {
                       />
                       <el-input
                         v-model="loc.path"
-                        :placeholder="t('site.locPathPlaceholder')"
+                        :placeholder="
+                          isRegexMode(loc.match_mode)
+                            ? t('site.locRegexPlaceholder')
+                            : t('site.locPathPlaceholder')
+                        "
                         class="loc-path"
                       />
                       <el-select
@@ -2238,6 +2246,7 @@ onMounted(() => {
                           :key="m.value"
                           :value="m.value"
                           :label="m.label"
+                          :title="m.desc"
                         />
                       </el-select>
                       <el-select
@@ -2300,6 +2309,12 @@ onMounted(() => {
                         :icon="Delete"
                         @click="removeLocation(i)"
                       />
+                    </div>
+                    <div
+                      v-if="isRegexMode(loc.match_mode)"
+                      class="form-tip loc-regex-tip"
+                    >
+                      {{ t('site.locRegexTip') }}
                     </div>
                     <div v-show="isLocExpanded(i)" class="loc-body">
                     <!-- 静态目录：alias（替换路径）/ root（拼接路径）两种挂载方式 -->

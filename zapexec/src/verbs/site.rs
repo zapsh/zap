@@ -1079,7 +1079,9 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
     // 自定义 locations（proxy 必须提供，php/static 用于扩展覆盖）
     for (i, l) in locations.iter().enumerate() {
         let path = l.path.trim();
-        if !path.starts_with('/') {
+        // 正则 location 的路径是正则表达式，未必以 / 开头（如 ~* \.(gif|jpg|png)$）
+        let is_regex = matches!(l.match_mode.trim(), "regex" | "regex_nocase");
+        if !path.starts_with('/') && !is_regex {
             continue;
         }
         // raw 的 `location /` 已并入默认根块（root 继承 + 伪静态 + 用户 raw），避免重复生成
@@ -1090,10 +1092,12 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         if body.is_empty() {
             continue;
         }
-        // 匹配修饰符：精确 `= /api` / 优先前缀 `^~ /api` / 默认前缀
+        // 匹配修饰符：精确 `= /api` / 优先前缀 `^~ /api` / 正则 `~` `~*` / 默认前缀
         let modifier = match l.match_mode.trim() {
             "exact" => "= ",
             "prefer" => "^~ ",
+            "regex" => "~ ",
+            "regex_nocase" => "~* ",
             _ => "",
         };
         core.push_str(&format!(
@@ -1695,10 +1699,10 @@ mod loc_extra_tests {
         assert!(s.contains("location /plain/ {"), "{s}");
     }
 
-    /// 匹配方式只允许三种，防止塞进 `~*` 之类把 location 变成正则匹配
+    /// 匹配方式仅允许白名单（含正则 ~ / ~*），其余一律拒绝
     #[test]
     fn location_match_mode_is_whitelisted() {
-        for bad in ["~*", "~", "= ", "@name"] {
+        for bad in ["@name", "= ", "nonsense"] {
             let l = LocationSpec {
                 path: "/".to_string(),
                 kind: "proxy".to_string(),
@@ -1708,7 +1712,7 @@ mod loc_extra_tests {
             };
             assert!(validate(vec![l]).is_err(), "{bad} 应被拒绝");
         }
-        for ok in ["", "exact", "prefer"] {
+        for ok in ["", "exact", "prefer", "regex", "regex_nocase"] {
             let l = LocationSpec {
                 path: "/".to_string(),
                 kind: "proxy".to_string(),
@@ -1718,6 +1722,90 @@ mod loc_extra_tests {
             };
             assert!(validate(vec![l]).is_ok(), "{ok} 应放行");
         }
+    }
+
+    /// 正则匹配渲染成 `location ~ ...` / `location ~* ...`，并支持正则元字符路径
+    #[test]
+    fn location_regex_renders_modifier() {
+        let domains = vec!["a.com".to_string()];
+        let locs = vec![
+            LocationSpec {
+                path: "/\\.git/".to_string(),
+                kind: "deny".to_string(),
+                code: 403,
+                match_mode: "regex".to_string(),
+                ..Default::default()
+            },
+            LocationSpec {
+                path: "\\.(gif|jpg|png)$".to_string(),
+                kind: "deny".to_string(),
+                match_mode: "regex_nocase".to_string(),
+                ..Default::default()
+            },
+        ];
+        let s = render_vhost_full(VhostRenderSpec {
+            security: None,
+            site_id: 21,
+            name: "m",
+            domains: &domains,
+            root: "",
+            php_socket: None,
+            access_log: None,
+            error_log: None,
+            waf_log: None,
+            dry_run_ok: true,
+            site_type: "proxy",
+            pseudo_static: "none",
+            pseudo_custom: "",
+            upstreams: &[],
+            locations: &locs,
+            ssl_files: None,
+            force_https: false,
+            ssl_tls: None,
+            listen_ipv4: "",
+            listen_ipv6: "",
+        });
+        assert!(s.contains("location ~ /\\.git/ {"), "{s}");
+        assert!(s.contains("location ~* \\.(gif|jpg|png)$ {"), "{s}");
+    }
+
+    /// 正则路径放宽字符限制（允许元字符），但禁止花括号与分号；非正则模式仍须以 / 开头
+    #[test]
+    fn location_regex_path_is_validated() {
+        // proxy 类型需有兜底 location /，这里补一个，专注验证正则路径本身
+        let root = LocationSpec {
+            path: "/".to_string(),
+            kind: "proxy".to_string(),
+            target: "http://127.0.0.1:8080".to_string(),
+            ..Default::default()
+        };
+        let ok = LocationSpec {
+            path: "/\\.git/".to_string(),
+            kind: "deny".to_string(),
+            match_mode: "regex".to_string(),
+            ..Default::default()
+        };
+        assert!(validate(vec![root.clone(), ok]).is_ok(), "正则路径应放行");
+
+        for bad in ["/a{b}", "/a;b", "{x}"] {
+            let l = LocationSpec {
+                path: bad.to_string(),
+                kind: "deny".to_string(),
+                match_mode: "regex".to_string(),
+                ..Default::default()
+            };
+            assert!(validate(vec![root.clone(), l]).is_err(), "{bad} 应被拒绝");
+        }
+        let no_slash = LocationSpec {
+            path: "\\.git".to_string(),
+            kind: "deny".to_string(),
+            match_mode: "".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            validate(vec![root.clone(), no_slash]).is_err(),
+            "非正则路径必须以 / 开头"
+        );
     }
 
     /// 剥离前缀：proxy_pass 带 URI（后端只监听 / 时打开它）
@@ -2065,7 +2153,30 @@ fn validate_vhost_cfg(
     let mut has_root_loc = false;
     for l in locations {
         let p = l.path.trim();
-        if !p.starts_with('/')
+        let is_regex = matches!(l.match_mode.trim(), "regex" | "regex_nocase");
+        if p.is_empty() {
+            return Err("location 路径不能为空".to_string());
+        }
+        if is_regex {
+            // 正则 location：开放常见正则元字符，但禁止花括号与分号（避免破坏 location 指令 / 注入）
+            if p.contains('{')
+                || p.contains('}')
+                || p.contains(';')
+                || !p.chars().all(|c| {
+                    c.is_ascii_alphanumeric()
+                        || matches!(
+                            c,
+                            '/' | '_' | '.' | '-' | '~' | '%' | '@' | ':' | '=' | '&' | '+' | '*'
+                                | '?' | '(' | ')' | '[' | ']' | '|' | '$' | '^' | '\\'
+                        )
+                })
+            {
+                return Err(format!(
+                    "location 正则路径非法：{}（允许正则元字符，禁止 {{ }} ;）",
+                    l.path
+                ));
+            }
+        } else if !p.starts_with('/')
             || !p.chars().all(|c| {
                 c.is_ascii_alphanumeric()
                     || matches!(c, '/' | '_' | '.' | '-' | '~' | '%' | '@' | ':' | '=' | '&')
@@ -2080,10 +2191,10 @@ fn validate_vhost_cfg(
             has_root_loc = true;
         }
         match l.match_mode.trim() {
-            "" | "exact" | "prefer" => {}
+            "" | "exact" | "prefer" | "regex" | "regex_nocase" => {}
             other => {
                 return Err(format!(
-                    "location 匹配方式非法：{other}（只能是 前缀 / 精确 / 优先前缀）"
+                    "location 匹配方式非法：{other}（只能是 前缀 / 精确 / 优先前缀 / 正则 ~ / 正则不区分大小写 ~*）"
                 ));
             }
         }
