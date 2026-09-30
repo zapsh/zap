@@ -21,6 +21,7 @@ data/sites/*
 data/pro/*
 data/ssl/*
 data/tmp/*
+data/plugins/logs/*
 data/cluster.*
 data/backups/
 data/users/

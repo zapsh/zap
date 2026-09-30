@@ -83,6 +83,7 @@ options:
 - `zap.exec(prog, {args})` —— 以 root 执行（仅 `scope=system`）
 - `zap.exec_as_user(prog, {args})` —— 以站点 Linux 账号执行（仅 `scope=site`）
 - `zap.site_root()` / `zap.site_linux_user()` —— 当前站点文档根 / 运行账号（`scope=site`）
+- `zap.home_dir()` —— 当前执行身份的家目录：`scope=system` 时为调用方 home，`scope=site` 时为站点 Linux 账号的 home（如 `/home/admin`）
 
 ## 安全边界
 

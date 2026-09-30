@@ -8,6 +8,7 @@
 //!   - `zap.exec(prog, {args})`         以 root 执行（仅 scope=system）
 //!   - `zap.exec_as_user(prog, {args})` 以站点 Linux 账号执行（仅 scope=site）
 //!   - `zap.site_root()` / `zap.site_linux_user()`  当前站点上下文（scope=site）
+//!   - `zap.home_dir()`               当前执行身份的家目录（scope=system 为调用方 home，scope=site 为站点 Linux 账号 home）
 //!
 //! 安全边界：
 //!   - 插件只能声明结构化 UI（manifest），不能注入前端代码；
@@ -242,6 +243,7 @@ pub async fn plugin_run(
                 &scope,
                 run_user.as_deref(),
                 run_root.as_deref(),
+                &home,
                 &options,
                 &action,
                 Some(lp.clone()),
@@ -280,6 +282,7 @@ pub async fn plugin_run(
             &scope,
             run_user.as_deref(),
             run_root.as_deref(),
+            &home,
             &options,
             &action,
             None,
@@ -302,6 +305,7 @@ fn run_lua(
     scope: &str,
     run_user: Option<&str>,
     run_root: Option<&str>,
+    home: &str,
     options: &HashMap<String, String>,
     action: &str,
     log_file: Option<std::path::PathBuf>,
@@ -401,10 +405,11 @@ fn run_lua(
             .set("exec_as_user", f_user.map_err(|e| format!("exec_as_user 注册失败: {e}"))?)
             .map_err(|e| format!("{e}"))?;
     }
-    // zap.site_root / zap.site_linux_user
+    // zap.site_root / zap.site_linux_user / zap.home_dir
     {
         let run_root = run_root.unwrap_or_default().to_string();
         let run_user3 = run_user.unwrap_or_default().to_string();
+        let home_dir = home.to_string();
         let f_root = lua.create_function(move |_, ()| Ok(run_root.clone()));
         zap_tbl
             .set("site_root", f_root.map_err(|e| format!("{e}"))?)
@@ -412,6 +417,10 @@ fn run_lua(
         let f_user = lua.create_function(move |_, ()| Ok(run_user3.clone()));
         zap_tbl
             .set("site_linux_user", f_user.map_err(|e| format!("{e}"))?)
+            .map_err(|e| format!("{e}"))?;
+        let f_home = lua.create_function(move |_, ()| Ok(home_dir.clone()));
+        zap_tbl
+            .set("home_dir", f_home.map_err(|e| format!("home_dir 注册失败: {e}"))?)
             .map_err(|e| format!("{e}"))?;
     }
 
