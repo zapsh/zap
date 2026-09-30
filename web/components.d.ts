@@ -75,6 +75,7 @@ declare module 'vue' {
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ElTree: typeof import('element-plus/es')['ElTree']
     ElUpload: typeof import('element-plus/es')['ElUpload']
+    FilePicker: typeof import('./src/components/FilePicker.vue')['default']
     Hamburger: typeof import('./src/components/Hamburger/index.vue')['default']
     MonitorRangePicker: typeof import('./src/components/MonitorRangePicker.vue')['default']
     NavPillPanels: typeof import('./src/components/NavPillPanels.vue')['default']

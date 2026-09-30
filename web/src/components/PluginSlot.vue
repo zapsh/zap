@@ -58,6 +58,18 @@
               </template>
             </el-input>
           </div>
+          <div v-else-if="opt.type === 'file' || opt.type === 'files'" class="dir-opt">
+            <el-input
+              v-model="form[opt.name]"
+              :placeholder="opt.placeholder || (opt.type === 'files' ? '可多选，留空 = 不选' : '留空 = 不选')"
+              readonly
+              style="flex: 1"
+            >
+              <template #append>
+                <el-button @click="openFile(opt)">选择文件</el-button>
+              </template>
+            </el-input>
+          </div>
           <div v-if="opt.desc" class="form-tip">{{ opt.desc }}</div>
         </el-form-item>
       </el-form>
@@ -74,6 +86,14 @@
       title="选择目标目录"
       @confirm="onDirConfirm"
     />
+
+    <FilePicker
+      v-model="fileVisible"
+      :multiple="fileMultiple"
+      :start-path="fileStartPath"
+      title="选择文件"
+      @confirm="onFileConfirm"
+    />
   </div>
 </template>
 
@@ -81,6 +101,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import DirPicker from '@/components/DirPicker.vue'
+import FilePicker from '@/components/FilePicker.vue'
 import { pluginList, pluginRun, type PluginInfo, type PluginOption } from '@/api/plugin'
 
 const props = defineProps<{ placementSlot: string; siteId?: number; webRoot?: string }>()
@@ -114,6 +135,23 @@ function onDirConfirm(absPath: string) {
   }
   form[dirTarget.value] = rel
   dirVisible.value = false
+}
+
+// 文件选择器（file 单选 / files 多选）：从站点根（webRoot）或家目录出发选文件，回传绝对路径。
+// 多选用空格连接成单个字符串（与 multiselect 一致），插件侧用 zap.option 读取后自行 split。
+const fileVisible = ref(false)
+const fileTarget = ref('')
+const fileMultiple = ref(false)
+const fileStartPath = ref('')
+function openFile(opt: PluginOption) {
+  fileTarget.value = opt.name
+  fileMultiple.value = opt.type === 'files'
+  fileStartPath.value = props.webRoot || ''
+  fileVisible.value = true
+}
+function onFileConfirm(paths: string[]) {
+  form[fileTarget.value] = (paths || []).join(' ')
+  fileVisible.value = false
 }
 
 type Choice = { label: string; value: string }

@@ -22,7 +22,7 @@
 | `scope` | `site`（以站点 Linux 账号运行，需站点上下文）/ `system`（以 root 运行） |
 | `ui.placement` | 前端入口槽位：`site.detail`（站点详情页「插件」Tab）等 |
 | `ui.label` / `ui.icon` / `ui.tab` | 按钮文案 / 图标 / 分组 |
-| `options` | 运行选项（结构同应用商店 `app.yaml` 的 `options`：`name`/`label`/`type`/`default`/`required`/`choices`…）。`type` 支持 `string`/`number`/`bool`/`select`/`multiselect`，以及插件扩展的 **`dir`**（目录选择器：在站点详情场景会从站点根出发选目录，并把选中结果按站点根裁切成**相对路径**回传，契合 `main.lua` 里 `site_root .. "/" .. target` 的拼法；无站点上下文时返回绝对路径） |
+| `options` | 运行选项（结构同应用商店 `app.yaml` 的 `options`：`name`/`label`/`type`/`default`/`required`/`choices`…）。`type` 支持 `string`/`number`/`bool`/`select`/`multiselect`，以及插件扩展的 **`dir`**（目录选择器）、**`file`**（单文件选择器）、**`files`**（多文件选择器）。`dir` 在站点详情场景会从站点根出发选目录并裁成相对路径；`file`/`files` 回传**绝对路径**（多选以空格连接成单个字符串） |
 | `actions` | 动作键 → 按钮文案，如 `run: 创建`；`on_run` 收到 `ctx.action` |
 
 ### `dir` 类型选项示例
@@ -46,6 +46,28 @@ options:
 
 > 注意：`dir` 回传的是字符串，在 `main.lua` 里仍用 `zap.option("TARGET")` 读取，插件无需为它做特殊处理。
 
+### `file` / `files` 类型选项示例
+
+`file` 渲染单文件选择器（点文件选中、双击确认），`files` 渲染多文件选择器（每个文件带勾选框）。两者都从站点根（无站点上下文时从家目录）出发浏览，回传**绝对路径**：
+
+```yaml
+options:
+  - name: SRC            # 单文件
+    label: 源文件
+    type: file
+    desc: 选择一个文件，回传其绝对路径
+  - name: SRCS           # 多文件
+    label: 源文件清单
+    type: files
+    desc: 可多选，回传以空格连接的绝对路径串（如 /a.txt /b.txt）
+```
+
+行为约定：
+
+- 两者都回传字符串；`files` 多选时把路径用**空格**拼成一个字符串（与 `multiselect` 一致），在 `main.lua` 里用 `zap.option("SRCS")` 拿到后用 `split(" ")` 拆开即可。
+- 路径是绝对路径（与 `dir` 的相对路径不同），插件可直接 `zap.exec_as_user("cat", { path })` 之类使用，无需再拼站点根。
+- 隔离规则与文件管理一致：管理员可一路向上，普通用户出不了自己的 `home`。
+
 ## main.lua 可用能力（全局表 `zap`）
 
 - `zap.log(msg)` —— 日志（回传前端）
@@ -62,8 +84,12 @@ options:
 
 ## 最小闭环示例
 
-把 `examples/composer-create/` 复制到某个用户的 `.zap` 目录下即可在对应站点详情页出现入口：
+把 `examples/` 下的插件目录复制到某个用户的 `.zap` 目录下即可在对应站点详情页出现入口：
 
 ```sh
 cp -r data/plugins/examples/composer-create ~/<user>/.zap/plugins/composer-create
+cp -r data/plugins/examples/widgets-demo   ~/<user>/.zap/plugins/widgets-demo
 ```
+
+- `composer-create`：真实可用的「在站点根下 composer create-project」示例（`dir` 控件）。
+- `widgets-demo`：**控件全家桶示例**，把 `string` / `number` / `bool` / `select` / `multiselect` / `dir` / `file` / `files` 全部演示一遍，`main.lua` 会把每个控件回传的值打印出来，方便对照前端与 `zap.option` 的取值。
