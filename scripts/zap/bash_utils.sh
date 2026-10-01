@@ -284,10 +284,26 @@ pkg_mirror() {
   printf '%s' "${base}" | sed 's:/*$::'
 }
 
+# 下载缓存目录（持久化，跨运行复用）：缺省 $ZAP_PATH/data/appstore/cache，
+# 可由 ZAP_PKG_CACHE 覆盖。命中即跳过网络下载。
+# 说明：zapexec 全局串行执行脚本任务，不会出现并发写同一缓存的竞态。
+_pkg_cache_dir() {
+  printf '%s' "${ZAP_PKG_CACHE:-$ZAP_PATH/data/appstore/cache}"
+}
+
+# 计算缓存文件路径：<sha256前16位>_<URL基名>，基名去查询串避免 ?v=1 干扰。
+_pkg_cache_path() {
+  local url="$1" base key
+  base="$(basename "${url%%\?*}")"
+  key="$(printf '%s' "$url" | sha256sum | cut -c1-16)"
+  printf '%s/%s_%s' "$(_pkg_cache_dir)" "$key" "$base"
+}
+
 # 私有下载器:curl 优先,回退 wget;自动重试;成功返回 0
 # 进度输出:curl --progress-bar / wget --show-progress 强制在非 TTY(日志文件)下
 # 也以 `\r` 刷新同一行进度,面板日志(xterm 渲染)中表现为一条实时进度条。
 # 本地源(/path 或 file:///path)直接 cp:离线环境下没有网络,但目录里有同样的包。
+# 远程源优先查持久化缓存(见 _pkg_cache_path)，命中复用；未命中则下载并回填缓存。
 fetch_file() {
   # fetch_file <url> <dest> [重试次数,默认3]
   local url="$1" dest="$2" retries="${3:-3}" i=0
@@ -302,14 +318,33 @@ fetch_file() {
       return 1
       ;;
   esac
+
+  # 远程源：先查下载缓存，命中即复用，不重复下载
+  local cache_dir cachefile
+  cache_dir="$(_pkg_cache_dir)"
+  if [ -n "$cache_dir" ]; then
+    ensure_dir "$cache_dir"
+    cachefile="$(_pkg_cache_path "$url")"
+    if [ -f "$cachefile" ]; then
+      log_info "命中下载缓存，跳过重复下载: ${cachefile}"
+      cp -f "$cachefile" "$dest" && return 0
+    fi
+  fi
+
   if command -v curl >/dev/null 2>&1; then
     while [ "$i" -lt "$retries" ]; do
-      if curl -fL --progress-bar --connect-timeout 15 -4 -o "$dest" "$url"; then return 0; fi
+      if curl -fL --progress-bar --connect-timeout 15 -4 -o "$dest" "$url"; then
+        [ -n "$cachefile" ] && cp -f "$dest" "$cachefile"
+        return 0
+      fi
       i=$((i + 1)); [ "$i" -lt "$retries" ] && sleep 1
     done
   elif command -v wget >/dev/null 2>&1; then
     while [ "$i" -lt "$retries" ]; do
-      if wget -q --show-progress -4 --timeout=60 --tries=2 -O "$dest" "$url"; then return 0; fi
+      if wget -q --show-progress -4 --timeout=60 --tries=2 -O "$dest" "$url"; then
+        [ -n "$cachefile" ] && cp -f "$dest" "$cachefile"
+        return 0
+      fi
       i=$((i + 1)); [ "$i" -lt "$retries" ] && sleep 1
     done
   else

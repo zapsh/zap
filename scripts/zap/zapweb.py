@@ -132,17 +132,45 @@ def assert_under(path: str | Path, root: str | Path) -> Path:
 # ── 下载 / 解压 ───────────────────────────────────────────────
 
 
+def _pkg_cache_dir() -> Path:
+    """持久化下载缓存目录（跨运行复用），缺省 $ZAP_DATA_PATH/appstore/cache，可用 ZAP_PKG_CACHE 覆盖。"""
+    p = os.environ.get("ZAP_PKG_CACHE") or os.path.join(env("ZAP_DATA_PATH"), "appstore", "cache")
+    return Path(p)
+
+
+def _pkg_cache_path(url: str) -> Path:
+    """缓存文件路径：<sha256前16位>_<URL基名>，基名去查询串。"""
+    base = url.split("?")[0].rstrip("/").split("/")[-1] or "download"
+    key = hashlib.sha256(url.encode()).hexdigest()[:16]
+    return _pkg_cache_dir() / f"{key}_{base}"
+
+
 def download(url: str, dest: str | Path, sha256: str = "") -> Path:
-    """下载文件；给了 sha256 就强制校验（官方包应在 app.yaml 声明摘要）。"""
+    """下载文件；给了 sha256 就强制校验（官方包应在 app.yaml 声明摘要）。
+    命中下载缓存（ZAP_PKG_CACHE）则直接复用，不重复下载。"""
     dest = Path(dest)
     ensure_dir(dest.parent)
-    run(["curl", "-fsSL", "--retry", "3", "-o", str(dest), url])
+    cache = _pkg_cache_path(url)
+    # 命中缓存：校验和通过（或无需校验）即复用
+    if cache.exists():
+        if not sha256 or sha256.lower() == hashlib.sha256(cache.read_bytes()).hexdigest().lower():
+            log_info("命中下载缓存，跳过重复下载：", cache.name)
+            shutil.copy(cache, dest)
+            return dest
+        log_warn("缓存文件校验和不匹配，重新下载：", cache.name)
+        cache.unlink(missing_ok=True)
+    # 下载到缓存临时文件，再回填缓存与 dest（先写 .part 再 rename，原子）
+    ensure_dir(cache.parent)
+    part = cache.with_suffix(cache.suffix + ".part")
+    run(["curl", "-fsSL", "--retry", "3", "-o", str(part), url])
     if sha256:
-        h = hashlib.sha256(dest.read_bytes()).hexdigest()
+        h = hashlib.sha256(part.read_bytes()).hexdigest()
         if h.lower() != sha256.lower():
-            dest.unlink(missing_ok=True)
-            die(f"校验和不匹配：{dest.name}（期望 {sha256[:12]}…，实际 {h[:12]}…）")
-        log_ok("校验和一致：", dest.name)
+            part.unlink(missing_ok=True)
+            die(f"校验和不匹配：{cache.name}（期望 {sha256[:12]}…，实际 {h[:12]}…）")
+        log_ok("校验和一致：", cache.name)
+    part.rename(cache)            # 回填缓存，供后续运行复用
+    shutil.copy(cache, dest)      # 给本次脚本使用
     return dest
 
 

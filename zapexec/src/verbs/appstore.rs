@@ -1350,6 +1350,15 @@ fn task_env(
         "ZAP_DATA_PATH".into(),
         zap_path().join("data").to_string_lossy().into_owned(),
     ));
+    // 持久化下载缓存目录：fetch_file / zapweb.download 命中即跳过网络下载，
+    // 跨多次运行复用，避免每次重跑都重新拉包（路径按 URL 摘要做 key）。
+    env.push((
+        "ZAP_PKG_CACHE".into(),
+        zap_path()
+            .join("data/appstore/cache")
+            .to_string_lossy()
+            .into_owned(),
+    ));
     if let Some(v) = version {
         env.push(("APP_VERSION".into(), v.to_string()));
         if let Some((major, rest)) = v.split_once('.') {

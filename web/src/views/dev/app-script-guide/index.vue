@@ -158,6 +158,7 @@
               <tr><td><code>APP_NAME</code></td><td>包名</td></tr>
               <tr><td><code>APP_PATH</code></td><td>本应用元数据登记目录（<code>$ZAP_PATH/data/apps/&lt;category&gt;/&lt;name&gt;</code>）：系统写 <code>meta.yaml</code>、脚本登记 <code>info.yaml</code>，勿放安装产物（登记字段见第三节「实例登记」）</td></tr>
               <tr><td><code>BUILD_PATH</code></td><td>本次运行专属编译目录（<code>$ZAP_PATH/data/appstore/runs/&lt;run_id&gt;/build</code>），编译中间产物放这里；脚本开头可放心 <code>rm -rf</code>——路径按 run 隔离，成功后随运行现场一并清理、失败保留供排查</td></tr>
+          <tr><td><code>ZAP_PKG_CACHE</code></td><td>持久化下载缓存目录（缺省 <code>$ZAP_PATH/data/appstore/cache</code>，可经环境变量覆盖）；<code>fetch_file</code> / <code>zapweb.download</code> 按 URL 摘要做 key，命中即跳过网络下载、跨多次运行复用，避免每次重跑都重新拉包</td></tr>
               <tr><td><code>ZAP_DATA_PATH</code></td><td>面板数据目录（<code>$ZAP_PATH/data</code>）</td></tr>
               <tr><td><code>APP_VERSION</code></td><td>本次安装/升级的目标版本</td></tr>
               <tr><td><code>MAJOR_VERSION</code></td><td>目标版本主版本号（如 1.24.0 → 1）</td></tr>
