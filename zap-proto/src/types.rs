@@ -1851,7 +1851,7 @@ mod tests {
             serde_json::to_string(&Request::AppstoreInstall {
                 pkg_path: "database/mariadb".into(),
                 source: "official".into(),
-                repo_id: Some("zap-appstore".into()),
+                repo_id: Some("appstore".into()),
                 version: "11.4.4".into(),
                 action: None,
                 options: None,
@@ -1862,13 +1862,13 @@ mod tests {
                 run_id: "r1".into(),
             })
             .unwrap(),
-            r#"{"verb":"appstore.install","pkg_path":"database/mariadb","source":"official","repo_id":"zap-appstore","version":"11.4.4","run_id":"r1"}"#
+            r#"{"verb":"appstore.install","pkg_path":"database/mariadb","source":"official","repo_id":"appstore","version":"11.4.4","run_id":"r1"}"#
         );
         assert_eq!(
             serde_json::to_string(&Request::AppstoreInstall {
                 pkg_path: "application/php".into(),
                 source: "official".into(),
-                repo_id: Some("zap-appstore".into()),
+                repo_id: Some("appstore".into()),
                 version: "8.3.3".into(),
                 action: Some("build".into()),
                 options: None,
@@ -1883,7 +1883,7 @@ mod tests {
                 run_id: "r2".into(),
             })
             .unwrap(),
-            r#"{"verb":"appstore.install","pkg_path":"application/php","source":"official","repo_id":"zap-appstore","version":"8.3.3","action":"build","provision":{"DB_NAME":"u_wp1"},"run_id":"r2"}"#
+            r#"{"verb":"appstore.install","pkg_path":"application/php","source":"official","repo_id":"appstore","version":"8.3.3","action":"build","provision":{"DB_NAME":"u_wp1"},"run_id":"r2"}"#
         );
         assert_eq!(
             serde_json::to_string(&Request::AppstoreRepoAdd {
@@ -1903,11 +1903,11 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&Request::AppstoreRepoUpdate {
-                id: "zap-appstore".into(),
+                id: "appstore".into(),
                 run_id: "r9".into(),
             })
             .unwrap(),
-            r#"{"verb":"appstore.repo_update","id":"zap-appstore","run_id":"r9"}"#
+            r#"{"verb":"appstore.repo_update","id":"appstore","run_id":"r9"}"#
         );
     }
 

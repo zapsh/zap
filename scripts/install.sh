@@ -441,12 +441,12 @@ info "安装包内容目录: ${SRC}"
 
 # ── AppStore 官方仓库地址 ──────────────────────────────────
 # 官方包脚本存放于独立 git 仓库，便于单独升级；面板中可添加/更换其他源
-APPSTORE_REPO_URL="${APPSTORE_REPO_URL:-https://github.com/zapsh/zap-appstore.git}"
+APPSTORE_REPO_URL="${APPSTORE_REPO_URL:-https://github.com/zapsh/appstore.git}"
 
 # ── AppStore 目录部署（多 Git 源，幂等：不覆盖 repos/.git 与 custom/）──
 deploy_appstore() {
     local DEST="$ZAP_DIR/data/appstore"
-    local BUILTIN="$DEST/repos/zap-appstore"
+    local BUILTIN="$DEST/repos/appstore"
     mkdir -p "$DEST"/{repos,custom,cache,tmp,logs}
     mkdir -p "$ZAP_DIR/data/apps"
 
@@ -459,7 +459,7 @@ deploy_appstore() {
     if [ ! -d "$BUILTIN/.git" ] && [ ! -d "$BUILTIN/database" ]; then
         mkdir -p "$BUILTIN"
         for c in infra application webapps database library; do
-            [ -d "$SRC/data/appstore/repos/zap-appstore/$c" ] && cp -Rf "$SRC/data/appstore/repos/zap-appstore/$c" "$BUILTIN/" 2>/dev/null || true
+            [ -d "$SRC/data/appstore/repos/appstore/$c" ] && cp -Rf "$SRC/data/appstore/repos/appstore/$c" "$BUILTIN/" 2>/dev/null || true
         done
     fi
 
@@ -468,16 +468,16 @@ deploy_appstore() {
         info "离线模式：跳过 AppStore 仓库克隆，沿用发行包内置种子包"
     elif [ ! -d "$BUILTIN/.git" ] && command -v git >/dev/null 2>&1; then
         info "初始化 AppStore 官方仓库..."
-        if git clone -q --depth 1 "$APPSTORE_REPO_URL" "$DEST/repos/.tmp-zap-appstore" 2>/dev/null; then
+        if git clone -q --depth 1 "$APPSTORE_REPO_URL" "$DEST/repos/.tmp-appstore" 2>/dev/null; then
             local has_seed
             # 只看有没有条目（不用 find，避免依赖 GNU 扩展）
             has_seed=$(ls -A "$BUILTIN" 2>/dev/null | head -1)
-            [ -n "$has_seed" ] && mv "$BUILTIN" "$DEST/repos/.seed-zap-appstore" 2>/dev/null || true
-            mv "$DEST/repos/.tmp-zap-appstore" "$BUILTIN"
-            rm -rf "$DEST/repos/.seed-zap-appstore" 2>/dev/null || true
+            [ -n "$has_seed" ] && mv "$BUILTIN" "$DEST/repos/.seed-appstore" 2>/dev/null || true
+            mv "$DEST/repos/.tmp-appstore" "$BUILTIN"
+            rm -rf "$DEST/repos/.seed-appstore" 2>/dev/null || true
             ok "AppStore 官方仓库同步完成"
         else
-            rm -rf "$DEST/repos/.tmp-zap-appstore" 2>/dev/null || true
+            rm -rf "$DEST/repos/.tmp-appstore" 2>/dev/null || true
             warn "无法克隆 AppStore 仓库（网络不可达？），已保留内置种子包，可在面板中重试更新"
         fi
     fi

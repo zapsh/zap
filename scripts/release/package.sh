@@ -107,7 +107,7 @@ package_full() {
 
   local data_dir="$zap_dir/data"
   mkdir -p "$data_dir/apps" "$data_dir/appstore/repos" "$data_dir/www/html"
-  cp -Rf data/appstore/repos/zap-appstore "$data_dir/appstore/repos/" 2>/dev/null || true
+  cp -Rf data/appstore/repos/appstore "$data_dir/appstore/repos/" 2>/dev/null || true
   cp -f data/appstore/repos.yaml "$data_dir/appstore/" 2>/dev/null || true
   cp -f data/apps/README.md "$data_dir/apps/" 2>/dev/null || true
   cp -Rf data/www "$data_dir/" 2>/dev/null || true

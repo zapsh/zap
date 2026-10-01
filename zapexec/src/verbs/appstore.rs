@@ -25,9 +25,9 @@ use zap_proto::Response;
 
 // ── 内置源（跟随 zap 发行包发布）────────────────────────────
 
-pub const BUILTIN_REPO_ID: &str = "zap-appstore";
+pub const BUILTIN_REPO_ID: &str = "appstore";
 pub const BUILTIN_REPO_NAME: &str = "Zap 官方应用商店";
-pub const BUILTIN_REPO_URL: &str = "https://github.com/zapsh/zap-appstore.git";
+pub const BUILTIN_REPO_URL: &str = "https://github.com/zapsh/appstore.git";
 
 // ── 目录定位 ───────────────────────────────────────────────
 
@@ -2689,7 +2689,7 @@ mod tests {
     fn with_zap_root() -> (std::sync::MutexGuard<'static, ()>, PathBuf) {
         let guard = ENV_GUARD.lock().unwrap();
         let dir = std::env::temp_dir().join(format!(
-            "zap-appstore-test-{}-{:?}",
+            "appstore-test-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -2890,8 +2890,8 @@ mod tests {
     #[test]
     fn id_from_url_extracts_repo_name() {
         assert_eq!(
-            id_from_url("https://github.com/zapsh/zap-appstore.git"),
-            "zap-appstore"
+            id_from_url("https://github.com/zapsh/appstore.git"),
+            "appstore"
         );
         assert_eq!(id_from_url("https://gitlab.com/org/store"), "store");
         assert_eq!(id_from_url("git@github.com:user/store.git"), "store");
@@ -2917,7 +2917,7 @@ mod tests {
             version: "11.4.4".into(),
             category: "database".into(),
             source: "official".into(),
-            repo_id: Some("zap-appstore".into()),
+            repo_id: Some("appstore".into()),
             installed_at: 1_700_000_000,
             upgraded_from: None,
             run_id: "r1".into(),
@@ -2926,7 +2926,7 @@ mod tests {
         let back = read_meta(&app).unwrap();
         assert_eq!(back.version, "11.4.4");
         assert_eq!(back.source, "official");
-        assert_eq!(back.repo_id.as_deref(), Some("zap-appstore"));
+        assert_eq!(back.repo_id.as_deref(), Some("appstore"));
         assert!(back.upgraded_from.is_none());
     }
 

@@ -413,7 +413,7 @@ end
 
 ### 包结构
 
-在应用商店仓库（如 `data/appstore/repos/zap-appstore/`）下新建 `plugins/<name>/`：
+在应用商店仓库（如 `data/appstore/repos/appstore/`）下新建 `plugins/<name>/`：
 
 ```
 plugins/hello-plugin/
@@ -462,5 +462,5 @@ echo "插件 $APP_NAME 已安装到 $DEST"
 应用商店的升级复用同一套 `install.sh`：把新版本仓库内容重新拷到 `$ZAP_PATH/plugins/<name>`
 覆盖即可；也可在 `app.yaml` 里提供 `upgrade.sh` 做差异化升级。
 
-> 完整可运行示例见 `data/appstore/repos/zap-appstore/plugins/hello-plugin/`
+> 完整可运行示例见 `data/appstore/repos/appstore/plugins/hello-plugin/`
 > （HTTP 界面演示插件，安装后会以 `site.detail` 槽位出现在站点详情）。

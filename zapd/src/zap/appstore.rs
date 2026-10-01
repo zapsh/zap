@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn sample_wordpress_package_declares_provision() {
         let repo =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/appstore/repos/zap-appstore");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/appstore/repos/appstore");
         let app = parse_app_yaml(&repo.join("webapps/wordpress/app.yaml"))
             .expect("样板包 app.yaml 解析失败");
         assert_eq!(app.category.as_deref(), Some("webapps"));
@@ -1191,9 +1191,9 @@ pub async fn read_repos_value() -> Option<Value> {
         }
         Some(json!({
             "repos": [{
-                "id": "zap-appstore",
+                "id": "appstore",
                 "name": "Zap 官方应用商店",
-                "url": "https://github.com/zapsh/zap-appstore.git",
+                "url": "https://github.com/zapsh/appstore.git",
                 "builtin": true,
                 "enabled": true,
                 "version": "",
