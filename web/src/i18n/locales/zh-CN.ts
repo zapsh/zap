@@ -813,7 +813,7 @@ export default {
     cacheNoSelection: '请先选择要清理的项目',
     cacheItemLogs: '应用商店安装日志',
     cacheItemRuns: '编译产物（运行现场）',
-    cacheItemCache: '下载缓存',
+    cacheItemCache: '软件包下载缓存',
     cacheItemCronLogs: '计划任务日志',
     cacheItemDockerLogs: 'Docker 构建日志',
     cacheColItem: '项目',

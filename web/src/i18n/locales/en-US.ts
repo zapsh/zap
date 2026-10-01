@@ -789,7 +789,7 @@ const enUS: Messages = {
     cacheNoSelection: 'Please select items to clean',
     cacheItemLogs: 'App store install logs',
     cacheItemRuns: 'Build artifacts (run snapshots)',
-    cacheItemCache: 'Download cache',
+    cacheItemCache: 'Package download cache',
     cacheItemCronLogs: 'Cron job logs',
     cacheItemDockerLogs: 'Docker build logs',
     cacheColItem: 'Item',
