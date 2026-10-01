@@ -432,8 +432,9 @@ const categoryLabels = computed<Record<string, string>>(() => ({
   database: t('appstoreInstalled.catDatabase'),
   library: t('appstoreInstalled.catLibrary'),
   plugins: t('appstoreInstalled.catPlugins'),
+  tools: t('appstoreInstalled.catTools'),
 }))
-const CATEGORY_ORDER = ['infra', 'application', 'webapps', 'database', 'library', 'plugins']
+const CATEGORY_ORDER = ['infra', 'application', 'webapps', 'database', 'library', 'plugins', 'tools']
 
 const stateMeta = computed<
   Record<string, { label: string; tag: 'success' | 'info' | 'danger' | 'warning'; color: string }>

@@ -53,6 +53,7 @@
         <el-radio-button value="database">{{ t('appstore.catDatabase') }}</el-radio-button>
         <el-radio-button value="library">{{ t('appstore.catLibrary') }}</el-radio-button>
         <el-radio-button value="plugins">{{ t('appstore.catPlugins') }}</el-radio-button>
+        <el-radio-button value="tools">{{ t('appstore.catTools') }}</el-radio-button>
       </el-radio-group>
       <el-input
         v-model="keyword"

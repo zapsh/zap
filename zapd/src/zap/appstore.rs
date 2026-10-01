@@ -1069,7 +1069,7 @@ fn scan_source_dir(
     // AppStore 分类：基础设施 / 应用程序 / Web 应用程序 / 数据层 / 基础库 / 插件
     // `plugins` 让系统级 Lua 插件也能走应用商店分发（install.sh 负责把目录落到
     // $ZAP_PATH/plugins/<name>，卸载/升级同此；运行时仍是插件引擎）。
-    for category in ["infra", "application", "webapps", "database", "library", "plugins"] {
+    for category in ["infra", "application", "webapps", "database", "library", "plugins", "tools"] {
         let cat_dir = dir.join(category);
         let Ok(entries) = std::fs::read_dir(&cat_dir) else {
             continue;
