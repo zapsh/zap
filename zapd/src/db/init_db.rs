@@ -66,6 +66,8 @@ pub async fn init_schema() {
     init_ssl_acme_dns_provider_table().await;
     // 备份中心：任务表 + 历史记录表
     init_backup_tables().await;
+    // 备份策略全局 KV（是否允许用户自助备份 / 全局保留份数 / 全量备份开关与调度）
+    init_backup_policy_table().await;
     // 老库补列：新增列自动 ALTER 到已有表，避免每次加列都必须重建数据库
     migrate_add_columns().await;
     // 依赖上面的补列结果，必须排在其后
@@ -146,6 +148,18 @@ async fn ensure_column(table: &str, column: &str, decl: &str) {
 /// ```ignore
 /// ensure_column("user", "new_col", "TEXT NOT NULL DEFAULT ''").await;
 /// ```
+/// 备份策略全局 KV 表：key 主键，value 字符串。
+/// 仅存开关类 / 数值类策略（是否允许用户自助备份、全局保留份数、全量备份开关与 cron）。
+async fn init_backup_policy_table() {
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS global_settings (
+        key TEXT NOT NULL PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT ''
+    );
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
 async fn migrate_add_columns() {
     // 会话版本号：老库补列后，存量用户一律从 0 起算（不影响已有 token）
     ensure_column("user", "token_version", "INTEGER NOT NULL DEFAULT 0").await;
@@ -219,6 +233,11 @@ async fn migrate_add_columns() {
     ensure_column("nginx_stream", "ssl_preread", "INTEGER NOT NULL DEFAULT 0").await;
     ensure_column("nginx_stream", "proxy_pass", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("nginx_stream", "extra", "TEXT NOT NULL DEFAULT ''").await;
+    // 备份归属：普通用户自助备份 / 管理员全量备份都按资源主人打标（owner），
+    // dest_root 记录该归档所在的备份根（空 = 系统备份根；否则用户家目录 backups），
+    // 还原 / 删除时据此把对应目录作为安全根传入 zapexec 的 assert_in_root。
+    ensure_column("backup_records", "owner", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("backup_records", "dest_root", "TEXT NOT NULL DEFAULT ''").await;
 }
 
 /// 菜单能力门禁赋值（**老库升级**用）。

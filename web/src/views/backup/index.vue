@@ -180,6 +180,38 @@
           </el-table-column>
         </el-table>
       </el-tab-pane>
+
+      <el-tab-pane label="备份策略" name="policy">
+        <el-card shadow="never" class="block">
+          <template #header>
+            <div class="card-head">
+              <span>备份策略</span>
+              <el-button text type="primary" @click="loadPolicy">刷新</el-button>
+            </div>
+          </template>
+          <el-form label-width="140px" class="form">
+            <el-form-item label="允许用户自助备份">
+              <el-switch v-model="policy.allow_user_backup" />
+              <span class="tip">关闭后，普通用户无法自助备份自己的站点 / 数据库</span>
+            </el-form-item>
+            <el-form-item label="全局保留份数">
+              <el-input-number v-model="policy.global_retain" :min="0" :max="999" />
+              <span class="tip">用户未单独设置时的默认保留份数</span>
+            </el-form-item>
+            <el-form-item label="启用全量备份">
+              <el-switch v-model="policy.all_enabled" />
+              <span class="tip">开启后按下方计划自动备份全部用户数据（按主人打标，用户可从系统目录还原）</span>
+            </el-form-item>
+            <el-form-item label="全量备份计划(cron)">
+              <el-input v-model="policy.all_schedule" placeholder="如 0 4 * * *（每天 4 点）" style="max-width:240px" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="savingPolicy" @click="savePolicy">保存策略</el-button>
+              <el-button :loading="runningFull" @click="runFull">立即全量备份</el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 任务编辑对话框 -->
@@ -288,6 +320,9 @@ const tab = ref('archives')
 const running = ref(false)
 const savingSetting = ref(false)
 const setting = ref({ path: '', disk_free: 0, disk_total: 0 })
+const policy = ref({ allow_user_backup: true, global_retain: 7, all_enabled: false, all_schedule: '' })
+const savingPolicy = ref(false)
+const runningFull = ref(false)
 const diskPercent = computed(() => {
   const t = setting.value.disk_total
   if (!t) return 0
@@ -335,6 +370,48 @@ const form = ref({
   dbPort: '',
   dbPath: '',
 })
+
+// ── 备份策略 ──
+async function loadPolicy() {
+  try {
+    const d: any = await http.get('/system/backup/policy')
+    policy.value = {
+      allow_user_backup: d.data?.allow_user_backup !== false,
+      global_retain: d.data?.global_retain ?? 7,
+      all_enabled: d.data?.all_enabled === true,
+      all_schedule: d.data?.all_schedule || '',
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载策略失败')
+  }
+}
+async function savePolicy() {
+  savingPolicy.value = true
+  try {
+    await http.post('/system/backup/policy', {
+      allow_user: policy.value.allow_user_backup,
+      global_retain: policy.value.global_retain,
+      all_enabled: policy.value.all_enabled,
+      all_schedule: policy.value.all_schedule.trim(),
+    })
+    ElMessage.success('策略已更新')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存失败')
+  } finally {
+    savingPolicy.value = false
+  }
+}
+async function runFull() {
+  runningFull.value = true
+  try {
+    await http.post('/system/backup/all')
+    ElMessage.success('已启动全量备份（后台执行）')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '启动失败')
+  } finally {
+    runningFull.value = false
+  }
+}
 
 // ── 归档 / 历史 / 任务 ──
 async function loadArchives() {
@@ -620,6 +697,7 @@ onMounted(() => {
   loadArchives()
   loadRecords()
   loadJobs()
+  loadPolicy()
 })
 </script>
 

@@ -534,6 +534,8 @@ interface SiteForm {
   web_root_custom: boolean
   /** 家目录前缀下的相对子路径（如 example.com）；「已有目录」与「自动创建」共用该输入 */
   web_root_sub: string
+  /** 站点实际文档根（编辑态回显；自定义目录时为空，由 web_root_custom + web_root_sub 派生） */
+  web_root: string
   upstreams: UpstreamSpec[]
   locations: LocationSpec[]
   /** SSL/TLS：绑定的证书库证书 id（null = 未选择，不启用 HTTPS） */
@@ -561,6 +563,7 @@ const blankForm = (): SiteForm => ({
   site_type: 'static',
   web_root_custom: false,
   web_root_sub: '',
+  web_root: '',
   upstreams: [],
   locations: [],
   ssl_cert_id: null,
@@ -1101,11 +1104,8 @@ async function onBackupSite(row: SiteItem) {
   }
   backupId.value = row.id
   try {
-    await http.post('/system/backup/create_dir', {
-      name: row.name || `site-${row.id}`,
-      paths: [row.web_root],
-    })
-    ElMessage.success(`已备份站点目录（${row.web_root}）到备份存储`)
+    await http.post('/system/backup/site_quick', { id: row.id })
+    ElMessage.success('已备份站点目录到备份存储')
   } catch (e: any) {
     ElMessage.error(e?.message || '备份失败')
   } finally {
@@ -1255,6 +1255,7 @@ function openEdit(row: SiteItem) {
   form.remark = row.remark
   form.php_instance = row.php_instance || ''
   form.site_type = (row.site_type as SiteType) || 'php'
+  form.web_root = row.web_root || ''
   form.web_root_custom = !!row.web_root_custom
   // 把已有文档根还原为「家目录前缀下的相对子路径」供编辑（已有目录 / 自动目录统一展示）
   form.web_root_sub = ''

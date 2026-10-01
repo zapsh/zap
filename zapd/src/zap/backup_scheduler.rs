@@ -11,6 +11,30 @@ use crate::db::get_db_pool;
 use crate::routers::system_backup::run_backup;
 use crate::zap::script_cron::Cron;
 
+/// 读全局策略 KV（与 `system_backup::gs_get` 同源，调度器独立实现避免跨模块依赖）。
+async fn gs_get(key: &str) -> String {
+    let pool = get_db_pool().await;
+    let r: Option<(String,)> = sqlx::query_as("SELECT value FROM global_settings WHERE key=?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    r.map(|x| x.0).unwrap_or_default()
+}
+
+async fn gs_set(key: &str, v: &str) {
+    let pool = get_db_pool().await;
+    let _ = sqlx::query(
+        "INSERT INTO global_settings (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    )
+    .bind(key)
+    .bind(v)
+    .execute(pool)
+    .await;
+}
+
 /// 启动调度循环（后台任务，不阻塞主流程）。
 pub fn start() {
     tokio::spawn(async {
@@ -49,10 +73,30 @@ async fn tick() {
             tokio::spawn(run_job(id, name, target_type, target, ts));
         }
     }
+
+    // 全量备份：管理员在「备份策略」里开启并配置 cron 后，按计划自动跑一次。
+    // 与任务共用 30s 扫描节拍 + 同分钟去重（last_run 落 global_settings）。
+    let all_enabled = gs_get("backup_all_enabled").await != "0";
+    let all_schedule = gs_get("backup_all_schedule").await;
+    if all_enabled && !all_schedule.trim().is_empty() {
+        if let Ok(cron) = Cron::parse(&all_schedule) {
+            if cron.matches(&now) {
+                let last = gs_get("backup_all_last_run")
+                    .await
+                    .parse::<i64>()
+                    .unwrap_or(0);
+                if (ts - last) > 60 {
+                    gs_set("backup_all_last_run", &ts.to_string()).await;
+                    info!("触发全量备份（计划 {all_schedule}）");
+                    tokio::spawn(crate::routers::system_backup::run_backup_all());
+                }
+            }
+        }
+    }
 }
 
 async fn run_job(id: i64, name: String, target_type: String, target: String, ts: i64) {
-    let result = run_backup(&target_type, &target, &name, "", Some(id)).await;
+    let result = run_backup(&target_type, &target, &name, "", Some(id), "", None).await;
     let pool = get_db_pool().await;
     match result {
         Ok(_) => {

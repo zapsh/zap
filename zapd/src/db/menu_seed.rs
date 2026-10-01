@@ -676,6 +676,23 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("backup")
     .icon("material-symbols:cloud-upload")
     .affix(),
+    // ── 我的备份（普通用户 / reseller / 管理员：自助备份与还原）──
+    MenuSeed::new("mybackup", "我的备份", "dir", "/mybackup", "Layout", R_ADMIN_USER_RESELLER, 5)
+        .icon("material-symbols:cloud-download")
+        .redirect("/mybackup/index")
+        .affix(),
+    MenuSeed::new(
+        "mybackup-index",
+        "我的备份",
+        "menu",
+        "index",
+        "backup/my",
+        R_ADMIN_USER_RESELLER,
+        1,
+    )
+    .parent("mybackup")
+    .icon("material-symbols:cloud-download")
+    .affix(),
     // ── 容器管理（Docker）：没装 Docker 时不下发 ──────────────
     MenuSeed::new("docker", "容器管理", "dir", "/docker", "Layout", R_ADMIN, 5)
         .icon("material-symbols:deployed-code")

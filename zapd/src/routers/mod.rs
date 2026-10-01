@@ -320,6 +320,16 @@ fn api_routers() -> Router {
         .route("/system/backup/create_dir", post(system_backup::create_dir))
         .route("/system/backup/create_db", post(system_backup::create_db))
         .route("/system/backup/db_quick", post(system_backup::db_quick))
+        .route("/system/backup/site_quick", post(system_backup::site_quick))
+        .route("/system/backup/policy", get(system_backup::policy_get))
+        .route("/system/backup/policy", post(system_backup::policy_set))
+        .route("/system/backup/my-retention", get(system_backup::my_retention_get))
+        .route(
+            "/system/backup/my-retention",
+            post(system_backup::my_retention_set),
+        )
+        .route("/system/backup/my", get(system_backup::my_list))
+        .route("/system/backup/all", post(system_backup::backup_all))
         .route("/system/backup/list", get(system_backup::list))
         .route("/system/backup/setting", get(system_backup::setting_get))
         .route("/system/backup/setting", post(system_backup::setting_save))

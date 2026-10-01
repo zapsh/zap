@@ -44,7 +44,7 @@
             <div class="sec-detail">{{ t(c.detail_key, c.detail_params) }}</div>
             <div v-if="c.suggestion_key" class="sec-suggest">
               <strong>{{ t('zapCfg.secSuggest') }}：</strong
-              >{{ t(c.suggestion_key, c.suggestion_params) }}
+              >{{ t(c.suggestion_key, c.suggestion_params ?? {}) }}
             </div>
           </div>
         </div>
