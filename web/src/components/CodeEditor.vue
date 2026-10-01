@@ -110,12 +110,7 @@ const githubDarkHighlight = HighlightStyle.define([
   },
   { tag: [tags.propertyName, tags.attributeName], color: '#79c0ff' },
   {
-    tag: [
-      tags.function(tags.variableName),
-      tags.function(tags.propertyName),
-      tags.title,
-      tags.title.function,
-    ],
+    tag: [tags.function(tags.variableName), tags.function(tags.propertyName)],
     color: '#d2a8ff',
   },
   {
