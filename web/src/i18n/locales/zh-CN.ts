@@ -824,6 +824,7 @@ export default {
     cacheConfirm: '将清理选中的 {n} 类缓存，该操作不可撤销，确认继续？',
     cacheCleanCancel: '取消',
     cacheDone: '已清理 {removed} 个条目，释放 {freed} 空间（{skipped} 个运行中任务已跳过）',
+    cacheDonePartial: '已清理 {removed} 个条目，释放 {freed} 空间（{skipped} 个运行中任务已跳过，{failed} 个删除失败，请检查权限或重试）',
   },
 
   /** 系统管理 · 系统更新 */

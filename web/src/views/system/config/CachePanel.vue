@@ -143,13 +143,24 @@ async function clean() {
   try {
     const res = await cleanZapCache(selected.value)
     const d = res.data
-    ElMessage.success(
-      t('zapCfg.cacheDone', {
-        removed: d.total_removed,
-        freed: fmtSize(d.total_freed),
-        skipped: d.skipped_running,
-      }),
-    )
+    if (d.failed > 0) {
+      ElMessage.warning(
+        t('zapCfg.cacheDonePartial', {
+          removed: d.total_removed,
+          freed: fmtSize(d.total_freed),
+          skipped: d.skipped_running,
+          failed: d.failed,
+        }),
+      )
+    } else {
+      ElMessage.success(
+        t('zapCfg.cacheDone', {
+          removed: d.total_removed,
+          freed: fmtSize(d.total_freed),
+          skipped: d.skipped_running,
+        }),
+      )
+    }
     await scan()
   } catch {
     /* handled */

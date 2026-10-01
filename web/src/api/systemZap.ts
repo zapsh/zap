@@ -104,12 +104,14 @@ export interface ZapCacheCleanItem {
   removed: number
   freed: number
   skipped_running: number
+  failed: number
 }
 export interface ZapCacheCleanData {
   results: ZapCacheCleanItem[]
   total_freed: number
   total_removed: number
   skipped_running: number
+  failed: number
 }
 
 /** 读取缓存清理预览（各目标可清理量与运行中保护数，仅 admin） */

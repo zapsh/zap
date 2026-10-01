@@ -800,6 +800,7 @@ const enUS: Messages = {
     cacheConfirm: 'This will clean the {n} selected cache types. This cannot be undone. Continue?',
     cacheCleanCancel: 'Cancel',
     cacheDone: 'Cleaned {removed} items, freed {freed} (skipped {skipped} running tasks)',
+    cacheDonePartial: 'Cleaned {removed} items, freed {freed} (skipped {skipped} running tasks, {failed} failed to delete — check permissions or retry)',
   },
 
   sysUpdate: {

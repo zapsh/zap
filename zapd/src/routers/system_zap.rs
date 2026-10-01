@@ -558,10 +558,11 @@ pub async fn zap_cache_clean(
     let total_freed: u64 = results.iter().map(|r| r.freed).sum();
     let total_removed: u64 = results.iter().map(|r| r.removed).sum();
     let skipped: u64 = results.iter().map(|r| r.skipped_running).sum();
+    let failed: u64 = results.iter().map(|r| r.failed).sum();
 
     let detail = format!(
-        "targets={:?} removed={} freed={} skipped_running={}",
-        payload.targets, total_removed, total_freed, skipped
+        "targets={:?} removed={} freed={} skipped_running={} failed={}",
+        payload.targets, total_removed, total_freed, skipped, failed
     );
     audit::log(Some(&claims), None, "zap_cache_clean", "system", &detail).await;
 
@@ -573,6 +574,7 @@ pub async fn zap_cache_clean(
             "total_freed": total_freed,
             "total_removed": total_removed,
             "skipped_running": skipped,
+            "failed": failed,
         }
     })))
 }

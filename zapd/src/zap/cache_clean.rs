@@ -8,12 +8,18 @@
 //! 覆盖的日志都遵循 `run-<task_id>.log` 命名，且 `task_id == task_queue.task_id`，
 //! 因此同一份"运行中任务号集合"即可保护 appstore / 计划任务(cron) / Docker 构建 三类日志。
 //!
+//! **删除必须走 root 特权的 zapexec**：面板进程(zapd)以 `zapadm` 运行，删不掉 zapexec(root)
+//! 创建的编译产物 / 日志目录；若就地用 `std::fs::remove_*` 会静默失败，导致"提示成功却删不掉"。
+//! 所以所有删除统一经 [`remove_via_exec`] 转发到执行端（root）完成。
+//!
 //! 后续新增清理类型，只需在 [`TARGET_*`] 常量登记，并在 [`analyze_all`] / [`clean`] 中加分支。
 
 use std::collections::HashSet;
 use std::path::Path;
 
 use serde::Serialize;
+use tracing::warn;
+use zap_proto::Request;
 
 use crate::zap::appstore;
 use crate::zap::user_cron;
@@ -46,9 +52,14 @@ pub struct TargetStat {
 #[derive(Debug, Serialize)]
 pub struct CleanResult {
     pub id: &'static str,
+    /// 实际成功删除的条目数（仅在删除真正成功时计数，避免"假成功"）。
     pub removed: u64,
+    /// 实际释放的字节数。
     pub freed: u64,
+    /// 因正在运行 / 排队而被跳过的条目数。
     pub skipped_running: u64,
+    /// 因权限 / 执行端不可用等原因删除失败的条目数。
+    pub failed: u64,
 }
 
 /// 取当前"正在运行 / 排队"的任务号集合：这些 run_id 对应的日志与运行现场必须保留。
@@ -95,6 +106,34 @@ fn log_run_ids(dir: &Path) -> Vec<String> {
     ids
 }
 
+/// 通过 root 特权的 zapexec 删除一个文件 / 目录。
+///
+/// 面板进程以 `zapadm` 运行，删不掉 zapexec(root) 创建的编译产物 / 日志目录；
+/// 因此一切删除都转发到执行端。`skip_owner_check + as_user=None` 让执行端以 root 身份、
+/// 不受属主校验地删除（路径经 `resolve_path` 剔除 `..`，且 `file.delete` 禁止删除
+/// 系统关键目录，安全性由执行端兜底）。成功返回 `true`，失败仅记日志并返 `false`，
+/// 调用方据此把条目计入 `failed` —— 绝不谎报成功。
+async fn remove_via_exec(path: &Path) -> bool {
+    let p = path.to_string_lossy().to_string();
+    match crate::zapexec::call(Request::FileDelete {
+        path: p,
+        as_user: None,
+        skip_owner_check: true,
+    })
+    .await
+    {
+        Ok(r) if r.code == 0 => true,
+        Ok(r) => {
+            warn!("缓存清理删除失败 {}: {}", path.display(), r.message);
+            false
+        }
+        Err(e) => {
+            warn!("缓存清理删除失败 {}: {}", path.display(), e);
+            false
+        }
+    }
+}
+
 // ── 日志 ────────────────────────────────────────────────
 
 fn analyze_logs(dir: &Path, protected: &HashSet<String>) -> TargetStat {
@@ -124,22 +163,34 @@ fn analyze_logs(dir: &Path, protected: &HashSet<String>) -> TargetStat {
     }
 }
 
-fn clean_logs(dir: &Path, protected: &HashSet<String>) -> CleanResult {
+async fn clean_logs(dir: &Path, protected: &HashSet<String>) -> CleanResult {
     let mut removed = 0u64;
     let mut freed = 0u64;
     let mut skipped = 0u64;
+    let mut failed = 0u64;
     for id in log_run_ids(dir) {
         if protected.contains(&id) {
             skipped += 1;
             continue;
         }
+        // 预估该条目的总体积（主日志 + .ret/.pid 边车）
+        let mut size = 0u64;
         for ext in ["", ".ret", ".pid"] {
             let p = dir.join(format!("run-{id}{ext}"));
-            if let Ok(meta) = std::fs::symlink_metadata(&p) {
-                freed += meta.len();
-                let _ = std::fs::remove_file(&p);
-                removed += 1;
+            if p.exists() {
+                size += dir_size(&p);
             }
+        }
+        // 主日志删除成功才算"清理掉该条目"；边车尽力删除即可
+        let main = dir.join(format!("run-{id}.log"));
+        if remove_via_exec(&main).await {
+            removed += 1;
+            freed += size;
+            for ext in [".ret", ".pid"] {
+                let _ = remove_via_exec(&dir.join(format!("run-{id}{ext}"))).await;
+            }
+        } else {
+            failed += 1;
         }
     }
     CleanResult {
@@ -147,6 +198,7 @@ fn clean_logs(dir: &Path, protected: &HashSet<String>) -> CleanResult {
         removed,
         freed,
         skipped_running: skipped,
+        failed,
     }
 }
 
@@ -196,7 +248,7 @@ fn analyze_user_logs(
 }
 
 /// 清理某用户的 `<users_dir>/<用户名>/<sub>` 下的日志（跳过运行中任务）。
-fn clean_user_logs(
+async fn clean_user_logs(
     id: &'static str,
     base: &Path,
     sub: &str,
@@ -205,6 +257,7 @@ fn clean_user_logs(
     let mut removed = 0u64;
     let mut freed = 0u64;
     let mut skipped = 0u64;
+    let mut failed = 0u64;
     if let Ok(users) = std::fs::read_dir(base) {
         for u in users.flatten() {
             let dir = u.path().join(sub);
@@ -216,13 +269,22 @@ fn clean_user_logs(
                     skipped += 1;
                     continue;
                 }
+                let mut size = 0u64;
                 for ext in ["", ".ret", ".pid"] {
                     let p = dir.join(format!("run-{run_id}{ext}"));
-                    if let Ok(meta) = std::fs::symlink_metadata(&p) {
-                        freed += meta.len();
-                        let _ = std::fs::remove_file(&p);
-                        removed += 1;
+                    if p.exists() {
+                        size += dir_size(&p);
                     }
+                }
+                let main = dir.join(format!("run-{run_id}.log"));
+                if remove_via_exec(&main).await {
+                    removed += 1;
+                    freed += size;
+                    for ext in [".ret", ".pid"] {
+                        let _ = remove_via_exec(&dir.join(format!("run-{run_id}{ext}"))).await;
+                    }
+                } else {
+                    failed += 1;
                 }
             }
         }
@@ -232,6 +294,7 @@ fn clean_user_logs(
         removed,
         freed,
         skipped_running: skipped,
+        failed,
     }
 }
 
@@ -265,10 +328,11 @@ fn analyze_runs(dir: &Path, protected: &HashSet<String>) -> TargetStat {
     }
 }
 
-fn clean_runs(dir: &Path, protected: &HashSet<String>) -> CleanResult {
+async fn clean_runs(dir: &Path, protected: &HashSet<String>) -> CleanResult {
     let mut removed = 0u64;
     let mut freed = 0u64;
     let mut skipped = 0u64;
+    let mut failed = 0u64;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
             let p = e.path();
@@ -280,9 +344,13 @@ fn clean_runs(dir: &Path, protected: &HashSet<String>) -> CleanResult {
                 skipped += 1;
                 continue;
             }
-            freed += dir_size(&p);
-            let _ = std::fs::remove_dir_all(&p);
-            removed += 1;
+            let size = dir_size(&p);
+            if remove_via_exec(&p).await {
+                removed += 1;
+                freed += size;
+            } else {
+                failed += 1;
+            }
         }
     }
     CleanResult {
@@ -290,6 +358,7 @@ fn clean_runs(dir: &Path, protected: &HashSet<String>) -> CleanResult {
         removed,
         freed,
         skipped_running: skipped,
+        failed,
     }
 }
 
@@ -314,19 +383,20 @@ fn analyze_cache(dir: &Path) -> TargetStat {
     }
 }
 
-fn clean_cache(dir: &Path) -> CleanResult {
+async fn clean_cache(dir: &Path) -> CleanResult {
     let mut removed = 0u64;
     let mut freed = 0u64;
+    let mut failed = 0u64;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
             let p = e.path();
-            freed += dir_size(&p);
-            if p.is_dir() {
-                let _ = std::fs::remove_dir_all(&p);
+            let size = dir_size(&p);
+            if remove_via_exec(&p).await {
+                removed += 1;
+                freed += size;
             } else {
-                let _ = std::fs::remove_file(&p);
+                failed += 1;
             }
-            removed += 1;
         }
     }
     CleanResult {
@@ -334,6 +404,7 @@ fn clean_cache(dir: &Path) -> CleanResult {
         removed,
         freed,
         skipped_running: 0,
+        failed,
     }
 }
 
@@ -364,21 +435,29 @@ pub async fn clean(targets: &[String]) -> Result<Vec<CleanResult>, ZapError> {
     let mut out = Vec::new();
     for t in targets {
         match t.as_str() {
-            TARGET_APPSTORE_LOGS => out.push(clean_logs(&appstore::logs_dir(), &protected)),
-            TARGET_APPSTORE_RUNS => out.push(clean_runs(&root.join("runs"), &protected)),
-            TARGET_APPSTORE_CACHE => out.push(clean_cache(&root.join("cache"))),
-            TARGET_USER_CRON_LOGS => out.push(clean_user_logs(
-                TARGET_USER_CRON_LOGS,
-                &users,
-                "cron-logs",
-                &protected,
-            )),
-            TARGET_USER_DOCKER_LOGS => out.push(clean_user_logs(
-                TARGET_USER_DOCKER_LOGS,
-                &users,
-                "docker-build-logs",
-                &protected,
-            )),
+            TARGET_APPSTORE_LOGS => {
+                out.push(clean_logs(&appstore::logs_dir(), &protected).await)
+            }
+            TARGET_APPSTORE_RUNS => {
+                out.push(clean_runs(&root.join("runs"), &protected).await)
+            }
+            TARGET_APPSTORE_CACHE => out.push(clean_cache(&root.join("cache")).await),
+            TARGET_USER_CRON_LOGS => {
+                out.push(
+                    clean_user_logs(TARGET_USER_CRON_LOGS, &users, "cron-logs", &protected).await,
+                )
+            }
+            TARGET_USER_DOCKER_LOGS => {
+                out.push(
+                    clean_user_logs(
+                        TARGET_USER_DOCKER_LOGS,
+                        &users,
+                        "docker-build-logs",
+                        &protected,
+                    )
+                    .await,
+                )
+            }
             _ => {}
         }
     }
