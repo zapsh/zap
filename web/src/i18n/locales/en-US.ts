@@ -4475,6 +4475,7 @@ const enUS: Messages = {
     scopeSystem: 'root',
     sourceArchive: 'Uploaded package',
     sourceGit: 'Git repository',
+    sourceAppstore: 'App Store',
     sourceManual: 'Copied manually',
     notInstalled: 'not recorded',
     empty: 'No plugins installed yet',

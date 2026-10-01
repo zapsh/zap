@@ -37,7 +37,7 @@ export interface PluginInfo {
   homepage?: string
   /** 自带 HTML 界面的文件名（manifest 的 ui.html）；空 = 用结构化表单 */
   html?: string
-  /** 安装来源：archive（上传包）/ git（仓库） */
+  /** 安装来源：archive（上传包）/ appstore（应用商店）/ git（历史仓库） */
   source?: string
   /** 安装来源详情：仓库 URL 或包名 */
   src?: string
@@ -46,7 +46,7 @@ export interface PluginInfo {
 }
 
 /** 安装来源 */
-export type PluginInstallSource = 'archive' | 'git'
+export type PluginInstallSource = 'archive' | 'appstore' | 'git'
 
 export function pluginList(params: { slot?: string; scope?: string; site_id?: number }) {
   return http.get('/plugin/list', { params })

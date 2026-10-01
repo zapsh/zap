@@ -1687,6 +1687,8 @@ pub async fn install(
                 if let Err(e) = write_meta(&app_path, &meta) {
                     tracing::error!("写入 {done_pkg_path} 安装元数据失败: {e}");
                 }
+                // plugins 类包：install.sh 整目录 cp 会覆盖 manifest，安装成功后补写来源
+                crate::verbs::plugin::write_appstore_plugin_source(&done_cat, &name, &done_pkg_path);
             }
             cleanup_snapshot(&done_run_id, code);
         });
@@ -1945,6 +1947,8 @@ pub async fn upgrade(
                 if let Err(e) = write_meta(&app_path, &meta) {
                     tracing::error!("写入 {done_pkg_path} 升级元数据失败: {e}");
                 }
+                // plugins 类包：升级（uninstall→install 兜底）也会覆盖 manifest，补写来源
+                crate::verbs::plugin::write_appstore_plugin_source(&done_cat, &name, &done_pkg_path);
             }
             cleanup_snapshot(&done_run_id, code);
         });
@@ -2170,6 +2174,8 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                             run_id: done_run_id.clone(),
                         };
                         let _ = write_meta(&done_app, &meta);
+                        // plugins 类包：重跑 install/升级 同样覆盖 manifest，补写来源
+                        crate::verbs::plugin::write_appstore_plugin_source(&category, &done_name, &pkg_path);
                     }
                     // 成功清掉本次重跑的快照（以及被重跑的那次）；失败留下供继续编辑
                     cleanup_snapshot(&done_run_id, code);
@@ -2205,6 +2211,8 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                             run_id: done_run_id.clone(),
                         };
                         let _ = write_meta(&done_app, &meta);
+                        // plugins 类包：重跑 install/升级 同样覆盖 manifest，补写来源
+                        crate::verbs::plugin::write_appstore_plugin_source(&category, &done_name, &pkg_path);
                     }
                     // 成功清掉本次重跑的快照（以及被重跑的那次）；失败留下供继续编辑
                     cleanup_snapshot(&done_run_id, code);

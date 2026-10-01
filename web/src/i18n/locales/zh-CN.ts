@@ -4400,6 +4400,7 @@ export default {
     scopeSystem: 'root',
     sourceArchive: '上传包',
     sourceGit: 'Git 仓库',
+    sourceAppstore: '应用商店',
     sourceManual: '手动放置',
     notInstalled: '未记录',
     empty: '还没有安装任何插件',

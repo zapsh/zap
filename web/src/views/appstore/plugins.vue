@@ -186,6 +186,7 @@ async function load() {
 
 function sourceLabel(row: PluginInfo) {
   if (row.source === 'git') return t('devPlugins.sourceGit')
+  if (row.source === 'appstore') return t('devPlugins.sourceAppstore')
   if (row.source === 'archive') return t('devPlugins.sourceArchive')
   return t('devPlugins.sourceManual')
 }

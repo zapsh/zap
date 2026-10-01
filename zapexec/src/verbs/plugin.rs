@@ -92,17 +92,17 @@ fn read_install_meta(dir: &Path) -> Option<Value> {
 /// 用独立顶层键避免与插件自身字段冲突；整个 manifest 解析为 `Value` 再写回，
 /// 保留作者原有的其它字段（仅会丢失 YAML 注释）。旧插件若仍带 `.zap-install.json`
 /// 由 `describe` 兜底读取，这里不依赖它。
-fn write_install_meta(
+pub(crate) fn write_install_meta(
     dir: &Path,
     source: &str,
     src: &str,
     installed_at: i64,
     level: &str,
 ) -> Result<(), String> {
-    // 安装来源已移除 git，现在只有 `archive` 一种合法值；做归一化兜底，
-    // 任何非 archive 的传入（含历史 `git`）都统一写成 `archive`，写回不再保留 git 来源。
+    // 安装来源已移除 git，现在只有 `archive`（上传包）/ `appstore`（应用商店）两种合法值；
+    // 做归一化兜底，任何非二者的值（含历史 `git`）都统一写成 `archive`，写回不再保留 git 来源。
     let source = match source {
-        "archive" => "archive",
+        "archive" | "appstore" => source,
         _ => "archive",
     };
     let mut path = None;
@@ -144,6 +144,31 @@ fn write_install_meta(
     let out = serde_yaml::to_string(&doc).map_err(|e| format!("manifest 写回失败: {e}"))?;
     std::fs::write(&path, out).map_err(|e| format!("写 manifest 失败: {e}"))?;
     Ok(())
+}
+
+/// AppStore「plugins」类包（系统级 Lua 插件）经应用商店安装 / 升级后，把来源写回插件
+/// `manifest.yaml` 的 `zap_install.source: appstore`，使插件系统在「插件管理」里正确显示
+/// 「应用商店」而非兜底成「手动放置」。
+///
+/// install.sh 每次整目录 `cp` 都会覆盖 manifest，所以必须在脚本 success 后补写（install /
+/// upgrade / 重跑 各路径都调它）。非 `plugins` 类包不走插件引擎，直接跳过。
+pub(crate) fn write_appstore_plugin_source(cat: &str, name: &str, pkg_path: &str) {
+    if cat != "plugins" {
+        return;
+    }
+    let dir = zap_path().join("plugins").join(name);
+    if !dir.is_dir() {
+        return;
+    }
+    if let Err(e) = write_install_meta(
+        &dir,
+        "appstore",
+        pkg_path,
+        chrono::Utc::now().timestamp(),
+        "system",
+    ) {
+        warn!("AppStore 插件 {name} 写回安装来源失败: {e}");
+    }
 }
 
 fn manifest_str<'a>(m: &'a serde_yaml::Value, key: &str) -> Option<&'a str> {
