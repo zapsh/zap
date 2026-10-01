@@ -152,17 +152,18 @@ pub(crate) fn resolve_slot(
                 .or_else(|| user.map(String::from))
                 .unwrap_or_default();
             if !owner.is_empty() {
+                // 首次安装时目录尚不存在（install 流程随后用 write_meta 的 create_dir_all 创建），
+                // 不能以 dir.is_dir() 作为返回条件 —— 否则会落到全局 apps/ 树、owner/site_id 变 None，
+                // 实例在「我的站点应用」里不可见、归属列也退化成「系统级」。
                 let dir = Slot::site(name, &owner, &sid).dir(&data);
-                if dir.is_dir() {
-                    return SlotPath {
-                        category: cat.to_string(),
-                        name: name.to_string(),
-                        dir,
-                        instance: Slot::site_instance(&sid),
-                        owner: Some(owner),
-                        site_id: Some(sid),
-                    };
-                }
+                return SlotPath {
+                    category: cat.to_string(),
+                    name: name.to_string(),
+                    dir,
+                    instance: Slot::site_instance(&sid),
+                    owner: Some(owner),
+                    site_id: Some(sid),
+                };
             }
             // owner 取不到 / 站点已转手：扫一遍用户目录找同名站点
             if let Some(found) = find_site_slot(cat, name, &sid) {
