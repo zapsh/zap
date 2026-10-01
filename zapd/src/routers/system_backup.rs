@@ -72,6 +72,9 @@ pub struct DbTarget {
     pub host: String,
     #[serde(default)]
     pub port: i32,
+    /// 本机 socket 路径（优先于 host/port；空则走 TCP）
+    #[serde(default)]
+    pub socket: Option<String>,
     #[serde(default)]
     pub db_path: Option<String>,
 }
@@ -120,6 +123,12 @@ pub struct BackupDeletePayload {
 pub struct BackupRestoreDirPayload {
     pub path: String,
     pub target_dir: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DbQuickPayload {
+    /// 要导出的数据库名（面板自己的 zapadm 凭据 + 本机 socket 直连，无需前端传密码）
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -250,6 +259,7 @@ pub async fn run_backup(
                 password: t.password,
                 host: t.host,
                 port: t.port,
+                socket: t.socket,
                 dest_dir: dest_dir.to_string(),
                 db_path: t.db_path,
                 backup_root: backup_root.clone(),
@@ -377,6 +387,7 @@ pub async fn create_db(
         password: payload.password,
         host: payload.host,
         port: payload.port,
+        socket: None,
         db_path: payload.db_path,
     })
     .map_err(|e| ZapError::New(-1, format!("参数序列化失败: {e}")))?;
@@ -390,6 +401,47 @@ pub async fn create_db(
     )
     .await;
     Ok(Json(json!({ "code": 0, "message": "数据库导出完成", "data": data })))
+}
+
+/// POST /system/backup/db_quick —— 按库名一键导出（复用面板 zapadm 凭据 + 本机 socket）。
+///
+/// 数据库列表页的「备份」按钮调用：避免把 MySQL 密码暴露到前端，连接身份与面板自身
+/// 一致（`zapadm`@localhost，经 socket 直连最稳）。
+pub async fn db_quick(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<DbQuickPayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let name = payload.name.trim().to_string();
+    if name.is_empty() {
+        return Err(ZapError::New(-1, "数据库名不能为空".to_string()));
+    }
+    let pwd = zap_crypto::read_cred("mysql", "zapadm").map_err(|e| {
+        ZapError::New(-1, format!("读取数据库凭据失败：{e}（请确认面板能连上 MySQL）"))
+    })?;
+    let socket = crate::routers::database::socket_path().await;
+    let target = serde_json::to_string(&DbTarget {
+        engine: "mysql".to_string(),
+        db_name: name.clone(),
+        user: "zapadm".to_string(),
+        password: pwd,
+        host: "127.0.0.1".to_string(),
+        port: 3306,
+        socket,
+        db_path: None,
+    })
+    .map_err(|e| ZapError::New(-1, format!("参数序列化失败: {e}")))?;
+    let data = run_backup("db", &target, &name, "", None).await?;
+    let _ = audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "backup_db_quick",
+        &name,
+        "",
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "数据库备份完成", "data": data })))
 }
 
 /// GET /system/backup/list —— 列出备份目录下的归档。

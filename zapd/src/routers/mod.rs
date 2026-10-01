@@ -319,6 +319,7 @@ fn api_routers() -> Router {
         // 备份中心（目录 / 数据库备份与还原 + 定时任务）
         .route("/system/backup/create_dir", post(system_backup::create_dir))
         .route("/system/backup/create_db", post(system_backup::create_db))
+        .route("/system/backup/db_quick", post(system_backup::db_quick))
         .route("/system/backup/list", get(system_backup::list))
         .route("/system/backup/setting", get(system_backup::setting_get))
         .route("/system/backup/setting", post(system_backup::setting_save))

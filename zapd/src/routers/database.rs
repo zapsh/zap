@@ -199,8 +199,8 @@ const SYSTEM_SCHEMAS: &[&str] = &["information_schema", "mysql", "performance_sc
 
 // ── 连接与执行 ──────────────────────────────────────────────
 
-/// 面板实际在用的 socket（状态页展示用）
-async fn socket_path() -> Option<String> {
+/// 面板实际在用的 socket（状态页展示用；备份一键导出复用此入口）
+pub(crate) async fn socket_path() -> Option<String> {
     socket_candidates().await.into_iter().next()
 }
 

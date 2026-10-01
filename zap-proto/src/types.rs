@@ -1671,6 +1671,9 @@ pub enum Request {
         host: String,
         #[serde(default)]
         port: i32,
+        /// 本机 socket 路径（优先于 host/port；空则走 TCP 回环）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        socket: Option<String>,
         /// 输出目录（空 = 备份根；否则落在备份根内）
         #[serde(default)]
         dest_dir: String,

@@ -12,6 +12,7 @@ import {
 import {
   ArrowDown,
   ArrowRight,
+  Box,
   Delete,
   Edit,
   FolderOpened,
@@ -1092,6 +1093,26 @@ function gotoApps(id: number) {
   router.push({ path: '/site', query: { tab: 'apps', site: String(id) } })
 }
 
+// ── 一键备份站点目录 ───────────────────────────────────────────
+const backupId = ref(0)
+async function onBackupSite(row: SiteItem) {
+  if (!row.web_root) {
+    return ElMessage.warning('该站点无文档根目录（反向代理类站点），无可备份内容')
+  }
+  backupId.value = row.id
+  try {
+    await http.post('/system/backup/create_dir', {
+      name: row.name || `site-${row.id}`,
+      paths: [row.web_root],
+    })
+    ElMessage.success(`已备份站点目录（${row.web_root}）到备份存储`)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '备份失败')
+  } finally {
+    backupId.value = 0
+  }
+}
+
 // 输入第一个域名后，自动生成站点目录名（详见 maybeAutoDirByDomain）
 watch(() => form.domains[0], maybeAutoDirByDomain)
 
@@ -2082,6 +2103,17 @@ onMounted(() => {
                 class="icon-btn"
                 :icon="Folder"
                 @click.stop="gotoApps(row.id)"
+              />
+            </el-tooltip>
+            <el-tooltip content="备份站点目录" placement="top">
+              <el-button
+                link
+                type="primary"
+                class="icon-btn"
+                :icon="Box"
+                :loading="backupId === row.id"
+                :disabled="readonly || (backupId !== 0 && backupId !== row.id)"
+                @click.stop="onBackupSite(row)"
               />
             </el-tooltip>
             <el-tooltip :content="t('common.edit')" placement="top">

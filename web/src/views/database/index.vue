@@ -66,8 +66,11 @@
         </el-table-column>
         <el-table-column prop="users" :label="t('database.colUsers')" width="90" align="center" />
         <el-table-column prop="tables" :label="t('database.colTables')" width="90" align="center" />
-        <el-table-column :label="t('common.operation')" width="90" fixed="right" align="center">
+        <el-table-column :label="t('common.operation')" width="140" fixed="right" align="center">
           <template #default="{ row }">
+            <el-button link type="primary" :loading="backuping === row.name" @click="onBackupDb(row)"
+              >备份</el-button
+            >
             <el-button link type="danger" @click="handleDrop(row)">{{
               t('common.delete')
             }}</el-button>
@@ -381,6 +384,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { Connection, Link, Plus, Refresh, User } from '@/icons'
 import { databaseApi, type DbItem, type DbStatus, type DbUser } from '@/api/database'
+import { http } from '@/utils/request'
 
 const { t } = useI18n()
 
@@ -460,6 +464,20 @@ async function loadRemote() {
 
 async function reload() {
   await Promise.all([loadStatus(), loadList(), loadUsers()])
+}
+
+// ── 一键备份数据库（按库名，复用面板 zapadm 凭据 + 本机 socket）──
+const backuping = ref('')
+async function onBackupDb(row: DbItem) {
+  backuping.value = row.name
+  try {
+    await http.post('/system/backup/db_quick', { name: row.name })
+    ElMessage.success(`数据库 ${row.name} 备份完成`)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '数据库备份失败')
+  } finally {
+    backuping.value = ''
+  }
 }
 
 onMounted(() => {

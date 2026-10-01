@@ -325,6 +325,7 @@ pub async fn db(
     password: String,
     host: String,
     port: i32,
+    socket: Option<String>,
     dest_dir: String,
     db_path: Option<String>,
     backup_root: String,
@@ -369,17 +370,19 @@ pub async fn db(
         run_status(c, "sqlite 导出失败")
     } else {
         // mysql / mariadb
-        let host: &str = if host.is_empty() { "127.0.0.1" } else { &host };
-        let port = if port <= 0 { 3306 } else { port };
         let mut c = crate::verbs::root_cmd("mysqldump");
         c.arg("--single-transaction")
             .arg("--routines")
-            .arg("--events")
-            .arg("-h")
-            .arg(host)
-            .arg("-P")
-            .arg(port.to_string())
-            .arg("-u")
+            .arg("--events");
+        // 优先走本机 socket（zapadm@localhost 直连最稳）；否则回退 TCP 回环
+        if let Some(sock) = socket.as_deref().filter(|s| !s.is_empty()) {
+            c.arg("--socket").arg(sock);
+        } else {
+            let host: &str = if host.is_empty() { "127.0.0.1" } else { &host };
+            let port = if port <= 0 { 3306 } else { port };
+            c.arg("-h").arg(host).arg("-P").arg(port.to_string());
+        }
+        c.arg("-u")
             .arg(&user)
             .arg(&db_name)
             .env("MYSQL_PWD", password.as_str());
