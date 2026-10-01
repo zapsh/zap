@@ -503,13 +503,6 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("plugin", "install")),
     ),
-    // 注意：`/plugin/install` 不会命中 `/plugin/install-git`（前缀按路径段边界匹配），
-    // Git 安装要单独登记，否则静默落到 Admin 下限。
-    (
-        "/plugin/install-git",
-        Required::User,
-        Some(Perm::action("plugin", "install")),
-    ),
     (
         "/plugin/uninstall",
         Required::User,

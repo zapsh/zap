@@ -283,13 +283,14 @@ pub async fn dispatch(req: Request) -> Response {
             name,
             actor,
             home,
+            user,
             site_id,
             site_root,
             site_linux_user,
             action,
             options,
         } => {
-            plugin::plugin_run(name, actor, home, site_id, site_root, site_linux_user, action, options)
+            plugin::plugin_run(name, actor, home, user, site_id, site_root, site_linux_user, action, options)
                 .await
         }
         Request::PluginInstall {
@@ -299,10 +300,9 @@ pub async fn dispatch(req: Request) -> Response {
             level,
             source,
             src,
-            git_ref,
             force,
         } => {
-            plugin::plugin_install(actor, home, name, level, source, src, git_ref, force).await
+            plugin::plugin_install(actor, home, name, level, source, src, force).await
         }
         Request::PluginUninstall {
             name,

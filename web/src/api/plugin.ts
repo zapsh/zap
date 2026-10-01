@@ -95,17 +95,6 @@ export function pluginInstallUpload(payload: {
   return http.post('/plugin/install', fd, { timeout: 600000 })
 }
 
-/** 从 Git 仓库安装插件。 */
-export function pluginInstallGit(payload: {
-  url: string
-  level: 'system' | 'user'
-  git_ref?: string
-  name?: string
-  force?: boolean
-}) {
-  return http.post('/plugin/install-git', payload, { timeout: 600000 })
-}
-
 /** 卸载插件（删除整个插件目录）。 */
 export function pluginUninstall(payload: { name: string; level: 'system' | 'user' }) {
   return http.post('/plugin/uninstall', payload)

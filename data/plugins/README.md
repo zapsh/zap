@@ -19,28 +19,30 @@
 
 ## 安装与卸载
 
-三种方式，落地结果完全一致（都是一个插件目录）：
+两种方式，落地结果完全一致（都是一个插件目录）：
 
-1. **面板上传**（开发 → 插件 → 上传安装）：选 `.zip` / `.tar.gz` / `.tgz` / `.tar` 包。
+1. **面板上传**（应用商店 → 插件 → 上传安装）：选 `.zip` / `.tar.gz` / `.tgz` / `.tar` 包。
    包根或**唯一的顶层目录**里需含 `manifest.yaml` + `main.lua`。
-2. **面板 Git 安装**（开发 → 插件 → Git 安装）：填仓库地址（http/https/ssh/git@），可选分支或标签。
-   内部执行 `git clone --depth 1 [--branch <ref>] <url>`。
-3. **手工放置**：直接把目录拷到 `$ZAP_PATH/plugins/<name>/` 或 `$HOME/.zap/plugins/<name>/`。
+2. **手工放置**：直接把目录拷到 `$ZAP_PATH/plugins/<name>/` 或 `$HOME/.zap/plugins/<name>/`。
 
 插件名可留空，此时取 `manifest.yaml` 里的 `name`；若两者都给了则必须一致。
 同名插件已存在时需勾选「覆盖安装」。
 
 卸载 = 删除整个插件目录（面板按 `level` 定位，路径越界会被拒绝）。
 
-### 安装记录
+### 安装信息
 
-安装成功后，插件目录里会写入 `.zap-install.json`：
+安装成功后，来源 / 分支 / 级别 / 安装时间会写回插件自身的 `manifest.yaml`（顶层 `zap_install:` 块）：
 
-```json
-{ "source": "git", "src": "https://github.com/u/p.git", "git_ref": "", "level": "user", "installed_at": 1767225600 }
+```yaml
+zap_install:
+  source: archive
+  src: /usr/local/zap/data/plugins/tmp/uploads/1-1767225600000.zip
+  level: user
+  installed_at: 1767225600
 ```
 
-列表接口据此回传 `source` / `src` / `installed_at`。手工放置的插件没有这个文件，界面显示为「手动放置」。
+列表接口据此回传 `source` / `src` / `installed_at`，不再单独维护 Meta 文件。手工放置的插件没有这段信息，界面显示来源为「手动放置」。
 
 ## manifest.yaml 字段
 
@@ -48,7 +50,7 @@
 | --- | --- |
 | `name` | 插件名（仅 `[A-Za-z0-9_-]`，与目录名一致） |
 | `title` | 显示名 |
-| `scope` | `site`（以站点 Linux 账号运行，需站点上下文）/ `system`（以 root 运行） |
+| `scope` | `site`（以站点 Linux 账号运行，需站点上下文）/ `user`（以面板用户账号运行，不绑定站点）/ `system`（以 root 运行，仅系统级） |
 | `ui.placement` | 前端入口槽位：`site.detail`（站点详情页「插件」Tab）等 |
 | `ui.label` / `ui.icon` / `ui.tab` | 按钮文案 / 图标 / 分组 |
 | `options` | 运行选项（结构同应用商店 `app.yaml` 的 `options`：`name`/`label`/`type`/`default`/`required`/`choices`…）。`type` 支持 `string`/`number`/`bool`/`select`/`multiselect`，以及插件扩展的 **`dir`**（目录选择器）、**`file`**（单文件选择器）、**`files`**（多文件选择器）。`dir`/`file`/`files` 都回传**绝对路径**（多选以空格连接成单个字符串）；`dir` 留空表示站点根 |
@@ -112,14 +114,14 @@ options:
 - `zap.log(msg)` —— 日志（回传前端）
 - `zap.logf(fmt, ...)` —— `string.format` 后写日志（公共库提供）
 - `zap.option(name)` —— 读取运行选项
-- `zap.run(prog, {args})` —— **按 scope 自动分派**：`site` 走站点账号，`system` 走 root
+- `zap.run(prog, {args})` —— **按 scope 自动分派**：`site` 走站点账号，`user` 走面板用户账号，`system` 走 root
 - `zap.try_run(prog, {args})` —— 同上，但失败不抛错，返回 `(ok, output)`
-- `zap.exec(prog, {args})` —— 强制以 root 执行（仅 `scope=system`）
-- `zap.exec_as_user(prog, {args})` —— 强制以站点 Linux 账号执行（仅 `scope=site`）
-- `zap.site_root()` / `zap.site_linux_user()` —— 当前站点文档根 / 运行账号（`scope=site`）
-- `zap.home_dir()` —— 当前执行身份的家目录：`scope=system` 时为调用方 home，`scope=site` 时为站点 Linux 账号的 home（如 `/home/admin`）
+- `zap.exec(prog, {args})` —— 强制以 root 执行（仅 `scope=system`；`site`/`user` 下被禁止）
+- `zap.exec_as_user(prog, {args})` —— 强制以运行账号执行：`site` 走站点账号，`user` 走面板用户账号
+- `zap.site_root()` / `zap.site_linux_user()` —— 当前站点文档根 / 运行账号（仅 `scope=site`，其余返回空）
+- `zap.home_dir()` —— 当前执行身份的家目录：`scope=system` 为调用方 home，`scope=site` 为站点账号 home，`scope=user` 为面板用户 home
 - `zap.plugin_dir()` —— 插件自身目录（读自带资源用）
-- `zap.scope()` / `zap.level()` —— `"site"|"system"` / `"user"|"system"`
+- `zap.scope()` / `zap.level()` —— `"site"|"user"|"system"` / `"user"|"system"`
 - `zap.canceled()` —— 异步插件轮询它判断用户是否点了取消
 - `zap.read_file(p)` / `zap.write_file(p, s)` / `zap.append_file(p, s)` —— 按 scope 降权读写文件
 - `zap.json_encode(v)` / `zap.json_decode(s)`

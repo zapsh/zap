@@ -6,6 +6,7 @@
         <el-radio-button value="store">{{ t('appstore.tabStore') }}</el-radio-button>
         <el-radio-button value="installed">{{ t('appstore.tabInstalled') }}</el-radio-button>
         <el-radio-button value="mine">{{ t('appstore.tabMine') }}</el-radio-button>
+        <el-radio-button value="plugins">{{ t('appstore.tabPlugins') }}</el-radio-button>
       </el-radio-group>
       <div class="view-tabs__actions">
         <!-- 任务队列入口：编译/安装是排队的，这里看得到排到哪了 -->
@@ -40,6 +41,7 @@
       :key="'installed'"
     />
     <InstalledPane v-if="activeTab === 'mine'" scope="mine" @task="onPaneTask" :key="'mine'" />
+    <PluginsPane v-if="activeTab === 'plugins'" :key="'plugins'" />
 
     <!-- 分类 + 搜索 -->
     <div v-if="activeTab === 'store'" class="filter-bar">
@@ -50,6 +52,7 @@
         <el-radio-button value="webapps">{{ t('appstore.catWebapps') }}</el-radio-button>
         <el-radio-button value="database">{{ t('appstore.catDatabase') }}</el-radio-button>
         <el-radio-button value="library">{{ t('appstore.catLibrary') }}</el-radio-button>
+        <el-radio-button value="plugins">{{ t('appstore.catPlugins') }}</el-radio-button>
       </el-radio-group>
       <el-input
         v-model="keyword"
@@ -321,7 +324,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { Goods, List, Plus, Search, InfoFilled } from '@/icons'
@@ -343,14 +347,26 @@ import {
 } from '@/api/appstore'
 import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
 import InstalledPane from '@/views/appstore/installed.vue'
+import PluginsPane from '@/views/appstore/plugins.vue'
 import RepoManageDrawer from '@/views/appstore/RepoManageDrawer.vue'
 
 const { t } = useI18n()
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.roles.includes('admin'))
 
-/** 当前页签：store=应用商店；installed=已安装实例；mine=我的站点应用 */
-const activeTab = ref<'store' | 'installed' | 'mine'>('store')
+/** 当前页签：store=应用商店；installed=已安装实例；mine=我的站点应用；plugins=插件管理 */
+const activeTab = ref<'store' | 'installed' | 'mine' | 'plugins'>('store')
+
+// 支持通过 ?tab=plugins 深链到「插件」页签（旧 /dev/plugins 入口重定向到这里）
+const route = useRoute()
+function syncTabFromQuery() {
+  const q = route.query.tab
+  if (q === 'store' || q === 'installed' || q === 'mine' || q === 'plugins') {
+    activeTab.value = q
+  }
+}
+syncTabFromQuery()
+watch(() => route.query.tab, syncTabFromQuery)
 
 /** 已安装面板提交任务后，在这里打开日志抽屉（与商店页共用一个抽屉） */
 function onPaneTask(runId: string, title: string) {

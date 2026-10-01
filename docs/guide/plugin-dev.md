@@ -28,7 +28,7 @@ title: 打个招呼
 version: 1.0.0
 description: 最小可运行插件
 author: you
-scope: site            # site = 以站点账号运行；system = 以 root 运行（仅系统级插件）
+scope: user            # user = 以调用方面板用户账号运行（不绑定站点）；site = 以站点账号；system = 以 root（仅系统级）
 
 ui:
   placement: site.detail   # 出现在「站点详情 → 插件」标签页
@@ -56,6 +56,37 @@ end
 把目录拷到 `$HOME/.zap/plugins/hello/`（或 `$ZAP_PATH/plugins/hello/`），
 打开「站点详情 → 插件」就能看到入口。
 
+### 非站点插件：`scope: user`
+
+有些插件根本不绑定某个站点（比如管理「当前面板用户」自己的 SSH 密钥、cron、家目录里的工具），
+它们应该用 `scope: user`：
+
+```yaml
+name: my-keys
+title: 我的密钥
+scope: user            # 以触发这次请求的面板用户身份运行，不需要站点
+ui:
+  placement: site.detail
+  label: 我的密钥
+```
+
+```lua
+function on_run(ctx)
+  local me = zap.home_dir()              -- 面板用户的家目录
+  zap.log('当前用户家目录: ' .. me)
+  zap.run('ls', { '-la', me })           -- 自动以该用户身份执行
+end
+```
+
+要点：
+
+- `scope: user` **不依赖站点上下文**，入口可挂在任意槽位，运行时也不会要求 `site_root`。
+- 运行身份是**触发请求的那个面板用户**的 Linux 账号——即使是管理员安装的系统级插件，
+  被普通用户触发时也只拥有该普通用户的权限，不会提权。
+- `zap.site_root()` / `zap.site_linux_user()` 在 `scope: user` 下返回空串；
+  取用户家目录请用 `zap.home_dir()`，不要用 `zap.path.site(...)`（那是站点根拼接）。
+- `zap.exec`（root）在 `scope: user` 下被禁止；执行命令一律走 `zap.run` / `zap.exec_as_user`。
+
 ---
 
 ## 2. manifest.yaml 完整字段
@@ -65,7 +96,7 @@ end
 | `name` | ✓ | 插件标识，**只允许字母数字、下划线、连字符**，必须与目录名一致 |
 | `title` | | 展示标题，缺省用 `name` |
 | `version` / `description` / `author` / `homepage` | | 元信息，管理页展示 |
-| `scope` | | `site`（默认可用，以站点 Linux 账号运行）/ `system`（以 root 运行）。**用户级插件不允许 `system`** |
+| `scope` | | `site`（以站点 Linux 账号运行，需站点上下文）/ `user`（以调用方面板用户账号运行，不绑定站点）/ `system`（以 root 运行，仅系统级插件可用）。**用户级插件不允许 `system`** |
 | `async` | | `true` 时后台执行，日志走 SSE 实时回传，前端可取消 |
 | `ui.placement` | ✓ | 入口挂载位置，见下表 |
 | `ui.label` | | 入口按钮文案 |
@@ -108,14 +139,14 @@ function on_scan(ctx) end       -- action=scan 时优先调用（HTML 界面用�
 | `zap.log(msg)` | 写日志，回传前端 |
 | `zap.logf(fmt, ...)` | `string.format` 后写日志 |
 | `zap.option(name)` | 读取选项 |
-| `zap.run(prog, {args})` | **按 scope 自动分派**：`site` 走站点账号，`system` 走 root |
+| `zap.run(prog, {args})` | **按 scope 自动分派**：`site` 走站点账号，`user` 走面板用户账号，`system` 走 root |
 | `zap.try_run(prog, {args})` | 同上，失败不抛错，返回 `(ok, output)` |
 | `zap.exec(prog, {args})` | 强制 root（仅 `scope: system`） |
-| `zap.exec_as_user(prog, {args})` | 强制站点账号（仅 `scope: site`） |
-| `zap.site_root()` / `zap.site_linux_user()` | 站点文档根 / 运行账号（`scope: site`） |
-| `zap.home_dir()` | 当前执行身份的家目录 |
+| `zap.exec_as_user(prog, {args})` | 强制降权到运行账号：`site` 走站点账号，`user` 走面板用户账号 |
+| `zap.site_root()` / `zap.site_linux_user()` | 站点文档根 / 站点运行账号（仅 `scope=site`，其余返回空） |
+| `zap.home_dir()` | 当前执行身份的家目录（`site`=站点账号 home / `user`=面板用户 home / `system`=调用方 home） |
 | `zap.plugin_dir()` | 插件自身目录（读自带资源） |
-| `zap.scope()` / `zap.level()` | `"site"\|"system"` / `"user"\|"system"` |
+| `zap.scope()` / `zap.level()` | `"site"\|"user"\|"system"` / `"user"\|"system"` |
 | `zap.canceled()` | 异步插件轮询它判断用户是否点了取消 |
 | `zap.read_file(p)` / `zap.write_file(p,s)` / `zap.append_file(p,s)` | 按 scope 降权读写文件 |
 | `zap.json_encode(v)` / `zap.json_decode(s)` | JSON |
@@ -335,19 +366,17 @@ end
 
 ## 8. 安装与卸载
 
-三种方式，落地结果一致（都是一个插件目录）：
+两种方式，落地结果一致（都是一个插件目录）：
 
-1. **面板上传**（开发 → 插件 → 上传安装）：`.zip` / `.tar.gz` / `.tgz` / `.tar`，
+1. **面板上传**（应用商店 → 插件 → 上传安装）：`.zip` / `.tar.gz` / `.tgz` / `.tar`，
    包根或**唯一的顶层目录**里需含 `manifest.yaml` + `main.lua`
-2. **面板 Git 安装**（开发 → 插件 → Git 安装）：`http(s)://` / `ssh://` / `git@`，
-   可选分支或标签（内部走 `git clone --depth 1`）
-3. **手工放置**：直接拷目录
+2. **手工放置**：直接拷目录
 
 插件名可留空，此时取 `manifest.yaml` 的 `name`；两者都给了必须一致。
 同名插件已存在时需勾选「覆盖安装」。卸载 = 删除整个插件目录。
 
-安装后目录里会写入 `.zap-install.json`（来源 / 分支 / 级别 / 时间），
-管理页据此显示来源。手工放置的插件没有它，显示为「手动放置」。
+安装时把来源 / 分支 / 级别 / 安装时间写回插件自身的 `manifest.yaml`（顶层 `zap_install:` 块），
+管理页据此显示来源。手工放置的插件没有这段信息，来源显示为「手动放置」。
 
 ---
 
@@ -357,6 +386,7 @@ end
 | --- | --- |
 | Lua 沙箱 | 无 `io` / `os` / `package` / `debug`；文件只能经 `zap.fs.*` 按 scope 降权访问 |
 | `scope: site` | `user_cmd` + `drop_privileges`（清附加组 → setgid → setuid）降到站点账号 |
+| `scope: user` | 降到触发请求的面板用户账号（同 `site` 的降权路径）；管理员装的系统级插件被普通用户触发时也仅该用户权限 |
 | `scope: system` | 仅系统级插件可用；**用户级插件声明 `system` 会在安装和运行两处被拒** |
 | 路径校验 | 安装解包挡 `..` 与绝对路径；卸载与 `ui.html` 读取都做 canonicalize 越界检查 |
 | HTML 界面 | iframe 无 `allow-same-origin`，只能经 postMessage 由父页面代跑 |
@@ -369,5 +399,68 @@ end
 - 插件列表与错误原因会写进 zapexec 日志
 - `plugin_list` 会跳过 manifest 解析失败的目录并记 warn —— 入口不出现先查日志
 - `scope: site` 插件要求有站点上下文；少了会报「需要 site_root / site_linux_user」
+- `scope: user` 插件要求调用方有 Linux 账号；`user` 字段为空会报「user 作用域插件需要调用方 Linux 账号」
 - 快速验证 Lua 语法：库文件有编译期校验（`cargo test -p zapexec`），
   自己的 `main.lua` 可以先用 `luac -p main.lua` 过一遍
+
+---
+
+## 11. 通过应用商店分发（系统级插件）
+
+除了「上传 / Git / 手工放置」三种本地安装方式，系统级插件也可以作为 **应用商店（AppStore）包** 发布，
+让用户从「应用商店 → 插件」分类里一键安装。两条入口落地结果完全一致（都是一个插件目录），
+原有上传安装功能不受影响。
+
+### 包结构
+
+在应用商店仓库（如 `data/appstore/repos/zap-appstore/`）下新建 `plugins/<name>/`：
+
+```
+plugins/hello-plugin/
+  app.yaml        # 市场元数据：卡片标题、描述、版本、分类（category: plugins）
+  manifest.yaml   # 插件运行时清单（scope / ui / options / actions），与原生插件一致
+  main.lua        # 插件逻辑（on_run / on_<action>）
+  ui.html         # 可选，自带 HTML 界面
+  install.sh      # 应用商店安装钩子：把目录落到 $ZAP_PATH/plugins/<name>
+  uninstall.sh    # 应用商店卸载钩子：删除该插件目录
+```
+
+- `app.yaml` 负责「市场卡片」与安装约束；`manifest.yaml` 负责「插件怎么跑」，两者互不干涉。
+- `category` 必须写 `plugins`（应用商店按此分类展示，见 `zapd/src/zap/appstore.rs` 的分类列表）。
+- `app.yaml` 不声明 `provision` / `run_as`：插件不走建站编排、也不降权，运行身份由 `manifest.yaml` 的 `scope` 决定。
+
+### install.sh（安装钩子）
+
+由 zapexec 以 **root** 执行（系统级插件）。以下环境变量由应用商店注入：
+`ZAP_PATH`（面板根）、`APP_NAME`（插件名）、`PKG_SRC_PATH`（仓库里本包源码目录）。
+
+```sh
+#!/bin/sh
+set -e
+DEST="$ZAP_PATH/plugins/$APP_NAME"
+rm -rf "$DEST"
+mkdir -p "$DEST"
+cp -r "$PKG_SRC_PATH/." "$DEST/"
+# 去掉应用商店专属编排文件，保持插件目录干净
+rm -f "$DEST/app.yaml" "$DEST/install.sh" "$DEST/uninstall.sh"
+echo "插件 $APP_NAME 已安装到 $DEST"
+```
+
+`uninstall.sh` 只需 `rm -rf "$ZAP_PATH/plugins/$APP_NAME"`。应用商店在卸载成功后
+还会自动清掉自己的安装元数据（`apps/plugins/<name>/default/meta.yaml`），不会留下脏数据。
+
+### 权限与可见性
+
+- 系统级插件 **仅管理员** 可从市场安装（与 `app.yaml` 的 `roles` 白名单规则一致；
+  缺省即仅 admin，要在市场里开放给普通用户可加 `roles: [user]`，此时插件落到 `$ZAP_PATH/plugins`
+  仍由后端权限点 `plugin:install` 把关）。
+- 安装完成后，`/plugin/list` 会自动扫到 `$ZAP_PATH/plugins/<name>`，站点详情「插件」标签页
+  照常渲染入口（含 `ui.html` 沙箱界面）—— 应用商店只是「分发渠道」，运行时仍是 Lua 引擎。
+
+### 升级
+
+应用商店的升级复用同一套 `install.sh`：把新版本仓库内容重新拷到 `$ZAP_PATH/plugins/<name>`
+覆盖即可；也可在 `app.yaml` 里提供 `upgrade.sh` 做差异化升级。
+
+> 完整可运行示例见 `data/appstore/repos/zap-appstore/plugins/hello-plugin/`
+> （HTTP 界面演示插件，安装后会以 `site.detail` 槽位出现在站点详情）。

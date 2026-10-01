@@ -12,15 +12,20 @@
         </div>
         <div class="head-right">
           <el-button :icon="Upload" @click="openUpload">{{ t('devPlugins.installUpload') }}</el-button>
-          <el-button :icon="Link" @click="openGit">{{ t('devPlugins.installGit') }}</el-button>
           <el-button :icon="Refresh" circle :loading="loading" @click="load" />
         </div>
       </div>
     </el-card>
 
+    <!-- 列表页签：全部插件（系统级 + 我的） / 我的插件（仅用户级） -->
+    <el-radio-group v-model="activeTab" size="small" class="plugin-tabs">
+      <el-radio-button value="all">{{ t('devPlugins.tabAll') }}</el-radio-button>
+      <el-radio-button value="mine">{{ t('devPlugins.tabMine') }}</el-radio-button>
+    </el-radio-group>
+
     <!-- 列表 -->
     <el-card shadow="never" class="table-card">
-      <el-table :data="rows" v-loading="loading" stripe>
+      <el-table :data="visibleRows" v-loading="loading" stripe>
         <el-table-column :label="t('devPlugins.colPlugin')" min-width="220">
           <template #default="{ row }">
             <div class="cell-name">{{ row.title || row.name }}</div>
@@ -75,7 +80,13 @@
 
         <el-table-column :label="t('devPlugins.colActions')" width="90" align="right">
           <template #default="{ row }">
-            <el-button link type="danger" size="small" @click="onUninstall(row)">
+            <el-button
+              link
+              type="danger"
+              size="small"
+              :disabled="row.level === 'system' && !isAdmin"
+              @click="onUninstall(row)"
+            >
               {{ t('devPlugins.uninstall') }}
             </el-button>
           </template>
@@ -127,40 +138,6 @@
         </el-button>
       </template>
     </el-dialog>
-
-    <!-- Git 安装 -->
-    <el-dialog v-model="gitVisible" :title="t('devPlugins.gitTitle')" width="520px">
-      <el-form label-width="110px">
-        <el-form-item :label="t('devPlugins.uploadLevel')">
-          <el-radio-group v-model="gitForm.level">
-            <el-radio value="user">{{ t('devPlugins.levelUser') }}</el-radio>
-            <el-radio value="system" :disabled="!isAdmin">{{ t('devPlugins.levelSystem') }}</el-radio>
-          </el-radio-group>
-          <div v-if="!isAdmin" class="form-tip">{{ t('devPlugins.adminOnly') }}</div>
-        </el-form-item>
-        <el-form-item :label="t('devPlugins.gitUrl')">
-          <el-input v-model="gitForm.url" :placeholder="t('devPlugins.gitUrlPlaceholder')" />
-        </el-form-item>
-        <el-form-item :label="t('devPlugins.gitRef')">
-          <el-input v-model="gitForm.git_ref" :placeholder="t('devPlugins.gitRefPlaceholder')" />
-        </el-form-item>
-        <el-form-item :label="t('devPlugins.gitName')">
-          <el-input
-            v-model="gitForm.name"
-            :placeholder="t('devPlugins.uploadNamePlaceholder')"
-          />
-        </el-form-item>
-        <el-form-item>
-          <el-checkbox v-model="gitForm.force">{{ t('devPlugins.gitForce') }}</el-checkbox>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="gitVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitGit">
-          {{ t('common.confirm') }}
-        </el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -168,9 +145,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
-import { Box, Link, Refresh, Upload } from '@/icons'
+import { Box, Refresh, Upload } from '@/icons'
 import {
-  pluginInstallGit,
   pluginInstallUpload,
   pluginList,
   pluginUninstall,
@@ -184,6 +160,12 @@ const userStore = useUserStore()
 const rows = ref<PluginInfo[]>([])
 const loading = ref(false)
 const submitting = ref(false)
+
+// 列表页签：全部（系统级 + 用户级合并）/ 我的插件（仅当前用户级）
+const activeTab = ref<'all' | 'mine'>('all')
+const visibleRows = computed(() =>
+  activeTab.value === 'mine' ? rows.value.filter((r) => r.level === 'user') : rows.value,
+)
 
 // 系统级插件会以 root 身份运行，只有 admin 能装 / 卸；前端先拦一道，后端再兜一次
 const isAdmin = computed(() => (userStore.roles || []).includes('admin'))
@@ -262,64 +244,6 @@ async function submitUpload() {
   }
 }
 
-// ── Git 安装 ────────────────────────────────────────────────
-const gitVisible = ref(false)
-const gitForm = ref<{
-  level: 'system' | 'user'
-  url: string
-  git_ref: string
-  name: string
-  force: boolean
-}>({ level: 'user', url: '', git_ref: '', name: '', force: false })
-
-function openGit() {
-  gitForm.value = { level: 'user', url: '', git_ref: '', name: '', force: false }
-  gitVisible.value = true
-}
-
-function validGitUrl(u: string) {
-  const s = u.trim().toLowerCase()
-  return (
-    s.startsWith('http://') ||
-    s.startsWith('https://') ||
-    s.startsWith('ssh://') ||
-    s.startsWith('git@') ||
-    s.startsWith('git://')
-  )
-}
-
-async function submitGit() {
-  if (!gitForm.value.url.trim()) {
-    ElMessage.warning(t('devPlugins.urlRequired'))
-    return
-  }
-  if (!validGitUrl(gitForm.value.url)) {
-    ElMessage.warning(t('devPlugins.urlInvalid'))
-    return
-  }
-  if (gitForm.value.level === 'system' && !isAdmin.value) {
-    ElMessage.warning(t('devPlugins.adminOnly'))
-    return
-  }
-  submitting.value = true
-  try {
-    await pluginInstallGit({
-      url: gitForm.value.url.trim(),
-      level: gitForm.value.level,
-      git_ref: gitForm.value.git_ref.trim() || undefined,
-      name: gitForm.value.name.trim() || undefined,
-      force: gitForm.value.force,
-    })
-    ElMessage.success(t('devPlugins.installOk'))
-    gitVisible.value = false
-    await load()
-  } catch (e: any) {
-    ElMessage.error(e?.message || String(e))
-  } finally {
-    submitting.value = false
-  }
-}
-
 // ── 卸载 ────────────────────────────────────────────────────
 async function onUninstall(row: PluginInfo) {
   if (row.level === 'system' && !isAdmin.value) {
@@ -352,6 +276,9 @@ onMounted(load)
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+.plugin-tabs {
+  align-self: flex-start;
 }
 .head-card :deep(.el-card__body) {
   padding: 14px 16px;

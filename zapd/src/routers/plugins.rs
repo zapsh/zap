@@ -4,8 +4,9 @@
 //! 再把解析后的上下文（家目录 / 站点 root / 站点 Linux 账号）通过白名单动词传给 zapexec。
 //!
 //! 安装 / 卸载按两个级别隔离：
-//!   - `system`（`$ZAP_PATH/plugins/`）：仅管理员，插件可以 root 身份运行；
-//!   - `user`（`<home>/.zap/plugins/`）：登录用户自己装，只能以站点账号运行。
+//!   - `system`（`$ZAP_PATH/plugins/`）：仅管理员，插件可 root / 站点 / 用户身份运行；
+//!   - `user`（`<home>/.zap/plugins/`）：登录用户自己装，只能以站点账号或用户身份运行（不允许 root）。
+//! 运行时身份由 manifest 的 `scope` 决定：`site`（站点账号）/ `user`（调用方面板用户账号）/ `system`（root）。
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -60,24 +61,6 @@ pub struct PluginRunPayload {
 }
 
 #[derive(Deserialize)]
-pub struct PluginGitInstallPayload {
-    /// 仓库 URL（http/https/ssh/git@）
-    pub url: String,
-    /// `system` | `user`，默认 `user`
-    #[serde(default)]
-    pub level: Option<String>,
-    /// 分支 / 标签，留空用仓库默认分支
-    #[serde(default)]
-    pub git_ref: Option<String>,
-    /// 插件名，留空则取 manifest 里的 name
-    #[serde(default)]
-    pub name: Option<String>,
-    /// 已存在同名插件时覆盖
-    #[serde(default)]
-    pub force: bool,
-}
-
-#[derive(Deserialize)]
 pub struct PluginUninstallPayload {
     pub name: String,
     /// `system` | `user`，默认 `user`
@@ -128,7 +111,7 @@ pub async fn plugin_run(
     Json(payload): Json<PluginRunPayload>,
 ) -> ZapJsonResult {
     let action = payload.action.unwrap_or_else(|| "run".into());
-    let (home, _linux_user) = load_user_home(claims.id as i64).await?;
+    let (home, linux_user) = load_user_home(claims.id as i64).await?;
     let (site_root, site_linux_user) = match payload.site_id {
         Some(sid) => {
             site::site_in_scope(&claims, sid).await?;
@@ -137,10 +120,12 @@ pub async fn plugin_run(
         }
         None => (None, None),
     };
+    let caller_user = if linux_user.is_empty() { None } else { Some(linux_user) };
     let resp = crate::zapexec::call(Request::PluginRun {
         name: payload.name,
         actor: claims.sub.clone(),
         home,
+        user: caller_user,
         site_id: payload.site_id,
         site_root,
         site_linux_user,
@@ -264,7 +249,6 @@ pub async fn plugin_install_upload(
         level: level.clone(),
         source: "archive".to_string(),
         src: src.clone(),
-        git_ref: None,
         force,
     })
     .await;
@@ -281,47 +265,6 @@ pub async fn plugin_install_upload(
         "plugin_install",
         &format!("{level}:archive"),
         &src,
-    )
-    .await;
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
-}
-
-/// 从 Git 仓库安装插件。
-pub async fn plugin_install_git(
-    claims: ValidatedClaims,
-    Extension(client_addr): Extension<SocketAddr>,
-    Json(payload): Json<PluginGitInstallPayload>,
-) -> ZapJsonResult {
-    let level = normalize_level(payload.level);
-    require_admin_for(&claims, &level)?;
-    let url = payload.url.trim().to_string();
-    if !is_safe_git_url(&url) {
-        return Err(ZapError::New(
-            -1,
-            "仓库地址只支持 http://、https://、ssh:// 或 git@ 形式".into(),
-        ));
-    }
-    let (home, _linux_user) = load_user_home(claims.id as i64).await?;
-    let resp = crate::zapexec::call(Request::PluginInstall {
-        name: payload.name.unwrap_or_default().trim().to_string(),
-        actor: claims.sub.clone(),
-        home,
-        level: level.clone(),
-        source: "git".to_string(),
-        src: url.clone(),
-        git_ref: payload.git_ref,
-        force: payload.force,
-    })
-    .await?;
-    if resp.code != 0 {
-        return Err(ZapError::New(resp.code, resp.message));
-    }
-    audit::log(
-        Some(&*claims),
-        Some(client_addr.ip().to_string().as_str()),
-        "plugin_install",
-        &format!("{level}:git"),
-        &url,
     )
     .await;
     Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
@@ -359,16 +302,6 @@ pub async fn plugin_uninstall(
     )
     .await;
     Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
-}
-
-/// 只放行常见的安全协议，挡掉 `file://` / `ext::` 这类能读本地仓库的地址。
-fn is_safe_git_url(url: &str) -> bool {
-    let u = url.to_ascii_lowercase();
-    u.starts_with("http://")
-        || u.starts_with("https://")
-        || u.starts_with("ssh://")
-        || u.starts_with("git@")
-        || u.starts_with("git://")
 }
 
 async fn load_user_home(uid: i64) -> Result<(String, String), ZapError> {
@@ -443,7 +376,6 @@ pub fn routers() -> Router {
             "/install",
             post(plugin_install_upload).layer(DefaultBodyLimit::max(PLUGIN_UPLOAD_LIMIT)),
         )
-        .route("/install-git", post(plugin_install_git))
         .route("/uninstall", post(plugin_uninstall))
 }
 

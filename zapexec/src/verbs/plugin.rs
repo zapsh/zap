@@ -5,11 +5,11 @@
 //! 调用受限能力：
 //!   - `zap.log(msg)`                   打印日志（回传前端）
 //!   - `zap.option(name)`               读取运行选项
-//!   - `zap.run(prog, {args})`          按 scope 自动选 root / 站点账号执行
+//!   - `zap.run(prog, {args})`          按 scope 自动选 root / 站点账号 / 用户账号执行
 //!   - `zap.exec(prog, {args})`         以 root 执行（仅 scope=system）
-//!   - `zap.exec_as_user(prog, {args})` 以站点 Linux 账号执行（仅 scope=site）
-//!   - `zap.site_root()` / `zap.site_linux_user()`  当前站点上下文（scope=site）
-//!   - `zap.home_dir()`               当前执行身份的家目录（scope=system 为调用方 home，scope=site 为站点 Linux 账号 home）
+//!   - `zap.exec_as_user(prog, {args})` 以站点 Linux 账号（scope=site）/ 面板用户账号（scope=user）执行
+//!   - `zap.site_root()` / `zap.site_linux_user()`  当前站点上下文（仅 scope=site）
+//!   - `zap.home_dir()`               当前执行身份的家目录（scope=system 为调用方 home，scope=site 为站点账号 home，scope=user 为面板用户 home）
 //!   - `zap.read_file(p)` / `zap.write_file(p, s)`  按 scope 降权读写文件
 //!   - `zap.json_encode(v)` / `zap.json_decode(s)`
 //!
@@ -20,10 +20,11 @@
 //!
 //! 安全边界：
 //!   - 插件只能声明结构化 UI（manifest），不能注入前端代码；
-//!   - 执行身份由 scope 决定，scope=site 时通过 user_cmd + drop_privileges 降到站点账号
-//!     （清附加组 → setgid → setuid），scope=system 才以 root 执行；
+//!   - 执行身份由 scope 决定：scope=site 降到站点账号；scope=user 降到调用方面板用户的 Linux 账号；
+//!     scope=system 才以 root 执行；
 //!   - **用户级插件不允许 `scope: system`**：否则普通用户往 `~/.zap/plugins` 放一个
-//!     插件就能以 root 执行任意命令（提权）。
+//!     插件就能以 root 执行任意命令（提权）。`scope=user` 两个级别都允许，但运行时始终降到调用方用户——
+//!     即使是管理员安装的系统级插件，被普通用户触发时也只拥有触发者自己的权限，不会提权。
 //!   - 插件名只允许 `[A-Za-z0-9_-]`，目录越界即拒绝。
 
 use std::collections::HashMap;
@@ -75,13 +76,74 @@ fn plugin_base(level: &str, home: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// 安装记录文件名：写在插件目录内，供列表页展示来源 / 安装时间。
+/// 旧版安装记录文件名：曾写在插件目录内供列表页展示来源 / 安装时间。
+/// 现已不再写入，这里仅保留以便 `read_install_meta` 兼容仍带此文件的旧插件。
 const INSTALL_META: &str = ".zap-install.json";
 
 fn read_install_meta(dir: &Path) -> Option<Value> {
     let p = dir.join(INSTALL_META);
     let txt = std::fs::read_to_string(&p).ok()?;
     serde_json::from_str::<Value>(&txt).ok()
+}
+
+/// 把安装来源 / 时间写回插件自身的 `manifest.yaml`，落在顶层 `zap_install:` 下。
+///
+/// 不再单独维护注册表 / Meta 文件：列表直接读 manifest 即可拿到来源与安装时间。
+/// 用独立顶层键避免与插件自身字段冲突；整个 manifest 解析为 `Value` 再写回，
+/// 保留作者原有的其它字段（仅会丢失 YAML 注释）。旧插件若仍带 `.zap-install.json`
+/// 由 `describe` 兜底读取，这里不依赖它。
+fn write_install_meta(
+    dir: &Path,
+    source: &str,
+    src: &str,
+    installed_at: i64,
+    level: &str,
+) -> Result<(), String> {
+    // 安装来源已移除 git，现在只有 `archive` 一种合法值；做归一化兜底，
+    // 任何非 archive 的传入（含历史 `git`）都统一写成 `archive`，写回不再保留 git 来源。
+    let source = match source {
+        "archive" => "archive",
+        _ => "archive",
+    };
+    let mut path = None;
+    for name in ["manifest.yaml", "manifest.yml"] {
+        let p = dir.join(name);
+        if p.is_file() {
+            path = Some(p);
+            break;
+        }
+    }
+    let path = path.ok_or_else(|| "未找到 manifest.yaml".to_string())?;
+    let txt = std::fs::read_to_string(&path).map_err(|e| format!("{e}"))?;
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(&txt).map_err(|e| format!("manifest 解析失败: {e}"))?;
+    let map = doc
+        .as_mapping_mut()
+        .ok_or_else(|| "manifest 不是顶层映射，无法写入安装信息".to_string())?;
+    let mut meta = serde_yaml::Mapping::new();
+    meta.insert(
+        serde_yaml::Value::String("source".into()),
+        serde_yaml::Value::String(source.to_string()),
+    );
+    meta.insert(
+        serde_yaml::Value::String("src".into()),
+        serde_yaml::Value::String(src.to_string()),
+    );
+    meta.insert(
+        serde_yaml::Value::String("installed_at".into()),
+        serde_yaml::Value::Number(serde_yaml::Number::from(installed_at)),
+    );
+    meta.insert(
+        serde_yaml::Value::String("level".into()),
+        serde_yaml::Value::String(level.to_string()),
+    );
+    map.insert(
+        serde_yaml::Value::String("zap_install".into()),
+        serde_yaml::Value::Mapping(meta),
+    );
+    let out = serde_yaml::to_string(&doc).map_err(|e| format!("manifest 写回失败: {e}"))?;
+    std::fs::write(&path, out).map_err(|e| format!("写 manifest 失败: {e}"))?;
+    Ok(())
 }
 
 fn manifest_str<'a>(m: &'a serde_yaml::Value, key: &str) -> Option<&'a str> {
@@ -99,13 +161,25 @@ fn describe(dir: &Path, name: &str, level: &str) -> Result<Value, String> {
             .to_string()
     };
     let placement = ui_str("placement");
-    let meta = read_install_meta(dir);
-    let meta_str = |k: &str| {
-        meta.as_ref()
+    // 安装信息优先读 manifest 里的 `zap_install`（安装时写回），兼容旧版仍带
+    // `.zap-install.json` 的插件（read_install_meta 仅作兜底）。
+    let install_yaml = m.get("zap_install");
+    let meta_json = read_install_meta(dir);
+    let meta_str = |k: &str| -> String {
+        if let Some(s) = install_yaml
             .and_then(|v| v.get(k))
             .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
+        {
+            return s.to_string();
+        }
+        if let Some(s) = meta_json
+            .as_ref()
+            .and_then(|v| v.get(k))
+            .and_then(|v| v.as_str())
+        {
+            return s.to_string();
+        }
+        String::new()
     };
     // json! 的对象语法不收块表达式，label 的回落值先算出来
     let label = {
@@ -137,7 +211,16 @@ fn describe(dir: &Path, name: &str, level: &str) -> Result<Value, String> {
         "homepage": manifest_str(&m, "homepage").unwrap_or("").to_string(),
         "source": meta_str("source"),
         "src": meta_str("src"),
-        "installed_at": meta.as_ref().and_then(|v| v.get("installed_at")).and_then(|v| v.as_i64()).unwrap_or(0),
+        "installed_at": install_yaml
+            .and_then(|v| v.get("installed_at"))
+            .and_then(|v| v.as_i64())
+            .or_else(|| {
+                meta_json
+                    .as_ref()
+                    .and_then(|v| v.get("installed_at"))
+                    .and_then(|v| v.as_i64())
+            })
+            .unwrap_or(0),
     }))
 }
 
@@ -273,10 +356,14 @@ pub async fn plugin_list(
 
 // ── 安装 / 卸载 ────────────────────────────────────────────
 
-/// 安装插件：`source` 为 `archive`（已落盘的 zip / tar.gz 包）或 `git`（仓库 URL）。
+/// 安装插件：`source` 目前仅支持 `archive`（已落盘的 zip / tar.gz 包，由面板上传而来）。
 ///
 /// 流程：解包到临时目录 → 定位插件根 → 校验 manifest.yaml + main.lua →
-/// 落地到 `<base>/<name>` → 写安装记录 → 放开读权限（用户级插件由站点账号读取）。
+/// 落地到 `<base>/<name>` → 把来源 / 安装时间写回 manifest.yaml → 放开读权限
+/// （用户级插件由站点账号读取）。
+///
+/// 不写任何注册表 / 独立 Meta 文件：列表靠扫描目录 + 读 manifest.yaml 里的 `zap_install`，
+/// 用户插件由用户自己管理。
 pub async fn plugin_install(
     _actor: String,
     home: String,
@@ -284,7 +371,6 @@ pub async fn plugin_install(
     level: String,
     source: String,
     src: String,
-    git_ref: Option<String>,
     force: bool,
 ) -> Response {
     // 名称可留空：此时以 manifest 里的 name 为准（上传 zip 时通常不知道里面叫什么）
@@ -307,8 +393,7 @@ pub async fn plugin_install(
     let res: Result<String, String> = (|| {
         match source.as_str() {
             "archive" => extract_archive(Path::new(&src), &unpack)?,
-            "git" => git_clone(&src, git_ref.as_deref(), &unpack)?,
-            other => return Err(format!("未知的插件来源类型: {other}")),
+            other => return Err(format!("未知的插件来源类型: {other}（仅支持上传包安装）")),
         }
         let root = locate_plugin_root(&unpack)?;
 
@@ -320,7 +405,15 @@ pub async fn plugin_install(
         // 用户级插件禁止 scope=system：否则等于把 root 执行权发给普通用户
         if level == "user" && manifest_str(&m, "scope").unwrap_or("system") == "system" {
             return Err(
-                "用户级插件不允许 scope: system（会以 root 执行），请改为 scope: site".into(),
+                "用户级插件不允许 scope: system（会以 root 执行），请改为 scope: site 或 scope: user"
+                    .into(),
+            );
+        }
+        // 校验 scope 取值，避免未知值被静默当成 root 执行
+        let scope_decl = manifest_str(&m, "scope").unwrap_or("system");
+        if scope_decl != "site" && scope_decl != "user" && scope_decl != "system" {
+            return Err(
+                format!("manifest 的 scope 非法: {scope_decl}（应为 site / user / system）").into(),
             );
         }
         if !root.join("main.lua").is_file() {
@@ -367,18 +460,17 @@ pub async fn plugin_install(
             let _ = std::fs::remove_dir_all(&root);
         }
 
-        let meta = json!({
-            "source": source,
-            "src": src,
-            "git_ref": git_ref.clone().unwrap_or_default(),
-            "level": level,
-            "installed_at": chrono::Utc::now().timestamp(),
-        });
-        std::fs::write(
-            target.join(INSTALL_META),
-            serde_json::to_string_pretty(&meta).unwrap_or_default(),
-        )
-        .map_err(|e| format!("写安装记录失败: {e}"))?;
+        // 把安装来源 / 时间写回 manifest.yaml 的顶层 `zap_install:`（列表读取时直接解析，
+        // 不再单独维护 Meta 文件）。失败不阻断安装，仅告警。
+        if let Err(e) = write_install_meta(
+            &target,
+            &source,
+            &src,
+            chrono::Utc::now().timestamp(),
+            &level,
+        ) {
+            warn!("写入插件安装信息失败（已忽略）: {e}");
+        }
 
         // 解包出来的文件可能带着打包机的权限（如 0600），放开「可读」让站点账号能读；
         // `X` 只给目录和本来就可执行的文件加执行位，不会误开可执行权限。
@@ -525,30 +617,6 @@ fn unpack_tar<R: std::io::Read>(ar: &mut tar::Archive<R>, dest: &Path) -> Result
     Ok(())
 }
 
-fn git_clone(url: &str, git_ref: Option<&str>, dest: &Path) -> Result<(), String> {
-    let mut args: Vec<String> = vec!["clone".into(), "--depth".into(), "1".into()];
-    if let Some(r) = git_ref.filter(|r| !r.trim().is_empty()) {
-        args.push("--branch".into());
-        args.push(r.trim().to_string());
-    }
-    args.push(url.to_string());
-    args.push(dest.display().to_string());
-    let out = std::process::Command::new("git")
-        .args(&args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("执行 git 失败（确认服务器已安装 git）: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git clone 失败: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    Ok(())
-}
-
 /// 定位插件根：包里常见「顶层只有一个目录」和「直接就是插件内容」两种布局。
 fn locate_plugin_root(unpack: &Path) -> Result<PathBuf, String> {
     if unpack.join("manifest.yaml").is_file() || unpack.join("manifest.yml").is_file() {
@@ -592,6 +660,7 @@ pub async fn plugin_run(
     name: String,
     _actor: String,
     home: String,
+    user: Option<String>,
     _site_id: Option<i64>,
     site_root: Option<String>,
     site_linux_user: Option<String>,
@@ -630,17 +699,28 @@ pub async fn plugin_run(
     if level == "user" && declared == "system" {
         return Response::err(
             -1,
-            "用户级插件不允许 scope: system（会以 root 执行），请改为 scope: site".to_string(),
+            "用户级插件不允许 scope: system（会以 root 执行），请改为 scope: site 或 scope: user"
+                .to_string(),
         );
     }
     let scope = declared.to_string();
-    let (run_user, run_root) = if scope == "site" {
-        match (site_root.clone(), site_linux_user.clone()) {
+    let (run_user, run_root) = match scope.as_str() {
+        "site" => match (site_root.clone(), site_linux_user.clone()) {
             (Some(r), Some(u)) => (Some(u), Some(r)),
             _ => return Response::err(-1, "site 作用域插件需要 site_root / site_linux_user"),
+        },
+        // scope=user：降到调用方面板用户的 Linux 账号，以该用户家目录为工作根；
+        // 不依赖站点上下文，因此非站点场景（如管理用户自己的家目录 / 密钥）也能用。
+        "user" => match user.clone() {
+            Some(u) => (Some(u), None),
+            None => {
+                return Response::err(-1, "user 作用域插件需要调用方 Linux 账号（user 字段为空）")
+            }
+        },
+        "system" => (None, None),
+        other => {
+            return Response::err(-1, format!("未知 scope: {other}（应为 site / user / system）"))
         }
-    } else {
-        (None, None)
     };
     let lua_file = dir.join("main.lua");
     let code = match std::fs::read_to_string(&lua_file) {
@@ -861,9 +941,9 @@ fn run_lua(
         let logf_user = logf.clone();
         let logf_run = logf.clone();
         let f_exec = lua.create_function(move |_, (prog, args): (String, mlua::Table)| {
-            if scope == "site" {
+            if scope != "system" {
                 return Err(mlua::Error::RuntimeError(
-                    "site 作用域禁止 zap.exec，请改用 zap.exec_as_user 或 zap.run".into(),
+                    "只有 scope: system 才能 zap.exec（以 root 执行），请改用 zap.run 或 zap.exec_as_user".into(),
                 ));
             }
             run_capture(
@@ -903,9 +983,12 @@ fn run_lua(
 
         // zap.run：按 scope 自动选 root / 站点账号，插件不必自己判断作用域
         let f_run = lua.create_function(move |_, (prog, args): (String, mlua::Table)| {
-            let user = if scope_run == "site" { run_user_run.clone() } else { None };
-            if scope_run == "site" && user.is_none() {
-                return Err(mlua::Error::RuntimeError("site 作用域插件未提供运行账号".into()));
+            let user = match scope_run.as_str() {
+                "site" | "user" => run_user_run.clone(),
+                _ => None,
+            };
+            if (scope_run == "site" || scope_run == "user") && user.is_none() {
+                return Err(mlua::Error::RuntimeError("该作用域插件未提供运行账号".into()));
             }
             run_capture(
                 user.as_deref(),
@@ -929,7 +1012,10 @@ fn run_lua(
         let cancel_try = cancel.clone();
         let child_pid_try = child_pid.clone();
         let f_try = lua.create_function(move |_, (prog, args): (String, mlua::Table)| {
-            let user = if scope_try == "site" { run_user_try.clone() } else { None };
+            let user = match scope_try.as_str() {
+                "site" | "user" => run_user_try.clone(),
+                _ => None,
+            };
             let argv = table_to_vec(&args);
             match run_capture(
                 user.as_deref(),
@@ -959,9 +1045,12 @@ fn run_lua(
                 move |_, (path, content): (String, Option<String>)| {
                     let script = format!("cat {} \"$1\"", redirect);
                     let stdin = if redirect == "<" { None } else { Some(content.unwrap_or_default()) };
-                    let user = if scope == "site" { run_user.clone() } else { None };
-                    if scope == "site" && user.is_none() {
-                        return Err(mlua::Error::RuntimeError("site 作用域插件未提供运行账号".into()));
+                    let user = match scope.as_str() {
+                        "site" | "user" => run_user.clone(),
+                        _ => None,
+                    };
+                    if (scope == "site" || scope == "user") && user.is_none() {
+                        return Err(mlua::Error::RuntimeError("该作用域插件未提供运行账号".into()));
                     }
                     if path.trim().is_empty() {
                         return Err(mlua::Error::RuntimeError("路径不能为空".into()));
@@ -985,17 +1074,37 @@ fn run_lua(
     }
     // zap.site_root / zap.site_linux_user / zap.home_dir / zap.plugin_dir / zap.scope / zap.level
     {
-        let run_root = ctx.run_root.clone().unwrap_or_default();
-        let run_user3 = ctx.run_user.clone().unwrap_or_default();
+        let run_root = ctx.run_root.clone();
+        let run_user3 = ctx.run_user.clone();
+        let scope_for_ctx = ctx.scope.clone();
         let home_dir = ctx.home.clone();
         let plugin_dir = ctx.plugin_dir.display().to_string();
         let scope = ctx.scope.clone();
         let level = ctx.level.clone();
-        let f_root = lua.create_function(move |_, ()| Ok(run_root.clone()));
+        // site_root / site_linux_user 仅 scope=site 有值；scope=user 返回空（无站点概念）
+        let f_root = {
+            let s = scope_for_ctx.clone();
+            lua.create_function(move |_, ()| {
+                Ok(if s == "site" {
+                    run_root.clone().unwrap_or_default()
+                } else {
+                    String::new()
+                })
+            })
+        };
         zap_tbl
             .set("site_root", f_root.map_err(|e| format!("{e}"))?)
             .map_err(|e| format!("{e}"))?;
-        let f_user = lua.create_function(move |_, ()| Ok(run_user3.clone()));
+        let f_user = {
+            let s = scope_for_ctx.clone();
+            lua.create_function(move |_, ()| {
+                Ok(if s == "site" {
+                    run_user3.clone().unwrap_or_default()
+                } else {
+                    String::new()
+                })
+            })
+        };
         zap_tbl
             .set("site_linux_user", f_user.map_err(|e| format!("{e}"))?)
             .map_err(|e| format!("{e}"))?;

@@ -368,6 +368,12 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
     redirect: '/appstore',
     meta: { hidden: true },
   },
+  // 旧入口：插件管理已并入应用商店页内「插件」页签（nav pill），连 tab 一起带到新地址
+  {
+    path: '/dev/plugins',
+    redirect: { path: '/appstore', query: { tab: 'plugins' } },
+    meta: { hidden: true },
+  },
   // 旧入口：自定义脚本 / 计划任务已并入「自动化脚本」页内页签，连 tab 一起带到新地址
   {
     path: '/system/scripts',

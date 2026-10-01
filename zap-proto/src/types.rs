@@ -1568,12 +1568,16 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<String>,
     },
-    /// 运行插件：scope=site 时以站点 Linux 账号执行，scope=system 以 root 执行
+    /// 运行插件：scope=site 以站点 Linux 账号执行，scope=user 以调用方面板用户账号执行，
+    /// scope=system 以 root 执行。
     #[serde(rename = "plugin.run")]
     PluginRun {
         name: String,
         actor: String,
         home: String,
+        /// 调用方面板用户对应的 Linux 账号（scope=user 时降权到此账号运行）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         site_id: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1587,7 +1591,7 @@ pub enum Request {
     /// 安装插件。
     ///
     /// `level`：`system`（`$ZAP_PATH/plugins/<name>`，管理员级）/ `user`（`<home>/.zap/plugins/<name>`）。
-    /// `source` 决定来源：`archive` 为已落在磁盘上的 zip / tar.gz 包路径，`git` 为仓库 URL。
+    /// `source` 决定来源：目前仅 `archive`（已落在磁盘上的 zip / tar.gz 包路径，由面板上传而来）。
     #[serde(rename = "plugin.install")]
     PluginInstall {
         name: String,
@@ -1595,13 +1599,10 @@ pub enum Request {
         home: String,
         /// `system` | `user`
         level: String,
-        /// `archive` | `git`
+        /// 来源类型：`archive`
         source: String,
-        /// archive 时为包路径；git 时为仓库 URL
+        /// archive 时为包路径
         src: String,
-        /// git 时的分支 / 标签（可空）
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        git_ref: Option<String>,
         /// 已存在同名插件时是否覆盖
         #[serde(default)]
         force: bool,
