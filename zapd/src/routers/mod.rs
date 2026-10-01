@@ -549,6 +549,10 @@ fn api_routers() -> Router {
             "/system/config/zap/cache/clean",
             post(system_zap::zap_cache_clean),
         )
+        .route(
+            "/system/config/zap/security",
+            get(system_zap::zap_security),
+        )
         .route("/system/config/services", get(system_config::list_services))
         .route(
             "/system/config/services/action",

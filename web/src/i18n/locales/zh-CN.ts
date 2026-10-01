@@ -825,6 +825,56 @@ export default {
     cacheCleanCancel: '取消',
     cacheDone: '已清理 {removed} 个条目，释放 {freed} 空间（{skipped} 个运行中任务已跳过）',
     cacheDonePartial: '已清理 {removed} 个条目，释放 {freed} 空间（{skipped} 个运行中任务已跳过，{failed} 个删除失败，请检查权限或重试）',
+
+    // 安全检测（Zap 运行环境权限与配置安全）
+    secTitle: '安全检测',
+    secSubtitle: '检测 Zap 运行环境的权限与配置安全',
+    secHint: '检查面板运行身份、关键目录与文件的权限，以及特权执行器(zapexec)的可用性；后续将扩展用户环境、家目录权限等检测。',
+    secRescan: '重新检测',
+    secEmpty: '暂无可展示的检测项',
+    secCatZap: 'Zap 运行环境',
+    secCatUser: '用户环境（即将上线）',
+    secCatHome: '家目录权限（即将上线）',
+    secSummary: '共 {total} 项检测：{pass} 通过 / {warn} 警告 / {fail} 风险 / {info} 提示',
+    secStatusPass: '通过',
+    secStatusWarn: '警告',
+    secStatusFail: '风险',
+    secStatusInfo: '提示',
+    secSuggest: '建议',
+
+    secRuntimeUser: '运行身份',
+    secRuntimeUserRoot: 'Zap 以 root 身份运行（uid={uid}），一旦面板被攻破将直接获得整台主机的最高权限，存在严重提权风险。',
+    secRuntimeUserRootSug: '创建专用低权限系统账号（如 zapadm）运行面板进程，仅保留 zapexec 以 root 运行以完成脚本降权执行。',
+    secRuntimeUserOk: 'Zap 以 {name}(uid={uid}) 身份运行，未使用 root，符合最小权限原则。',
+
+    secDataWritable: '数据目录可写',
+    secDataWritableOk: '数据目录 {path} 可写，面板可正常保存配置与落盘数据。',
+    secDataWritableFail: '数据目录 {path} 不可写（运行身份 uid={uid} 权限不足），面板可能无法保存配置或写入数据。',
+    secDataWritableSug: '检查目录属主与权限，确保运行身份（uid={uid}）对数据目录具备写权限。',
+
+    secConfigPerms: '配置文件权限',
+    secConfigPermsOk: '配置文件 {path} 权限为 {mode}，未被其他用户读取。',
+    secConfigPermsWorldRead: '配置文件 {path} 权限为 {mode}，其他用户可读；文件内含 JWT 密钥，存在泄露风险。',
+    secConfigPermsWorldWrite: '配置文件 {path} 权限为 {mode}，其他用户可改写，存在被篡改风险。',
+    secConfigPermsMissing: '配置文件 {path} 不存在（使用内置默认值）。',
+    secConfigPermsSug: '将配置文件权限设为 640（仅属主读写、zap 组可读），并确认属主为运行身份。',
+
+    secCertKey: '面板私钥权限',
+    secCertKeyOk: '私钥 {path} 权限为 {mode}，仅属主可读，符合安全规范。',
+    secCertKeyWorldRead: '私钥 {path} 权限为 {mode}，其他用户可读；私钥泄露将导致会话被伪造。',
+    secCertKeyWorldWrite: '私钥 {path} 权限为 {mode}，其他用户可改写，存在被替换风险。',
+    secCertKeyMissing: '私钥文件 {path} 不存在（可能尚未配置或已移至其他路径）。',
+    secCertKeySug: '将私钥权限设为 600（仅属主可读写）。',
+
+    secWorldWritable: '全局可写检查',
+    secWorldWritableOk: '数据目录、应用商店目录与用户目录均未被其他用户写入。',
+    secWorldWritableWarn: '发现 {count} 处全局可写路径：{paths}，其他用户可能篡改这些文件。',
+    secWorldWritableSug: '对列出的路径移除其他用户的写权限（chmod o-w）。',
+
+    secZapexec: '特权执行器',
+    secZapexecOk: '特权执行器 zapexec 的 IPC 套接字 {path} 存在，软件安装与脚本降权执行可用。',
+    secZapexecFail: '未找到 zapexec 的 IPC 套接字 {path}，特权操作（软件安装、脚本降权执行）将不可用。',
+    secZapexecSug: '确认 zapexec 已安装并运行，且 zap.yaml 中 exec.socket_path 与执行器套接字路径一致。',
   },
 
   /** 系统管理 · 系统更新 */

@@ -11,6 +11,7 @@ import ZapPanel from './ZapPanel.vue'
 import NotifyPanel from './NotifyPanel.vue'
 import MirrorPanel from './MirrorPanel.vue'
 import CachePanel from './CachePanel.vue'
+import SecurityPanel from './SecurityPanel.vue'
 
 const { t } = useI18n()
 
@@ -49,6 +50,13 @@ const tabs = computed(() => [
     icon: Setting,
     panel: CachePanel,
     hint: t('zapCfg.cacheSubtitle'),
+  },
+  {
+    key: 'security',
+    label: t('zapCfg.secTitle'),
+    icon: Setting,
+    panel: SecurityPanel,
+    hint: t('zapCfg.secSubtitle'),
   },
 ])
 </script>

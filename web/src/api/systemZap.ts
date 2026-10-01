@@ -123,3 +123,34 @@ export function getZapCache() {
 export function cleanZapCache(targets: string[]) {
   return http.post<ApiResponse<ZapCacheCleanData>>('/system/config/zap/cache/clean', { targets })
 }
+
+/** 安全检测结果：单条检查 */
+export type SecurityStatus = 'pass' | 'warn' | 'fail' | 'info'
+
+export interface ZapSecurityCheck {
+  id: string
+  /** 原始分类 id（如 zap），用于分组 */
+  category: string
+  /** 分类标题的 i18n key */
+  category_key: string
+  /** 检查项名称的 i18n key */
+  name_key: string
+  status: SecurityStatus
+  /** 详情模板的 i18n key */
+  detail_key: string
+  /** 详情模板插值参数 */
+  detail_params: Record<string, unknown>
+  /** 修复建议模板的 i18n key（无建议则为 null） */
+  suggestion_key?: string | null
+  /** 修复建议模板插值参数 */
+  suggestion_params?: Record<string, unknown> | null
+}
+
+export interface ZapSecurityData {
+  checks: ZapSecurityCheck[]
+}
+
+/** 运行安全检测（Zap 运行环境权限与配置安全，仅 admin） */
+export function getZapSecurity() {
+  return http.get<ApiResponse<ZapSecurityData>>('/system/config/zap/security')
+}

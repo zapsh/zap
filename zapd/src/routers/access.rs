@@ -2243,6 +2243,7 @@ mod tests {
             "/system/config/processes/kill",
             "/system/config/basic",
             "/system/config/zap",
+            "/system/config/zap/security",
             "/system/config/firewall/rule/add",
             "/system/job/start",
             "/system/job/stop",

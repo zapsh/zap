@@ -28,6 +28,7 @@ use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
 use crate::zap::audit;
 use crate::zap::cache_clean;
+use crate::zap::security_check;
 use crate::zap::jwt::ValidatedClaims;
 use crate::zap::jwt::is_admin;
 
@@ -576,5 +577,20 @@ pub async fn zap_cache_clean(
             "skipped_running": skipped,
             "failed": failed,
         }
+    })))
+}
+
+// ── 安全检测（Zap 运行环境权限 / 配置安全）────────────────────
+
+/// GET /system/config/zap/security —— 运行安全检测，返回分类后的检查结果。
+pub async fn zap_security(claims: ValidatedClaims) -> ZapJsonResult {
+    if !is_admin(&claims) {
+        return Err(ZapError::New(-1, "仅管理员可运行安全检测".to_string()));
+    }
+    let checks = security_check::run_all().await;
+    Ok(Json(json!({
+        "code": 0,
+        "message": "OK",
+        "data": { "checks": checks }
     })))
 }

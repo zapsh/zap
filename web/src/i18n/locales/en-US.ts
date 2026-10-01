@@ -801,6 +801,56 @@ const enUS: Messages = {
     cacheCleanCancel: 'Cancel',
     cacheDone: 'Cleaned {removed} items, freed {freed} (skipped {skipped} running tasks)',
     cacheDonePartial: 'Cleaned {removed} items, freed {freed} (skipped {skipped} running tasks, {failed} failed to delete — check permissions or retry)',
+
+    // Security check (Zap runtime permissions and configuration security)
+    secTitle: 'Security Check',
+    secSubtitle: 'Check Zap runtime permissions and configuration security',
+    secHint: 'Checks the panel runtime identity, permissions of critical directories and files, and availability of the privileged executor (zapexec); user-environment and home-directory checks will be added later.',
+    secRescan: 'Re-scan',
+    secEmpty: 'No checks to display',
+    secCatZap: 'Zap Runtime',
+    secCatUser: 'User environment (coming soon)',
+    secCatHome: 'Home directory (coming soon)',
+    secSummary: '{total} checks: {pass} passed / {warn} warnings / {fail} risks / {info} info',
+    secStatusPass: 'Pass',
+    secStatusWarn: 'Warning',
+    secStatusFail: 'Risk',
+    secStatusInfo: 'Info',
+    secSuggest: 'Suggestion',
+
+    secRuntimeUser: 'Runtime identity',
+    secRuntimeUserRoot: 'Zap runs as root (uid={uid}). If the panel is compromised, the attacker gains full host control — a serious privilege-escalation risk.',
+    secRuntimeUserRootSug: 'Create a dedicated low-privilege account (e.g. zapadm) for the panel, and keep only zapexec running as root for privilege-dropped script execution.',
+    secRuntimeUserOk: 'Zap runs as {name} (uid={uid}), not root — follows the principle of least privilege.',
+
+    secDataWritable: 'Data directory writable',
+    secDataWritableOk: 'Data directory {path} is writable; the panel can save config and persist data normally.',
+    secDataWritableFail: 'Data directory {path} is not writable (runtime uid={uid} lacks permission); the panel may fail to save config or write data.',
+    secDataWritableSug: 'Check directory ownership and permissions so the runtime identity (uid={uid}) can write to the data directory.',
+
+    secConfigPerms: 'Config file permissions',
+    secConfigPermsOk: 'Config file {path} has mode {mode}; not readable by other users.',
+    secConfigPermsWorldRead: 'Config file {path} has mode {mode} and is world-readable; it contains the JWT secret, posing a leak risk.',
+    secConfigPermsWorldWrite: 'Config file {path} has mode {mode} and is world-writable, posing a tampering risk.',
+    secConfigPermsMissing: 'Config file {path} does not exist (built-in defaults are used).',
+    secConfigPermsSug: 'Set the config file to mode 640 (owner rw, zap group r) and ensure the owner is the runtime identity.',
+
+    secCertKey: 'Panel private key permissions',
+    secCertKeyOk: 'Private key {path} has mode {mode}; readable only by the owner — compliant.',
+    secCertKeyWorldRead: 'Private key {path} has mode {mode} and is world-readable; a leak would allow session forgery.',
+    secCertKeyWorldWrite: 'Private key {path} has mode {mode} and is world-writable, posing a replacement risk.',
+    secCertKeyMissing: 'Private key file {path} does not exist (not yet configured or moved).',
+    secCertKeySug: 'Set the private key to mode 600 (owner rw only).',
+
+    secWorldWritable: 'World-writable check',
+    secWorldWritableOk: 'Data, appstore and user directories are not world-writable.',
+    secWorldWritableWarn: '{count} world-writable path(s) found: {paths}; other users may tamper with these files.',
+    secWorldWritableSug: 'Remove world-write permission on the listed paths (chmod o-w).',
+
+    secZapexec: 'Privileged executor',
+    secZapexecOk: 'The zapexec IPC socket {path} exists; software install and privilege-dropped execution are available.',
+    secZapexecFail: 'The zapexec IPC socket {path} was not found; privileged operations (install, dropped execution) will be unavailable.',
+    secZapexecSug: 'Ensure zapexec is installed and running, and that exec.socket_path in zap.yaml matches the executor socket path.',
   },
 
   sysUpdate: {

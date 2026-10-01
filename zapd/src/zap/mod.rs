@@ -26,6 +26,7 @@ pub mod logrotate;
 pub mod mirror;
 pub mod notify;
 pub mod script_cron;
+pub mod security_check;
 pub mod server_env;
 pub mod session;
 pub mod system_info;
