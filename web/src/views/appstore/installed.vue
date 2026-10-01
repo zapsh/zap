@@ -87,7 +87,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="version" :label="t('appstoreInstalled.colVersion')" width="110" />
-        <el-table-column label="expose" min-width="180">
+        <el-table-column v-if="scope !== 'mine'" label="expose" min-width="180">
           <template #default="{ row }">
             <span class="mono">{{ exposeOf(row) }}</span>
             <el-tag
@@ -100,7 +100,7 @@
             >
           </template>
         </el-table-column>
-        <el-table-column :label="t('appstoreInstalled.colState')" width="110">
+        <el-table-column v-if="scope !== 'mine'" :label="t('appstoreInstalled.colState')" width="110">
           <template #default="{ row }">
             <span class="state-cell">
               <i
@@ -115,7 +115,7 @@
         </el-table-column>
         <el-table-column :label="t('common.operation')" width="300" fixed="right">
           <template #default="{ row }">
-            <template v-if="canControl(row)">
+            <template v-if="canControl(row) && scope !== 'mine'">
               <template v-if="isAdmin">
                 <el-button
                   size="small"
