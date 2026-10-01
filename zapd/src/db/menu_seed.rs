@@ -642,6 +642,19 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("dev")
     .icon("material-symbols:menu-book")
     .affix(),
+    // 插件管理：用户级插件登录用户自己就能装；系统级插件在页面与后端双重校验为 admin
+    MenuSeed::new(
+        "dev-plugins",
+        "插件",
+        "menu",
+        "plugins",
+        "dev/plugins/index",
+        R_ADMIN_USER_RESELLER,
+        4,
+    )
+    .parent("dev")
+    .icon("material-symbols:extension")
+    .affix(),
     // ── 计划任务（目录）──────────────────────────────────────
     MenuSeed::new("crontab", "计划任务", "dir", "/crontab", "Layout", R_ALL, 4)
         .icon("material-symbols:schedule")

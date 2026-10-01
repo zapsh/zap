@@ -2,12 +2,17 @@
 //!
 //! 复用应用商店的鉴权与站点归属校验：列表/运行前确认操作者身份与站点归属，
 //! 再把解析后的上下文（家目录 / 站点 root / 站点 Linux 账号）通过白名单动词传给 zapexec。
+//!
+//! 安装 / 卸载按两个级别隔离：
+//!   - `system`（`$ZAP_PATH/plugins/`）：仅管理员，插件可以 root 身份运行；
+//!   - `user`（`<home>/.zap/plugins/`）：登录用户自己装，只能以站点账号运行。
 
 use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::extract::{Json, Query};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Query};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::Router;
@@ -19,9 +24,13 @@ use zap_proto::Request;
 
 use crate::db;
 use crate::zap::ZapError;
-use crate::zap::jwt::{decode_verified, ValidatedClaims};
+use crate::zap::audit;
+use crate::zap::jwt::{decode_verified, is_admin, ValidatedClaims};
 use crate::routers::site;
 use crate::zap::ZapJsonResult;
+
+/// 上传插件包的大小上限（插件就是几个 Lua / YAML 文件，64 MB 绰绰有余）。
+const PLUGIN_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct PluginListQuery {
@@ -29,6 +38,14 @@ pub struct PluginListQuery {
     pub slot: Option<String>,
     #[serde(default)]
     pub scope: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct PluginUiQuery {
+    pub name: String,
+    /// `system` | `user`，默认 `user`
+    #[serde(default)]
+    pub level: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -40,6 +57,52 @@ pub struct PluginRunPayload {
     pub site_id: Option<i64>,
     #[serde(default)]
     pub options: std::collections::HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+pub struct PluginGitInstallPayload {
+    /// 仓库 URL（http/https/ssh/git@）
+    pub url: String,
+    /// `system` | `user`，默认 `user`
+    #[serde(default)]
+    pub level: Option<String>,
+    /// 分支 / 标签，留空用仓库默认分支
+    #[serde(default)]
+    pub git_ref: Option<String>,
+    /// 插件名，留空则取 manifest 里的 name
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 已存在同名插件时覆盖
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Deserialize)]
+pub struct PluginUninstallPayload {
+    pub name: String,
+    /// `system` | `user`，默认 `user`
+    #[serde(default)]
+    pub level: Option<String>,
+}
+
+/// 读取插件自带的 HTML 界面文件内容（前端塞进沙箱 iframe 渲染）。
+pub async fn plugin_ui(
+    claims: ValidatedClaims,
+    Query(q): Query<PluginUiQuery>,
+) -> ZapJsonResult {
+    let (home, _linux_user) = load_user_home(claims.id as i64).await?;
+    let level = normalize_level(q.level.clone());
+    let resp = crate::zapexec::call(Request::PluginUi {
+        name: q.name.clone(),
+        actor: claims.sub.clone(),
+        home,
+        level,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
 }
 
 pub async fn plugin_list(
@@ -89,6 +152,223 @@ pub async fn plugin_run(
         return Err(ZapError::New(resp.code, resp.message));
     }
     Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+// ── 安装 / 卸载 ────────────────────────────────────────────
+
+/// 系统级插件目录落在 zapexec 侧（`$ZAP_PATH/plugins`），这里只负责收上传包。
+fn plugin_upload_dir() -> PathBuf {
+    let base = std::env::var("ZAP_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"));
+    base.join("data/plugins/tmp/uploads")
+}
+
+fn normalize_level(level: Option<String>) -> String {
+    match level.unwrap_or_default().as_str() {
+        "system" => "system".to_string(),
+        _ => "user".to_string(),
+    }
+}
+
+/// 系统级插件只有管理员能装 / 卸：它们可以以 root 身份运行。
+fn require_admin_for(claims: &ValidatedClaims, level: &str) -> Result<(), ZapError> {
+    if level == "system" && !is_admin(claims) {
+        return Err(ZapError::New(-1, "仅管理员可安装 / 卸载系统级插件".into()));
+    }
+    Ok(())
+}
+
+/// 上传插件包安装（multipart）：字段 `level` / `force` / `name`，文件字段为 zip / tar.gz。
+///
+/// 文件先落到面板数据盘再交给 zapexec 解包，避免把整个包读进内存。
+/// 建议前端把文件字段放在最后，这样前面的 `level` 等字段已先被读到。
+pub async fn plugin_install_upload(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    mut multipart: Multipart,
+) -> ZapJsonResult {
+    let mut level = String::from("user");
+    let mut force = false;
+    let mut name = String::new();
+    let mut staged: Option<PathBuf> = None;
+
+    loop {
+        let mut field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            // 请求体超限或连接中断：把已落盘的临时文件清掉，别留垃圾
+            Err(e) => {
+                if let Some(p) = &staged {
+                    let _ = tokio::fs::remove_file(p).await;
+                }
+                return Err(ZapError::New(-1, format!("上传中断：{e}")));
+            }
+        };
+        let file_name = field.file_name().unwrap_or("").to_string();
+        if file_name.is_empty() {
+            match field.name().unwrap_or("") {
+                "level" => level = field.text().await.unwrap_or_default(),
+                "force" => {
+                    let v = field.text().await.unwrap_or_default();
+                    force = v == "true" || v == "1" || v == "on";
+                }
+                "name" => name = field.text().await.unwrap_or_default(),
+                _ => {}
+            }
+            continue;
+        }
+        // 文件字段：按扩展名落盘（原始文件名不可信，不参与路径拼接）
+        let ext = std::path::Path::new(&file_name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("zip")
+            .to_ascii_lowercase();
+        let dir = plugin_upload_dir();
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| ZapError::New(-1, format!("创建上传目录失败: {e}")))?;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = dir.join(format!("{}-{}.{ext}", claims.id, ts));
+        let mut out = tokio::fs::File::create(&path)
+            .await
+            .map_err(|e| ZapError::New(-1, format!("创建临时文件失败: {e}")))?;
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| ZapError::New(-1, format!("读取上传内容失败: {e}")))?
+        {
+            use tokio::io::AsyncWriteExt;
+            out.write_all(&chunk)
+                .await
+                .map_err(|e| ZapError::New(-1, format!("写入临时文件失败: {e}")))?;
+        }
+        staged = Some(path);
+    }
+
+    let Some(path) = staged else {
+        return Err(ZapError::New(-1, "没有收到插件包文件".into()));
+    };
+    let level = normalize_level(Some(level));
+    require_admin_for(&claims, &level)?;
+
+    let (home, _linux_user) = load_user_home(claims.id as i64).await?;
+    let src = path.display().to_string();
+    let resp = crate::zapexec::call(Request::PluginInstall {
+        name: name.trim().to_string(),
+        actor: claims.sub.clone(),
+        home,
+        level: level.clone(),
+        source: "archive".to_string(),
+        src: src.clone(),
+        git_ref: None,
+        force,
+    })
+    .await;
+    // 无论成败，临时包都不再需要
+    let _ = tokio::fs::remove_file(&path).await;
+
+    let resp = resp?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    audit::log(
+        Some(&*claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "plugin_install",
+        &format!("{level}:archive"),
+        &src,
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+/// 从 Git 仓库安装插件。
+pub async fn plugin_install_git(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<PluginGitInstallPayload>,
+) -> ZapJsonResult {
+    let level = normalize_level(payload.level);
+    require_admin_for(&claims, &level)?;
+    let url = payload.url.trim().to_string();
+    if !is_safe_git_url(&url) {
+        return Err(ZapError::New(
+            -1,
+            "仓库地址只支持 http://、https://、ssh:// 或 git@ 形式".into(),
+        ));
+    }
+    let (home, _linux_user) = load_user_home(claims.id as i64).await?;
+    let resp = crate::zapexec::call(Request::PluginInstall {
+        name: payload.name.unwrap_or_default().trim().to_string(),
+        actor: claims.sub.clone(),
+        home,
+        level: level.clone(),
+        source: "git".to_string(),
+        src: url.clone(),
+        git_ref: payload.git_ref,
+        force: payload.force,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    audit::log(
+        Some(&*claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "plugin_install",
+        &format!("{level}:git"),
+        &url,
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+/// 卸载插件（删除整个插件目录）。
+pub async fn plugin_uninstall(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<PluginUninstallPayload>,
+) -> ZapJsonResult {
+    let level = normalize_level(payload.level);
+    require_admin_for(&claims, &level)?;
+    let name = payload.name.trim().to_string();
+    if name.is_empty() {
+        return Err(ZapError::New(-1, "缺少插件名".into()));
+    }
+    let (home, _linux_user) = load_user_home(claims.id as i64).await?;
+    let resp = crate::zapexec::call(Request::PluginUninstall {
+        name: name.clone(),
+        actor: claims.sub.clone(),
+        home,
+        level: level.clone(),
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    audit::log(
+        Some(&*claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "plugin_uninstall",
+        &format!("{level}:{name}"),
+        "",
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+/// 只放行常见的安全协议，挡掉 `file://` / `ext::` 这类能读本地仓库的地址。
+fn is_safe_git_url(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    u.starts_with("http://")
+        || u.starts_with("https://")
+        || u.starts_with("ssh://")
+        || u.starts_with("git@")
+        || u.starts_with("git://")
 }
 
 async fn load_user_home(uid: i64) -> Result<(String, String), ZapError> {
@@ -154,9 +434,17 @@ async fn load_site_ctx(site_id: i64) -> Result<(String, String), ZapError> {
 pub fn routers() -> Router {
     Router::new()
         .route("/list", get(plugin_list))
+        .route("/ui", get(plugin_ui))
         .route("/run", post(plugin_run))
         .route("/watch", get(plugin_watch))
         .route("/cancel", post(plugin_cancel))
+        // 安装 / 卸载：上传包单独放开请求体上限
+        .route(
+            "/install",
+            post(plugin_install_upload).layer(DefaultBodyLimit::max(PLUGIN_UPLOAD_LIMIT)),
+        )
+        .route("/install-git", post(plugin_install_git))
+        .route("/uninstall", post(plugin_uninstall))
 }
 
 /// 取消一个正在运行的异步插件。

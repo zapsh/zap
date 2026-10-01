@@ -6,7 +6,9 @@
       <el-card v-for="p in plugins" :key="p.name" shadow="never" class="plugin-card">
         <div class="plugin-head">
           <span class="plugin-title">{{ p.label || p.title }}</span>
-          <el-button size="small" type="primary" @click="openRun(p)">{{ runLabel(p) }}</el-button>
+          <el-button size="small" type="primary" @click="openPlugin(p)">
+            {{ p.html ? '打开' : runLabel(p) }}
+          </el-button>
         </div>
         <div v-if="p.tab" class="plugin-sub">{{ p.tab }}</div>
       </el-card>
@@ -87,6 +89,30 @@
       </template>
     </el-dialog>
 
+    <!-- 自带 HTML 界面的插件：内容塞进沙箱 iframe，脚本只能走 postMessage 回调后端 -->
+    <el-dialog
+      v-model="htmlDialog"
+      :title="current?.label || '插件'"
+      width="880px"
+      top="6vh"
+      @closed="htmlDoc = ''"
+    >
+      <div v-loading="htmlLoading" class="html-plugin">
+        <iframe
+          v-if="htmlDoc"
+          ref="frameRef"
+          class="plugin-frame"
+          title="plugin-ui"
+          sandbox="allow-scripts"
+          :srcdoc="htmlDoc"
+        />
+        <div v-else-if="!htmlLoading" class="form-tip">未能加载插件界面</div>
+      </div>
+      <template #footer>
+        <el-button @click="htmlDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <DirPicker
       v-model="dirVisible"
       :start-path="dirStartPath"
@@ -105,11 +131,18 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import DirPicker from '@/components/DirPicker.vue'
 import FilePicker from '@/components/FilePicker.vue'
-import { pluginList, pluginRun, pluginCancel, type PluginInfo, type PluginOption } from '@/api/plugin'
+import {
+  pluginList,
+  pluginRun,
+  pluginCancel,
+  pluginUi,
+  type PluginInfo,
+  type PluginOption,
+} from '@/api/plugin'
 import { getToken } from '@/utils/auth'
 import { API_BASE } from '@/utils/base'
 
@@ -177,6 +210,165 @@ function runLabel(p?: PluginInfo | null) {
   const a = keys[0]
   return a ? (p.actions as any)[a] : '运行'
 }
+/**
+ * 插件界面 ↔ 面板的 RPC 桥。
+ *
+ * 注入到 iframe 的 `srcdoc` 里，给插件页面提供 `window.zap.call(action, options, onLine)`。
+ * iframe 挂的是 `sandbox="allow-scripts"`（**不含 allow-same-origin**），所以它是
+ * 不透明源：碰不到面板 DOM / Cookie / localStorage，也发不出带凭据的请求 ——
+ * 要调后端只能 postMessage 给父页面，由父页面带着真实 JWT 代跑 `/plugin/run`，
+ * 权限点与 scope 仍旧在后端把关。
+ */
+const RPC_BRIDGE = `<script>
+(function () {
+  var seq = 0, pending = {};
+  window.addEventListener('message', function (ev) {
+    var d = ev.data;
+    if (!d || d.__zapRpc !== 1 || !d.id) return;
+    var p = pending[d.id];
+    if (!p) return;
+    // 流式日志：持续推送，不结算 Promise
+    if (d.stream === true) { if (typeof p.onLine === 'function') p.onLine(d.line); return; }
+    delete pending[d.id];
+    if (d.ok) p.resolve(d.data); else p.reject(new Error(d.data || '调用失败'));
+  });
+  function call(action, options, onLine) {
+    return new Promise(function (resolve, reject) {
+      var id = 'r' + (++seq);
+      pending[id] = { resolve: resolve, reject: reject, onLine: onLine };
+      parent.postMessage(
+        { __zapRpc: 1, id: id, action: action, options: options || {}, stream: typeof onLine === 'function' },
+        '*'
+      );
+    });
+  }
+  window.zap = {
+    call: call,
+    run: function (options, onLine) { return call('run', options, onLine); }
+  };
+})();
+<\/script>
+`
+
+const htmlDialog = ref(false)
+const htmlLoading = ref(false)
+const htmlDoc = ref('')
+const frameRef = ref<HTMLIFrameElement | null>(null)
+
+/** 把后端响应收敛成插件拿得到的文本（同步插件是 log，异步插件是累积日志）。 */
+function toText(payload: any): string {
+  if (typeof payload?.log === 'string') return payload.log
+  if (typeof payload === 'string') return payload
+  return JSON.stringify(payload ?? null, null, 2)
+}
+
+function reply(id: string, ok: boolean, data: any) {
+  frameRef.value?.contentWindow?.postMessage({ __zapRpc: 1, id, ok, data }, '*')
+}
+
+/** 异步插件：订阅 SSE 把日志攒起来，可选逐行回推给 iframe。 */
+function watchFrameLog(
+  logPath: string,
+  id: string,
+  stream: boolean,
+  resolve: (s: string) => void,
+  reject: (e: Error) => void,
+) {
+  const url = `${API_BASE}/plugin/watch?token=${encodeURIComponent(getToken())}&log_path=${encodeURIComponent(logPath)}`
+  const es = new EventSource(url)
+  let acc = ''
+  const finish = (code?: number) => {
+    es.close()
+    if (code === undefined || code === 0) resolve(acc)
+    else reject(new Error(acc || `插件退出码 ${code}`))
+  }
+  es.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data)
+      if (d.type === 'done') return finish(d.code)
+      if (d.type === 'log') {
+        acc += d.line + '\n'
+        if (stream) {
+          frameRef.value?.contentWindow?.postMessage(
+            { __zapRpc: 1, id, stream: true, line: d.line },
+            '*',
+          )
+        }
+      }
+    } catch {
+      acc += ev.data + '\n'
+    }
+  }
+  es.onerror = () => finish()
+}
+
+/** 处理 iframe 发来的调用：转发成 `/plugin/run`，再把结果 post 回去。 */
+async function handleRpc(d: any) {
+  const p = current.value
+  if (!p) return reply(d.id, false, '插件上下文已关闭')
+  const action = String(d.action || 'run')
+  const options: Record<string, string> = {}
+  if (d.options && typeof d.options === 'object') {
+    for (const [k, v] of Object.entries(d.options)) options[k] = String(v)
+  }
+  try {
+    const r: any = await pluginRun({ name: p.name, action, site_id: props.siteId, options })
+    const body = r?.data ?? r
+    const payload = body?.data ?? body
+    if (payload && payload.async) {
+      await new Promise<string>((resolve, reject) =>
+        watchFrameLog(payload.log_path, d.id, d.stream === true, resolve, reject),
+      ).then(
+        (out) => reply(d.id, true, out),
+        (e) => reply(d.id, false, e?.message || String(e)),
+      )
+    } else {
+      reply(d.id, true, toText(payload))
+    }
+  } catch (e: any) {
+    reply(d.id, false, e?.message || String(e))
+  }
+}
+
+function onWindowMessage(ev: MessageEvent) {
+  // 只认自己这个 iframe 发来的消息：判 source，别把页面上其它 postMessage 当指令
+  const frame = frameRef.value
+  if (!frame || ev.source !== frame.contentWindow) return
+  const d = ev.data
+  if (!d || d.__zapRpc !== 1 || !d.id) return
+  void handleRpc(d)
+}
+
+/** 自带 HTML 界面的插件：拉取 `ui.html` 并在沙箱 iframe 里渲染。 */
+async function openHtml(p: PluginInfo) {
+  current.value = p
+  htmlDoc.value = ''
+  htmlDialog.value = true
+  htmlLoading.value = true
+  try {
+    const r: any = await pluginUi({ name: p.name, level: p.level || 'user' })
+    const body = r?.data ?? r
+    const payload = body?.data ?? body
+    const html = String(payload?.html || '')
+    if (!html) {
+      ElMessage.error('插件界面为空')
+      htmlDialog.value = false
+      return
+    }
+    htmlDoc.value = RPC_BRIDGE + html
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载插件界面失败')
+    htmlDialog.value = false
+  } finally {
+    htmlLoading.value = false
+  }
+}
+
+function openPlugin(p: PluginInfo) {
+  if (p.html) void openHtml(p)
+  else openRun(p)
+}
+
 function openRun(p: PluginInfo) {
   current.value = p
   result.value = ''
@@ -282,6 +474,7 @@ function cancelRun() {
     })
 }
 onMounted(async () => {
+  window.addEventListener('message', onWindowMessage)
   loading.value = true
   try {
     const r: any = await pluginList({ slot: props.placementSlot, site_id: props.siteId })
@@ -293,6 +486,8 @@ onMounted(async () => {
     loading.value = false
   }
 })
+
+onUnmounted(() => window.removeEventListener('message', onWindowMessage))
 </script>
 
 <style scoped>
@@ -329,5 +524,18 @@ onMounted(async () => {
   overflow: auto;
   white-space: pre-wrap;
   font-size: 12px;
+}
+/* 插件自带界面：iframe 由插件自己撑高度，最小高度保证空页面也不塌 */
+.html-plugin {
+  min-height: 120px;
+}
+.plugin-frame {
+  width: 100%;
+  min-height: 360px;
+  height: 60vh;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  background: #fff;
+  display: block;
 }
 </style>

@@ -292,6 +292,30 @@ pub async fn dispatch(req: Request) -> Response {
             plugin::plugin_run(name, actor, home, site_id, site_root, site_linux_user, action, options)
                 .await
         }
+        Request::PluginInstall {
+            name,
+            actor,
+            home,
+            level,
+            source,
+            src,
+            git_ref,
+            force,
+        } => {
+            plugin::plugin_install(actor, home, name, level, source, src, git_ref, force).await
+        }
+        Request::PluginUninstall {
+            name,
+            actor,
+            home,
+            level,
+        } => plugin::plugin_uninstall(actor, home, name, level).await,
+        Request::PluginUi {
+            name,
+            actor,
+            home,
+            level,
+        } => plugin::plugin_ui(actor, home, name, level).await,
         Request::AppstoreInstanceAction {
             pkg_path,
             instance,

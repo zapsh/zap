@@ -29,10 +29,32 @@ export interface PluginInfo {
   async?: boolean
   options: PluginOption[]
   actions: PluginAction
+  /** 安装级别：system = 系统级（管理员），user = 用户级（仅本人可见） */
+  level?: 'system' | 'user'
+  version?: string
+  description?: string
+  author?: string
+  homepage?: string
+  /** 自带 HTML 界面的文件名（manifest 的 ui.html）；空 = 用结构化表单 */
+  html?: string
+  /** 安装来源：archive（上传包）/ git（仓库） */
+  source?: string
+  /** 安装来源详情：仓库 URL 或包名 */
+  src?: string
+  /** 安装时间（Unix 秒） */
+  installed_at?: number
 }
+
+/** 安装来源 */
+export type PluginInstallSource = 'archive' | 'git'
 
 export function pluginList(params: { slot?: string; scope?: string; site_id?: number }) {
   return http.get('/plugin/list', { params })
+}
+
+/** 取插件自带的 HTML 界面内容（渲染进沙箱 iframe）。 */
+export function pluginUi(params: { name: string; level?: 'system' | 'user' }) {
+  return http.get('/plugin/ui', { params })
 }
 
 export function pluginRun(
@@ -51,4 +73,40 @@ export function pluginRun(
 /** 取消正在运行的异步插件（task_id 来自 plugin/run 的返回）。 */
 export function pluginCancel(task_id: string) {
   return http.post('/plugin/cancel', { token: getToken(), task_id })
+}
+
+/**
+ * 上传插件包安装（multipart）。
+ *
+ * 字段顺序很重要：`level` / `force` / `name` 要先 append，文件最后 append ——
+ * 后端按 multipart 字段到达顺序解析，文件放最后才能保证前面的选项已被读到。
+ */
+export function pluginInstallUpload(payload: {
+  file: File
+  level: 'system' | 'user'
+  force?: boolean
+  name?: string
+}) {
+  const fd = new FormData()
+  fd.append('level', payload.level)
+  fd.append('force', payload.force ? 'true' : 'false')
+  if (payload.name) fd.append('name', payload.name)
+  fd.append('file', payload.file)
+  return http.post('/plugin/install', fd, { timeout: 600000 })
+}
+
+/** 从 Git 仓库安装插件。 */
+export function pluginInstallGit(payload: {
+  url: string
+  level: 'system' | 'user'
+  git_ref?: string
+  name?: string
+  force?: boolean
+}) {
+  return http.post('/plugin/install-git', payload, { timeout: 600000 })
+}
+
+/** 卸载插件（删除整个插件目录）。 */
+export function pluginUninstall(payload: { name: string; level: 'system' | 'user' }) {
+  return http.post('/plugin/uninstall', payload)
 }

@@ -24,6 +24,7 @@ export default defineUserConfig({
             '/guide/upgrade.md',
             '/guide/faq.md',
             '/guide/user-manual.md',
+            '/guide/plugin-dev.md',
             '/guide/changelog.md',
           ],
         },

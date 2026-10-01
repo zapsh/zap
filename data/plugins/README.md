@@ -5,13 +5,42 @@
 
 ## 目录约定（自动发现，无需编译注册）
 
-- **系统级**：`$ZAP_PATH/plugins/<name>/`（对所有用户/站点可用；由 admin 放置或经应用商店 `plugin` 分类安装）
-- **用户级**：`$HOME/.zap/plugins/<name>/`（仅该面板用户可见，作用于自己的站点与家目录；直接放置/上传即用，零安装）
+- **系统级**：`$ZAP_PATH/plugins/<name>/`（对所有用户/站点可用；**仅管理员**可安装）
+- **用户级**：`$HOME/.zap/plugins/<name>/`（仅该面板用户可见，作用于自己的站点与家目录；登录用户自己就能装）
 
 每个插件是一个目录，含：
 
 - `manifest.yaml` —— 描述与 UI 元数据（下表）
-- `main.lua` —— 定义 `on_run(ctx)`，通过全局表 `zap` 调用受限能力
+- `main.lua` —— 定义 `on_run(ctx)` / `on_<action>(ctx)`，通过全局表 `zap` 调用受限能力
+- `ui.html` —— 可选，自带 HTML 界面（`ui.html` 字段指向它，见「自带 HTML 界面」）
+- `lib/*.lua` —— 可选，插件自带的私有函数库（自动加载，见「公共函数库」）
+
+以 `.` 或 `_` 开头的目录（`_lib`、`.git`）不会被当成插件。
+
+## 安装与卸载
+
+三种方式，落地结果完全一致（都是一个插件目录）：
+
+1. **面板上传**（开发 → 插件 → 上传安装）：选 `.zip` / `.tar.gz` / `.tgz` / `.tar` 包。
+   包根或**唯一的顶层目录**里需含 `manifest.yaml` + `main.lua`。
+2. **面板 Git 安装**（开发 → 插件 → Git 安装）：填仓库地址（http/https/ssh/git@），可选分支或标签。
+   内部执行 `git clone --depth 1 [--branch <ref>] <url>`。
+3. **手工放置**：直接把目录拷到 `$ZAP_PATH/plugins/<name>/` 或 `$HOME/.zap/plugins/<name>/`。
+
+插件名可留空，此时取 `manifest.yaml` 里的 `name`；若两者都给了则必须一致。
+同名插件已存在时需勾选「覆盖安装」。
+
+卸载 = 删除整个插件目录（面板按 `level` 定位，路径越界会被拒绝）。
+
+### 安装记录
+
+安装成功后，插件目录里会写入 `.zap-install.json`：
+
+```json
+{ "source": "git", "src": "https://github.com/u/p.git", "git_ref": "", "level": "user", "installed_at": 1767225600 }
+```
+
+列表接口据此回传 `source` / `src` / `installed_at`。手工放置的插件没有这个文件，界面显示为「手动放置」。
 
 ## manifest.yaml 字段
 
@@ -78,18 +107,93 @@ options:
 
 ## main.lua 可用能力（全局表 `zap`）
 
+### 基础
+
 - `zap.log(msg)` —— 日志（回传前端）
+- `zap.logf(fmt, ...)` —— `string.format` 后写日志（公共库提供）
 - `zap.option(name)` —— 读取运行选项
-- `zap.exec(prog, {args})` —— 以 root 执行（仅 `scope=system`）
-- `zap.exec_as_user(prog, {args})` —— 以站点 Linux 账号执行（仅 `scope=site`）
+- `zap.run(prog, {args})` —— **按 scope 自动分派**：`site` 走站点账号，`system` 走 root
+- `zap.try_run(prog, {args})` —— 同上，但失败不抛错，返回 `(ok, output)`
+- `zap.exec(prog, {args})` —— 强制以 root 执行（仅 `scope=system`）
+- `zap.exec_as_user(prog, {args})` —— 强制以站点 Linux 账号执行（仅 `scope=site`）
 - `zap.site_root()` / `zap.site_linux_user()` —— 当前站点文档根 / 运行账号（`scope=site`）
 - `zap.home_dir()` —— 当前执行身份的家目录：`scope=system` 时为调用方 home，`scope=site` 时为站点 Linux 账号的 home（如 `/home/admin`）
+- `zap.plugin_dir()` —— 插件自身目录（读自带资源用）
+- `zap.scope()` / `zap.level()` —— `"site"|"system"` / `"user"|"system"`
+- `zap.canceled()` —— 异步插件轮询它判断用户是否点了取消
+- `zap.read_file(p)` / `zap.write_file(p, s)` / `zap.append_file(p, s)` —— 按 scope 降权读写文件
+- `zap.json_encode(v)` / `zap.json_decode(s)`
+- `zap.time()` / `zap.date(fmt[, ts])` —— 时间戳 / 格式化（`%Y-%m-%d %H:%M:%S`）
+- `zap.env(name)` —— 环境变量（只放开 `ZAP_*` 与 `PATH/HOME/USER/SHELL/LANG/TMPDIR`）
+
+## 自带 HTML 界面（可选）
+
+声明 `ui.html: <文件名>` 后，前端不再渲染结构化表单，改为把该文件塞进
+`sandbox="allow-scripts"` 的 iframe（**不含 `allow-same-origin`**）。
+面板自动注入 `window.zap`，界面靠 `postMessage` 回调后端：
+
+```js
+await zap.call('scan', { TARGET: 'public' })             // -> Promise<输出文本>
+await zap.call('du', { TARGET: '' }, (line) => { ... })  // 流式日志（异步插件）
+```
+
+请求按 `action` 分发到 `main.lua` 的 `on_<action>`（未定义则回落到 `on_run`）。
+完整说明与示例见 `docs/guide/plugin-dev.md` 与 `examples/html-demo/`。
+
+## 公共函数库（自动加载）
+
+`main.lua` 之前，zapexec 会按以下顺序自动加载 `*.lua`，无需 `require`：
+
+1. `$ZAP_PATH/data/plugins/_lib/` —— 系统级公共库（随发行包提供 `zap.lua`）
+2. `$HOME/.zap/plugins/_lib/` —— 用户级公共库
+3. `<plugin_dir>/lib/` —— 插件自带的私有库
+
+后者可覆盖前者。库里已经定义好的 helpers：
+
+| 分类 | 函数 |
+| --- | --- |
+| 日志 / 断言 | `zap.logf` `zap.assert` `zap.fail` |
+| 字符串 | `zap.str.trim` `.blank` `.split` `.join` `.starts` `.ends` `.contains` `.lines` |
+| 路径 | `zap.path.join` `.dirname` `.basename` `.ext` `.is_abs` `.normalize` `.within` `.site` |
+| 表 | `zap.tbl.keys` `.values` `.count` `.map` `.filter` `.contains` `.index_of` `.merge` |
+| 文件系统 | `zap.fs.exists` `.is_dir` `.is_file` `.read` `.write` `.append` `.mkdir` `.remove` `.copy` `.move` `.chmod` `.list` `.read_lines` `.size` `.append_line` `.grep` |
+| Shell | `zap.shell_quote`（别名 `zap.q`） |
+| 选项 | `zap.opt` `.opt_required` `.opt_bool` `.opt_number` `.opt_list` |
+| 其它 | `zap.to_json` `.from_json` `.now` `.fmt_time` `.is_site_scope` |
+| 顶层别名 | `zap.split` `zap.trim` `zap.join` `zap.q` |
+
+`zap.fs.*` 全部基于 `zap.run`，因此**自动继承 scope 降权** —— `scope=site` 时不会以 root 碰到文件。
+
+示例：
+
+```lua
+function on_run(ctx)
+  local name = zap.opt_required("NAME")
+  local dir  = zap.path.site(zap.opt("TARGET", ""))   -- 拼接站点根并校验不越界
+  if not zap.fs.is_dir(dir) then zap.fs.mkdir(dir) end
+  zap.fs.write(zap.path.join(dir, name .. ".txt"), "hello\n")
+  zap.logf("写了 %d 字节到 %s", #("hello\n"), dir)
+  for _, line in ipairs(zap.fs.read_lines(zap.path.join(dir, ".env"))) do
+    zap.log(line)
+  end
+end
+```
 
 ## 安全边界
 
-- 插件只能声明**结构化 UI 元数据**，不能注入任意前端代码/HTML/路由；前端由受信任的 `<PluginSlot>` 组件渲染。
+- **沙箱只启用 `table` / `string` / `math` / `utf8` / `coroutine`**，没有 `io` / `os` / `package` / `debug`。
+  插件跑在 zapexec 进程里，放开 `io` 就能以 root 身份读写任意文件，直接绕过 `scope=site` 的降权
+  （`drop_privileges` 只对子进程生效）。要读文件用 `zap.fs.*` / `zap.read_file`。
+- 默认只声明**结构化 UI 元数据**，前端由受信任的 `<PluginSlot>` 组件渲染。
+- 声明 `ui.html` 的插件可以自带 HTML 界面，但运行在 `sandbox="allow-scripts"` 的 iframe 里
+  （**不含 `allow-same-origin`**）：碰不到面板 DOM / Cookie / localStorage，也发不出带凭据的请求，
+  要调后端只能 `postMessage` 给父页面，由父页面带真实 JWT 代跑 `/plugin/run`。权限点与 scope 仍在后端把关。
 - 执行身份由 `scope` 决定；`site` 走 `user_cmd` + `drop_privileges`（清附加组 → setgid → setuid）降到站点账号，`system` 才是 root。
+- **用户级插件不允许 `scope: system`**（安装和运行两处都会拒绝）—— 否则普通用户往 `~/.zap/plugins`
+  放一个插件就能以 root 执行任意命令。系统级插件只有管理员能安装 / 卸载。
 - 列表/运行前 `zapd` 校验操作者身份与站点归属（复用 `site_in_scope`）。
+- 接口权限点：`plugin:view` / `plugin:run` / `plugin:install` / `plugin:uninstall`，
+  登记在 `zapd/src/routers/access.rs` 的 `RULES` 里（角色权限页可勾选「插件」模块）。
 
 ## 最小闭环示例
 

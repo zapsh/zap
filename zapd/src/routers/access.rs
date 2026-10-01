@@ -470,6 +470,51 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("system.cloud", "delete")),
     ),
+    // ── 插件：view / run / install / uninstall ──
+    // `install` 与 `uninstall` 按级别在 handler 里二次校验：系统级插件会以 root 运行，
+    // 只有管理员能装 / 卸；用户级插件只作用于本人站点，登录用户即可。
+    (
+        "/plugin/list",
+        Required::User,
+        Some(Perm::action("plugin", "view")),
+    ),
+    (
+        "/plugin/watch",
+        Required::User,
+        Some(Perm::action("plugin", "view")),
+    ),
+    (
+        "/plugin/ui",
+        Required::User,
+        Some(Perm::action("plugin", "view")),
+    ),
+    (
+        "/plugin/run",
+        Required::User,
+        Some(Perm::action("plugin", "run")),
+    ),
+    (
+        "/plugin/cancel",
+        Required::User,
+        Some(Perm::action("plugin", "run")),
+    ),
+    (
+        "/plugin/install",
+        Required::User,
+        Some(Perm::action("plugin", "install")),
+    ),
+    // 注意：`/plugin/install` 不会命中 `/plugin/install-git`（前缀按路径段边界匹配），
+    // Git 安装要单独登记，否则静默落到 Admin 下限。
+    (
+        "/plugin/install-git",
+        Required::User,
+        Some(Perm::action("plugin", "install")),
+    ),
+    (
+        "/plugin/uninstall",
+        Required::User,
+        Some(Perm::action("plugin", "uninstall")),
+    ),
     // ── 应用商店：view / install / uninstall / upgrade / manage / log / retry ──
     (
         "/appstore/install",
@@ -1106,6 +1151,7 @@ const NS_LABELS: &[(&str, &str)] = &[
     ("appstore", "应用商店"),
     ("appstore.repo", "应用源管理"),
     ("appstore.script", "自定义脚本"),
+    ("plugin", "插件"),
     ("dev", "开发者接口"),
     ("webapp.phpmyadmin", "phpMyAdmin"),
     // Zap Pro（商业模块）：未启用时目录里不会出现这一项（规则来自 pro_rules）
@@ -2280,28 +2326,61 @@ mod tests {
     /// 普通用户 / 成员一进对应页面就吃「权限不足，该操作需要更高角色权限」。
     #[test]
     fn every_route_has_an_access_rule() {
-        let src = include_str!("mod.rs");
-        let mut rest = src;
+        // `.nest()` 挂出去的子路由不在 mod.rs 里（如 `.nest("/plugin", plugins::routers())`），
+        // 必须连同子路由文件一起扫，否则漏登记的接口照样静默落到 Admin 下限。
+        const SCANNED: &[(&str, &str)] = &[
+            (include_str!("mod.rs"), ""),
+            (include_str!("plugins.rs"), "/plugin"),
+        ];
         let mut checked = 0;
-        while let Some(idx) = rest.find(".route(\"") {
-            let tail = &rest[idx + ".route(\"".len()..];
-            let Some(end) = tail.find('"') else { break };
-            let mut path = &tail[..end];
-            // 与 `normalize` 一致：剥掉可选的前缀与 /api
-            if let Some(r) = path.strip_prefix(&crate::config::url_prefix_path()) {
-                path = if r.is_empty() { "/" } else { r };
+        for (src, prefix) in SCANNED {
+            let mut rest = *src;
+            while let Some(idx) = rest.find(".route(\"") {
+                let tail = &rest[idx + ".route(\"".len()..];
+                let Some(end) = tail.find('"') else { break };
+                let mut path = &tail[..end];
+                // 与 `normalize` 一致：剥掉可选的前缀与 /api
+                if let Some(r) = path.strip_prefix(&crate::config::url_prefix_path()) {
+                    path = if r.is_empty() { "/" } else { r };
+                }
+                if let Some(r) = path.strip_prefix("/api") {
+                    path = if r.is_empty() { "/" } else { r };
+                }
+                let full = format!("{prefix}{path}");
+                assert!(
+                    RULES.iter().any(|(p, _, _)| prefix_hit(&full, p)),
+                    "{full} 未在权限矩阵登记，会默认落到 Admin 下限（普通用户 403）"
+                );
+                checked += 1;
+                rest = &tail[end..];
             }
-            if let Some(r) = path.strip_prefix("/api") {
-                path = if r.is_empty() { "/" } else { r };
-            }
-            assert!(
-                RULES.iter().any(|(prefix, _, _)| prefix_hit(path, prefix)),
-                "{path} 未在权限矩阵登记，会默认落到 Admin 下限（普通用户 403）"
-            );
-            checked += 1;
-            rest = &tail[end..];
         }
         assert!(checked > 200, "路由解析失败，只扫到 {checked} 条");
+    }
+
+    /// 插件接口必须落到 `plugin:*` 权限点，而不是默认的 Admin 下限。
+    #[test]
+    fn plugin_paths_map_to_perms() {
+        assert_eq!(required_for("/plugin/list"), Required::User);
+        assert_eq!(required_for("/plugin/run"), Required::User);
+        assert_eq!(required_for("/plugin/install"), Required::User);
+        assert_eq!(required_for("/plugin/uninstall"), Required::User);
+        assert_eq!(
+            perm_key_for("/plugin/list", &Method::GET).as_deref(),
+            Some("plugin:view")
+        );
+        assert_eq!(
+            perm_key_for("/plugin/run", &Method::POST).as_deref(),
+            Some("plugin:run")
+        );
+        assert_eq!(
+            perm_key_for("/plugin/install", &Method::POST).as_deref(),
+            Some("plugin:install")
+        );
+        assert_eq!(
+            perm_key_for("/plugin/uninstall", &Method::POST).as_deref(),
+            Some("plugin:uninstall")
+        );
     }
 
     #[test]

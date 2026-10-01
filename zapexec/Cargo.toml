@@ -16,6 +16,9 @@ libc = "0.2"
 chrono = "0.4"
 serde_yaml = "0.9"
 zip = "2"
+# 插件包解包：支持 tar.gz / tgz / tar.bz2
+tar = "0.4"
+flate2 = "1.0"
 zap-crypto = { path = "../zap-crypto" }
 bollard = "0.21.1"
 futures-util = "0.3"

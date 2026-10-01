@@ -1584,6 +1584,49 @@ pub enum Request {
         #[serde(default)]
         options: std::collections::HashMap<String, String>,
     },
+    /// 安装插件。
+    ///
+    /// `level`：`system`（`$ZAP_PATH/plugins/<name>`，管理员级）/ `user`（`<home>/.zap/plugins/<name>`）。
+    /// `source` 决定来源：`archive` 为已落在磁盘上的 zip / tar.gz 包路径，`git` 为仓库 URL。
+    #[serde(rename = "plugin.install")]
+    PluginInstall {
+        name: String,
+        actor: String,
+        home: String,
+        /// `system` | `user`
+        level: String,
+        /// `archive` | `git`
+        source: String,
+        /// archive 时为包路径；git 时为仓库 URL
+        src: String,
+        /// git 时的分支 / 标签（可空）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_ref: Option<String>,
+        /// 已存在同名插件时是否覆盖
+        #[serde(default)]
+        force: bool,
+    },
+    /// 卸载插件：删除 `<base>/<name>` 整个目录。
+    #[serde(rename = "plugin.uninstall")]
+    PluginUninstall {
+        name: String,
+        actor: String,
+        home: String,
+        /// `system` | `user`
+        level: String,
+    },
+    /// 读取插件自带的 HTML 界面（`manifest.yaml` 里 `ui.html` 指向的文件）。
+    ///
+    /// 只回传文件内容，由前端塞进沙箱 iframe 渲染；不在 zapd 侧拼页面，
+    /// 避免把插件 HTML 混进面板的同源文档里。
+    #[serde(rename = "plugin.ui")]
+    PluginUi {
+        name: String,
+        actor: String,
+        home: String,
+        /// `system` | `user`
+        level: String,
+    },
 }
 
 /// `zapexec` -> `zapd` 的响应。

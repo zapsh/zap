@@ -247,6 +247,7 @@ cp -Rf "$CUR_DIR/scripts" "$DIST_ZAP/"
 #   appstore/repos/zap-appstore/          内置 AppStore 种子源
 #   appstore/repos.yaml、custom/README.md 安装脚本(install.sh)依赖的模板
 #   apps/README.md                        APPS_DIR 占位说明（apps 下其它为运行时安装实例，不打包）
+#   plugins/_lib/*.lua                   插件公共函数库（zapexec 在 main.lua 前自动加载）
 #   www/                                 站点骨架模板(data/www/skel) + IP 默认页 / 维护页(data/www/_zap)
 # 说明：systemd 服务模板、运维脚本、zap 共享工具与 conf 模板统一由 scripts/ 提供，
 #       不重复打进 data/；安装后 data/ 是运行时数据区（zap.db、apps、appstore、run/ 等）
@@ -257,6 +258,9 @@ mkdir -p "$DIST_DATA/appstore/repos"
 cp -Rf "$CUR_DIR/data/appstore/repos/zap-appstore" "$DIST_DATA/appstore/repos/" 2>/dev/null || true
 cp -f "$CUR_DIR/data/appstore/repos.yaml" "$DIST_DATA/appstore/" 2>/dev/null || true
 cp -f "$CUR_DIR/data/apps/README.md" "$DIST_DATA/apps/" 2>/dev/null || true
+# plugins/_lib：插件公共函数库，不带上它所有插件都会因加载失败而跑不起来
+mkdir -p "$DIST_DATA/plugins/_lib"
+cp -f "$CUR_DIR/data/plugins/_lib/"*.lua "$DIST_DATA/plugins/_lib/" 2>/dev/null || true
 # www/：站点骨架模板 skel/index.html 与 IP 默认页 / 维护页 _zap/*.html（运维可直接编辑）
 cp -Rf "$CUR_DIR/data/www" "$DIST_DATA/" 2>/dev/null || true
 mkdir -p "$DIST_DATA/www/html"

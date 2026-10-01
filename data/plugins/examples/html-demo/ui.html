@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!-- 面板会自动注入 window.zap（postMessage RPC 桥），这里不要重复定义 -->
+    <style>
+      :root { color-scheme: light; }
+      body { margin: 16px; font: 13px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #2c3e50; }
+      h3 { margin: 0 0 12px; font-size: 15px; }
+      .row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+      input { flex: 1; padding: 6px 10px; border: 1px solid #dcdfe6; border-radius: 4px; font: inherit; }
+      input:focus { outline: none; border-color: #409eff; }
+      button { padding: 6px 16px; border: 1px solid #dcdfe6; border-radius: 4px; background: #409eff; color: #fff; font: inherit; cursor: pointer; }
+      button:disabled { opacity: .6; cursor: not-allowed; }
+      button.ghost { background: #fff; color: #606266; }
+      pre { margin: 0; padding: 12px; background: #f5f7fa; border-radius: 6px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all; min-height: 60px; }
+      .tip { color: #909399; font-size: 12px; margin-top: 6px; }
+      .err { color: #f56c6c; }
+    </style>
+  </head>
+  <body>
+    <h3>目录体检</h3>
+
+    <div class="row">
+      <input id="target" placeholder="相对站点根目录，留空 = 根目录" value="" />
+      <button id="scan">扫描</button>
+      <button id="du" class="ghost">统计占用</button>
+    </div>
+    <div class="tip">输入由插件自己校验，越界路径会被 <code>zap.path.site()</code> 挡掉。</div>
+
+    <pre id="out">（点上面的按钮）</pre>
+
+    <script>
+      var out = document.getElementById('out')
+      var target = document.getElementById('target')
+      var scanBtn = document.getElementById('scan')
+      var duBtn = document.getElementById('du')
+
+      function busy(v) {
+        scanBtn.disabled = v
+        duBtn.disabled = v
+      }
+
+      // zap.call(action, options) -> Promise<插件输出文本>
+      // 第三个参数传回调则开启流式日志（异步插件逐行回推）
+      function call(action, onLine) {
+        busy(true)
+        out.className = ''
+        if (!onLine) out.textContent = '执行中…'
+        return zap
+          .call(action, { TARGET: target.value || '' }, onLine)
+          .then(function (text) {
+            out.textContent = text || '（无输出）'
+          })
+          .catch(function (e) {
+            out.className = 'err'
+            out.textContent = '失败: ' + (e && e.message ? e.message : e)
+          })
+          .then(function () {
+            busy(false)
+          })
+      }
+
+      scanBtn.onclick = function () {
+        call('scan')
+      }
+
+      // 流式示例：异步插件的日志逐行追加
+      duBtn.onclick = function () {
+        out.textContent = ''
+        call('du', function (line) {
+          out.textContent += line + '\n'
+        })
+      }
+    </script>
+  </body>
+</html>
