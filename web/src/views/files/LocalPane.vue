@@ -207,7 +207,11 @@
             <el-table-column type="selection" width="40" />
             <el-table-column :label="t('common.name')" min-width="260">
               <template #default="{ row }">
-                <div class="fm-file-name">
+                <div
+                  class="fm-file-name"
+                  :class="{ 'drop-target': row.is_dir && dropTargetDir === row.path }"
+                  :data-dir-path="row.is_dir ? row.path : ''"
+                >
                   <el-icon
                     :size="18"
                     :color="
@@ -323,7 +327,7 @@
           <div class="fm-dropzone-inner">
             <el-icon :size="42"><Upload /></el-icon>
             <div class="fm-dropzone-text">
-              {{ t('filesLocal.dropHint', { path: currentPath || t('filesLocal.currentDir') }) }}
+              {{ t('filesLocal.dropHint', { path: dropTargetDir || currentPath || t('filesLocal.currentDir') }) }}
             </div>
           </div>
         </div>
@@ -1513,20 +1517,29 @@ async function doRename() {
 
 /** 拖拽的文件是否悬停在列表区上方 */
 const dragActive = ref(false)
+/** 拖拽时若悬停在某个目录行上，松手就传进该子目录（而不是当前目录） */
+const dropTargetDir = ref('')
 
 function onDragEnter() {
   dragActive.value = true
 }
 
-function onDragOver() {
+function onDragOver(e: DragEvent) {
   dragActive.value = true
+  // 从实际悬停的元素往上找带 data-dir-path 的目录行，记为落点目标
+  const row = (e.target as HTMLElement | null)?.closest('[data-dir-path]')
+  const p = row?.getAttribute('data-dir-path')
+  dropTargetDir.value = p && p.length ? p : ''
 }
 
 /** 用 relatedTarget 判断，移到列表区内部（表格 / 遮罩）不算离开，避免闪烁 */
 function onDragLeave(e: DragEvent) {
   const el = e.currentTarget as HTMLElement | null
   const to = e.relatedTarget as Node | null
-  if (!el || !to || !el.contains(to)) dragActive.value = false
+  if (!el || !to || !el.contains(to)) {
+    dragActive.value = false
+    dropTargetDir.value = ''
+  }
 }
 
 /**
@@ -1842,7 +1855,9 @@ async function handleDrop(e: DragEvent) {
     uploadScanning.value = false
   }
   if (!files.length) return
-  const dir = currentPath.value
+  // 优先落到悬停的目录行；否则传到当前目录
+  const dir = dropTargetDir.value || currentPath.value
+  dropTargetDir.value = ''
   enqueueUploads(dir, files)
 }
 
@@ -2752,6 +2767,13 @@ watch(viewMode, async (mode) => {
   align-items: center;
   gap: 8px;
   cursor: pointer;
+}
+
+.fm-file-name.drop-target {
+  outline: 2px dashed var(--el-color-primary);
+  outline-offset: -3px;
+  border-radius: 4px;
+  background: var(--el-color-primary-light-9);
 }
 
 .fm-grid-wrap {
