@@ -1189,6 +1189,13 @@ export default {
     dirtyClose: '「{name}」有未保存的修改。',
     saveAndClose: '保存并关闭',
     discard: '放弃修改',
+    fullscreen: '全屏',
+    exitFullscreen: '退出全屏',
+    allTabs: '所有标签',
+    close: '关闭',
+    closeOthers: '关闭其他',
+    closeAll: '关闭全部',
+    dirtyCloseOthers: '有 {n} 个其他标签未保存。',
   },
 
   /** 服务器 - 时间设置 */

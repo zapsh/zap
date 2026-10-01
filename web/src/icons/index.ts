@@ -57,6 +57,8 @@ import IconMemory from '~icons/material-symbols/memory'
 import IconMemoryAlt from '~icons/material-symbols/memory-alt'
 import IconMenu from '~icons/material-symbols/menu'
 import IconMinimize from '~icons/material-symbols/minimize'
+import IconFullscreen from '~icons/material-symbols/fullscreen'
+import IconFullscreenExit from '~icons/material-symbols/fullscreen-exit'
 import IconMenuBook from '~icons/material-symbols/menu-book'
 import IconMonitor from '~icons/material-symbols/monitor'
 import IconMonitorHeart from '~icons/material-symbols/monitor-heart'
@@ -246,6 +248,8 @@ export const Loading = IconProgressActivity
 export const Lock = IconLock
 export const MagicStick = IconAutoFixHigh
 export const Minimize = IconMinimize
+export const FullScreen = IconFullscreen
+export const FullScreenExit = IconFullscreenExit
 export const Monitor = IconMonitor
 export const Moon = IconDarkMode
 export const MoreFilled = IconMoreVert

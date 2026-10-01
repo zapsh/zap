@@ -13,7 +13,14 @@
       <el-icon class="few-dock-close" @click.stop="requestClose"><Close /></el-icon>
     </div>
 
-    <div v-else-if="shown" class="few-window" :style="winStyle" @mousedown="bringToFront">
+    <div
+      v-else-if="shown"
+      ref="winRoot"
+      class="few-window"
+      :class="{ 'is-expanded': expanded }"
+      :style="winStyle"
+      @mousedown="bringToFront"
+    >
       <!-- 顶部工具栏：标题 + 保存/保存全部/重新加载/最小化/关闭，整条可拖动（按钮区除外） -->
       <div class="few-header" @mousedown="startDrag">
         <div class="few-header-left">
@@ -52,7 +59,15 @@
             <el-icon><Refresh /></el-icon>
             {{ t('fileEditor.reload') }}
           </el-button>
-          <el-button size="small" text :title="t('fileEditor.minimize')" @click="minimized = true">
+          <el-button
+            size="small"
+            text
+            :title="expanded ? t('fileEditor.exitFullscreen') : t('fileEditor.fullscreen')"
+            @click="toggleExpand"
+          >
+            <el-icon><component :is="expanded ? FullScreenExit : FullScreen" /></el-icon>
+          </el-button>
+          <el-button size="small" text :title="t('fileEditor.minimize')" @click="minimizeWin">
             <el-icon><Minimize /></el-icon>
           </el-button>
           <el-button size="small" text :title="t('common.close')" @click="requestClose">
@@ -105,21 +120,67 @@
         </div>
 
         <div class="few-editor-area">
-          <!-- 标签条：已打开的文件都在这里，点标签切换，× 关闭单个标签 -->
-          <div v-if="tabs.length" class="few-tabs">
-            <div
-              v-for="tab in tabs"
-              :key="tab.path"
-              class="few-tab"
-              :class="{ 'is-active': tab.path === activePath }"
-              :title="tab.path"
-              @click="activateTab(tab)"
-              @mousedown.middle.prevent="closeTab(tab)"
-            >
-              <span class="few-tab-name">{{ nameOf(tab.path) }}</span>
-              <span v-if="tabDirty(tab)" class="few-tab-dot" :title="t('fileEditor.unsaved')" />
-              <el-icon class="few-tab-close" @click.stop="closeTab(tab)"><Close /></el-icon>
+          <!-- 标签条：已打开的文件都在这里；点标签切换，× 关闭单个，右键菜单关闭其他/全部；溢出时下拉定位 -->
+          <div v-if="tabs.length" class="few-tabbar">
+            <div class="few-tabs" ref="tabsScrollRef" @contextmenu.prevent="onTabbarContext">
+              <div
+                v-for="tab in tabs"
+                :key="tab.path"
+                class="few-tab"
+                :class="{ 'is-active': tab.path === activePath }"
+                :title="tab.path"
+                @click="activateTab(tab)"
+                @mousedown.middle.prevent="closeTab(tab)"
+                @contextmenu.prevent.stop="onTabContext(tab, $event)"
+              >
+                <span class="few-tab-name">{{ nameOf(tab.path) }}</span>
+                <span v-if="tabDirty(tab)" class="few-tab-dot" :title="t('fileEditor.unsaved')" />
+                <el-icon class="few-tab-close" @click.stop="closeTab(tab)"><Close /></el-icon>
+              </div>
             </div>
+            <el-dropdown class="few-tabs-more" trigger="click" @command="activatePath">
+              <el-button size="small" text :title="t('fileEditor.allTabs')">
+                <el-icon><MoreFilled /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="few-tabs-menu">
+                  <el-dropdown-item
+                    v-for="tab in tabs"
+                    :key="tab.path"
+                    :command="tab.path"
+                    :class="{ 'is-active': tab.path === activePath }"
+                  >
+                    <span class="few-tabs-menu-name" @click="activateTab(tab)">
+                      {{ nameOf(tab.path) }}
+                    </span>
+                    <el-icon class="few-tabs-menu-close" @click.stop="closeTab(tab)">
+                      <Close />
+                    </el-icon>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+
+          <!-- 右键标签菜单 -->
+          <div
+            v-if="tabMenu.show"
+            class="few-tab-ctx"
+            :style="{ left: tabMenu.x + 'px', top: tabMenu.y + 'px' }"
+            @click.stop
+            @contextmenu.prevent
+          >
+            <div v-if="tabMenu.target" class="few-tab-ctx-item" @click="closeMenuTarget">
+              {{ t('fileEditor.close') }}
+            </div>
+            <div
+              v-if="tabMenu.target"
+              class="few-tab-ctx-item"
+              @click="closeMenuOthers"
+            >
+              {{ t('fileEditor.closeOthers') }}
+            </div>
+            <div class="few-tab-ctx-item" @click="closeAllTabs">{{ t('fileEditor.closeAll') }}</div>
           </div>
 
           <!-- 每个标签一个编辑器实例：v-show 切换，各自的 undo 历史与光标都留着 -->
@@ -169,14 +230,14 @@
         </span>
       </div>
 
-      <!-- 右下角拉伸手柄 -->
-      <div class="few-resize" @mousedown.stop.prevent="startResize" />
+      <!-- 右下角拉伸手柄（全屏时隐藏） -->
+      <div v-show="!expanded" class="few-resize" @mousedown.stop.prevent="startResize" />
     </div>
   </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import CodeEditor from '@/components/CodeEditor.vue'
@@ -194,9 +255,12 @@ import {
   Edit,
   Folder,
   FolderOpened,
+  FullScreen,
+  FullScreenExit,
   HardDrive,
   Home,
   Minimize,
+  MoreFilled,
   Refresh,
   Save,
 } from '@/icons'
@@ -262,6 +326,16 @@ function tabDirty(tab: EditorTab) {
 
 function activateTab(tab: EditorTab) {
   activePath.value = tab.path
+  scrollActiveIntoView()
+}
+
+/** 标签条滚动容器；切换标签后把当前标签滚进可视区 */
+const tabsScrollRef = ref<HTMLElement | null>(null)
+function scrollActiveIntoView() {
+  nextTick(() => {
+    const el = tabsScrollRef.value?.querySelector('.few-tab.is-active') as HTMLElement | null
+    el?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+  })
 }
 
 // ── 语法语言：默认按扩展名自动判断，可在状态栏手动指定（按文件记住） ──
@@ -302,15 +376,57 @@ const y = ref(0)
 const w = ref(980)
 const h = ref(620)
 
+/** 全屏 / 最大化：铺满整个视口（优先用浏览器 Fullscreen API，禁用时退化为填满窗口） */
+const winRoot = ref<HTMLElement | null>(null)
+const expanded = ref(false)
+let savedGeo: { x: number; y: number; w: number; h: number } | null = null
+
 const shown = computed(() => props.active && !minimized.value)
 const dockShown = computed(() => props.active && minimized.value)
-const winStyle = computed(() => ({
-  left: `${x.value}px`,
-  top: `${y.value}px`,
-  width: `${w.value}px`,
-  height: `${h.value}px`,
-  zIndex: zIndex.value,
-}))
+
+/** 退出浏览器 Fullscreen API（若无全屏态则空操作） */
+function exitFullscreenApi() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+}
+
+/** 切换全屏 / 最大化：记录原几何，退出时还原 */
+async function toggleExpand() {
+  if (expanded.value) {
+    expanded.value = false
+    exitFullscreenApi()
+    if (savedGeo) {
+      x.value = savedGeo.x
+      y.value = savedGeo.y
+      w.value = savedGeo.w
+      h.value = savedGeo.h
+      savedGeo = null
+    }
+    return
+  }
+  savedGeo = { x: x.value, y: y.value, w: w.value, h: h.value }
+  expanded.value = true
+  const el = winRoot.value
+  if (el && document.fullscreenEnabled && el.requestFullscreen) {
+    try {
+      await el.requestFullscreen()
+    } catch {
+      // 被拒绝（如 iframe 限制、非用户手势）：保留「填满窗口」即可
+    }
+  }
+}
+const winStyle = computed(() => {
+  // 全屏 / 最大化：直接铺满视口，忽略 x/y/w/h
+  if (expanded.value) {
+    return { left: '0px', top: '0px', width: '100vw', height: '100vh', zIndex: zIndex.value }
+  }
+  return {
+    left: `${x.value}px`,
+    top: `${y.value}px`,
+    width: `${w.value}px`,
+    height: `${h.value}px`,
+    zIndex: zIndex.value,
+  }
+})
 
 /** 最小化的图标上显示什么：优先当前文件名，多个标签补一句「共 N 个文件」 */
 const dockName = computed(() => activeName.value || t('fileEditor.title'))
@@ -556,6 +672,92 @@ async function closeTab(tab: EditorTab) {
   activePath.value = next ? next.path : ''
 }
 
+// ── 标签右键菜单：关闭 / 关闭其他 / 关闭全部 ────────────────────
+
+const tabMenu = reactive({ show: false, x: 0, y: 0, target: null as EditorTab | null })
+
+function hideTabMenu() {
+  tabMenu.show = false
+}
+
+function onTabbarContext(e: MouseEvent) {
+  tabMenu.target = null
+  tabMenu.x = e.clientX
+  tabMenu.y = e.clientY
+  tabMenu.show = true
+}
+
+function onTabContext(tab: EditorTab, e: MouseEvent) {
+  tabMenu.target = tab
+  tabMenu.x = e.clientX
+  tabMenu.y = e.clientY
+  tabMenu.show = true
+}
+
+/** 右键菜单的「关闭」：关闭目标标签（菜单自身点完需手动收起） */
+function closeMenuTarget() {
+  if (tabMenu.target) void closeTab(tabMenu.target)
+  hideTabMenu()
+}
+
+/** 右键菜单的「关闭其他」：目标可能为空时跳过 */
+function closeMenuOthers() {
+  if (tabMenu.target) void closeOtherTabs(tabMenu.target)
+}
+
+/** 下拉「所有标签」里点某条：切换过去 */
+function activatePath(p: string) {
+  const tab = tabs.value.find((t) => t.path === p)
+  if (tab) activateTab(tab)
+}
+
+/** 关闭除 target 外的所有标签（脏文件先确认） */
+async function closeOtherTabs(target: EditorTab) {
+  hideTabMenu()
+  const others = tabs.value.filter((t) => t.path !== target.path)
+  const dirty = others.filter(tabDirty)
+  if (dirty.length) {
+    const choice = await confirmDirty(t('fileEditor.dirtyCloseOthers', { n: dirty.length }), {
+      saveText: t('fileEditor.saveAll'),
+      discardText: t('fileEditor.discardAll'),
+    })
+    if (choice === 'cancel') return
+    if (choice === 'save') {
+      for (const tab of dirty) {
+        if (!(await saveTab(tab, true))) return
+      }
+    }
+  }
+  tabs.value = tabs.value.filter((t) => t.path === target.path)
+  activePath.value = target.path
+}
+
+/** 关闭全部标签（脏文件先确认） */
+async function closeAllTabs() {
+  hideTabMenu()
+  const dirty = tabs.value.filter(tabDirty)
+  if (dirty.length) {
+    const choice = await confirmDirty(t('fileEditor.dirtyCloseAll', { n: dirty.length }), {
+      saveText: t('fileEditor.saveAllAndClose'),
+      discardText: t('fileEditor.discardAll'),
+    })
+    if (choice === 'cancel') return
+    if (choice === 'save') {
+      for (const tab of dirty) {
+        if (!(await saveTab(tab, true))) return
+      }
+    }
+  }
+  tabs.value = []
+  activePath.value = ''
+}
+
+/** 最小化：退出浏览器全屏（若有），窗口仍保持「最大化」直到还原 */
+function minimizeWin() {
+  exitFullscreenApi()
+  minimized.value = true
+}
+
 /** 关闭整个窗口：有脏标签时给「全部保存并关闭 / 全部放弃 / 取消」 */
 async function requestClose() {
   if (dirtyCount.value) {
@@ -668,10 +870,32 @@ function onTreeNodeClick(data: TreeNode) {
  */
 function onKeydown(e: KeyboardEvent) {
   if (minimized.value || !props.active || !activeTab.value) return
-  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return
-  e.preventDefault()
-  e.stopPropagation()
-  if (!activeTab.value.saving) void saveFile()
+  const mod = e.ctrlKey || e.metaKey
+  // 切换标签：Ctrl/Cmd + Tab（Shift 反向）
+  if (mod && e.key === 'Tab') {
+    e.preventDefault()
+    e.stopPropagation()
+    const order = tabs.value
+    if (order.length > 1) {
+      const i = order.findIndex((t) => t.path === activePath.value)
+      const dir = e.shiftKey ? -1 : 1
+      activateTab(order[(i + dir + order.length) % order.length])
+    }
+    return
+  }
+  // 关闭当前标签：Ctrl/Cmd + W
+  if (mod && e.key.toLowerCase() === 'w') {
+    e.preventDefault()
+    e.stopPropagation()
+    void closeTab(activeTab.value)
+    return
+  }
+  // 保存当前标签：Ctrl/Cmd + S
+  if (mod && e.key.toLowerCase() === 's') {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!activeTab.value.saving) void saveFile()
+  }
 }
 
 onMounted(async () => {
@@ -679,6 +903,7 @@ onMounted(async () => {
   y.value = Math.min(Math.max(0, Math.round((window.innerHeight - h.value) / 2) - 40), 120)
   window.addEventListener('keydown', onKeydown, true)
   window.addEventListener('resize', clampToViewport)
+  window.addEventListener('click', hideTabMenu)
   await loadTreeRoot()
   if (props.filePath) {
     if (props.isDir) await rootTreeAt(props.filePath)
@@ -693,6 +918,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown, true)
   window.removeEventListener('resize', clampToViewport)
+  window.removeEventListener('click', hideTabMenu)
+  exitFullscreenApi()
   stopDrag()
   stopResize()
 })
@@ -729,6 +956,12 @@ watch(
   border: 1px solid var(--el-border-color-light);
   border-radius: 6px;
   box-shadow: var(--el-box-shadow-dark);
+
+  // 全屏 / 最大化：去掉圆角与边框，真正铺满视口
+  &.is-expanded {
+    border-radius: 0;
+    border-width: 0;
+  }
 }
 
 // ── 顶部工具栏 ──────────────────────────────────────────────
@@ -844,11 +1077,19 @@ watch(
 
 // ── 标签条 ─────────────────────────────────────────────────
 
+.few-tabbar {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .few-tabs {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 4px;
-  flex-shrink: 0;
   overflow-x: auto;
   padding-bottom: 4px;
 
@@ -859,6 +1100,66 @@ watch(
   &::-webkit-scrollbar-thumb {
     background: var(--el-border-color-light);
     border-radius: 2px;
+  }
+}
+
+.few-tabs-more {
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.few-tabs-menu {
+  :deep(.el-dropdown-menu__item) {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 320px;
+
+    &.is-active {
+      color: var(--el-color-primary);
+      font-weight: 600;
+    }
+  }
+
+  &-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &-close {
+    margin-left: 8px;
+    flex-shrink: 0;
+
+    &:hover {
+      color: var(--el-color-danger);
+    }
+  }
+}
+
+// 标签右键菜单
+.few-tab-ctx {
+  position: fixed;
+  z-index: 2500;
+  min-width: 140px;
+  padding: 4px;
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  box-shadow: var(--el-box-shadow-light);
+
+  &-item {
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--el-text-color-regular);
+    border-radius: 4px;
+    cursor: pointer;
+
+    &:hover {
+      background: var(--el-fill-color-light);
+      color: var(--el-color-primary);
+    }
   }
 }
 

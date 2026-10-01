@@ -1175,6 +1175,13 @@ const enUS: Messages = {
     dirtyClose: '"{name}" has unsaved changes.',
     saveAndClose: 'Save and Close',
     discard: 'Discard',
+    fullscreen: 'Fullscreen',
+    exitFullscreen: 'Exit Fullscreen',
+    allTabs: 'All tabs',
+    close: 'Close',
+    closeOthers: 'Close Others',
+    closeAll: 'Close All',
+    dirtyCloseOthers: '{n} other tabs have unsaved changes.',
   },
 
   /** Server - system time */

@@ -4,10 +4,13 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Compartment, EditorState, type Extension } from '@codemirror/state'
+import { Compartment, EditorState, type Extension, Prec } from '@codemirror/state'
 import { EditorView, placeholder } from '@codemirror/view'
 import { basicSetup } from 'codemirror'
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { tags } from '@lezer/highlight'
 import { loadLangExtension, langFromPath, type EditorLangName } from '@/utils/editorLang'
+import { isDark } from '@/composables/useTheme'
 
 const props = withDefaults(
   defineProps<{
@@ -48,6 +51,8 @@ let view: EditorView | null = null
  */
 const langConf = new Compartment()
 const readOnlyConf = new Compartment()
+/** 主题（浅色用基础外观，深色用 GitHub Dark）单独一个 Compartment，切换时实时 reconfigure */
+const themeConf = new Compartment()
 
 function effectiveLang(): EditorLangName {
   if (props.lang) return props.lang
@@ -80,6 +85,99 @@ const baseTheme = EditorView.theme({
   '.cm-activeLineGutter': { backgroundColor: 'rgba(64, 158, 255, 0.08)' },
   '.cm-tooltip': { zIndex: 3100 },
 })
+
+/**
+ * GitHub Dark 语法高亮（tag → 颜色）。对应 github/dark 调色板。
+ * 用 Prec.high 压过 basicSetup 自带的浅色 defaultHighlightStyle，深色模式才生效。
+ */
+const githubDarkHighlight = HighlightStyle.define([
+  { tag: tags.comment, color: '#8b949e', fontStyle: 'italic' },
+  {
+    tag: [
+      tags.keyword,
+      tags.operatorKeyword,
+      tags.modifier,
+      tags.controlKeyword,
+      tags.moduleKeyword,
+      tags.definitionKeyword,
+    ],
+    color: '#ff7b72',
+  },
+  { tag: [tags.string, tags.special(tags.string), tags.regexp], color: '#a5d6ff' },
+  {
+    tag: [tags.number, tags.bool, tags.atom, tags.null, tags.constant(tags.name)],
+    color: '#79c0ff',
+  },
+  { tag: [tags.propertyName, tags.attributeName], color: '#79c0ff' },
+  {
+    tag: [
+      tags.function(tags.variableName),
+      tags.function(tags.propertyName),
+      tags.title,
+      tags.title.function,
+    ],
+    color: '#d2a8ff',
+  },
+  {
+    tag: [tags.typeName, tags.className, tags.namespace, tags.typeOperator, tags.tagName],
+    color: '#ffa657',
+  },
+  {
+    tag: [tags.operator, tags.derefOperator, tags.punctuation, tags.separator],
+    color: '#c9d1d9',
+  },
+  { tag: [tags.meta, tags.documentMeta], color: '#8b949e' },
+  { tag: [tags.link, tags.url], color: '#a5d6ff' },
+  { tag: tags.heading, color: '#79c0ff', fontWeight: 'bold' },
+  { tag: tags.strong, fontWeight: 'bold' },
+  { tag: tags.emphasis, fontStyle: 'italic' },
+  { tag: tags.quote, color: '#8b949e' },
+  { tag: tags.list, color: '#ffa657' },
+  { tag: tags.inserted, color: '#7ee787' },
+  { tag: tags.deleted, color: '#ffa198' },
+  { tag: tags.changed, color: '#79c0ff' },
+  { tag: tags.invalid, color: '#ff7b72' },
+  { tag: tags.character, color: '#a5d6ff' },
+])
+
+/** GitHub Dark 编辑器外观（背景 / 光标 / 选区 / gutter 等），{ dark: true } 提示背景为深 */
+const githubDarkTheme = EditorView.theme(
+  {
+    '&': { color: '#c9d1d9', backgroundColor: '#0d1117' },
+    '.cm-content': { caretColor: '#c9d1d9', color: '#c9d1d9' },
+    '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#c9d1d9' },
+    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
+      backgroundColor: '#264f78',
+    },
+    '.cm-activeLine': { backgroundColor: 'rgba(177, 186, 196, 0.10)' },
+    '.cm-gutters': {
+      backgroundColor: '#0d1117',
+      color: '#484f58',
+      borderRight: '1px solid #21262d',
+    },
+    '.cm-activeLineGutter': { backgroundColor: 'rgba(177, 186, 196, 0.10)', color: '#8b949e' },
+    '.cm-tooltip': {
+      backgroundColor: '#161b22',
+      border: '1px solid #30363d',
+      color: '#c9d1d9',
+    },
+    '.cm-tooltip-autocomplete ul li[aria-selected]': {
+      backgroundColor: '#2f3b4a',
+      color: '#c9d1d9',
+    },
+    '.cm-matchingBracket, &.cm-focused .cm-matchingBracket': {
+      backgroundColor: 'rgba(63, 185, 80, 0.25)',
+      outline: '1px solid rgba(63, 185, 80, 0.4)',
+    },
+  },
+  { dark: true },
+)
+
+/** 当前主题扩展：深色返回 GitHub Dark，浅色不挂（沿用基础外观 + Element Plus 变量） */
+function themeExtensions(): Extension[] {
+  if (!isDark.value) return []
+  return [Prec.high(syntaxHighlighting(githubDarkHighlight)), githubDarkTheme]
+}
 
 /** 光标所在行列（1 起算） */
 function cursorOf(state: EditorState) {
@@ -115,6 +213,7 @@ function createView() {
     baseTheme,
     langConf.of([]),
     readOnlyConf.of(EditorState.readOnly.of(props.readonly)),
+    themeConf.of(themeExtensions()),
     EditorView.lineWrapping,
     EditorView.updateListener.of((u) => {
       if (u.docChanged) emit('update:modelValue', u.state.doc.toString())
@@ -165,6 +264,14 @@ watch(
   },
 )
 
+// 深色模式切换：实时替换主题（不重建视图，光标 / 滚动 / undo 都不动）
+watch(
+  () => isDark.value,
+  () => {
+    view?.dispatch({ effects: themeConf.reconfigure(themeExtensions()) })
+  },
+)
+
 // 多标签场景：从隐藏切回可见时重新测量，避免沿用 display:none 时的旧尺寸
 watch(
   () => props.active,
@@ -186,7 +293,7 @@ watch(
   height: 100%;
 }
 
-.code-editor.is-readonly :deep(.cm-editor) {
+:global(html:not(.dark)) .code-editor.is-readonly :deep(.cm-editor) {
   background: var(--el-fill-color-light);
 }
 
