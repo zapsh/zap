@@ -607,6 +607,15 @@ pub enum Request {
         #[serde(default)]
         skip_owner_check: bool,
     },
+    /// 计算目录大小（递归累计字节数；符号链接不跟随，避免环与重复统计）
+    #[serde(rename = "file.dir_size")]
+    DirSize {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
     /// 修改文件/目录权限（mode 为八进制数值，仅低 12 位有效）
     #[serde(rename = "file.chmod")]
     FileChmod {

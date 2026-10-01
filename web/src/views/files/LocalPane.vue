@@ -111,9 +111,21 @@
               {{ t('filesLocal.newFile') }}
             </el-button>
           </el-button-group>
-          <el-button size="small" @click="refreshList" :loading="loading">
-            <el-icon><Refresh /></el-icon>
-          </el-button>
+          <el-button-group class="refresh-group">
+            <el-button size="small" @click="refreshList" :loading="loading">
+              <el-icon><Refresh /></el-icon>
+            </el-button>
+            <!-- 计算当前目录（递归）大小 -->
+            <el-button
+              size="small"
+              :title="t('filesLocal.computeSize')"
+              :loading="dirSizeComputing"
+              @click="computeCurrentDirSize"
+            >
+              <el-icon><DataLine /></el-icon>
+              {{ t('filesLocal.computeSize') }}
+            </el-button>
+          </el-button-group>
           <!-- 打开常驻编辑器浮窗：已打开时复用同一实例（可能正缩成图标）；图标按钮 -->
           <el-button size="small" :title="t('filesLocal.openInEditor')" :disabled="!canOpenInEditor" @click="openInEditor()">
             <el-icon><Edit /></el-icon>
@@ -225,10 +237,25 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column :label="t('common.size')" width="120" align="right">
+            <el-table-column :label="t('common.size')" width="150" align="right">
               <template #default="{ row }">
                 <span v-if="!row.is_dir">{{ formatSize(row.size) }}</span>
-                <span v-else class="text-muted">-</span>
+                <span v-else class="fm-dir-size">
+                  <span v-if="dirSizeLoading(row.path)" class="text-muted">
+                    <el-icon class="is-loading"><Loading /></el-icon>
+                  </span>
+                  <template v-else>
+                    <span v-if="dirSizes[row.path] != null">{{ formatSize(dirSizes[row.path]) }}</span>
+                    <span v-else class="text-muted">-</span>
+                    <el-button
+                      size="small"
+                      text
+                      :icon="Refresh"
+                      :title="t('filesLocal.computeSize')"
+                      @click.stop="computeRowDirSize(row)"
+                    />
+                  </template>
+                </span>
               </template>
             </el-table-column>
             <el-table-column :label="t('filesLocal.colModified')" width="180">
@@ -793,6 +820,7 @@ import {
   CircleCloseFilled,
   User,
   InfoFilled,
+  DataLine,
 } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ElTree } from 'element-plus'
@@ -811,6 +839,7 @@ import {
   chownFile,
   copyFile,
   archiveFiles,
+  getDirSize,
   type FileEntry,
 } from '@/api/file'
 import CodeEditor from '@/components/CodeEditor.vue'
@@ -1195,6 +1224,72 @@ async function loadFileList() {
 
 function refreshList() {
   loadFileList()
+}
+
+// ── 目录大小（计算 / 显示） ───────────────────────────────
+
+/** 已算出的目录大小（字节），按路径缓存；行内刷新按钮与工具栏共用 */
+const dirSizes = reactive<Record<string, number>>({})
+/** 正在计算的路径集合（行内按钮用） */
+const dirSizeLoadingSet = reactive(new Set<string>())
+/** 工具栏「计算当前目录大小」按钮的 loading */
+const dirSizeComputing = ref(false)
+
+function dirSizeLoading(path: string): boolean {
+  return dirSizeLoadingSet.has(path)
+}
+
+async function fetchDirSize(path: string): Promise<number> {
+  // 响应拦截器已解包：res 即 { code, message, data }，res.data 为载荷 { path, size }
+  const res = await getDirSize(path)
+  const size = res.data?.size ?? 0
+  dirSizes[path] = size
+  return size
+}
+
+/** 行内刷新按钮：计算该目录（递归）大小并就地显示 */
+async function computeRowDirSize(row: FileEntry) {
+  if (!row.is_dir) return
+  dirSizeLoadingSet.add(row.path)
+  try {
+    const size = await fetchDirSize(row.path)
+    ElMessage.success(t('filesLocal.dirSizeResult', { path: row.name, size: formatSize(size) }))
+  } catch {
+    // 拦截器已统一提示
+  } finally {
+    dirSizeLoadingSet.delete(row.path)
+  }
+}
+
+/** 工具栏按钮：并发计算当前列表中每个目录（递归）的大小，逐个填入行内「大小」列 */
+async function computeCurrentDirSize() {
+  const dirs = fileList.value.filter((e) => e.is_dir)
+  if (!dirs.length) {
+    ElMessage.info(t('filesLocal.noDirsToCompute'))
+    return
+  }
+  dirSizeComputing.value = true
+  try {
+    // 并发上限，避免几百个目录一次性打满请求；单个失败不影响其余
+    const CONCURRENCY = 8
+    let idx = 0
+    const worker = async () => {
+      while (idx < dirs.length) {
+        const d = dirs[idx++]
+        try {
+          const res = await getDirSize(d.path)
+          dirSizes[d.path] = res.data?.size ?? 0
+        } catch {
+          // 单个目录计算失败：留空，继续其余
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, dirs.length) }, worker))
+    const total = dirs.reduce((s, d) => s + (dirSizes[d.path] || 0), 0)
+    ElMessage.success(t('filesLocal.dirSizeComputed', { n: dirs.length, size: formatSize(total) }))
+  } finally {
+    dirSizeComputing.value = false
+  }
 }
 
 function navigateTo(path: string) {
@@ -2774,6 +2869,17 @@ watch(viewMode, async (mode) => {
   outline-offset: -3px;
   border-radius: 4px;
   background: var(--el-color-primary-light-9);
+}
+
+.fm-dir-size {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.fm-dir-size .el-button {
+  margin-left: 2px;
 }
 
 .fm-grid-wrap {

@@ -943,6 +943,10 @@ export default {
     emptyDir: '此目录为空',
     dropHint: '松开鼠标，上传文件或文件夹到 {path}',
     currentDir: '当前目录',
+    computeSize: '计算大小',
+    dirSizeResult: '「{path}」大小：{size}',
+    noDirsToCompute: '当前目录没有子目录',
+    dirSizeComputed: '已计算 {n} 个目录，共 {size}',
 
     uploadOk: '成功 {n}',
     uploadFail: '失败 {n}',

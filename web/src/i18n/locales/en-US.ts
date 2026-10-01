@@ -924,6 +924,10 @@ const enUS: Messages = {
     emptyDir: 'This directory is empty',
     dropHint: 'Release to upload files or folders to {path}',
     currentDir: 'current directory',
+    computeSize: 'Compute size',
+    dirSizeResult: 'Size of "{path}": {size}',
+    noDirsToCompute: 'No subdirectories in current folder',
+    dirSizeComputed: 'Computed {n} directories, total {size}',
 
     uploadOk: 'Done {n}',
     uploadFail: 'Failed {n}',

@@ -139,6 +139,13 @@ export function getFileInfo(path: string) {
   })
 }
 
+/** Compute recursive directory size (returns total bytes; a plain file returns its own size) */
+export function getDirSize(path: string) {
+  return http.get<ApiResponse<{ path: string; size: number }>>('/system/files/dir_size', {
+    params: { path },
+  })
+}
+
 /** Copy file/directory to a new path */
 export function copyFile(path: string, newPath: string) {
   return http.post<ApiResponse<{ path: string }>>('/system/files/copy', {

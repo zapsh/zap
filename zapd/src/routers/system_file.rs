@@ -905,6 +905,29 @@ pub async fn file_info(claims: Claims, Query(query): Query<PathQuery>) -> ZapJso
     ))
 }
 
+/// GET /system/files/dir_size?path=...
+/// 计算目录（递归）占用大小，返回字节数；普通文件则直接返回其大小。
+pub async fn file_dir_size(claims: Claims, Query(query): Query<PathQuery>) -> ZapJsonResult {
+    let raw_path = query.path.as_deref().unwrap_or("/");
+    let (home, tmp) = user_private_prefixes(&claims).await;
+    let resolved = resolve_path(raw_path)?;
+    check_access(&claims, &resolved, &home, &tmp)?;
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
+
+    let resp = crate::zapexec::call(Request::DirSize {
+        path: resolved.to_string_lossy().to_string(),
+        as_user,
+        skip_owner_check,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": resp.data }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

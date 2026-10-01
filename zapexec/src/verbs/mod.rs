@@ -143,6 +143,9 @@ pub async fn dispatch(req: Request) -> Response {
         Request::FileInfo { path, as_user, skip_owner_check } => {
             file::info(path, as_user, skip_owner_check).await
         }
+        Request::DirSize { path, as_user, skip_owner_check } => {
+            file::dir_size(path, as_user, skip_owner_check).await
+        }
         Request::FileChmod {
             path,
             mode,

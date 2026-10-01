@@ -359,6 +359,11 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::action("system.file", "view")),
     ),
     (
+        "/system/files/dir_size",
+        Required::User,
+        Some(Perm::action("system.file", "view")),
+    ),
+    (
         "/system/files/write",
         Required::User,
         Some(Perm::action("system.file", "write")),

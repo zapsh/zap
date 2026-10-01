@@ -711,6 +711,7 @@ fn api_routers() -> Router {
             post(system_file::file_upload).layer(DefaultBodyLimit::max(LOCAL_UPLOAD_LIMIT)),
         )
         .route("/system/files/info", get(system_file::file_info))
+        .route("/system/files/dir_size", get(system_file::file_dir_size))
         // 云存储（多套配置 + 对象浏览/传输）
         .route("/system/cloud/stores", get(cloud::store_list))
         .route("/system/cloud/store/save", post(cloud::store_save))

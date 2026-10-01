@@ -182,7 +182,10 @@
         { "method": "POST", "path": "/system/files/rename", "summary": "重命名 / 移动" },
         { "method": "GET", "path": "/system/files/download", "summary": "下载文件（二进制流）" },
         { "method": "POST", "path": "/system/files/upload", "summary": "上传文件（multipart）" },
-        { "method": "GET", "path": "/system/files/info", "summary": "单个文件详情" }
+        { "method": "GET", "path": "/system/files/info", "summary": "单个文件详情" },
+        { "method": "GET", "path": "/system/files/dir_size", "summary": "计算目录（递归）大小", "params": [
+          { "name": "path", "type": "string", "required": true, "desc": "目录绝对路径" }
+        ] }
       ]
     },
     {

@@ -757,6 +757,66 @@ pub async fn info(path: String, as_user: Option<String>, skip_owner_check: bool)
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
 }
 
+/// 计算目录占用大小（递归累计文件内容字节数）。
+///
+/// - 目录：用栈遍历，累加每个真实文件的 `len()`；符号链接以 `symlink_metadata`
+///   不跟随，避免软链成环导致无限递归，也不重复统计指向的子树。
+/// - 单个文件：直接返回其 `len()`（语义上「大小」同样成立）。
+/// - 无权限读取的子目录 / 子项跳过，不阻断整棵统计；读不到路径信息时同样跳过。
+pub async fn dir_size(
+    path: String,
+    as_user: Option<String>,
+    skip_owner_check: bool,
+) -> Response {
+    tokio::task::spawn_blocking(move || {
+        let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
+        let md = match std::fs::metadata(&resolved) {
+            Ok(m) => m,
+            Err(e) => return Response::err(-1, format!("路径不存在: {e}")),
+        };
+        if !md.is_dir() {
+            return Response::ok(
+                "ok",
+                Some(json!({ "path": resolved.to_string_lossy(), "size": md.len() })),
+            );
+        }
+        let mut total: u64 = 0;
+        let mut stack = vec![resolved.clone()];
+        while let Some(p) = stack.pop() {
+            let rd = match std::fs::read_dir(&p) {
+                Ok(rd) => rd,
+                // 无权限的子目录跳过，不阻断整棵统计
+                Err(_) => continue,
+            };
+            for entry in rd.flatten() {
+                let ep = entry.path();
+                // 不跟随符号链接：软链既可能成环，也可能指回已统计的子树
+                let emd = match std::fs::symlink_metadata(&ep) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if emd.file_type().is_symlink() {
+                    continue;
+                }
+                if emd.is_dir() {
+                    stack.push(ep);
+                } else {
+                    total += emd.len();
+                }
+            }
+        }
+        Response::ok(
+            "ok",
+            Some(json!({ "path": resolved.to_string_lossy(), "size": total })),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
 /// 成功响应：带上根路径的最新信息（前端用它回填权限 / 属主列）。
 fn ok_with_info(path: &Path, msg: &str) -> Response {
     match file_info(path) {
@@ -1293,6 +1353,29 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// 递归目录大小：累加所有文件内容字节，符号链接不计入。
+    #[tokio::test]
+    async fn dir_size_sums_files_recursively() {
+        let root = std::env::temp_dir().join("zap_dir_size_test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), b"hello").unwrap(); // 5
+        std::fs::write(root.join("sub/b.txt"), b"world!!").unwrap(); // 7
+        let link = root.join("loop");
+        let _ = std::os::unix::fs::symlink(root.join("sub"), &link);
+
+        let resp = dir_size(root.display().to_string(), None, true).await;
+        assert_eq!(resp.code, 0, "{}", resp.message);
+        let size = resp
+            .data
+            .as_ref()
+            .and_then(|v| v.get("size"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert_eq!(size, 12, "应只累加真实文件，符号链接不计");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 普通用户的文件操作必须被限制在本人家目录 / 私有临时目录 / 面板数据目录内，
