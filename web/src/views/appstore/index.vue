@@ -68,171 +68,182 @@
       </el-input>
     </div>
 
-    <!-- 包列表 -->
-    <div v-if="activeTab === 'store'" class="pkg-grid" v-loading="loading">
-      <el-card v-for="pkg in filteredPackages" :key="pkg.pkg_path" shadow="hover" class="pkg-card">
-        <div class="pkg-head">
-          <div class="pkg-name">
-            {{ pkg.name }}
-            <el-tag v-if="pkg.installed" size="small" type="success" effect="light">{{
-              (pkg.installed_instances || []).length > 1
-                ? `${t('appstore.tagInstalled')} × ${(pkg.installed_instances || []).length}`
-                : t('appstore.tagInstalled')
-            }}</el-tag>
-            <el-tag v-else size="small" type="info" effect="plain">{{
-              t('appstore.tagNotInstalled')
-            }}</el-tag>
-            <el-tag
-              v-if="pkg.allow_multiple_instances"
-              size="small"
-              type="primary"
-              effect="plain"
-              >{{ t('appstore.tagMultiVersion') }}</el-tag
-            >
-          </div>
-          <div class="pkg-tags">
-            <el-tag v-if="pkg.source === 'custom'" size="small" type="warning" effect="light">{{
-              t('appstore.tagCustom')
-            }}</el-tag>
-            <el-tag v-else-if="pkg.repo_id" size="small" type="info" effect="plain">{{
-              pkg.repo_id
-            }}</el-tag>
-          </div>
-        </div>
-        <div class="pkg-title">{{ pkg.title || pkg.name }}</div>
-        <div class="pkg-desc">{{ pkg.description || t('appstore.noDescription') }}</div>
-        <div class="pkg-meta">
-          <span v-if="pkg.versions && pkg.versions.length > 1" class="pkg-ver-sel">
-            {{ t('appstore.versionColon') }}
-            <el-select
-              size="small"
-              :style="{ width: versionGroups(pkg).length ? '210px' : '130px' }"
-              :model-value="selVersion[pkg.pkg_path] || pkg.version"
-              @change="onSelVersion(pkg, $event)"
-            >
-              <template v-if="versionGroups(pkg).length">
-                <el-option-group v-for="g in versionGroups(pkg)" :key="g.family" :label="g.label">
-                  <el-option v-for="ver in g.versions" :key="ver" :label="ver" :value="ver">
-                    <div class="ver-opt-row">
-                      <span>{{ ver }}</span>
-                      <el-tag :type="familyTagType(g.family)" size="small" effect="plain">
-                        {{ g.short }}
-                      </el-tag>
-                    </div>
-                  </el-option>
-                </el-option-group>
-              </template>
-              <el-option v-else v-for="ver in pkg.versions" :key="ver" :label="ver" :value="ver" />
-            </el-select>
-            <el-tag
-              v-if="familyOf(pkg, curVersion(pkg))"
-              class="ver-fam-tag"
-              :type="familyTagType(familyOf(pkg, curVersion(pkg)))"
-              size="small"
-              effect="light"
-              >{{ familyLabelOf(pkg, curVersion(pkg)) }}</el-tag
-            >
-          </span>
-          <span v-else
-            >{{ t('appstore.versionColon') }} <b>{{ pkg.version || '-' }}</b></span
-          >
-          <span v-if="depList(pkg).length" class="pkg-deps">{{
-            t('appstore.depColon', { list: depList(pkg).join(t('appstore.depSep')) })
-          }}</span>
-          <span v-if="pkg.default_port" class="pkg-port">{{
-            t('appstore.portColon', { port: pkg.default_port })
-          }}</span>
-        </div>
-        <div v-if="pkg.installed" class="pkg-installed-meta">
-          {{ t('appstore.installedVersionColon') }}
-          <b>{{ pkg.installed_version || '-' }}</b>
-          <el-tag
-            v-if="familyOf(pkg, pkg.installed_version)"
-            size="small"
-            :type="familyTagType(familyOf(pkg, pkg.installed_version))"
-            effect="plain"
-            >{{ familyLabelOf(pkg, pkg.installed_version) }}</el-tag
-          >
-          <span v-if="pkg.upgraded_from">{{
-            t('appstore.upgradedFrom', { from: pkg.upgraded_from })
-          }}</span>
-        </div>
-        <div class="pkg-actions">
-          <template v-if="!pkg.installed">
-            <template v-if="actionEntries(pkg).length">
-              <el-button
-                v-for="[key, label] in actionEntries(pkg)"
-                :key="key"
+    <!-- 包列表（表格形式） -->
+    <div v-if="activeTab === 'store'" class="pkg-table-wrap" v-loading="loading">
+      <el-table :data="filteredPackages" row-key="pkg_path" stripe style="width: 100%">
+        <el-table-column label="名称" min-width="210">
+          <template #default="{ row }">
+            <div class="cell-name">
+              <span class="cell-name__title">{{ row.name }}</span>
+              <div class="cell-name__tags">
+                <el-tag v-if="row.installed" size="small" type="success" effect="light">{{
+                  (row.installed_instances || []).length > 1
+                    ? `${t('appstore.tagInstalled')} × ${(row.installed_instances || []).length}`
+                    : t('appstore.tagInstalled')
+                }}</el-tag>
+                <el-tag v-else size="small" type="info" effect="plain">{{ t('appstore.tagNotInstalled') }}</el-tag>
+                <el-tag v-if="row.allow_multiple_instances" size="small" type="primary" effect="plain">{{
+                  t('appstore.tagMultiVersion')
+                }}</el-tag>
+                <el-tag v-if="row.source === 'custom'" size="small" type="warning" effect="light">{{
+                  t('appstore.tagCustom')
+                }}</el-tag>
+                <el-tag v-else-if="row.repo_id" size="small" type="info" effect="plain">{{ row.repo_id }}</el-tag>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="描述" min-width="300">
+          <template #default="{ row }">
+            <div class="cell-desc">
+              <div class="cell-desc__title">{{ row.title || row.name }}</div>
+              <div class="cell-desc__body">{{ row.description || t('appstore.noDescription') }}</div>
+              <div v-if="depList(row).length || row.default_port" class="cell-desc__meta">
+                <span v-if="depList(row).length">{{
+                  t('appstore.depColon', { list: depList(row).join(t('appstore.depSep')) })
+                }}</span>
+                <span v-if="row.default_port">{{ t('appstore.portColon', { port: row.default_port }) }}</span>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="版本" width="300">
+          <template #default="{ row }">
+            <span v-if="row.versions && row.versions.length > 1" class="pkg-ver-sel">
+              {{ t('appstore.versionColon') }}
+              <el-select
                 size="small"
-                type="primary"
-                :disabled="!canOperatePkg(pkg)"
-                @click="handleInstall(pkg, key)"
-                >{{ label }}</el-button
+                :style="{ width: versionGroups(row).length ? '210px' : '130px' }"
+                :model-value="selVersion[row.pkg_path] || row.version"
+                @change="onSelVersion(row, $event)"
               >
+                <template v-if="versionGroups(row).length">
+                  <el-option-group v-for="g in versionGroups(row)" :key="g.family" :label="g.label">
+                    <el-option v-for="ver in g.versions" :key="ver" :label="ver" :value="ver">
+                      <div class="ver-opt-row">
+                        <span>{{ ver }}</span>
+                        <el-tag :type="familyTagType(g.family)" size="small" effect="plain">{{ g.short }}</el-tag>
+                      </div>
+                    </el-option>
+                  </el-option-group>
+                </template>
+                <el-option v-else v-for="ver in row.versions" :key="ver" :label="ver" :value="ver" />
+              </el-select>
+              <el-tag
+                v-if="familyOf(row, curVersion(row))"
+                class="ver-fam-tag"
+                :type="familyTagType(familyOf(row, curVersion(row)))"
+                size="small"
+                effect="light"
+                >{{ familyLabelOf(row, curVersion(row)) }}</el-tag
+              >
+            </span>
+            <span v-else>{{ t('appstore.versionColon') }} <b>{{ row.version || '-' }}</b></span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="已安装" width="170">
+          <template #default="{ row }">
+            <template v-if="row.installed">
+              <div class="cell-installed">
+                <b>{{ row.installed_version || '-' }}</b>
+                <el-tag
+                  v-if="familyOf(row, row.installed_version)"
+                  size="small"
+                  :type="familyTagType(familyOf(row, row.installed_version))"
+                  effect="plain"
+                  >{{ familyLabelOf(row, row.installed_version) }}</el-tag
+                >
+                <div v-if="row.upgraded_from" class="cell-installed__from">
+                  {{ t('appstore.upgradedFrom', { from: row.upgraded_from }) }}
+                </div>
+              </div>
             </template>
-            <el-button
-              v-else
-              size="small"
-              type="primary"
-              :disabled="!canOperatePkg(pkg)"
-              @click="handleInstall(pkg)"
-              >{{ t('appstore.btnInstall') }}</el-button
-            >
+            <span v-else class="muted">-</span>
           </template>
-          <template v-else>
-            <el-button
-              v-if="!pkg.allow_multiple_instances && !actionEntries(pkg).length"
-              size="small"
-              type="primary"
-              plain
-              :disabled="!canOperatePkg(pkg)"
-              @click="handleInstall(pkg)"
-              >{{ t('appstore.btnReinstall') }}</el-button
-            >
-            <el-button
-              v-if="pkg.allow_multiple_instances && !actionEntries(pkg).length"
-              size="small"
-              type="primary"
-              plain
-              :disabled="!canOperatePkg(pkg)"
-              @click="handleInstall(pkg)"
-              >{{ t('appstore.btnInstallAgain') }}</el-button
-            >
-            <el-button
-              v-for="[key, label] in actionEntries(pkg)"
-              :key="key"
-              size="small"
-              type="success"
-              plain
-              :disabled="!canOperatePkg(pkg)"
-              @click="handleInstall(pkg, key)"
-              >{{ label }}</el-button
-            >
-            <el-button
-              v-if="!pkg.allow_multiple_instances"
-              size="small"
-              type="warning"
-              plain
-              :disabled="!canOperatePkg(pkg)"
-              @click="handleUpgrade(pkg)"
-              >{{ t('appstore.btnUpgrade') }}</el-button
-            >
-            <el-button
-              size="small"
-              type="danger"
-              plain
-              :disabled="!canOperatePkg(pkg)"
-              @click="handleUninstall(pkg)"
-              >{{ t('appstore.btnUninstall') }}</el-button
-            >
+        </el-table-column>
+
+        <el-table-column :label="t('common.operation')" width="300" fixed="right">
+          <template #default="{ row }">
+            <div class="cell-actions">
+              <template v-if="!row.installed">
+                <template v-if="actionEntries(row).length">
+                  <el-button
+                    v-for="[key, label] in actionEntries(row)"
+                    :key="key"
+                    size="small"
+                    type="primary"
+                    :disabled="!canOperatePkg(row)"
+                    @click="handleInstall(row, key)"
+                    >{{ label }}</el-button
+                  >
+                </template>
+                <el-button
+                  v-else
+                  size="small"
+                  type="primary"
+                  :disabled="!canOperatePkg(row)"
+                  @click="handleInstall(row)"
+                  >{{ t('appstore.btnInstall') }}</el-button
+                >
+              </template>
+              <template v-else>
+                <el-button
+                  v-if="!row.allow_multiple_instances && !actionEntries(row).length"
+                  size="small"
+                  type="primary"
+                  plain
+                  :disabled="!canOperatePkg(row)"
+                  @click="handleInstall(row)"
+                  >{{ t('appstore.btnReinstall') }}</el-button
+                >
+                <el-button
+                  v-if="row.allow_multiple_instances && !actionEntries(row).length"
+                  size="small"
+                  type="primary"
+                  plain
+                  :disabled="!canOperatePkg(row)"
+                  @click="handleInstall(row)"
+                  >{{ t('appstore.btnInstallAgain') }}</el-button
+                >
+                <el-button
+                  v-for="[key, label] in actionEntries(row)"
+                  :key="key"
+                  size="small"
+                  type="success"
+                  plain
+                  :disabled="!canOperatePkg(row)"
+                  @click="handleInstall(row, key)"
+                  >{{ label }}</el-button
+                >
+                <el-button
+                  v-if="!row.allow_multiple_instances"
+                  size="small"
+                  type="warning"
+                  plain
+                  :disabled="!canOperatePkg(row)"
+                  @click="handleUpgrade(row)"
+                  >{{ t('appstore.btnUpgrade') }}</el-button
+                >
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :disabled="!canOperatePkg(row)"
+                  @click="handleUninstall(row)"
+                  >{{ t('appstore.btnUninstall') }}</el-button
+                >
+              </template>
+            </div>
           </template>
-        </div>
-      </el-card>
+        </el-table-column>
+        <template #empty>
+          <el-empty :description="t('appstore.noPackages')" :image-size="80" />
+        </template>
+      </el-table>
     </div>
-    <el-empty
-      v-if="!loading && filteredPackages.length === 0"
-      :description="t('appstore.noPackages')"
-    />
 
     <!-- 任务队列抽屉：应用商店自己的任务（安装 / 升级 / 脚本 / 仓库同步） -->
     <el-drawer v-model="queueVisible" :title="t('appstore.queueTitle')" size="72%" destroy-on-close>
@@ -1038,62 +1049,71 @@ onMounted(() => {
   justify-content: space-between;
 }
 
-.pkg-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-  min-height: 120px;
-}
-
-.pkg-card {
+.pkg-table-wrap {
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
+  overflow: hidden;
 }
 
-.pkg-head {
+.cell-name {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
+  flex-direction: column;
+  gap: 4px;
 }
-
-.pkg-name {
-  font-size: 15px;
+.cell-name__title {
+  font-size: 14px;
   font-weight: 600;
   color: var(--el-text-color-primary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
-
-.pkg-tags {
+.cell-name__tags {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
-.pkg-title {
+.cell-desc__title {
   font-size: 13px;
   color: var(--el-text-color-regular);
 }
-
-.pkg-desc {
+.cell-desc__body {
   font-size: 12px;
   color: var(--el-text-color-secondary);
-  margin: 6px 0;
-  min-height: 32px;
+  margin: 2px 0;
   line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-
-.pkg-meta {
+.cell-desc__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
-  margin-bottom: 6px;
+}
+
+.cell-installed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.cell-installed__from {
+  width: 100%;
+  color: var(--el-text-color-secondary);
+}
+
+.cell-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.muted {
+  color: var(--el-text-color-placeholder);
 }
 
 .ver-opt-row {
@@ -1105,24 +1125,6 @@ onMounted(() => {
 
 .ver-fam-tag {
   margin-left: 6px;
-}
-
-.pkg-installed-meta {
-  font-size: 12px;
-  color: #67c23a;
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.pkg-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  border-top: 1px solid var(--el-border-color-lighter);
-  padding-top: 10px;
 }
 
 
