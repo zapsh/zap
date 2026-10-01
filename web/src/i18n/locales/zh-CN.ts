@@ -3580,8 +3580,6 @@ export default {
     editAfterBackup: '备份后编辑',
     infoTitle: '运行 / 安装信息（info.yaml）',
     noExtraInfo: '安装脚本未登记额外信息',
-    noSvcTip:
-      '该实例未登记 systemd 服务（info.yaml 缺 svc_name），无法通过面板启停，请在安装脚本中登记并 enable。',
     confirmAction: '确定{action} {name}（{instance}）？',
     confirmTitle: '{action}确认',
     actionOk: '{action}成功（{instance} 现为 {state}）',

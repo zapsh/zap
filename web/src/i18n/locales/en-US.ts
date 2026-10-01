@@ -3617,8 +3617,6 @@ const enUS: Messages = {
     editAfterBackup: 'Back Up and Edit',
     infoTitle: 'Runtime / Install Info (info.yaml)',
     noExtraInfo: 'The install script registered no extra information',
-    noSvcTip:
-      'This instance registered no systemd service (info.yaml is missing svc_name), so it cannot be started or stopped here; register and enable it in the install script.',
     confirmAction: 'Confirm to {action} {name} ({instance})?',
     confirmTitle: 'Confirm {action}',
     actionOk: '{action} succeeded ({instance} is now {state})',

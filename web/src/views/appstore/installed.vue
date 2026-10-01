@@ -310,9 +310,6 @@
             >{{ t('appstoreInstalled.actRestart') }}</el-button
           >
         </div>
-        <p v-else-if="!canControl(current)" class="no-svc-tip">
-          {{ t('appstoreInstalled.noSvcTip') }}
-        </p>
       </div>
     </el-drawer>
 
