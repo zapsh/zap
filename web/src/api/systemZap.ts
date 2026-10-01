@@ -85,3 +85,39 @@ export function restartZapdService() {
     http.post<ApiResponse>('/system/config/services/action', { name: svc, action: 'restart' })
   return run('zapd.service').catch(() => run('zapd'))
 }
+
+/** 缓存清理目标（清理前预览） */
+export interface ZapCacheTarget {
+  id: string
+  count: number
+  size: number
+  protected: number
+  dir: string
+}
+export interface ZapCacheStat {
+  targets: ZapCacheTarget[]
+}
+
+/** 单类清理结果 */
+export interface ZapCacheCleanItem {
+  id: string
+  removed: number
+  freed: number
+  skipped_running: number
+}
+export interface ZapCacheCleanData {
+  results: ZapCacheCleanItem[]
+  total_freed: number
+  total_removed: number
+  skipped_running: number
+}
+
+/** 读取缓存清理预览（各目标可清理量与运行中保护数，仅 admin） */
+export function getZapCache() {
+  return http.get<ApiResponse<ZapCacheStat>>('/system/config/zap/cache')
+}
+
+/** 清理选中的缓存目标（跳过正在运行的任务，仅 admin） */
+export function cleanZapCache(targets: string[]) {
+  return http.post<ApiResponse<ZapCacheCleanData>>('/system/config/zap/cache/clean', { targets })
+}

@@ -27,6 +27,7 @@ use crate::routers::ssl;
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
 use crate::zap::audit;
+use crate::zap::cache_clean;
 use crate::zap::jwt::ValidatedClaims;
 use crate::zap::jwt::is_admin;
 
@@ -516,5 +517,62 @@ pub async fn ssl_self_sign(
     Ok(Json(json!({
         "code": 0,
         "message": "已重新生成自签证书，重启 Zap 服务后生效"
+    })))
+}
+
+// ── 缓存清理（appstore 安装日志 / 编译产物 / 下载缓存）──────────
+
+/// 清理目标列表（与 cache_clean 模块的 TARGET_* 常量一致）。
+#[derive(Debug, Default, Deserialize)]
+pub struct CacheCleanPayload {
+    pub targets: Vec<String>,
+}
+
+/// GET /system/config/zap/cache —— 预览各目标可清理量与"运行中"保护数。
+pub async fn zap_cache_get(claims: ValidatedClaims) -> ZapJsonResult {
+    if !is_admin(&claims) {
+        return Err(ZapError::New(-1, "仅管理员可查看缓存清理".to_string()));
+    }
+    let stats = cache_clean::analyze_all().await;
+    Ok(Json(json!({
+        "code": 0,
+        "message": "OK",
+        "data": { "targets": stats }
+    })))
+}
+
+/// POST /system/config/zap/cache/clean —— 清理所选目标，跳过正在运行的任务。
+pub async fn zap_cache_clean(
+    claims: ValidatedClaims,
+    Json(payload): Json<CacheCleanPayload>,
+) -> ZapJsonResult {
+    if !is_admin(&claims) {
+        return Err(ZapError::New(-1, "仅管理员可清理缓存".to_string()));
+    }
+    if payload.targets.is_empty() {
+        return Err(ZapError::New(-1, "请选择要清理的项目".to_string()));
+    }
+    let results = cache_clean::clean(&payload.targets)
+        .await
+        .map_err(|e| ZapError::New(-1, e.to_string()))?;
+    let total_freed: u64 = results.iter().map(|r| r.freed).sum();
+    let total_removed: u64 = results.iter().map(|r| r.removed).sum();
+    let skipped: u64 = results.iter().map(|r| r.skipped_running).sum();
+
+    let detail = format!(
+        "targets={:?} removed={} freed={} skipped_running={}",
+        payload.targets, total_removed, total_freed, skipped
+    );
+    audit::log(Some(&claims), None, "zap_cache_clean", "system", &detail).await;
+
+    Ok(Json(json!({
+        "code": 0,
+        "message": "清理完成",
+        "data": {
+            "results": results,
+            "total_freed": total_freed,
+            "total_removed": total_removed,
+            "skipped_running": skipped,
+        }
     })))
 }

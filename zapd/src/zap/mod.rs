@@ -10,6 +10,7 @@ pub mod acme;
 pub mod admin_bootstrap;
 pub mod appstore;
 pub mod audit;
+pub mod cache_clean;
 pub mod auto_update;
 pub mod certmgr;
 pub mod cloud;

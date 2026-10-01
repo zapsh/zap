@@ -10,6 +10,7 @@ import NavPillPanels from '@/components/NavPillPanels.vue'
 import ZapPanel from './ZapPanel.vue'
 import NotifyPanel from './NotifyPanel.vue'
 import MirrorPanel from './MirrorPanel.vue'
+import CachePanel from './CachePanel.vue'
 
 const { t } = useI18n()
 
@@ -41,6 +42,13 @@ const tabs = computed(() => [
     icon: Download,
     panel: MirrorPanel,
     hint: t('mirrorCfg.pillHint'),
+  },
+  {
+    key: 'cache',
+    label: t('zapCfg.cacheTitle'),
+    icon: Setting,
+    panel: CachePanel,
+    hint: t('zapCfg.cacheSubtitle'),
   },
 ])
 </script>
