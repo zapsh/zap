@@ -1,6 +1,7 @@
 mod acme;
 mod app;
 mod appstore;
+mod backup;
 mod plugin;
 mod cred;
 mod cron;
@@ -657,6 +658,71 @@ pub async fn dispatch(req: Request) -> Response {
             Response::err(-1, "容器终端请使用流式会话".to_string())
         }
         Request::DockerEvents => Response::err(-1, "事件流请使用流式会话".to_string()),
+        // ── 备份（目录 / 数据库）──────────────────────────────
+        Request::BackupList { dir, backup_root } => backup::list(dir, backup_root).await,
+        Request::BackupDir {
+            name,
+            paths,
+            dest_dir,
+            as_user,
+            skip_owner_check,
+            backup_root,
+        } => backup::dir(name, paths, dest_dir, as_user, skip_owner_check, backup_root).await,
+        Request::BackupDb {
+            name,
+            engine,
+            db_name,
+            user,
+            password,
+            host,
+            port,
+            dest_dir,
+            db_path,
+            backup_root,
+        } => backup::db(
+            name,
+            engine,
+            db_name,
+            user,
+            password,
+            host,
+            port,
+            dest_dir,
+            db_path,
+            backup_root,
+        )
+        .await,
+        Request::BackupDelete { path, backup_root } => backup::delete(path, backup_root).await,
+        Request::BackupRestoreDir {
+            path,
+            target_dir,
+            as_user,
+            skip_owner_check,
+            backup_root,
+        } => backup::restore_dir(path, target_dir, as_user, skip_owner_check, backup_root).await,
+        Request::BackupRestoreDb {
+            path,
+            engine,
+            db_name,
+            user,
+            password,
+            host,
+            port,
+            db_path,
+            backup_root,
+        } => backup::restore_db(
+            path,
+            engine,
+            db_name,
+            user,
+            password,
+            host,
+            port,
+            db_path,
+            backup_root,
+        )
+        .await,
+        Request::BackupDisk { dir } => backup::disk(dir).await,
     }
 }
 

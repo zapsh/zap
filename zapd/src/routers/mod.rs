@@ -46,6 +46,7 @@ async fn demo_readonly_guard(req: Request, next: Next) -> Result<Response, Respo
 pub mod access;
 pub mod app;
 pub mod appstore;
+pub mod system_backup;
 pub mod plugins;
 pub mod auth;
 pub mod cloud;
@@ -315,6 +316,20 @@ fn api_routers() -> Router {
         .route("/database/remote", get(database::remote_list))
         .route("/database/remote/grant", post(database::remote_grant))
         .route("/database/remote/revoke", post(database::remote_revoke))
+        // 备份中心（目录 / 数据库备份与还原 + 定时任务）
+        .route("/system/backup/create_dir", post(system_backup::create_dir))
+        .route("/system/backup/create_db", post(system_backup::create_db))
+        .route("/system/backup/list", get(system_backup::list))
+        .route("/system/backup/setting", get(system_backup::setting_get))
+        .route("/system/backup/setting", post(system_backup::setting_save))
+        .route("/system/backup/delete", post(system_backup::delete))
+        .route("/system/backup/restore_dir", post(system_backup::restore_dir))
+        .route("/system/backup/restore_db", post(system_backup::restore_db))
+        .route("/system/backup/jobs", get(system_backup::jobs_list))
+        .route("/system/backup/records", get(system_backup::records_list))
+        .route("/system/backup/job/save", post(system_backup::job_save))
+        .route("/system/backup/job/delete", post(system_backup::job_delete))
+        .route("/system/backup/job/run", post(system_backup::job_run))
         .route("/system/package/delete", post(package::package_delete))
         // Role management (admin only)
         .route("/system/role/list", get(system_role::role_list))

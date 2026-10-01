@@ -15,6 +15,9 @@ pub struct ZapConfig {
     pub exec: ExecConfig,
     #[serde(default)]
     pub db: DbConfig,
+    /// 备份存储配置（备份根目录等）。
+    #[serde(default)]
+    pub backup: BackupConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -74,6 +77,15 @@ impl Default for DbConfig {
     }
 }
 
+/// 备份存储配置。
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct BackupConfig {
+    /// 备份根目录（归档统一落在此目录下）。留空 = 默认 `{ZAP_PATH}/data/backup`。
+    /// 该目录可指向另一块磁盘 / 挂载点，缓解系统盘空间不足。
+    #[serde(default)]
+    pub backup_dir: String,
+}
+
 const DEFAULT_JWT_SECURE: &str = "secure-key-zap-default";
 
 /// 全局配置（惰性初始化一次）。`get_config` 兜底加载；`init_config` 在服务器启动期
@@ -127,6 +139,7 @@ pub fn new() -> ZapConfig {
         },
         exec: ExecConfig::default(),
         db: DbConfig::default(),
+        backup: BackupConfig::default(),
     }
 }
 

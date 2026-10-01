@@ -227,6 +227,8 @@ async fn main() {
     zap::script_cron::start();
     // init cron scheduler for 面板用户计划任务（crontab.yaml）
     zap::user_cron::start();
+    // 备份任务调度器（目录 / 数据库定时备份）
+    zap::backup_scheduler::start();
     // 自动更新（zapd/zapexec 系统升级）定时调度
     zap::auto_update::start();
 

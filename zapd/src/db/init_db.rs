@@ -64,6 +64,8 @@ pub async fn init_schema() {
     init_ssl_acme_account_table().await;
     init_ssl_acme_order_table().await;
     init_ssl_acme_dns_provider_table().await;
+    // 备份中心：任务表 + 历史记录表
+    init_backup_tables().await;
     // 老库补列：新增列自动 ALTER 到已有表，避免每次加列都必须重建数据库
     migrate_add_columns().await;
     // 依赖上面的补列结果，必须排在其后
@@ -1389,6 +1391,43 @@ async fn init_ssl_acme_dns_provider_table() {
         updated_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_ssl_acme_dns_provider_user ON ssl_acme_dns_provider(user_id);
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+// ── 备份中心（目录 / 数据库备份与定时任务）──────────────────────
+
+async fn init_backup_tables() {
+    if table_exists("backup_jobs").await {
+        return;
+    }
+    let sql = r#"
+    CREATE TABLE backup_jobs (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL DEFAULT '',
+        target_type TEXT NOT NULL DEFAULT 'dir',
+        target TEXT NOT NULL DEFAULT '',
+        schedule TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        retain_count INTEGER NOT NULL DEFAULT 7,
+        cloud_id TEXT NOT NULL DEFAULT '',
+        last_run_at INTEGER NOT NULL DEFAULT 0,
+        last_status INTEGER NOT NULL DEFAULT 0,
+        last_message TEXT NOT NULL DEFAULT '',
+        created_at INTEGER,
+        updated_at INTEGER
+    );
+    CREATE TABLE backup_records (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER NOT NULL DEFAULT 0,
+        kind TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL DEFAULT '',
+        path TEXT NOT NULL DEFAULT '',
+        size INTEGER NOT NULL DEFAULT 0,
+        status INTEGER NOT NULL DEFAULT 0,
+        message TEXT NOT NULL DEFAULT '',
+        created_at INTEGER
+    );
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }

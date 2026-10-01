@@ -659,6 +659,23 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("crontab")
     .icon("material-symbols:alarm")
     .affix(),
+    // ── 备份中心（目录 / 数据库备份与还原，可定时）───────────
+    MenuSeed::new("backup", "备份", "dir", "/backup", "Layout", R_ADMIN, 5)
+        .icon("material-symbols:cloud-upload")
+        .redirect("/backup/index")
+        .affix(),
+    MenuSeed::new(
+        "backup-index",
+        "备份",
+        "menu",
+        "index",
+        "backup/index",
+        R_ADMIN,
+        1,
+    )
+    .parent("backup")
+    .icon("material-symbols:cloud-upload")
+    .affix(),
     // ── 容器管理（Docker）：没装 Docker 时不下发 ──────────────
     MenuSeed::new("docker", "容器管理", "dir", "/docker", "Layout", R_ADMIN, 5)
         .icon("material-symbols:deployed-code")

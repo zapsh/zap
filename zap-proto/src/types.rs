@@ -1628,6 +1628,111 @@ pub enum Request {
         /// `system` | `user`
         level: String,
     },
+    /// 备份：列出备份目录下的归档（root 特权）。
+    #[serde(rename = "backup.list")]
+    BackupList {
+        /// 实际要扫描的目录（可由 zapd 解析为绝对路径）
+        dir: String,
+        /// 备份根目录（用于校验落点）；空 = zapexec 兜底默认 `{ZAP_PATH}/data/backup`
+        #[serde(default)]
+        backup_root: String,
+    },
+    /// 备份：将目录/文件打包为 tar.gz（root 特权）。
+    #[serde(rename = "backup.dir")]
+    BackupDir {
+        /// 归档名（不含路径与后缀，自动加 .tar.gz）
+        name: String,
+        /// 待打包的绝对路径列表（多个时按各自相对 `/` 的层级存入归档）
+        paths: Vec<String>,
+        /// 输出目录（空 = 备份根；否则落在备份根内）
+        #[serde(default)]
+        dest_dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+        /// 备份根目录；空 = 默认
+        #[serde(default)]
+        backup_root: String,
+    },
+    /// 备份：导出数据库（root 特权）。mysql 走 mysqldump，sqlite 走 sqlite3 .dump。
+    #[serde(rename = "backup.db")]
+    BackupDb {
+        /// 归档名（不含路径与后缀，自动加 .sql.gz）
+        name: String,
+        /// mysql | sqlite
+        engine: String,
+        db_name: String,
+        #[serde(default)]
+        user: String,
+        #[serde(default)]
+        password: String,
+        #[serde(default)]
+        host: String,
+        #[serde(default)]
+        port: i32,
+        /// 输出目录（空 = 备份根；否则落在备份根内）
+        #[serde(default)]
+        dest_dir: String,
+        /// sqlite 时为数据库文件路径（engine=sqlite 时必填）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        db_path: Option<String>,
+        /// 备份根目录；空 = 默认
+        #[serde(default)]
+        backup_root: String,
+    },
+    /// 备份：删除归档（root 特权，路径须位于备份根内）。
+    #[serde(rename = "backup.delete")]
+    BackupDelete {
+        path: String,
+        /// 备份根目录；空 = 默认
+        #[serde(default)]
+        backup_root: String,
+    },
+    /// 备份：还原目录（解包到目标目录，root 特权）。
+    #[serde(rename = "backup.restore_dir")]
+    BackupRestoreDir {
+        /// 归档绝对路径
+        path: String,
+        /// 解包目标目录（归档内相对结构会原样落到此目录下）
+        target_dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+        /// 备份根目录；空 = 默认
+        #[serde(default)]
+        backup_root: String,
+    },
+    /// 备份：还原数据库（root 特权）。
+    #[serde(rename = "backup.restore_db")]
+    BackupRestoreDb {
+        /// 归档绝对路径（.sql.gz）
+        path: String,
+        engine: String,
+        db_name: String,
+        #[serde(default)]
+        user: String,
+        #[serde(default)]
+        password: String,
+        #[serde(default)]
+        host: String,
+        #[serde(default)]
+        port: i32,
+        /// sqlite 时为目标数据库文件路径
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        db_path: Option<String>,
+        /// 备份根目录；空 = 默认
+        #[serde(default)]
+        backup_root: String,
+    },
+    /// 备份：查询某目录所在文件系统的可用 / 总空间（root 特权，用于磁盘不足预警）。
+    #[serde(rename = "backup.disk")]
+    BackupDisk {
+        /// 要查询的目录（须位于备份根内；空 = 备份根）
+        #[serde(default)]
+        dir: String,
+    },
 }
 
 /// `zapexec` -> `zapd` 的响应。
