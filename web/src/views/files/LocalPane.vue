@@ -115,7 +115,7 @@
             <el-icon><Refresh /></el-icon>
           </el-button>
           <!-- 打开常驻编辑器浮窗：已打开时复用同一实例（可能正缩成图标）；图标按钮 -->
-          <el-button size="small" :title="t('filesLocal.openInEditor')" @click="openInEditor()">
+          <el-button size="small" :title="t('filesLocal.openInEditor')" :disabled="!canOpenInEditor" @click="openInEditor()">
             <el-icon><Edit /></el-icon>
           </el-button>
         </div>
@@ -656,6 +656,7 @@
     <FileEditorWindow
       v-if="editorWinMounted"
       :file-path="editorWinPath"
+      :is-dir="editorWinIsDir"
       :token="editorWinToken"
       :home-path="homePath"
       :active="pageActive"
@@ -682,7 +683,7 @@
         </div>
         <div
           class="fm-context-item"
-          :class="{ disabled: !canEditFile }"
+          :class="{ disabled: !canOpenInEditor }"
           @click="editInEditorFromMenu"
         >
           <el-icon><Edit /></el-icon>
@@ -853,8 +854,8 @@ const canDownloadDirectly = computed(
 const hasDirectory = computed(() => selectedItems.value.some((e) => e.is_dir))
 
 const canOpen = computed(() => selectionCount.value === 1)
-/** 「使用编辑器打开」：只能对单个文件（目录没有内容可编辑） */
-const canEditFile = computed(() => selectionCount.value === 1 && !singleSelected.value?.is_dir)
+/** 「使用编辑器打开」：选中单项时打开该项；未选中时打开空窗口（左侧默认家目录） */
+const canOpenInEditor = computed(() => selectionCount.value <= 1)
 const canRename = computed(() => selectionCount.value === 1)
 const canDuplicate = computed(() => selectionCount.value === 1)
 const canSetPermissions = computed(() => hasSelection.value)
@@ -923,6 +924,60 @@ async function revealInTree() {
 function syncTree() {
   const current = currentPath.value
   if (current && treeNode(current)) treeRef.value?.setCurrentKey(current)
+}
+
+/** 等待若干毫秒（轮询懒加载节点的 load 完成） */
+function sleep(ms: number) {
+  return new Promise<void>((r) => setTimeout(r, ms))
+}
+
+/** 确保某节点已展开且子目录已加载（懒加载树） */
+async function ensureNodeExpanded(node: any) {
+  if (!node.expanded) node.expand()
+  if (!node.loaded) {
+    for (let i = 0; i < 40; i++) {
+      if (node.loaded) break
+      await sleep(30)
+    }
+  }
+}
+
+/**
+ * 让左侧目录树自动展开到指定路径并高亮：
+ * - 目录：逐层展开所有祖先，最终高亮该目录节点
+ * - 文件：逐层展开到父目录，高亮父目录节点（文件本身不在树里）
+ */
+async function revealPathInTree(target: string, isDir: boolean) {
+  const tree = treeRef.value
+  if (!tree) return
+  const norm = (target || '/').replace(/\/+$/, '') || '/'
+  const segs = norm.split('/').filter((s) => s)
+  const prefixes: string[] = []
+  let acc = ''
+  for (const s of segs) {
+    acc = acc ? acc + '/' + s : '/' + s
+    prefixes.push(acc)
+  }
+  const firstNode = prefixes.length ? treeNode(prefixes[0]) : null
+  // 管理员有系统根「/」入口：路径不在家目录下时，先把根展开才能拿到 /etc、/home 等顶层子目录
+  const rootNode = treeNode('/')
+  if (!firstNode && rootNode && !rootNode.expanded) await ensureNodeExpanded(rootNode)
+  const last = prefixes.length - 1
+  const expandLast = isDir ? last : last - 1
+  for (let i = 0; i <= expandLast; i++) {
+    const node = treeNode(prefixes[i])
+    if (!node) break
+    await ensureNodeExpanded(node)
+    await nextTick()
+  }
+  const key = isDir ? norm : last > 0 ? prefixes[last - 1] : ''
+  if (key && treeNode(key)) tree.setCurrentKey(key)
+}
+
+/** 导航进某目录，并让左侧树自动定位到它 */
+async function navigateAndReveal(path: string) {
+  navigateTo(path)
+  await revealPathInTree(path, true)
 }
 
 // Dialogs
@@ -994,16 +1049,21 @@ function onEditKeydown(e: KeyboardEvent) {
 const editorWinMounted = ref(false)
 /** 要打开的文件；为空 = 只把窗口叫出来，由用户在窗口内选文件 */
 const editorWinPath = ref('')
+/** 要打开的路径是否为目录：是则让编辑器浮窗进入「文件夹视图」 */
+const editorWinIsDir = ref(false)
 /** 每次调用自增：已挂载时用它换文件 / 从最小化还原 */
 const editorWinToken = ref(0)
 /** 文件管理页被路由切走时（keep-alive 缓存）浮窗一并隐藏，切回来再显示 */
 const pageActive = ref(true)
 
 function openInEditor(entry?: FileEntry | null) {
-  const item = entry ?? (canEditFile.value ? singleSelected.value : null)
-  editorWinPath.value = item?.path ?? ''
+  const item = entry ?? singleSelected.value
+  // 没选具体项：打开一个空编辑器窗口，左侧树默认以家目录为根，由用户在窗口内挑文件
+  editorWinPath.value = item ? item.path : ''
+  editorWinIsDir.value = item ? !!item.is_dir : false
   editorWinToken.value++
   editorWinMounted.value = true
+  if (item) revealPathInTree(item.path, !!item.is_dir)
 }
 
 function editInEditorFromMenu() {
@@ -1802,9 +1862,10 @@ function openSelected() {
   const item = singleSelected.value
   if (!item) return
   if (item.is_dir) {
-    navigateTo(item.path)
+    navigateAndReveal(item.path)
   } else {
     openFileEditor(item)
+    revealPathInTree(item.path, false)
   }
 }
 

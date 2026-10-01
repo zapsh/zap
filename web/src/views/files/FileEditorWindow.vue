@@ -78,13 +78,14 @@
           </div>
           <el-scrollbar class="few-tree-scroll">
             <el-tree
+              ref="treeRef"
               :data="treeData"
               :props="treeProps"
               :load="loadTreeNode"
               node-key="path"
               lazy
               highlight-current
-              :current-node-key="activePath"
+              :current-node-key="activePath || treeRootPath"
               @node-click="onTreeNodeClick"
             >
               <template #default="{ node, data }">
@@ -204,6 +205,8 @@ const props = withDefaults(
   defineProps<{
     /** 要打开的文件路径；为空表示只开窗口，从左侧树里挑 */
     filePath?: string
+    /** 要打开的路径是否为目录：是则进入「文件夹视图」而非直接打开文件 */
+    isDir?: boolean
     /** 每次「使用编辑器打开」自增，用于在已挂载的窗口里加标签 / 从最小化还原 */
     token?: number
     /** 树根（家目录）；为空时向后端要一次 */
@@ -211,7 +214,7 @@ const props = withDefaults(
     /** 父级（文件管理页）是否处于激活态：切走路由时整个浮窗隐藏 */
     active?: boolean
   }>(),
-  { filePath: '', token: 0, homePath: '', active: true },
+  { filePath: '', isDir: false, token: 0, homePath: '', active: true },
 )
 
 const emit = defineEmits<{
@@ -393,6 +396,40 @@ function bringToFront() {
 function restore() {
   minimized.value = false
   bringToFront()
+}
+
+// ── 左侧树以「打开的目录」为根 ───────────────────────────────
+
+/** 左侧树当前根目录（打开目录 / 打开文件时取其父目录）；文件管理里的树根不设 */
+const treeRootPath = ref('')
+const treeRef = ref<any>(null)
+
+/** 取路径的父目录（已到根则返回 '/'） */
+function parentOf(path: string): string {
+  const p = path.replace(/\/+$/, '')
+  if (p === '' || p === '/') return '/'
+  const idx = p.lastIndexOf('/')
+  return idx <= 0 ? '/' : p.slice(0, idx)
+}
+
+/**
+ * 把左侧树的根改成指定目录：树只展示该目录及其子目录，
+ * 让「用编辑器打开」的目录成为浏览的基准（右侧不再重复列目录）。
+ */
+async function rootTreeAt(path: string) {
+  treeRootPath.value = path
+  treeData.value = [
+    {
+      name: nameOf(path) || path,
+      path,
+      is_dir: true,
+      icon: path === props.homePath ? 'home' : path === '/' ? 'root' : undefined,
+    },
+  ]
+  await nextTick()
+  const node = treeRef.value?.store.getNode(path)
+  if (node) await node.expand()
+  treeRef.value?.setCurrentKey(path)
 }
 
 // ── 文件读写 ────────────────────────────────────────────────
@@ -597,12 +634,14 @@ async function loadTreeRoot() {
 
 async function refreshTree() {
   await loadTreeRoot()
+  // 回到默认（家目录）根，清掉「以某目录为基准」的临时根
+  treeRootPath.value = ''
 }
 
 async function loadTreeNode(node: any, resolve: (data: TreeNode[]) => void) {
   const path: string | undefined = node.data?.path
-  // level 0 由 :data 提供，再 resolve 会重复渲染一组根节点
-  if (node.level === 0 || !path) {
+  // 没有路径的节点（占位根）不加载；其余目录（含被设为树根的那一层）都按需列出子目录
+  if (!path) {
     resolve([])
     return
   }
@@ -617,6 +656,7 @@ async function loadTreeNode(node: any, resolve: (data: TreeNode[]) => void) {
 }
 
 function onTreeNodeClick(data: TreeNode) {
+  // 目录：默认展开/收起；文件：开成编辑标签
   if (!data.is_dir) void openPath(data.path)
 }
 
@@ -640,7 +680,14 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeydown, true)
   window.addEventListener('resize', clampToViewport)
   await loadTreeRoot()
-  if (props.filePath) await openPath(props.filePath)
+  if (props.filePath) {
+    if (props.isDir) await rootTreeAt(props.filePath)
+    else {
+      // 文件：左侧树以「文件所在目录」为基准，并打开该文件
+      await rootTreeAt(parentOf(props.filePath))
+      await openPath(props.filePath)
+    }
+  }
 })
 
 onBeforeUnmount(() => {
@@ -650,14 +697,24 @@ onBeforeUnmount(() => {
   stopResize()
 })
 
-// 父级再次「使用编辑器打开」（可能换了文件，也可能窗口正缩在图标里）
+// 父级再次「使用编辑器打开」（可能换了文件 / 目录，也可能窗口正缩在图标里）
 watch(
-  () => [props.filePath, props.token],
+  () => [props.filePath, props.token, props.isDir],
   () => {
     // 缩成图标时无论是否带文件都先还原，让窗口重新可见
     if (minimized.value) restore()
-    if (!props.filePath) return
-    void openPath(props.filePath)
+    // 没选具体文件 / 目录：左侧树回到家目录根（默认基准）
+    if (!props.filePath) {
+      void loadTreeRoot().then(() => {
+        treeRootPath.value = ''
+      })
+      return
+    }
+    if (props.isDir) void rootTreeAt(props.filePath)
+    else {
+      void rootTreeAt(parentOf(props.filePath))
+      void openPath(props.filePath)
+    }
   },
 )
 </script>
