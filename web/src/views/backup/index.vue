@@ -4,6 +4,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useUserStore } from '@/stores/user'
 import { Setting, User, Timer } from '@/icons'
 import NavPillPanels from '@/components/NavPillPanels.vue'
@@ -11,6 +12,7 @@ import MyBackup from './my.vue'
 import JobTasks from './jobs.vue'
 import BackupSettings from './Settings.vue'
 
+const { t } = useI18n()
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.roles?.includes('admin') === true)
 
@@ -24,26 +26,26 @@ const tabs = computed(() => {
   const list = [
     {
       key: 'my',
-      label: '我的备份',
+      label: t('backup.myTab'),
       icon: User,
       panel: MyBackup,
-      hint: '个人保留份数与备份归档，可自助还原',
+      hint: t('backup.myHint'),
     },
     {
       key: 'jobs',
-      label: '备份任务',
+      label: t('backup.jobsTab'),
       icon: Timer,
       panel: JobTasks,
-      hint: '定时备份自己的目录或数据库（受策略开关约束）',
+      hint: t('backup.jobsHint'),
     },
   ]
   if (isAdmin.value) {
     list.push({
       key: 'settings',
-      label: '备份设置',
+      label: t('backup.settingsTab'),
       icon: Setting,
       panel: BackupSettings,
-      hint: '存储目录 / 立即备份 / 计划任务 / 备份策略',
+      hint: t('backup.settingsHint'),
     })
   }
   return list

@@ -6,126 +6,126 @@
       type="info"
       :closable="false"
       show-icon
-      title="定时备份功能未开启"
-      description="管理员已在「备份策略」中关闭「允许用户定时备份」，暂无法创建或管理定时备份任务。如需开启请联系管理员。"
+      :title="t('backup.jobDisabledTitle')"
+      :description="t('backup.jobDisabledDesc')"
       style="margin-bottom: 16px"
     />
 
     <template v-else>
       <div class="card-head">
-        <span>备份任务</span>
-        <el-button type="primary" @click="openJobDialog(null)">新建任务</el-button>
+        <span>{{ t('backup.jobsTitle') }}</span>
+        <el-button type="primary" @click="openJobDialog(null)">{{ t('backup.newJob') }}</el-button>
       </div>
       <el-table :data="jobs" v-loading="loadingJobs" size="small">
-        <el-table-column prop="name" label="名称" min-width="160" />
-        <el-table-column prop="target_type" label="类型" width="80" />
-        <el-table-column label="计划(cron)" min-width="160">
+        <el-table-column prop="name" :label="t('backup.colName')" min-width="160" />
+        <el-table-column prop="target_type" :label="t('backup.colType')" width="80" />
+        <el-table-column :label="t('backup.colSchedule')" min-width="160">
           <template #default="{ row }">
             <div>{{ describeCron(row.schedule) }}</div>
             <div class="muted">{{ row.schedule }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="保留份数" width="80">
+        <el-table-column :label="t('backup.colRetain')" width="80">
           <template #default="{ row }">{{ row.retain_count }}</template>
         </el-table-column>
-        <el-table-column label="启用" width="90">
+        <el-table-column :label="t('backup.colEnabled')" width="90">
           <template #default="{ row }">
             <el-switch v-model="row.enabled" :active-value="1" :inactive-value="0"
               @change="onToggleJob(row)" />
           </template>
         </el-table-column>
-        <el-table-column label="上次运行" width="200">
+        <el-table-column :label="t('backup.colLastRun')" width="200">
           <template #default="{ row }">
             <span v-if="row.last_run_at">{{ formatTime(row.last_run_at) }}</span>
-            <el-tag v-if="row.last_status === 1" size="small" type="success">成功</el-tag>
-            <el-tag v-else-if="row.last_status === -1" size="small" type="danger">失败</el-tag>
+            <el-tag v-if="row.last_status === 1" size="small" type="success">{{ t('backup.statusOk') }}</el-tag>
+            <el-tag v-else-if="row.last_status === -1" size="small" type="danger">{{ t('backup.statusFail') }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="220">
+        <el-table-column :label="t('backup.colAction')" width="220">
           <template #default="{ row }">
-            <el-button text type="primary" @click="onRunJob(row)">立即执行</el-button>
-            <el-button text type="primary" @click="openJobDialog(row)">编辑</el-button>
-            <el-button text type="danger" @click="onDeleteJob(row)">删除</el-button>
+            <el-button text type="primary" @click="onRunJob(row)">{{ t('backup.runNow') }}</el-button>
+            <el-button text type="primary" @click="openJobDialog(row)">{{ t('backup.edit') }}</el-button>
+            <el-button text type="danger" @click="onDeleteJob(row)">{{ t('backup.delete') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
     </template>
 
     <!-- 任务编辑对话框 -->
-    <el-dialog v-model="jobDialog" :title="jobForm.id ? '编辑任务' : '新建任务'" width="560px">
+    <el-dialog v-model="jobDialog" :title="jobForm.id ? t('backup.editTitle') : t('backup.newTitle')" width="560px">
       <el-form :model="jobForm" label-width="96px">
-        <el-form-item label="任务名">
+        <el-form-item :label="t('backup.nameLabel')">
           <el-input v-model="jobForm.name" />
         </el-form-item>
-        <el-form-item label="备份类型">
+        <el-form-item :label="t('backup.kindLabel')">
           <el-radio-group v-model="jobForm.target_type">
-            <el-radio value="dir">目录 / 文件</el-radio>
-            <el-radio value="db">数据库</el-radio>
+            <el-radio value="dir">{{ t('backup.kindDirFile') }}</el-radio>
+            <el-radio value="db">{{ t('backup.kindDb') }}</el-radio>
           </el-radio-group>
         </el-form-item>
 
         <template v-if="jobForm.target_type === 'dir'">
-          <el-form-item label="备份路径">
-            <el-input v-model="jobForm.dirPaths" type="textarea" :rows="3" placeholder="每行一个绝对路径" />
-            <span v-if="!isAdmin" class="tip">仅能填写你自己家目录内的绝对路径（后端会校验）</span>
+          <el-form-item :label="t('backup.pathLabel')">
+            <el-input v-model="jobForm.dirPaths" type="textarea" :rows="3" :placeholder="t('backup.pathPh')" />
+            <span v-if="!isAdmin" class="tip">{{ t('backup.pathUserTip') }}</span>
           </el-form-item>
         </template>
         <template v-else>
-          <el-form-item label="数据库类型">
+          <el-form-item :label="t('backup.engineLabel')">
             <el-select v-model="jobForm.engine" style="width:160px">
               <el-option label="MySQL / MariaDB" value="mysql" />
               <el-option label="SQLite" value="sqlite" />
             </el-select>
           </el-form-item>
-          <el-form-item label="数据库名">
+          <el-form-item :label="t('backup.dbNameLabel')">
             <el-input v-model="jobForm.dbName" />
-            <span v-if="!isAdmin" class="tip">仅能填写你自己名下的数据库（库名需以你的账号前缀开头，后端会校验）</span>
+            <span v-if="!isAdmin" class="tip">{{ t('backup.dbNameUserTip') }}</span>
           </el-form-item>
           <el-collapse class="more-collapse">
-            <el-collapse-item title="更多连接信息（留空则用本机 zapadm 直连，填写后备份远程数据库）">
-              <el-form-item label="用户名">
-                <el-input v-model="jobForm.dbUser" placeholder="留空 = zapadm" />
+            <el-collapse-item :title="t('backup.moreConn')">
+              <el-form-item :label="t('backup.dbUser')">
+                <el-input v-model="jobForm.dbUser" :placeholder="t('backup.dbUserPh')" />
               </el-form-item>
-              <el-form-item label="密码">
-                <el-input v-model="jobForm.dbPass" type="password" show-password placeholder="留空 = 面板凭据" />
+              <el-form-item :label="t('backup.dbPass')">
+                <el-input v-model="jobForm.dbPass" type="password" show-password :placeholder="t('backup.dbPassPh')" />
               </el-form-item>
-              <el-form-item label="主机">
+              <el-form-item :label="t('backup.host')">
                 <el-input v-model="jobForm.dbHost" placeholder="127.0.0.1" />
               </el-form-item>
-              <el-form-item label="端口">
+              <el-form-item :label="t('backup.port')">
                 <el-input v-model="jobForm.dbPort" placeholder="3306" />
               </el-form-item>
-              <el-form-item v-if="jobForm.engine === 'sqlite'" label="数据库文件">
+              <el-form-item v-if="jobForm.engine === 'sqlite'" :label="t('backup.dbFile')">
                 <el-input v-model="jobForm.dbPath" />
               </el-form-item>
             </el-collapse-item>
           </el-collapse>
         </template>
 
-        <el-form-item label="计划(cron)">
+        <el-form-item :label="t('backup.scheduleLabel')">
           <el-select
             v-model="jobForm.schedule"
             filterable
             allow-create
             default-first-option
-            placeholder="如 0 3 * * *（每天 3 点）"
+            :placeholder="t('backup.schedulePh')"
             style="width: 100%"
           >
-            <el-option label="每天 03:00" value="0 3 * * *" />
-            <el-option label="每天 04:00" value="0 4 * * *" />
-            <el-option label="每周一 03:00" value="0 3 * * 1" />
-            <el-option label="每月 1 号 03:00" value="0 3 1 * *" />
-            <el-option label="每小时" value="0 * * * *" />
+            <el-option :label="t('backup.cronDaily3')" value="0 3 * * *" />
+            <el-option :label="t('backup.cronDaily4')" value="0 4 * * *" />
+            <el-option :label="t('backup.cronWeekly')" value="0 3 * * 1" />
+            <el-option :label="t('backup.cronMonthly')" value="0 3 1 * *" />
+            <el-option :label="t('backup.cronHourly')" value="0 * * * *" />
           </el-select>
-          <span class="tip">当前执行：{{ describeCron(jobForm.schedule) }}（标准 5 段 cron，可直接输入自定义表达式）</span>
+          <span class="tip">{{ t('backup.scheduleTip', { desc: describeCron(jobForm.schedule) }) }}</span>
         </el-form-item>
-        <el-form-item label="保留份数">
+        <el-form-item :label="t('backup.retainLabel')">
           <el-input-number v-model="jobForm.retain_count" :min="0" :max="999" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="jobDialog = false">取消</el-button>
-        <el-button type="primary" :loading="savingJob" @click="onSaveJob">保存</el-button>
+        <el-button @click="jobDialog = false">{{ t('backup.cancel') }}</el-button>
+        <el-button type="primary" :loading="savingJob" @click="onSaveJob">{{ t('backup.save') }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -133,10 +133,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { http } from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 
+const { t } = useI18n()
 const userStore = useUserStore()
 const isAdmin = computed(() => (userStore.roles || []).includes('admin'))
 
@@ -184,7 +186,7 @@ async function loadJobs() {
     jobs.value = []
     // 普通用户被开关拦截时已在页面上给出提示，不再重复报错
     if (!(e?.message || '').includes('已关闭')) {
-      ElMessage.error(e?.message || '加载失败')
+      ElMessage.error(e?.message || t('backup.loadFailed'))
     }
   } finally {
     loadingJobs.value = false
@@ -193,20 +195,20 @@ async function loadJobs() {
 
 function openJobDialog(row: any) {
   if (row) {
-    let t: any = {}
-    try { t = JSON.parse(row.target || '{}') } catch {}
+    let t2: any = {}
+    try { t2 = JSON.parse(row.target || '{}') } catch {}
     jobForm.value = {
       id: row.id,
       name: row.name,
       target_type: row.target_type,
-      dirPaths: (t.paths || []).join('\n'),
-      engine: t.engine || 'mysql',
-      dbName: t.db_name || '',
-      dbUser: t.user || '',
-      dbPass: t.password || '',
-      dbHost: t.host || '',
-      dbPort: t.port ? String(t.port) : '',
-      dbPath: t.db_path || '',
+      dirPaths: (t2.paths || []).join('\n'),
+      engine: t2.engine || 'mysql',
+      dbName: t2.db_name || '',
+      dbUser: t2.user || '',
+      dbPass: t2.password || '',
+      dbHost: t2.host || '',
+      dbPort: t2.port ? String(t2.port) : '',
+      dbPath: t2.db_path || '',
       schedule: row.schedule,
       retain_count: row.retain_count,
     }
@@ -222,14 +224,14 @@ function openJobDialog(row: any) {
 
 async function onSaveJob() {
   const f = jobForm.value
-  if (!f.name.trim()) return ElMessage.warning('请填写任务名')
+  if (!f.name.trim()) return ElMessage.warning(t('backup.nameRequired'))
   let target: any
   if (f.target_type === 'dir') {
     const paths = f.dirPaths.split('\n').map((s) => s.trim()).filter(Boolean)
-    if (!paths.length) return ElMessage.warning('请填写备份路径')
+    if (!paths.length) return ElMessage.warning(t('backup.pathsRequired'))
     target = { paths }
   } else {
-    if (!f.dbName.trim()) return ElMessage.warning('请填写数据库名')
+    if (!f.dbName.trim()) return ElMessage.warning(t('backup.dbNameNameRequired'))
     target = {
       engine: f.engine,
       db_name: f.dbName,
@@ -250,11 +252,11 @@ async function onSaveJob() {
       schedule: f.schedule,
       retain_count: f.retain_count,
     })
-    ElMessage.success('已保存')
+    ElMessage.success(t('backup.saved'))
     jobDialog.value = false
     loadJobs()
   } catch (e: any) {
-    ElMessage.error(e?.message || '保存失败')
+    ElMessage.error(e?.message || t('backup.saveFailed'))
   } finally {
     savingJob.value = false
   }
@@ -263,10 +265,10 @@ async function onSaveJob() {
 async function onRunJob(row: any) {
   try {
     await http.post('/system/backup/job/run', { id: row.id })
-    ElMessage.success('已触发执行')
+    ElMessage.success(t('backup.triggered'))
     setTimeout(loadJobs, 1500)
   } catch (e: any) {
-    ElMessage.error(e?.message || '执行失败')
+    ElMessage.error(e?.message || t('backup.runFailed'))
   }
 }
 
@@ -282,23 +284,23 @@ async function onToggleJob(row: any) {
       retain_count: row.retain_count,
     })
   } catch (e: any) {
-    ElMessage.error(e?.message || '更新失败')
+    ElMessage.error(e?.message || t('backup.updateFailed'))
     loadJobs()
   }
 }
 
 async function onDeleteJob(row: any) {
   try {
-    await ElMessageBox.confirm(`确认删除任务 ${row.name}？`, '提示', { type: 'warning' })
+    await ElMessageBox.confirm(t('backup.deleteJobConfirm', { name: row.name }), t('backup.notice'), { type: 'warning' })
   } catch {
     return
   }
   try {
     await http.post('/system/backup/job/delete', { id: row.id })
-    ElMessage.success('已删除')
+    ElMessage.success(t('backup.deleted'))
     loadJobs()
   } catch (e: any) {
-    ElMessage.error(e?.message || '删除失败')
+    ElMessage.error(e?.message || t('backup.deleteFailed'))
   }
 }
 
@@ -317,23 +319,27 @@ function formatTime(ts: number) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
-const CRON_DESC: Record<string, string> = {
-  '0 3 * * *': '每天 03:00',
-  '0 4 * * *': '每天 04:00',
-  '0 3 * * 1': '每周一 03:00',
-  '0 3 1 * *': '每月 1 号 03:00',
-  '0 * * * *': '每小时',
-  '* * * * *': '每分钟',
+/** cron 表达式 -> 人类可读说明（命中预设走 i18n，未命中回退原始表达式） */
+const CRON_DESC_KEY: Record<string, string> = {
+  '0 3 * * *': 'backup.cronDaily3',
+  '0 4 * * *': 'backup.cronDaily4',
+  '0 3 * * 1': 'backup.cronWeekly',
+  '0 3 1 * *': 'backup.cronMonthly',
+  '0 * * * *': 'backup.cronHourly',
+  '* * * * *': 'backup.cronMinute',
 }
 function describeCron(expr?: string) {
   const e = (expr || '').trim()
-  if (!e) return '未设置'
-  if (CRON_DESC[e]) return CRON_DESC[e]
+  if (!e) return t('backup.cronUnset')
+  if (CRON_DESC_KEY[e]) return t(CRON_DESC_KEY[e])
   const m = e.match(/^\d+ (\d+) \* \* \*$/)
-  if (m) return `每天 ${String(m[1]).padStart(2, '0')}:00`
+  if (m) return t('backup.cronDailyAt', { h: String(m[1]).padStart(2, '0') })
   const h = e.match(/^\d+ (\d+) \* \* (\d+)$/)
-  if (h) return `每周 ${['日','一','二','三','四','五','六'][Number(h[2])] || h[2]} ${String(h[1]).padStart(2, '0')}:00`
-  return `自定义：${e}`
+  if (h) {
+    const wd = t('backup.weekdays').split(',')
+    return t('backup.cronWeeklyAt', { d: wd[Number(h[2])] || h[2], h: String(h[1]).padStart(2, '0') })
+  }
+  return t('backup.cronCustom', { expr: e })
 }
 
 onMounted(() => {
