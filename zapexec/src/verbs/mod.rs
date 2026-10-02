@@ -700,10 +700,19 @@ pub async fn dispatch(req: Request) -> Response {
         Request::BackupRestoreDir {
             path,
             target_dir,
+            to_original,
             as_user,
             skip_owner_check,
             backup_root,
-        } => backup::restore_dir(path, target_dir, as_user, skip_owner_check, backup_root).await,
+        } => backup::restore_dir(
+            path,
+            target_dir,
+            to_original,
+            as_user,
+            skip_owner_check,
+            backup_root,
+        )
+        .await,
         Request::BackupRestoreDb {
             path,
             engine,

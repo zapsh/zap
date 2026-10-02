@@ -479,6 +479,7 @@ pub async fn delete(path: String, backup_root: String) -> Response {
 pub async fn restore_dir(
     path: String,
     target_dir: String,
+    to_original: bool,
     _as_user: Option<String>,
     _skip_owner_check: bool,
     backup_root: String,
@@ -489,6 +490,17 @@ pub async fn restore_dir(
     };
     if !p.is_file() {
         return Response::err(-1, "归档不存在或不是文件".to_string());
+    }
+    if to_original {
+        // 归档内为相对路径（如 home/u/www/...），以 root 运行 tar 并 -C / 解包，
+        // 即可写回原绝对位置，且保留原始属主。
+        let mut cmd = crate::verbs::root_cmd("tar");
+        cmd.arg("-xzf").arg(&p).arg("-C").arg("/");
+        return match cmd.status() {
+            Ok(s) if s.success() => Response::ok("已还原到原路径", None),
+            Ok(s) => Response::err(-1, format!("解包失败: 退出码 {}", s.code().unwrap_or(-1))),
+            Err(e) => Response::err(-1, format!("执行 tar 失败: {e}")),
+        };
     }
     let target = PathBuf::from(&target_dir);
     if let Err(e) = std::fs::create_dir_all(&target) {

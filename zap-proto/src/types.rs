@@ -1707,6 +1707,10 @@ pub enum Request {
         path: String,
         /// 解包目标目录（归档内相对结构会原样落到此目录下）
         target_dir: String,
+        /// 为 true 时按归档内相对路径写回原绝对位置（tar -C / 解包），忽略 target_dir。
+        /// 因会写回文件系统任意位置，须由管理员或该备份所属用户发起。
+        #[serde(default)]
+        to_original: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_user: Option<String>,
         #[serde(default)]

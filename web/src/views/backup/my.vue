@@ -64,75 +64,6 @@
       </div>
     </el-card>
 
-    <!-- 额外备份目录：家目录外（策略二） -->
-    <el-card shadow="never" class="block">
-      <template #header>
-        <div class="card-head">
-          <span>额外备份目录（家目录外）</span>
-          <el-button text type="primary" @click="loadUserPaths">刷新</el-button>
-        </div>
-      </template>
-      <el-table :data="userPaths" v-loading="loadingUserPaths" size="small" empty-text="暂无">
-        <el-table-column prop="path" label="目录" min-width="240" />
-        <el-table-column prop="note" label="备注" min-width="120" />
-        <el-table-column label="操作" width="100">
-          <template #default="{ row }">
-            <el-button text type="danger" @click="onDeleteUserPath(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-form :inline="true" class="form" style="margin-top:12px">
-        <el-form-item label="目录">
-          <el-input v-model="userPathForm.path" placeholder="绝对路径，如 /data/docker-volumes" style="width:300px" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="userPathForm.note" style="width:160px" />
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" :loading="savingUserPath" @click="onAddUserPath">添加</el-button>
-        </el-form-item>
-      </el-form>
-      <div class="tip">这些目录会并入「按家目录」全量备份（策略二）。家目录内已自动包含，这里只填家目录之外、或 Docker 卷等额外路径。</div>
-    </el-card>
-
-    <!-- 站点额外目录（策略一） -->
-    <el-card shadow="never" class="block">
-      <template #header>
-        <div class="card-head">
-          <span>站点额外目录</span>
-          <el-button text type="primary" @click="loadSitePaths">刷新</el-button>
-        </div>
-      </template>
-      <el-form :inline="true" class="form">
-        <el-form-item label="选择站点">
-          <el-select v-model="selectedSiteId" filterable placeholder="选择站点" style="width:240px" @change="loadSitePaths">
-            <el-option v-for="s in sites" :key="s.id" :label="(s.name || ('站点#'+s.id)) + ' (#'+s.id+')'" :value="s.id" />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <el-table :data="sitePaths" v-loading="loadingSitePaths" size="small" empty-text="请选择站点">
-        <el-table-column prop="path" label="目录" min-width="240" />
-        <el-table-column prop="note" label="备注" min-width="120" />
-        <el-table-column label="操作" width="100">
-          <template #default="{ row }">
-            <el-button text type="danger" @click="onDeleteSitePath(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-form :inline="true" class="form" style="margin-top:12px">
-        <el-form-item label="目录">
-          <el-input v-model="sitePathForm.path" placeholder="绝对路径" style="width:300px" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="sitePathForm.note" style="width:160px" />
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" :loading="savingSitePath" :disabled="!selectedSiteId" @click="onAddSitePath">添加</el-button>
-        </el-form-item>
-      </el-form>
-      <div class="tip">这些目录会并入该站点的全量备份（策略一：站点文档根 + 应用工作目录 + 此处）。</div>
-    </el-card>
-
     <!-- 还原对话框 -->
     <el-dialog v-model="restoreDialog" title="还原" width="520px">
       <el-form :model="restoreForm" label-width="110px">
@@ -153,8 +84,17 @@
         <el-form-item v-if="restoreForm.kind === 'db'" label="目标数据库">
           <el-input v-model="restoreForm.dbName" placeholder="要还原到的数据库名" />
         </el-form-item>
-        <el-form-item v-if="restoreForm.kind === 'dir'" label="解包目标目录">
+        <el-form-item v-if="restoreForm.kind === 'dir'" label="还原方式">
+          <el-radio-group v-model="restoreForm.toOriginal">
+            <el-radio :value="false">解包到指定目录</el-radio>
+            <el-radio :value="true">还原到原路径</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="restoreForm.kind === 'dir' && !restoreForm.toOriginal" label="解包目标目录">
           <el-input v-model="restoreForm.targetDir" placeholder="如 /home/u/www/restore" />
+        </el-form-item>
+        <el-form-item v-if="restoreForm.kind === 'dir' && restoreForm.toOriginal">
+          <span class="tip">将按归档内路径直接写回原绝对位置（需管理员或该备份所属用户）。</span>
         </el-form-item>
         <el-form-item>
           <span class="tip">数据库还原使用存储凭据，无需输入密码。</span>
@@ -172,29 +112,11 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { http } from '@/utils/request'
-import { useUserStore } from '@/stores/user'
-
-const userStore = useUserStore()
-const uid = userStore.userId
 
 const loading = ref(false)
 const records = ref<any[]>([])
 const retain = ref(7)
 const savingRetain = ref(false)
-
-// ── 额外备份目录（家目录外，策略二）──
-const loadingUserPaths = ref(false)
-const savingUserPath = ref(false)
-const userPaths = ref<any[]>([])
-const userPathForm = ref({ path: '', note: '' })
-
-// ── 站点额外目录（策略一）──
-const sites = ref<any[]>([])
-const selectedSiteId = ref<number>(0)
-const loadingSitePaths = ref(false)
-const savingSitePath = ref(false)
-const sitePaths = ref<any[]>([])
-const sitePathForm = ref({ path: '', note: '' })
 
 const restoreDialog = ref(false)
 const restoring = ref(false)
@@ -205,6 +127,7 @@ const restoreForm = ref({
   engine: 'mysql',
   dbName: '',
   targetDir: '',
+  toOriginal: false,
 })
 
 async function loadList() {
@@ -248,6 +171,7 @@ function onRestore(row: any) {
     engine: 'mysql',
     dbName: '',
     targetDir: '',
+    toOriginal: false,
   }
   restoreDialog.value = true
 }
@@ -257,8 +181,12 @@ async function onConfirmRestore() {
   restoring.value = true
   try {
     if (r.kind === 'dir') {
-      if (!r.targetDir.trim()) return ElMessage.warning('请填写解包目标目录')
-      await http.post('/system/backup/restore_dir', { path: r.path, target_dir: r.targetDir.trim() })
+      if (r.toOriginal) {
+        await http.post('/system/backup/restore_dir', { path: r.path, to_original: true })
+      } else {
+        if (!r.targetDir.trim()) return ElMessage.warning('请填写解包目标目录')
+        await http.post('/system/backup/restore_dir', { path: r.path, target_dir: r.targetDir.trim() })
+      }
     } else {
       if (!r.dbName.trim()) return ElMessage.warning('请填写目标数据库名')
       await http.post('/system/backup/restore_db', {
@@ -306,120 +234,9 @@ function formatTime(ts: number) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
-// ── 额外备份目录：家目录外 ──
-async function loadUserPaths() {
-  loadingUserPaths.value = true
-  try {
-    const d: any = await http.get('/system/backup/paths', { params: { owner_type: 'user', owner_id: uid } })
-    userPaths.value = d.data?.items || []
-  } catch (e: any) {
-    ElMessage.error(e?.message || '加载失败')
-  } finally {
-    loadingUserPaths.value = false
-  }
-}
-async function onAddUserPath() {
-  if (!userPathForm.value.path.trim()) return ElMessage.warning('请填写目录')
-  savingUserPath.value = true
-  try {
-    await http.post('/system/backup/paths', {
-      owner_type: 'user',
-      owner_id: uid,
-      path: userPathForm.value.path.trim(),
-      note: userPathForm.value.note.trim(),
-    })
-    ElMessage.success('已添加')
-    userPathForm.value = { path: '', note: '' }
-    loadUserPaths()
-  } catch (e: any) {
-    ElMessage.error(e?.message || '添加失败')
-  } finally {
-    savingUserPath.value = false
-  }
-}
-async function onDeleteUserPath(row: any) {
-  try {
-    await ElMessageBox.confirm(`确认删除 ${row.path}？`, '提示', { type: 'warning' })
-  } catch {
-    return
-  }
-  try {
-    await http.delete('/system/backup/paths', { data: { id: row.id } })
-    ElMessage.success('已删除')
-    loadUserPaths()
-  } catch (e: any) {
-    ElMessage.error(e?.message || '删除失败')
-  }
-}
-
-// ── 站点额外目录 ──
-async function loadSites() {
-  try {
-    const d: any = await http.get('/site/list')
-    sites.value = d.data?.rows || d.data?.sites || []
-    if (!selectedSiteId.value && sites.value.length) {
-      selectedSiteId.value = sites.value[0].id
-      loadSitePaths()
-    }
-  } catch (e: any) {
-    ElMessage.error(e?.message || '加载站点失败')
-  }
-}
-async function loadSitePaths() {
-  if (!selectedSiteId.value) {
-    sitePaths.value = []
-    return
-  }
-  loadingSitePaths.value = true
-  try {
-    const d: any = await http.get('/system/backup/paths', { params: { owner_type: 'site', owner_id: selectedSiteId.value } })
-    sitePaths.value = d.data?.items || []
-  } catch (e: any) {
-    ElMessage.error(e?.message || '加载失败')
-  } finally {
-    loadingSitePaths.value = false
-  }
-}
-async function onAddSitePath() {
-  if (!selectedSiteId.value) return ElMessage.warning('请先选择站点')
-  if (!sitePathForm.value.path.trim()) return ElMessage.warning('请填写目录')
-  savingSitePath.value = true
-  try {
-    await http.post('/system/backup/paths', {
-      owner_type: 'site',
-      owner_id: selectedSiteId.value,
-      path: sitePathForm.value.path.trim(),
-      note: sitePathForm.value.note.trim(),
-    })
-    ElMessage.success('已添加')
-    sitePathForm.value = { path: '', note: '' }
-    loadSitePaths()
-  } catch (e: any) {
-    ElMessage.error(e?.message || '添加失败')
-  } finally {
-    savingSitePath.value = false
-  }
-}
-async function onDeleteSitePath(row: any) {
-  try {
-    await ElMessageBox.confirm(`确认删除 ${row.path}？`, '提示', { type: 'warning' })
-  } catch {
-    return
-  }
-  try {
-    await http.delete('/system/backup/paths', { data: { id: row.id } })
-    ElMessage.success('已删除')
-    loadSitePaths()
-  } catch (e: any) {
-    ElMessage.error(e?.message || '删除失败')
-  }
-}
-
 onMounted(() => {
   loadList()
   loadRetention()
-  loadUserPaths()
-  loadSites()
 })
 </script>
 

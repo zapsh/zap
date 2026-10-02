@@ -280,6 +280,9 @@
               <el-button type="primary" :loading="savingPath" @click="onAddPath">添加</el-button>
             </el-form-item>
           </el-form>
+          <div class="tip" style="margin-top:8px">
+            家目录之外的目录只能由管理员在此添加：普通用户仅备份各自家目录（策略二整屋打包），站点附加目录也在此维护。
+          </div>
         </el-card>
       </el-tab-pane>
     </el-tabs>
@@ -369,8 +372,17 @@
         <el-form-item v-if="restoreForm.engine === 'sqlite'" label="数据库文件">
           <el-input v-model="restoreForm.dbPath" placeholder="如 /usr/local/zap/data/zap.db" />
         </el-form-item>
-        <el-form-item v-if="restoreForm.kind === 'dir'" label="解包目标目录">
+        <el-form-item v-if="restoreForm.kind === 'dir'" label="还原方式">
+          <el-radio-group v-model="restoreForm.toOriginal">
+            <el-radio :value="false">解包到指定目录</el-radio>
+            <el-radio :value="true">还原到原路径</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="restoreForm.kind === 'dir' && !restoreForm.toOriginal" label="解包目标目录">
           <el-input v-model="restoreForm.targetDir" placeholder="如 /home/u/www/restore" />
+        </el-form-item>
+        <el-form-item v-if="restoreForm.kind === 'dir' && restoreForm.toOriginal">
+          <span class="tip">将按归档内路径直接写回原绝对位置（需管理员或该备份所属用户）。</span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -629,7 +641,7 @@ async function onDeleteArchive(row: any) {
 // ── 还原 ──
 const restoreDialog = ref(false)
 const restoring = ref(false)
-const restoreForm = ref({ kind: 'dir', path: '', engine: 'mysql', dbName: '', dbUser: '', dbPass: '', dbHost: '', dbPort: '', dbPath: '', targetDir: '' })
+const restoreForm = ref({ kind: 'dir', path: '', engine: 'mysql', dbName: '', dbUser: '', dbPass: '', dbHost: '', dbPort: '', dbPath: '', targetDir: '', toOriginal: false })
 
 function onRestore(row: any) {
   const kind = /\.sql\.gz$/.test(row.name) ? 'db' : 'dir'
@@ -644,6 +656,7 @@ function onRestore(row: any) {
     dbPort: '3306',
     dbPath: '',
     targetDir: '',
+    toOriginal: false,
   }
   restoreDialog.value = true
 }
@@ -652,8 +665,12 @@ async function onConfirmRestore() {
   restoring.value = true
   try {
     if (r.kind === 'dir') {
-      if (!r.targetDir.trim()) return ElMessage.warning('请填写解包目标目录')
-      await http.post('/system/backup/restore_dir', { path: r.path, target_dir: r.targetDir.trim() })
+      if (r.toOriginal) {
+        await http.post('/system/backup/restore_dir', { path: r.path, to_original: true })
+      } else {
+        if (!r.targetDir.trim()) return ElMessage.warning('请填写解包目标目录')
+        await http.post('/system/backup/restore_dir', { path: r.path, target_dir: r.targetDir.trim() })
+      }
     } else {
       if (!r.dbName.trim()) return ElMessage.warning('请填写目标数据库名')
       await http.post('/system/backup/restore_db', {

@@ -301,6 +301,8 @@ pub struct BackupDeletePayload {
 pub struct BackupRestoreDirPayload {
     pub path: String,
     pub target_dir: String,
+    #[serde(default)]
+    pub to_original: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -866,8 +868,11 @@ pub async fn restore_dir(
     claims: ValidatedClaims,
     Json(payload): Json<BackupRestoreDirPayload>,
 ) -> ZapJsonResult {
-    if payload.path.trim().is_empty() || payload.target_dir.trim().is_empty() {
-        return Err(ZapError::New(-1, "路径与目标目录不能为空".to_string()));
+    if payload.path.trim().is_empty() {
+        return Err(ZapError::New(-1, "路径不能为空".to_string()));
+    }
+    if !payload.to_original && payload.target_dir.trim().is_empty() {
+        return Err(ZapError::New(-1, "解包目标目录不能为空".to_string()));
     }
     let pool = crate::db::get_db_pool().await;
     // 归属校验：管理员可还原任意；用户仅能还原自己（owner = 登录名）的备份，
@@ -898,6 +903,7 @@ pub async fn restore_dir(
     let resp = crate::zapexec::call(Request::BackupRestoreDir {
         path: payload.path.trim().to_string(),
         target_dir: payload.target_dir.trim().to_string(),
+        to_original: payload.to_original,
         as_user: None,
         skip_owner_check: false,
         backup_root: root,
@@ -911,7 +917,7 @@ pub async fn restore_dir(
         None,
         "backup_restore_dir",
         &payload.path,
-        &payload.target_dir,
+        &format!("to_original={}", payload.to_original),
     )
     .await;
     Ok(Json(json!({ "code": 0, "message": "目录还原完成" })))
@@ -1303,33 +1309,7 @@ pub struct BackupPathListQuery {
     pub owner_id: i64,
 }
 
-/// 校验登录用户对某 owner_type/owner_id 是否有权管理其额外备份目录（admin 任意；用户仅自己/自己站点）。
-async fn assert_path_owner(claims: &ValidatedClaims, owner_type: &str, owner_id: i64) -> Result<(), ZapError> {
-    if is_admin(claims) {
-        return Ok(());
-    }
-    let uid = claims.id as i64;
-    if owner_type == "user" {
-        if owner_id == uid {
-            return Ok(());
-        }
-    } else if owner_type == "site" {
-        let pool = crate::db::get_db_pool().await;
-        let ok: Option<(i64,)> = sqlx::query_as("SELECT id FROM site WHERE id=? AND user_id=?")
-            .bind(owner_id)
-            .bind(uid)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
-        if ok.is_some() {
-            return Ok(());
-        }
-    }
-    Err(ZapError::New(403, "无权限管理该资源的备份目录".to_string()))
-}
-
-/// GET /system/backup/paths —— 额外备份目录列表。
+/// GET /system/backup/paths —— 额外备份目录列表（仅管理员可见/管理）。
 pub async fn paths_list(claims: ValidatedClaims, Query(q): Query<BackupPathListQuery>) -> ZapJsonResult {
     let pool = crate::db::get_db_pool().await;
     let rows: Vec<(i64, String, i64, String, String, i64)> = if is_admin(&claims) {
@@ -1388,8 +1368,9 @@ pub async fn paths_list(claims: ValidatedClaims, Query(q): Query<BackupPathListQ
     Ok(Json(json!({ "code": 0, "message": "ok", "data": { "items": data } })))
 }
 
-/// POST /system/backup/paths —— 新增额外备份目录（admin 或资源主人）。
+/// POST /system/backup/paths —— 新增额外备份目录（仅管理员；家目录之外的目录只能由管理员添加）。
 pub async fn paths_add(claims: ValidatedClaims, Json(p): Json<BackupPathPayload>) -> ZapJsonResult {
+    require_admin(&claims)?;
     let owner_type = p.owner_type.trim();
     if !matches!(owner_type, "site" | "user") {
         return Err(ZapError::New(-1, "owner_type 仅支持 site / user".to_string()));
@@ -1398,7 +1379,6 @@ pub async fn paths_add(claims: ValidatedClaims, Json(p): Json<BackupPathPayload>
     if path.is_empty() || !path.starts_with('/') {
         return Err(ZapError::New(-1, "目录必须为绝对路径".to_string()));
     }
-    assert_path_owner(&claims, owner_type, p.owner_id).await?;
     let pool = crate::db::get_db_pool().await;
     let ts = now_ts();
     sqlx::query(
@@ -1417,8 +1397,9 @@ pub async fn paths_add(claims: ValidatedClaims, Json(p): Json<BackupPathPayload>
     Ok(Json(json!({ "code": 0, "message": "已添加" })))
 }
 
-/// DELETE /system/backup/paths —— 删除额外备份目录（admin 或资源主人）。
+/// DELETE /system/backup/paths —— 删除额外备份目录（仅管理员）。
 pub async fn paths_delete(claims: ValidatedClaims, Json(p): Json<BackupPathPayload>) -> ZapJsonResult {
+    require_admin(&claims)?;
     let pool = crate::db::get_db_pool().await;
     let row: Option<(String, i64)> = sqlx::query_as("SELECT owner_type, owner_id FROM backup_paths WHERE id=?")
         .bind(p.id)
@@ -1430,7 +1411,7 @@ pub async fn paths_delete(claims: ValidatedClaims, Json(p): Json<BackupPathPaylo
         Some(x) => x,
         None => return Err(ZapError::New(-1, "记录不存在".to_string())),
     };
-    assert_path_owner(&claims, &ot, oid).await?;
+    let _ = (ot, oid);
     sqlx::query("DELETE FROM backup_paths WHERE id=?")
         .bind(p.id)
         .execute(pool)
