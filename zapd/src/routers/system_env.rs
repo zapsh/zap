@@ -238,7 +238,7 @@ pub async fn env_python_install(
         return Err(ZapError::New(-1, "仅管理员可安装 Python 版本".to_string()));
     }
     let version = payload.version.trim().to_string();
-    if version.is_empty() || version.len() > 16 {
+    if version.is_empty() || version.len() > 32 {
         return Err(ZapError::New(-1, "版本号不合法".to_string()));
     }
     let resp = crate::zapexec::call(Request::EnvPython {
@@ -273,7 +273,7 @@ pub async fn env_python_remove(
         return Err(ZapError::New(-1, "仅管理员可卸载 Python 版本".to_string()));
     }
     let version = payload.version.trim().to_string();
-    if version.is_empty() || version.len() > 16 {
+    if version.is_empty() || version.len() > 32 {
         return Err(ZapError::New(-1, "版本号不合法".to_string()));
     }
     let resp = crate::zapexec::call(Request::EnvPython {

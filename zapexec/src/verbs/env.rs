@@ -23,6 +23,13 @@ pub async fn detect() -> Response {
 /// fnm 安装目录：固定放全局，装一次所有用户都能用（各自只需挑版本）。
 pub const FNM_DIR: &str = "/usr/local/fnm";
 
+/// uv 解释器的共享安装目录：root 统一装到这里，所有用户（站点应用）都能用。
+///
+/// 不设 `UV_PYTHON_INSTALL_DIR` 时 uv 默认装进执行者家目录（~/.local/share/uv/python），
+/// root 装的就只有 root 能用：面板显示「安装成功」，zap / 站点用户的 `uv python list`
+/// 里却根本没有，建 .venv 时还得各下一份。
+pub const UV_PYTHON_INSTALL_DIR: &str = "/usr/local/share/uv/python";
+
 /// 一键装 uv 的命令：pip（走已配 PyPI 源）优先，其次官方脚本。
 const INSTALL_UV_CMD: &str = "if command -v pip3 >/dev/null 2>&1; then \
      pip3 install --break-system-packages uv 2>/dev/null || pip3 install uv; \
@@ -352,13 +359,19 @@ fn python_inner(action: &str, version: &str, extra: &str) -> Response {
                 );
             };
             let cmd = if action == "install" {
-                format!("{} python install {v}", uv)
+                format!(
+                    "{} python install {v} && chmod -R a+rX {} && {}",
+                    uv,
+                    UV_PYTHON_INSTALL_DIR,
+                    write_uv_env_cmd()
+                )
             } else {
                 format!("{} python uninstall {v}", uv)
             };
             let out = root_cmd("bash")
                 .arg("-lc")
                 .arg(&cmd)
+                .env("UV_PYTHON_INSTALL_DIR", UV_PYTHON_INSTALL_DIR)
                 .output()
                 .map_err(|e| Response::err(-1, format!("执行 {cmd} 失败：{e}")));
             match out {
@@ -388,9 +401,64 @@ fn python_inner(action: &str, version: &str, extra: &str) -> Response {
     }
 }
 
-/// 版本号只允许 `3` / `3.11` / `3.11.9` 这类形式（要拼进 shell 命令，必须严格）。
+/// 版本号允许 `3` / `3.11` / `3.11.9`，也允许预发布形式 `3.15.0rc2`（含字母后缀），
+/// 还要拼进 shell 命令，必须严格（仅字母数字、点、加号）。
 fn is_safe_version(v: &str) -> bool {
-    !v.is_empty() && v.len() <= 16 && v.chars().all(|c| c.is_ascii_digit() || c == '.')
+    !v.is_empty()
+        && v.len() <= 32
+        && v
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '+')
+}
+
+/// 生成「把共享解释器目录写进全局登录环境」的 shell 片段：
+/// 落一份 /etc/profile.d/zap-uv-python.sh，所有交互式登录 shell 的 uv
+/// 都能看到 root 统一安装的版本（面板 / run_as 侧走 .env 注入，不依赖它）。
+fn write_uv_env_cmd() -> String {
+    format!(
+        "printf 'export UV_PYTHON_INSTALL_DIR={UV_PYTHON_INSTALL_DIR}\\n' > /etc/profile.d/zap-uv-python.sh"
+    )
+}
+
+/// 确保共享目录里有指定小版本的 Python（站点用户建 .venv 前调用）。
+///
+/// 共享目录归 root、站点用户只读：缺版本时必须先由 root（这里）装好，
+/// 否则站点用户的 uv 会试图往共享目录下载，因无写权限而失败。
+/// 版本匹配用前缀：`3.15` 命中 `cpython-3.15.0rc2-…` / `cpython-3.15.0-…` 都算有。
+pub(crate) fn ensure_python_shared(version: &str) -> Result<(), String> {
+    if !is_safe_version(version) {
+        return Err(format!("版本号不合法：{version}"));
+    }
+    let prefix = format!("cpython-{version}");
+    let have = std::fs::read_dir(UV_PYTHON_INSTALL_DIR)
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        })
+        .unwrap_or(false);
+    if have {
+        return Ok(());
+    }
+    let Some(uv) = uv_bin() else {
+        return Err("未找到 uv，无法补装 Python 解释器".to_string());
+    };
+    let cmd = format!(
+        "{uv} python install {version} && chmod -R a+rX {UV_PYTHON_INSTALL_DIR} && {}",
+        write_uv_env_cmd()
+    );
+    let out = root_cmd("bash")
+        .arg("-lc")
+        .arg(&cmd)
+        .env("UV_PYTHON_INSTALL_DIR", UV_PYTHON_INSTALL_DIR)
+        .output()
+        .map_err(|e| format!("执行 {cmd} 失败：{e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let tail = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        Err(format!("{cmd} 失败：{}", tail.trim()))
+    }
 }
 
 /// PyPI 系统级配置：uv 读 /etc/uv/uv.toml，pip 读 /etc/pip.conf。
@@ -482,19 +550,26 @@ pub fn detect_python() -> Value {
     };
     let mut versions: Vec<Value> = Vec::new();
     // uv 管理的版本：`uv python list` 每行形如
-    //   cpython-3.12.4-linux-x86_64-gnu    /root/.local/share/uv/python/.../bin/python3.12
+    //   cpython-3.12.4-linux-x86_64-gnu    /usr/local/share/uv/python/.../bin/python3.12
     if let Some(uv) = &uv_path {
         // 只要已安装的；老版本 uv 不认 --only-installed（输出为空）时退回完整列表，
-        // 再靠 uv_list_installed 的路径判断把未安装项剔掉
+        // 再靠 uv_list_installed 的路径判断把未安装项剔掉。
+        // 带上 UV_PYTHON_INSTALL_DIR：装在共享目录里的解释器才能被列出来
+        //（不设的话 uv 只看执行者家目录，root 探测就漏掉全局版本）。
         let mut txt = String::new();
         if let Ok(o) = root_cmd(uv)
             .args(["python", "list", "--only-installed"])
+            .env("UV_PYTHON_INSTALL_DIR", UV_PYTHON_INSTALL_DIR)
             .output()
         {
             txt = String::from_utf8_lossy(&o.stdout).to_string();
         }
         if txt.trim().is_empty() {
-            if let Ok(o) = root_cmd(uv).args(["python", "list"]).output() {
+            if let Ok(o) = root_cmd(uv)
+                .args(["python", "list"])
+                .env("UV_PYTHON_INSTALL_DIR", UV_PYTHON_INSTALL_DIR)
+                .output()
+            {
                 txt = String::from_utf8_lossy(&o.stdout).to_string();
             }
         }
@@ -588,12 +663,28 @@ mod uv_list_tests {
             assert!(uv_list_installed(line).is_none(), "{line}");
         }
     }
+
+    /// 预发布版本（带字母后缀）不能被当非法行丢掉：
+    /// `uv python install 3.15` 装到的可能是 `cpython-3.15.0rc2`。
+    #[test]
+    fn prerelease_line_is_kept() {
+        let line = "cpython-3.15.0rc2-linux-x86_64-gnu    /usr/local/share/uv/python/cpython-3.15.0rc2-linux-x86_64-gnu/bin/python3.15";
+        let (ver, path) = uv_list_installed(line).expect("预发布已安装行应保留");
+        assert_eq!(ver, "3.15.0rc2");
+        assert!(path.starts_with('/'), "{path}");
+        assert!(is_safe_version("3.15.0rc2"), "rc 版本号应可通过校验");
+    }
 }
 
 fn uv_list_version(line: &str) -> Option<String> {
     let tok = line.split_whitespace().next()?;
     let ver = tok.split('-').nth(1)?;
-    if ver.chars().all(|c| c.is_ascii_digit() || c == '.') {
+    // 预发布版本带字母后缀（如 `cpython-3.15.0rc2-linux-…` 的 `3.15.0rc2`），
+    // 只认数字会把它当非法行丢掉，装完的版本在面板里就「消失」了。
+    if ver
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '+')
+    {
         Some(ver.to_string())
     } else {
         None
@@ -1391,15 +1482,18 @@ mod python_tests {
     use super::*;
 
     /// 版本号要拼进 shell 命令，必须严格限制（防注入）。
+    /// 允许字母是为预发布后缀（3.15.0rc2），其余一律拒绝。
     #[test]
     fn version_token_must_be_numeric() {
         assert!(is_safe_version("3"));
         assert!(is_safe_version("3.12"));
         assert!(is_safe_version("3.12.4"));
+        assert!(is_safe_version("3.15.0rc2"));
         assert!(!is_safe_version(""));
         assert!(!is_safe_version("3.12; rm -rf /"));
         assert!(!is_safe_version("3.12 ls"));
         assert!(!is_safe_version("$(id)"));
+        assert!(!is_safe_version("3.12`id`"));
     }
 
     #[test]

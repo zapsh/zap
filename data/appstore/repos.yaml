@@ -4,6 +4,6 @@ repos:
   url: https://github.com/zapsh/appstore.git
   builtin: true
   enabled: true
-  version: e2c8873
-  commit: e2c8873e33dcd266b06462f7e91749d0e885e962
-  updated_at: 1790685734
+  version: 8bf2913
+  commit: 8bf2913198bdaa301d3ce1a732299f7f7e2bf014
+  updated_at: 1790941969

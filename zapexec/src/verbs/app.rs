@@ -14,6 +14,7 @@ use serde_json::json;
 use zap_proto::{Response, app_type_supported};
 
 use super::env::uv_bin;
+use super::env::UV_PYTHON_INSTALL_DIR;
 use super::root_cmd;
 
 // ── 运行时版本探测 ──────────────────────────────────────
@@ -247,6 +248,9 @@ fn run_as(user: &str, workdir: &Path, cmd: &str) -> Result<(bool, String), Strin
         .env("ZAP_RUN_USER", user)
         .env("ZAP_RUN_CMD", cmd)
         .env("HOME", format!("/home/{user}"))
+        // uv 默认只看执行者家目录：带上共享解释器目录，站点用户建 .venv
+        // 时才能找到 root 统一安装的 Python 版本（目录本身只读）。
+        .env("UV_PYTHON_INSTALL_DIR", UV_PYTHON_INSTALL_DIR)
         .current_dir(workdir);
     let out = c.output().map_err(|e| format!("执行命令失败: {e}"))?;
     let merged = if out.status.success() {
@@ -326,6 +330,11 @@ fn prepare_deps(
             // 明确要求建环境、或要装依赖时都要有 .venv。
             // 优先 uv：它能按指定版本现拉一个解释器，不依赖系统装没装 pythonX-venv。
             if need_venv && !venv.join("bin/python").exists() {
+                // 指定版本时先确保共享目录里有该解释器（root 补装）：
+                // 共享目录站点用户只读，缺版本时他们自己装不进去。
+                if !version.is_empty() && uv.is_some() {
+                    super::env::ensure_python_shared(version)?;
+                }
                 let (cmd, how) = match &uv {
                     Some(uv) => {
                         if version.is_empty() {

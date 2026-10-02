@@ -86,6 +86,6 @@
     "vue-tsc": "^3.3.11"
   },
   "allowScripts": {
-    "@parcel/watcher@2.5.6": true
+    "@parcel/watcher@2.6.0": true
   }
 }
