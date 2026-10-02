@@ -163,6 +163,10 @@
             <el-icon><Archive /></el-icon>
             {{ t('filesLocal.archive') }}
           </el-button>
+          <el-button size="small" :disabled="!canExtract" @click="extractFromToolbar">
+            <el-icon><Box /></el-icon>
+            {{ t('filesLocal.extract') }}
+          </el-button>
           <el-button size="small" :disabled="!canRename" @click="showRenameDialog(singleSelected!)">
             <el-icon><Edit /></el-icon>
             {{ t('filesLocal.rename') }}
@@ -680,6 +684,14 @@
       </template>
     </DirPicker>
 
+    <!-- 解压压缩包：选位置 + 覆盖选项 -->
+    <ExtractDialog
+      v-model="extractVisible"
+      :archive-path="extractTarget"
+      :start-path="currentPath"
+      @success="onExtractSuccess"
+    />
+
     <!--
       常驻编辑器浮窗：异步组件，首次打开才加载 chunk；非模态（无遮罩，文件管理照样可点）。
       生命周期跟随文件管理：除浮窗内点「关闭」外不卸载（最小化只是缩成底部图标）。
@@ -743,6 +755,14 @@
         <div class="fm-context-item" :class="{ disabled: !canArchive }" @click="archiveFromMenu">
           <el-icon><Archive /></el-icon>
           <span>{{ t('filesLocal.archive') }}</span>
+        </div>
+        <div
+          class="fm-context-item"
+          :class="{ disabled: !canExtract }"
+          @click="extractFromMenu"
+        >
+          <el-icon><Box /></el-icon>
+          <span>{{ t('filesLocal.extract') }}</span>
         </div>
         <div class="fm-context-item" :class="{ disabled: !canRename }" @click="renameFromMenu">
           <el-icon><Edit /></el-icon>
@@ -821,6 +841,7 @@ import {
   User,
   InfoFilled,
   DataLine,
+  Box,
 } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ElTree } from 'element-plus'
@@ -844,6 +865,7 @@ import {
 } from '@/api/file'
 import CodeEditor from '@/components/CodeEditor.vue'
 import DirPicker from '@/components/DirPicker.vue'
+import ExtractDialog from './ExtractDialog.vue'
 
 /** 编辑器浮窗按需加载：只有真正用过「使用编辑器打开」才会请求这个 chunk */
 const FileEditorWindow = defineAsyncComponent(() => import('./FileEditorWindow.vue'))
@@ -895,6 +917,12 @@ const canSetPermissions = computed(() => hasSelection.value)
 const canCopy = computed(() => hasSelection.value)
 const canMove = computed(() => hasSelection.value)
 const canArchive = computed(() => hasSelection.value)
+const canExtract = computed(() => {
+  const item = singleSelected.value
+  return selectionCount.value === 1 && !!item && !item.is_dir && isArchiveName(item.name)
+})
+const extractVisible = ref(false)
+const extractTarget = ref('')
 const canRemove = computed(() => hasSelection.value)
 const canDownload = computed(() => hasSelection.value)
 
@@ -1456,6 +1484,31 @@ function downloadFromMenu() {
 function archiveFromMenu() {
   closeContextMenu()
   showArchiveDialog()
+}
+function extractFromMenu() {
+  closeContextMenu()
+  openExtract()
+}
+function extractFromToolbar() {
+  openExtract()
+}
+function openExtract() {
+  const item = singleSelected.value
+  if (!item) return
+  extractTarget.value = item.path
+  extractVisible.value = true
+}
+function onExtractSuccess() {
+  extractVisible.value = false
+  loadFileList()
+  refreshTree()
+}
+/** 仅前端用于判断解压菜单是否可用；后端会再做一次格式校验 */
+function isArchiveName(name: string): boolean {
+  const n = name.toLowerCase()
+  return ['zip', 'tar', 'tar.gz', 'tgz', 'tar.bz2', 'tar.xz', '7z', 'gz'].some((e) =>
+    n.endsWith(`.${e}`),
+  )
 }
 function renameFromMenu() {
   closeContextMenu()

@@ -84,6 +84,17 @@ pub struct ArchivePayload {
     dest_dir: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct ExtractPayload {
+    /// 压缩包路径（zip / tar / tar.gz / tgz）
+    path: String,
+    /// 解压目标目录
+    dest_dir: String,
+    /// 是否覆盖已存在文件
+    #[serde(default)]
+    overwrite: bool,
+}
+
 // ── path helpers ───────────────────────────────────────────
 // 授权（基于 JWT 角色）仍在 zapd 完成；实际文件操作转发给 zapexec（root）。
 
@@ -719,6 +730,52 @@ pub async fn file_archive(
     Ok(Json(
         json!({ "code": 0, "message": resp.message, "data": resp.data }),
     ))
+}
+
+/// POST /system/files/extract
+///
+/// 解压压缩包到指定目录。支持 zip / tar / tar.gz / tgz；
+/// `overwrite` 为 true 时覆盖同名文件。落地的文件归当前操作者所有。
+pub async fn file_extract(
+    claims: Claims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<ExtractPayload>,
+) -> ZapJsonResult {
+    let (home, tmp) = user_private_prefixes(&claims).await;
+    let archive = resolve_path(&payload.path)?;
+    check_access(&claims, &archive, &home, &tmp)?;
+
+    let dest = resolve_path(&payload.dest_dir)?;
+    check_write_access(&claims, &dest, &home, &tmp)?;
+
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
+
+    let resp = crate::zapexec::call(Request::FileExtract {
+        path: archive.to_string_lossy().to_string(),
+        dest_dir: dest.to_string_lossy().to_string(),
+        overwrite: payload.overwrite,
+        as_user,
+        skip_owner_check,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "file_extract",
+        &format!(
+            "{} → {}",
+            archive.to_string_lossy(),
+            dest.to_string_lossy()
+        ),
+        "",
+    )
+    .await;
+
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
 }
 
 /// GET /system/files/download?path=...

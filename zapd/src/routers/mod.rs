@@ -745,6 +745,7 @@ fn api_routers() -> Router {
         .route("/system/files/chown", post(system_file::file_chown))
         .route("/system/files/copy", post(system_file::file_copy))
         .route("/system/files/archive", post(system_file::file_archive))
+        .route("/system/files/extract", post(system_file::file_extract))
         .route("/system/files/download", get(system_file::file_download))
         // 放开请求体上限：不放就是 axum 默认的 2 MB，稍大一点的文件都传不上来
         .route(

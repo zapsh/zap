@@ -374,6 +374,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("system.file", "view")),
     ),
+    // 解压会落地新文件，按写入授权
+    (
+        "/system/files/extract",
+        Required::User,
+        Some(Perm::action("system.file", "write")),
+    ),
     (
         "/system/files/copy",
         Required::User,

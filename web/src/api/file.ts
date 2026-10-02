@@ -176,3 +176,21 @@ export function archiveFiles(paths: string[], name: string, baseDir: string, des
     dest_dir: destDir,
   })
 }
+
+export interface ExtractData {
+  /** 解压目标目录 */
+  path: string
+}
+
+/**
+ * Extract an archive (zip / tar / tar.gz / tgz) into `destDir`.
+ *
+ * `overwrite` 为 true 时覆盖同名文件；不支持的格式后端会返回明确错误。
+ */
+export function extractArchive(path: string, destDir: string, overwrite: boolean) {
+  return http.post<ApiResponse<ExtractData>>('/system/files/extract', {
+    path,
+    dest_dir: destDir,
+    overwrite,
+  })
+}

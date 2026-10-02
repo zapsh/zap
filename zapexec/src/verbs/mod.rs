@@ -176,6 +176,13 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
         } => file::archive(paths, name, base_dir, dest_dir, as_user, skip_owner_check).await,
+        Request::FileExtract {
+            path,
+            dest_dir,
+            overwrite,
+            as_user,
+            skip_owner_check,
+        } => file::extract(path, dest_dir, overwrite, as_user, skip_owner_check).await,
         Request::AppstoreRepoAdd { name, url, run_id } => {
             appstore::repo_add(name, url, run_id).await
         }

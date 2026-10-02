@@ -669,6 +669,19 @@ pub enum Request {
         #[serde(default)]
         skip_owner_check: bool,
     },
+    /// 解压压缩包到目标目录：支持 zip / tar / tar.gz / tgz。
+    /// `dest_dir` 为解压目标目录；`overwrite` 为 true 时覆盖同名文件。
+    #[serde(rename = "file.extract")]
+    FileExtract {
+        path: String,
+        dest_dir: String,
+        #[serde(default)]
+        overwrite: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
     /// 添加 AppStore Git 源（clone 到 data/appstore/repos/<id>/）
     #[serde(rename = "appstore.repo_add")]
     AppstoreRepoAdd {
