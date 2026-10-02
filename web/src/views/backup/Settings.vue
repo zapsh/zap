@@ -207,9 +207,8 @@
               <el-radio-group v-model="policy.mode">
                 <el-radio value="home">按家目录</el-radio>
                 <el-radio value="site">按站点+应用+库</el-radio>
-                <el-radio value="both">两者都跑</el-radio>
               </el-radio-group>
-              <span class="tip">home=遍历用户家目录；site=遍历站点文档根+应用工作目录+库；both=两者</span>
+              <span class="tip">home=遍历用户家目录；site=遍历站点文档根+应用工作目录+库（both 模式后端保留但暂不开放）</span>
             </el-form-item>
             <el-form-item label="落盘位置">
               <el-radio-group v-model="policy.dest">
