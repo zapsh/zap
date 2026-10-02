@@ -19,6 +19,9 @@
 //!
 //! 只作用于**新建库**：已存在的库保留原样（菜单可由管理员在「菜单管理」里改），
 //! 这正是我们想要的 —— 种子是初始状态，不是每启动一次就覆盖用户改过的菜单。
+//!
+//! 显示顺序 = 数组声明顺序（见 [`seed_menus`]）。要调整侧栏顺序，直接挪动数组里
+//! 的行即可，无需再维护分组用的 `sort_order` 数字（该字段已不再参与排序）。
 
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -29,7 +32,6 @@ pub(crate) const R_ADMIN: &str = "admin";
 const R_ADMIN_USER: &str = "admin,user";
 const R_ADMIN_RESELLER: &str = "admin,reseller";
 const R_ADMIN_USER_RESELLER: &str = "admin,user,reseller";
-const R_RESELLER: &str = "reseller";
 
 /// 一条菜单种子。
 ///
@@ -55,6 +57,8 @@ pub struct MenuSeed {
     pub feature: &'static str,
     /// 可见角色（逗号分隔）；同时决定 `role_menus`
     pub roles: &'static str,
+    /// 历史遗留字段：显示排序现由 `seed_menus` 按数组下标自动写入，这里的值不再参与排序。
+    #[allow(dead_code)]
     pub sort_order: i32,
     /// 0 = 停用：不进侧栏，行保留以兼容既有授权记录
     pub status: i32,
@@ -133,9 +137,10 @@ pub(crate) fn all_seeds() -> impl Iterator<Item = &'static MenuSeed> {
     MENU_SEEDS.iter().chain(pro_seeds())
 }
 
-/// 菜单清单：声明顺序 = 插入顺序 = id 自增顺序；父菜单必须先声明。
+/// 菜单清单：声明顺序 = 插入顺序 = id 自增顺序 = 侧栏显示顺序；父菜单必须先声明。
 ///
-/// 分组与侧栏顺序一致（组间空行 = 一级入口，缩进的子项挂在其上）。
+/// 组内顺序与 `sort_order` 语义一致（顶层升序、子项挂父级下再升序、并列保持原序）。
+/// 调整顺序只需挪动这里的行。
 pub static MENU_SEEDS: &[MenuSeed] = &[
     // ── 仪表盘 ──────────────────────────────────────────────
     MenuSeed::new(
@@ -199,6 +204,414 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("database")
     .icon("material-symbols:database")
     .affix(),
+    // ── 文件管理 ────────────────────────────────────────────
+    MenuSeed::new("files", "文件管理", "menu", "/files", "Layout", R_ALL, 3)
+        .icon("material-symbols:folder")
+        .redirect("/files/index")
+        .affix(),
+    MenuSeed::new(
+        "files-index",
+        "文件管理",
+        "menu",
+        "index",
+        "files/index",
+        R_ALL,
+        1,
+    )
+    .parent("files")
+    .icon("material-symbols:folder")
+    .affix(),
+    // ── 终端 ────────────────────────────────────────────────
+    MenuSeed::new("terminal", "终端", "menu", "/terminal", "Layout", R_ALL, 4)
+        .icon("material-symbols:monitor")
+        .redirect("/terminal/index")
+        .affix(),
+    MenuSeed::new(
+        "terminal-index",
+        "终端",
+        "menu",
+        "index",
+        "terminal/index",
+        R_ALL,
+        1,
+    )
+    .parent("terminal")
+    .icon("material-symbols:monitor")
+    .affix(),
+    // ── 计划任务（目录）──────────────────────────────────────
+    MenuSeed::new("crontab", "计划任务", "dir", "/crontab", "Layout", R_ALL, 4)
+        .icon("material-symbols:schedule")
+        .redirect("/crontab/index")
+        .affix(),
+    MenuSeed::new(
+        "crontab-index",
+        "计划任务",
+        "menu",
+        "index",
+        "crontab/index",
+        R_ALL,
+        1,
+    )
+    .parent("crontab")
+    .icon("material-symbols:alarm")
+    .affix(),
+    // ── 备份中心（目录 / 数据库备份与还原，可定时）───────────
+    // 「我的备份」对所有登录角色可见（nav pill 切换）；「备份设置」仅管理员，pill 内按角色隐藏。
+    MenuSeed::new("backup", "备份", "dir", "/backup", "Layout", R_ADMIN_USER_RESELLER, 5)
+        .icon("material-symbols:cloud-upload")
+        .redirect("/backup/index")
+        .affix(),
+    MenuSeed::new(
+        "backup-index",
+        "备份",
+        "menu",
+        "index",
+        "backup/index",
+        R_ADMIN_USER_RESELLER,
+        1,
+    )
+    .parent("backup")
+    .icon("material-symbols:cloud-upload")
+    .affix(),
+    // ── 容器管理（Docker）：没装 Docker 时不下发 ──────────────
+    MenuSeed::new("docker", "容器管理", "dir", "/docker", "Layout", R_ADMIN, 5)
+        .icon("material-symbols:deployed-code")
+        .redirect("/docker/index")
+        .feature("docker"),
+    MenuSeed::new(
+        "docker-index",
+        "容器",
+        "menu",
+        "index",
+        "docker/index",
+        R_ADMIN,
+        1,
+    )
+    .parent("docker")
+    .icon("material-symbols:deployed-code")
+    .feature("docker"),
+    // ── SSL/TLS（目录）──────────────────────────────────────
+    MenuSeed::new(
+        "ssl-tls",
+        "SSL/TLS",
+        "dir",
+        "/ssl-tls",
+        "Layout",
+        R_ADMIN_USER,
+        6,
+    )
+    .icon("material-symbols:lock")
+    .redirect("/ssl-tls/certs")
+    .affix(),
+    MenuSeed::new(
+        "ssl-certs",
+        "SSL证书",
+        "menu",
+        "certs",
+        "ssl-tls/certs/index",
+        R_ADMIN_USER,
+        1,
+    )
+    .parent("ssl-tls")
+    .icon("material-symbols:lock")
+    .affix(),
+    // DNS 服务商收进证书页头部按钮 + 抽屉，入口隐藏（页面路由仍可达）
+    MenuSeed::new(
+        "ssl-dns-providers",
+        "DNS服务商",
+        "menu",
+        "dns-providers",
+        "ssl-tls/dns-providers/index",
+        R_ADMIN_USER,
+        2,
+    )
+    .parent("ssl-tls")
+    .icon("material-symbols:dns")
+    .hidden(),
+    // ── 应用商店 ────────────────────────────────────────────
+    MenuSeed::new(
+        "appstore",
+        "应用商店",
+        "menu",
+        "/appstore",
+        "Layout",
+        R_ALL,
+        7,
+    )
+    .icon("material-symbols:storefront")
+    .redirect("/appstore/index")
+    .affix(),
+    MenuSeed::new(
+        "appstore-index",
+        "应用商店",
+        "menu",
+        "index",
+        "appstore/index",
+        R_ALL,
+        1,
+    )
+    .parent("appstore")
+    .icon("material-symbols:storefront")
+    .affix(),
+    // 已安装应用改成应用商店页内的 nav pill，入口隐藏（路由仍可达）
+    MenuSeed::new(
+        "installed",
+        "已安装应用",
+        "menu",
+        "installed",
+        "appstore/installed",
+        R_ADMIN_USER_RESELLER,
+        2,
+    )
+    .parent("appstore")
+    .icon("material-symbols:deployed-code")
+    .affix()
+    .hidden(),
+    // ── 客户管理（admin / reseller 都可见，置于「服务器状态」之上）────────
+    MenuSeed::new(
+        "reseller-users",
+        "客户管理",
+        "menu",
+        "/reseller/users",
+        "Layout",
+        R_ADMIN_RESELLER,
+        8,
+    )
+    .icon("material-symbols:account-circle")
+    .redirect("/reseller/users/index")
+    .affix(),
+    MenuSeed::new(
+        "reseller-users-index",
+        "客户管理",
+        "menu",
+        "index",
+        "system/access/index",
+        R_ADMIN_RESELLER,
+        1,
+    )
+    .parent("reseller-users")
+    .icon("material-symbols:account-circle")
+    .affix(),
+    MenuSeed::new(
+        "reseller-packages",
+        "套餐",
+        "menu",
+        "packages",
+        "system/packages/index",
+        R_ADMIN_RESELLER,
+        2,
+    )
+    .parent("reseller-users")
+    .icon("material-symbols:storefront"),
+    // ── 服务器状态（目录）────────────────────────────────────
+    MenuSeed::new(
+        "server-status",
+        "服务器状态",
+        "dir",
+        "/server-status",
+        "Layout",
+        R_ADMIN,
+        9,
+    )
+    .icon("material-symbols:monitor-heart")
+    .redirect("/server-status/index")
+    .affix(),
+    MenuSeed::new(
+        "server-status-index",
+        "Server Monitor",
+        "menu",
+        "index",
+        "server-status/index",
+        R_ADMIN,
+        1,
+    )
+    .parent("server-status")
+    .icon("material-symbols:monitoring")
+    .affix(),
+    MenuSeed::new(
+        "server-status-nginx",
+        "Nginx Server",
+        "menu",
+        "nginx-server",
+        "server-status/nginx-server/index",
+        R_ADMIN,
+        2,
+    )
+    .parent("server-status")
+    .icon("material-symbols:monitor")
+    .affix(),
+    // 进程管理 / 系统服务：原先是「服务器配置 → 系统管理」里的两个页签。
+    // 它们本质是"看当前状态"（进程占用、单元运行状态），不是改配置，
+    // 归到「服务器状态」下，监控与配置的边界才清楚。
+    MenuSeed::new(
+        "server-status-process",
+        "进程管理",
+        "menu",
+        "process",
+        "server-status/process/index",
+        R_ADMIN,
+        3,
+    )
+    .parent("server-status")
+    .icon("material-symbols:memory")
+    .affix(),
+    MenuSeed::new(
+        "server-status-services",
+        "系统服务",
+        "menu",
+        "services",
+        "server-status/services/index",
+        R_ADMIN,
+        4,
+    )
+    .parent("server-status")
+    .icon("material-symbols:miscellaneous-services")
+    .affix(),
+    // ── 团队成员：入口已并入「个人中心」，整组隐藏 ──────────────
+    MenuSeed::new(
+        "team",
+        "团队成员",
+        "dir",
+        "/team",
+        "Layout",
+        R_ADMIN_USER_RESELLER,
+        9,
+    )
+    .icon("material-symbols:group")
+    .redirect("/team/index")
+    .hidden(),
+    MenuSeed::new(
+        "team-index",
+        "团队成员",
+        "menu",
+        "index",
+        "team/index",
+        R_ADMIN_USER_RESELLER,
+        1,
+    )
+    .parent("team")
+    .icon("material-symbols:group")
+    .affix()
+    .hidden(),
+    // ── 服务器配置（目录）────────────────────────────────────
+    MenuSeed::new(
+        "server",
+        "服务器配置",
+        "dir",
+        "/server",
+        "Layout",
+        R_ADMIN,
+        10,
+    )
+    .icon("material-symbols:tune")
+    .redirect("/server/system")
+    .affix(),
+    // 系统管理：只剩 服务器时间 / SSH 服务（系统服务与进程管理已归到「服务器状态」）
+    MenuSeed::new(
+        "server-system",
+        "系统管理",
+        "menu",
+        "system",
+        "server/system/index",
+        R_ADMIN,
+        1,
+    )
+    .parent("server")
+    .icon("material-symbols:settings")
+    .affix(),
+    // 服务配置：Nginx / PHP / MySQL 配置合到一页
+    MenuSeed::new(
+        "server-service-conf",
+        "服务配置",
+        "menu",
+        "service-conf",
+        "server/service-conf/index",
+        R_ADMIN,
+        3,
+    )
+    .parent("server")
+    .icon("material-symbols:dns")
+    .affix(),
+    // 网络配置：网络设置 + IP 设置 合到一页
+    MenuSeed::new(
+        "server-network",
+        "网络配置",
+        "menu",
+        "network",
+        "server/network/index",
+        R_ADMIN,
+        6,
+    )
+    .parent("server")
+    .icon("material-symbols:link")
+    .affix(),
+    // 四层转发：TCP / UDP 端口转发（Nginx stream），仅管理员。
+    // 菜单隐藏：入口已并入「服务配置 → Nginx → 四层转发」，避免两处维护。
+    MenuSeed::new(
+        "server-stream",
+        "四层转发",
+        "menu",
+        "stream",
+        "server/stream/index",
+        R_ADMIN,
+        7,
+    )
+    .parent("server")
+    .icon("material-symbols:swap-horiz")
+    .affix()
+    .hidden(),
+    MenuSeed::new(
+        "server-firewall",
+        "防火墙",
+        "menu",
+        "firewall",
+        "server/firewall/index",
+        R_ADMIN,
+        8,
+    )
+    .parent("server")
+    .icon("material-symbols:lock")
+    .affix(),
+    MenuSeed::new(
+        "server-env",
+        "运行环境",
+        "menu",
+        "env",
+        "server/env/index",
+        R_ADMIN,
+        9,
+    )
+    .parent("server")
+    .icon("material-symbols:auto-fix-high")
+    .affix(),
+    MenuSeed::new(
+        "server-migrate",
+        "数据迁移",
+        "menu",
+        "migrate",
+        "server/migrate/index",
+        R_ADMIN,
+        11,
+    )
+    .parent("server")
+    .icon("material-symbols:sort")
+    .affix(),
+    // ── 旧「脚本/自动化」目录：两个页面已挂到「系统设置」下 ──────
+    // 目录本身隐藏，保留是为了不占掉已分配的 id 段（历史库里的 role_menus 行
+    // 还指向它）。新库里它只是个空壳入口，可随时删。
+    MenuSeed::new(
+        "automation",
+        "脚本/自动化",
+        "dir",
+        "/automation",
+        "Layout",
+        R_ADMIN,
+        11,
+    )
+    .icon("material-symbols:timer")
+    .redirect("/system/automation")
+    .affix()
+    .hidden(),
     // ── 系统设置（目录）──────────────────────────────────────
     MenuSeed::new("system", "系统设置", "dir", "/system", "Layout", R_ALL, 12)
         .icon("material-symbols:settings")
@@ -279,320 +692,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("system")
     .icon("material-symbols:timer")
     .affix(),
-    // ── 服务器配置（目录）────────────────────────────────────
-    MenuSeed::new(
-        "server",
-        "服务器配置",
-        "dir",
-        "/server",
-        "Layout",
-        R_ADMIN,
-        9,
-    )
-    .icon("material-symbols:tune")
-    .redirect("/server/system")
-    .affix(),
-    // 系统管理：只剩 服务器时间 / SSH 服务（系统服务与进程管理已归到「服务器状态」）
-    MenuSeed::new(
-        "server-system",
-        "系统管理",
-        "menu",
-        "system",
-        "server/system/index",
-        R_ADMIN,
-        1,
-    )
-    .parent("server")
-    .icon("material-symbols:settings")
-    .affix(),
-    // 服务配置：Nginx / PHP / MySQL 配置合到一页
-    MenuSeed::new(
-        "server-service-conf",
-        "服务配置",
-        "menu",
-        "service-conf",
-        "server/service-conf/index",
-        R_ADMIN,
-        3,
-    )
-    .parent("server")
-    .icon("material-symbols:dns")
-    .affix(),
-    // 四层转发：TCP / UDP 端口转发（Nginx stream），仅管理员。
-    // 菜单隐藏：入口已并入「服务配置 → Nginx → 四层转发」，避免两处维护。
-    MenuSeed::new(
-        "server-stream",
-        "四层转发",
-        "menu",
-        "stream",
-        "server/stream/index",
-        R_ADMIN,
-        7,
-    )
-    .parent("server")
-    .icon("material-symbols:swap-horiz")
-    .affix()
-    .hidden(),
-    // 网络配置：网络设置 + IP 设置 合到一页
-    MenuSeed::new(
-        "server-network",
-        "网络配置",
-        "menu",
-        "network",
-        "server/network/index",
-        R_ADMIN,
-        6,
-    )
-    .parent("server")
-    .icon("material-symbols:link")
-    .affix(),
-    MenuSeed::new(
-        "server-firewall",
-        "防火墙",
-        "menu",
-        "firewall",
-        "server/firewall/index",
-        R_ADMIN,
-        8,
-    )
-    .parent("server")
-    .icon("material-symbols:lock")
-    .affix(),
-    MenuSeed::new(
-        "server-env",
-        "运行环境",
-        "menu",
-        "env",
-        "server/env/index",
-        R_ADMIN,
-        9,
-    )
-    .parent("server")
-    .icon("material-symbols:auto-fix-high")
-    .affix(),
-    MenuSeed::new(
-        "server-migrate",
-        "数据迁移",
-        "menu",
-        "migrate",
-        "server/migrate/index",
-        R_ADMIN,
-        11,
-    )
-    .parent("server")
-    .icon("material-symbols:sort")
-    .affix(),
-    // ── 终端 ────────────────────────────────────────────────
-    MenuSeed::new("terminal", "终端", "menu", "/terminal", "Layout", R_ALL, 4)
-        .icon("material-symbols:monitor")
-        .redirect("/terminal/index")
-        .affix(),
-    MenuSeed::new(
-        "terminal-index",
-        "终端",
-        "menu",
-        "index",
-        "terminal/index",
-        R_ALL,
-        1,
-    )
-    .parent("terminal")
-    .icon("material-symbols:monitor")
-    .affix(),
-    // ── 文件管理 ────────────────────────────────────────────
-    MenuSeed::new("files", "文件管理", "menu", "/files", "Layout", R_ALL, 3)
-        .icon("material-symbols:folder")
-        .redirect("/files/index")
-        .affix(),
-    MenuSeed::new(
-        "files-index",
-        "文件管理",
-        "menu",
-        "index",
-        "files/index",
-        R_ALL,
-        1,
-    )
-    .parent("files")
-    .icon("material-symbols:folder")
-    .affix(),
-    // ── 客户管理（reseller 专属）─────────────────────────────
-    MenuSeed::new(
-        "reseller-users",
-        "客户管理",
-        "menu",
-        "/reseller/users",
-        "Layout",
-        R_RESELLER,
-        5,
-    )
-    .icon("material-symbols:account-circle")
-    .redirect("/reseller/users/index")
-    .affix(),
-    MenuSeed::new(
-        "reseller-users-index",
-        "客户管理",
-        "menu",
-        "index",
-        "system/access/index",
-        R_RESELLER,
-        1,
-    )
-    .parent("reseller-users")
-    .icon("material-symbols:account-circle")
-    .affix(),
-    MenuSeed::new(
-        "reseller-packages",
-        "套餐",
-        "menu",
-        "packages",
-        "system/packages/index",
-        R_ADMIN_RESELLER,
-        2,
-    )
-    .parent("reseller-users")
-    .icon("material-symbols:storefront"),
-    // ── SSL/TLS（目录）──────────────────────────────────────
-    MenuSeed::new(
-        "ssl-tls",
-        "SSL/TLS",
-        "dir",
-        "/ssl-tls",
-        "Layout",
-        R_ADMIN_USER,
-        6,
-    )
-    .icon("material-symbols:lock")
-    .redirect("/ssl-tls/certs")
-    .affix(),
-    MenuSeed::new(
-        "ssl-certs",
-        "SSL证书",
-        "menu",
-        "certs",
-        "ssl-tls/certs/index",
-        R_ADMIN_USER,
-        1,
-    )
-    .parent("ssl-tls")
-    .icon("material-symbols:lock")
-    .affix(),
-    // DNS 服务商收进证书页头部按钮 + 抽屉，入口隐藏（页面路由仍可达）
-    MenuSeed::new(
-        "ssl-dns-providers",
-        "DNS服务商",
-        "menu",
-        "dns-providers",
-        "ssl-tls/dns-providers/index",
-        R_ADMIN_USER,
-        2,
-    )
-    .parent("ssl-tls")
-    .icon("material-symbols:dns")
-    .hidden(),
-    // ── 应用商店 ────────────────────────────────────────────
-    MenuSeed::new(
-        "appstore",
-        "应用商店",
-        "menu",
-        "/appstore",
-        "Layout",
-        R_ALL,
-        7,
-    )
-    .icon("material-symbols:storefront")
-    .redirect("/appstore/index")
-    .affix(),
-    MenuSeed::new(
-        "appstore-index",
-        "应用商店",
-        "menu",
-        "index",
-        "appstore/index",
-        R_ALL,
-        1,
-    )
-    .parent("appstore")
-    .icon("material-symbols:storefront")
-    .affix(),
-    // 已安装应用改成应用商店页内的 nav pill，入口隐藏（路由仍可达）
-    MenuSeed::new(
-        "installed",
-        "已安装应用",
-        "menu",
-        "installed",
-        "appstore/installed",
-        R_ADMIN_USER_RESELLER,
-        2,
-    )
-    .parent("appstore")
-    .icon("material-symbols:deployed-code")
-    .affix()
-    .hidden(),
-    // ── 服务器状态（目录）────────────────────────────────────
-    MenuSeed::new(
-        "server-status",
-        "服务器状态",
-        "dir",
-        "/server-status",
-        "Layout",
-        R_ADMIN,
-        8,
-    )
-    .icon("material-symbols:monitor-heart")
-    .redirect("/server-status/index")
-    .affix(),
-    MenuSeed::new(
-        "server-status-index",
-        "Server Monitor",
-        "menu",
-        "index",
-        "server-status/index",
-        R_ADMIN,
-        1,
-    )
-    .parent("server-status")
-    .icon("material-symbols:monitoring")
-    .affix(),
-    MenuSeed::new(
-        "server-status-nginx",
-        "Nginx Server",
-        "menu",
-        "nginx-server",
-        "server-status/nginx-server/index",
-        R_ADMIN,
-        2,
-    )
-    .parent("server-status")
-    .icon("material-symbols:monitor")
-    .affix(),
-    // 进程管理 / 系统服务：原先是「服务器配置 → 系统管理」里的两个页签。
-    // 它们本质是"看当前状态"（进程占用、单元运行状态），不是改配置，
-    // 归到「服务器状态」下，监控与配置的边界才清楚。
-    MenuSeed::new(
-        "server-status-process",
-        "进程管理",
-        "menu",
-        "process",
-        "server-status/process/index",
-        R_ADMIN,
-        3,
-    )
-    .parent("server-status")
-    .icon("material-symbols:memory")
-    .affix(),
-    MenuSeed::new(
-        "server-status-services",
-        "系统服务",
-        "menu",
-        "services",
-        "server-status/services/index",
-        R_ADMIN,
-        4,
-    )
-    .parent("server-status")
-    .icon("material-symbols:miscellaneous-services")
-    .affix(),
     // ── 开发（目录）─────────────────────────────────────────
     MenuSeed::new(
         "dev",
@@ -642,100 +741,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("dev")
     .icon("material-symbols:menu-book")
     .affix(),
-    // ── 计划任务（目录）──────────────────────────────────────
-    MenuSeed::new("crontab", "计划任务", "dir", "/crontab", "Layout", R_ALL, 4)
-        .icon("material-symbols:schedule")
-        .redirect("/crontab/index")
-        .affix(),
-    MenuSeed::new(
-        "crontab-index",
-        "计划任务",
-        "menu",
-        "index",
-        "crontab/index",
-        R_ALL,
-        1,
-    )
-    .parent("crontab")
-    .icon("material-symbols:alarm")
-    .affix(),
-    // ── 备份中心（目录 / 数据库备份与还原，可定时）───────────
-    MenuSeed::new("backup", "备份", "dir", "/backup", "Layout", R_ADMIN, 5)
-        .icon("material-symbols:cloud-upload")
-        .redirect("/backup/index")
-        .affix(),
-    MenuSeed::new(
-        "backup-index",
-        "备份",
-        "menu",
-        "index",
-        "backup/index",
-        R_ADMIN,
-        1,
-    )
-    .parent("backup")
-    .icon("material-symbols:cloud-upload")
-    .affix(),
-    // ── 我的备份（普通用户 / reseller / 管理员：自助备份与还原）──
-    MenuSeed::new("mybackup", "我的备份", "dir", "/mybackup", "Layout", R_ADMIN_USER_RESELLER, 5)
-        .icon("material-symbols:cloud-download")
-        .redirect("/mybackup/index")
-        .affix(),
-    MenuSeed::new(
-        "mybackup-index",
-        "我的备份",
-        "menu",
-        "index",
-        "backup/my",
-        R_ADMIN_USER_RESELLER,
-        1,
-    )
-    .parent("mybackup")
-    .icon("material-symbols:cloud-download")
-    .affix(),
-    // ── 容器管理（Docker）：没装 Docker 时不下发 ──────────────
-    MenuSeed::new("docker", "容器管理", "dir", "/docker", "Layout", R_ADMIN, 5)
-        .icon("material-symbols:deployed-code")
-        .redirect("/docker/index")
-        .feature("docker"),
-    MenuSeed::new(
-        "docker-index",
-        "容器",
-        "menu",
-        "index",
-        "docker/index",
-        R_ADMIN,
-        1,
-    )
-    .parent("docker")
-    .icon("material-symbols:deployed-code")
-    .feature("docker"),
-    // ── 团队成员：入口已并入「个人中心」，整组隐藏 ──────────────
-    MenuSeed::new(
-        "team",
-        "团队成员",
-        "dir",
-        "/team",
-        "Layout",
-        R_ADMIN_USER_RESELLER,
-        9,
-    )
-    .icon("material-symbols:group")
-    .redirect("/team/index")
-    .hidden(),
-    MenuSeed::new(
-        "team-index",
-        "团队成员",
-        "menu",
-        "index",
-        "team/index",
-        R_ADMIN_USER_RESELLER,
-        1,
-    )
-    .parent("team")
-    .icon("material-symbols:group")
-    .affix()
-    .hidden(),
     // ── 文档：已整合进 About ZAP，整组隐藏（路由仍可达）────────
     MenuSeed::new("docs", "文档", "dir", "/docs", "Layout", R_ALL, 14)
         .icon("material-symbols:menu-book")
@@ -782,30 +787,15 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("docs")
     .icon("material-symbols:upgrade")
     .hidden(),
-    // ── 旧「脚本/自动化」目录：两个页面已挂到「系统设置」下 ──────
-    // 目录本身隐藏，保留是为了不占掉已分配的 id 段（历史库里的 role_menus 行
-    // 还指向它）。新库里它只是个空壳入口，可随时删。
-    MenuSeed::new(
-        "automation",
-        "脚本/自动化",
-        "dir",
-        "/automation",
-        "Layout",
-        R_ADMIN,
-        11,
-    )
-    .icon("material-symbols:timer")
-    .redirect("/system/automation")
-    .affix()
-    .hidden(),
 ];
 
 /// 按声明顺序写入 `menus`（id 由 SQLite 自增），返回 `name → id` 映射。
 ///
 /// 父菜单必须在子菜单之前声明，否则子项的 `parent_id` 落不成（记 0 并告警）。
+/// 显示顺序由声明顺序（= 数组下标）决定，落库时直接以该下标作为 `sort_order`。
 pub async fn seed_menus(pool: &SqlitePool) -> HashMap<String, i64> {
     let mut ids: HashMap<String, i64> = HashMap::new();
-    for seed in all_seeds() {
+    for (idx, seed) in all_seeds().enumerate() {
         let parent_id = match seed.parent {
             Some(p) => match ids.get(p) {
                 Some(id) => *id,
@@ -837,7 +827,7 @@ pub async fn seed_menus(pool: &SqlitePool) -> HashMap<String, i64> {
         .bind(seed.affix as i32)
         .bind(seed.feature)
         .bind(seed.roles)
-        .bind(seed.sort_order)
+        .bind(idx as i32)
         .bind(seed.status)
         .execute(pool)
         .await;
@@ -997,11 +987,8 @@ mod tests {
             .unwrap()
         }
         let admin = grants(&pool, "admin").await;
-        // 管理员拿到除「客户管理」（reseller 专属）以外的全部入口
-        let expected: Vec<String> = all_seeds()
-            .map(|s| s.name.to_string())
-            .filter(|n| n != "reseller-users" && n != "reseller-users-index")
-            .collect();
+        // 管理员拿到全部入口（含「客户管理」，现 admin / reseller 都可见）
+        let expected: Vec<String> = all_seeds().map(|s| s.name.to_string()).collect();
         assert_eq!(
             admin.iter().collect::<std::collections::BTreeSet<_>>(),
             expected.iter().collect::<std::collections::BTreeSet<_>>(),
@@ -1035,14 +1022,14 @@ mod tests {
         // 与「旧库最终态」对齐的可见条数（防止重构悄悄改了可见范围）
         assert_eq!(demo.len(), 15, "demo 可见菜单数变化");
         let reseller = grants(&pool, "reseller").await;
-        assert_eq!(reseller.len(), 27, "reseller 可见菜单数变化");
-        // reseller 专属：客户管理只给它自己
+        assert_eq!(reseller.len(), 29, "reseller 可见菜单数变化");
+        // 客户管理（admin / reseller 都可见）
         assert!(reseller.iter().any(|n| n == "reseller-users"));
-        assert!(!admin.iter().any(|n| n == "reseller-users"));
+        assert!(admin.iter().any(|n| n == "reseller-users"));
 
         // 自动化脚本是 admin 专属
         let user = grants(&pool, "user").await;
-        assert_eq!(user.len(), 29, "user 可见菜单数变化");
+        assert_eq!(user.len(), 31, "user 可见菜单数变化");
         assert!(
             !user.iter().any(|n| n == "automation-scripts"),
             "自动化脚本必须仅 admin 可见"
