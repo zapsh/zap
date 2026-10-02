@@ -210,25 +210,56 @@ async fn user_backup_root(user_id: i64) -> Result<(String, String), ZapError> {
     Ok((username, format!("{}/backups", home.trim_end_matches('/'))))
 }
 
-/// 按库名前缀（登录名 + '_'）解析归属用户名，并返回其家目录备份根。
-async fn db_owner_root(db_name: &str) -> Result<(String, String), ZapError> {
-    let owner = match db_name.split('_').next() {
-        Some(o) if !o.is_empty() => o.to_string(),
-        _ => return Err(ZapError::New(-1, "无法从库名解析归属用户".to_string())),
+/// 库名是否带有「已存在用户」的前缀（用于区分有主库 / 无前缀库）。
+async fn db_has_user_prefix(db_name: &str) -> bool {
+    let Some(prefix) = db_name.split('_').next() else {
+        return false;
     };
-    let pool = crate::db::get_db_pool().await;
-    let row: Option<(String,)> = sqlx::query_as("SELECT home_dir FROM user WHERE username=?")
-        .bind(&owner)
-        .fetch_optional(pool)
-        .await?;
-    let Some((home,)) = row else {
-        return Err(ZapError::New(-1, format!("归属用户 {owner} 不存在")));
-    };
-    let home = home.trim();
-    if home.is_empty() {
-        return Err(ZapError::New(-1, format!("用户 {owner} 的家目录尚未初始化")));
+    if prefix.is_empty() {
+        return false;
     }
-    Ok((owner, format!("{}/backups", home.trim_end_matches('/'))))
+    let pool = crate::db::get_db_pool().await;
+    sqlx::query_as::<_, (String,)>("SELECT username FROM user WHERE username=?")
+        .bind(prefix)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// 按库名前缀（登录名 + '_'）解析归属用户名，并返回其家目录备份根。
+///
+/// 库名前缀本身就是一个已存在用户 → 归该用户（`<home>/backups`）；
+/// 无前缀 / 前缀查不到对应用户（典型是管理员自建的无前缀库）→ 归 `operator`
+/// （执行备份的管理员）家目录 `backups/`。这样管理员备份无前缀库不会再因
+/// 「找不到用户」而失败；仅当 `operator` 自身家目录也未初始化才报错。
+async fn db_owner_root(db_name: &str, operator: &str) -> Result<(String, String), ZapError> {
+    let pool = crate::db::get_db_pool().await;
+    // 前缀本身即可作为候选用户，再补一个 operator 兜底
+    let prefix = db_name.split('_').next().unwrap_or("").to_string();
+    let candidates: Vec<&str> = if prefix.is_empty() {
+        vec![operator]
+    } else {
+        vec![prefix.as_str(), operator]
+    };
+    for user in candidates.into_iter().filter(|u| !u.is_empty()) {
+        if let Some((home,)) =
+            sqlx::query_as::<_, (String,)>("SELECT home_dir FROM user WHERE username=?")
+                .bind(user)
+                .fetch_optional(pool)
+                .await?
+        {
+            let home = home.trim();
+            if !home.is_empty() {
+                return Ok((user.to_string(), format!("{}/backups", home.trim_end_matches('/'))));
+            }
+        }
+    }
+    Err(ZapError::New(
+        -1,
+        format!("无前缀库 {db_name} 无法归属：操作者 {operator} 的家目录尚未初始化"),
+    ))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -445,15 +476,36 @@ pub async fn run_backup(
         "db" => {
             let t: DbTarget = serde_json::from_str(target_json)
                 .map_err(|e| ZapError::New(-1, format!("target 解析失败: {e}")))?;
+            // 留空的连接信息默认用面板 zapadm 本机直连；填写则作为远程数据库备份。
+            let user = if t.user.trim().is_empty() {
+                "zapadm".to_string()
+            } else {
+                t.user.clone()
+            };
+            let host = if t.host.trim().is_empty() {
+                "127.0.0.1".to_string()
+            } else {
+                t.host.clone()
+            };
+            let port = if t.port <= 0 { 3306 } else { t.port };
+            let password = if t.engine == "mysql" && t.password.trim().is_empty() {
+                zap_crypto::read_cred("mysql", "zapadm").unwrap_or_default()
+            } else {
+                t.password.clone()
+            };
+            let socket = match t.socket.clone() {
+                Some(s) if !s.trim().is_empty() => Some(s),
+                _ => crate::routers::database::socket_path().await,
+            };
             crate::zapexec::call(Request::BackupDb {
                 name: eff_name.clone(),
                 engine: t.engine,
                 db_name: t.db_name,
-                user: t.user,
-                password: t.password,
-                host: t.host,
-                port: t.port,
-                socket: t.socket,
+                user,
+                password,
+                host,
+                port,
+                socket,
                 dest_dir: dest_dir.to_string(),
                 db_path: t.db_path,
                 backup_root: eff_root.clone(),
@@ -648,8 +700,16 @@ pub async fn db_quick(
             return Err(ZapError::New(-1, "只能备份自己的数据库".to_string()));
         }
     }
-    // 按库名前缀归属到对应用户家目录 backups，并取该用户的保留份数
-    let (owner, root) = db_owner_root(&name).await?;
+    // 归属：库名前缀对应用户 → 该用户；无前缀（管理员自建库）→ 操作者。
+    let (owner, root) = db_owner_root(&name, &claims.sub).await?;
+    let home = root.trim_end_matches("/backups").trim_end_matches('/').to_string();
+    // 无前缀库（管理员自建）统一写系统备份根；有前缀的用户库仍服从全局
+    // 「落盘位置」策略（home=家目录 / system=系统目录），与全量备份一致。
+    let eff_root = if db_has_user_prefix(&name).await {
+        resolve_full_root(&policy_backup_dest().await, &home, &owner).0
+    } else {
+        backup_root_path()
+    };
     let retain = user_retention(&owner).await;
     let pwd = zap_crypto::read_cred("mysql", "zapadm").map_err(|e| {
         ZapError::New(-1, format!("读取数据库凭据失败：{e}（请确认面板能连上 MySQL）"))
@@ -676,7 +736,7 @@ pub async fn db_quick(
         "",
         None,
         &owner,
-        Some(&root),
+        Some(&eff_root),
         &excludes,
         exf.as_deref(),
         &[name.clone()],
@@ -1693,7 +1753,7 @@ async fn backup_all_dbs(report: &mut BackupAllReport, dest: &str, retain: i64) {
     .unwrap_or_default();
     let socket = crate::routers::database::socket_path().await;
     for (db,) in dbs {
-        let (owner, home) = match db_owner_root(&db).await {
+        let (owner, home) = match db_owner_root(&db, "admin").await {
             Ok((o, h)) => (o, h.trim_end_matches("/backups").trim_end_matches('/').to_string()),
             Err(_) => {
                 // 无前缀库归管理员

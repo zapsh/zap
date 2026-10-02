@@ -68,21 +68,25 @@
               <el-form-item label="数据库名">
                 <el-input v-model="form.dbName" placeholder="要导出的数据库名" />
               </el-form-item>
-              <el-form-item v-if="form.engine === 'mysql'" label="用户名">
-                <el-input v-model="form.dbUser" />
-              </el-form-item>
-              <el-form-item v-if="form.engine === 'mysql'" label="密码">
-                <el-input v-model="form.dbPass" type="password" show-password />
-              </el-form-item>
-              <el-form-item v-if="form.engine === 'mysql'" label="主机">
-                <el-input v-model="form.dbHost" placeholder="127.0.0.1" />
-              </el-form-item>
-              <el-form-item v-if="form.engine === 'mysql'" label="端口">
-                <el-input v-model="form.dbPort" placeholder="3306" />
-              </el-form-item>
-              <el-form-item v-if="form.engine === 'sqlite'" label="数据库文件">
-                <el-input v-model="form.dbPath" placeholder="如 /usr/local/zap/data/zap.db" />
-              </el-form-item>
+              <el-collapse class="more-collapse">
+                <el-collapse-item title="更多连接信息（留空则用本机 zapadm 直连，填写后备份远程数据库）">
+                  <el-form-item label="用户名">
+                    <el-input v-model="form.dbUser" placeholder="留空 = zapadm" />
+                  </el-form-item>
+                  <el-form-item label="密码">
+                    <el-input v-model="form.dbPass" type="password" show-password placeholder="留空 = 面板凭据" />
+                  </el-form-item>
+                  <el-form-item label="主机">
+                    <el-input v-model="form.dbHost" placeholder="127.0.0.1" />
+                  </el-form-item>
+                  <el-form-item label="端口">
+                    <el-input v-model="form.dbPort" placeholder="3306" />
+                  </el-form-item>
+                  <el-form-item v-if="form.engine === 'sqlite'" label="数据库文件">
+                    <el-input v-model="form.dbPath" placeholder="如 /usr/local/zap/data/zap.db" />
+                  </el-form-item>
+                </el-collapse-item>
+              </el-collapse>
             </template>
 
             <el-form-item>
@@ -154,7 +158,12 @@
         <el-table :data="jobs" v-loading="loadingJobs" size="small">
           <el-table-column prop="name" label="名称" min-width="160" />
           <el-table-column prop="target_type" label="类型" width="80" />
-          <el-table-column prop="schedule" label="计划(cron)" width="140" />
+          <el-table-column label="计划(cron)" min-width="160">
+            <template #default="{ row }">
+              <div>{{ describeCron(row.schedule) }}</div>
+              <div class="muted">{{ row.schedule }}</div>
+            </template>
+          </el-table-column>
           <el-table-column label="保留份数" width="80">
             <template #default="{ row }">{{ row.retain_count }}</template>
           </el-table-column>
@@ -222,8 +231,23 @@
               <el-switch v-model="policy.all_enabled" />
               <span class="tip">开启后按下方计划自动备份全部用户数据（按主人打标，用户可从系统目录还原）</span>
             </el-form-item>
-            <el-form-item label="全量备份计划(cron)">
-              <el-input v-model="policy.all_schedule" placeholder="如 0 4 * * *（每天 4 点）" style="max-width:240px" />
+            <el-form-item label="全量备份计划">
+              <el-select
+                v-model="policy.all_schedule"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                placeholder="留空 = 不自动备份"
+                style="max-width: 260px"
+              >
+                <el-option label="每天 03:00" value="0 3 * * *" />
+                <el-option label="每天 04:00" value="0 4 * * *" />
+                <el-option label="每周一 03:00" value="0 3 * * 1" />
+                <el-option label="每月 1 号 03:00" value="0 3 1 * *" />
+                <el-option label="每小时" value="0 * * * *" />
+              </el-select>
+              <span class="tip">当前执行：{{ describeCron(policy.all_schedule) }}（留空 = 不自动备份；标准 5 段 cron，可直接输入自定义表达式）</span>
             </el-form-item>
             <el-form-item label="上次全量结果" v-if="policy.last_report">
               <span class="tip">
@@ -315,25 +339,43 @@
           <el-form-item label="数据库名">
             <el-input v-model="jobForm.dbName" />
           </el-form-item>
-          <el-form-item v-if="jobForm.engine === 'mysql'" label="用户名">
-            <el-input v-model="jobForm.dbUser" />
-          </el-form-item>
-          <el-form-item v-if="jobForm.engine === 'mysql'" label="密码">
-            <el-input v-model="jobForm.dbPass" type="password" show-password />
-          </el-form-item>
-          <el-form-item v-if="jobForm.engine === 'mysql'" label="主机">
-            <el-input v-model="jobForm.dbHost" placeholder="127.0.0.1" />
-          </el-form-item>
-          <el-form-item v-if="jobForm.engine === 'mysql'" label="端口">
-            <el-input v-model="jobForm.dbPort" placeholder="3306" />
-          </el-form-item>
-          <el-form-item v-if="jobForm.engine === 'sqlite'" label="数据库文件">
-            <el-input v-model="jobForm.dbPath" />
-          </el-form-item>
+          <el-collapse class="more-collapse">
+            <el-collapse-item title="更多连接信息（留空则用本机 zapadm 直连，填写后备份远程数据库）">
+              <el-form-item label="用户名">
+                <el-input v-model="jobForm.dbUser" placeholder="留空 = zapadm" />
+              </el-form-item>
+              <el-form-item label="密码">
+                <el-input v-model="jobForm.dbPass" type="password" show-password placeholder="留空 = 面板凭据" />
+              </el-form-item>
+              <el-form-item label="主机">
+                <el-input v-model="jobForm.dbHost" placeholder="127.0.0.1" />
+              </el-form-item>
+              <el-form-item label="端口">
+                <el-input v-model="jobForm.dbPort" placeholder="3306" />
+              </el-form-item>
+              <el-form-item v-if="jobForm.engine === 'sqlite'" label="数据库文件">
+                <el-input v-model="jobForm.dbPath" />
+              </el-form-item>
+            </el-collapse-item>
+          </el-collapse>
         </template>
 
         <el-form-item label="计划(cron)">
-          <el-input v-model="jobForm.schedule" placeholder="如 0 3 * * *（每天 3 点）" />
+          <el-select
+            v-model="jobForm.schedule"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="如 0 3 * * *（每天 3 点）"
+            style="width: 100%"
+          >
+            <el-option label="每天 03:00" value="0 3 * * *" />
+            <el-option label="每天 04:00" value="0 4 * * *" />
+            <el-option label="每周一 03:00" value="0 3 * * 1" />
+            <el-option label="每月 1 号 03:00" value="0 3 1 * *" />
+            <el-option label="每小时" value="0 * * * *" />
+          </el-select>
+          <span class="tip">当前执行：{{ describeCron(jobForm.schedule) }}（标准 5 段 cron，可直接输入自定义表达式）</span>
         </el-form-item>
         <el-form-item label="保留份数">
           <el-input-number v-model="jobForm.retain_count" :min="0" :max="999" />
@@ -403,6 +445,7 @@ const running = ref(false)
 const savingSetting = ref(false)
 const setting = ref({ path: '', disk_free: 0, disk_total: 0 })
 const policy = ref<any>({ allow_user_backup: true, global_retain: 7, all_enabled: false, all_schedule: '', mode: 'home', dest: 'system', exclude_default: '', last_report: null })
+/** 全量备份计划：直接绑定 policy.all_schedule，可在下方 select 选预设或手输 cron */
 const savingPolicy = ref(false)
 const runningFull = ref(false)
 const loadingPaths = ref(false)
@@ -838,6 +881,26 @@ function formatTime(ts: number) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+/** cron 表达式 -> 人类可读说明（命中预设则用中文，未命中回退原始表达式） */
+const CRON_DESC: Record<string, string> = {
+  '0 3 * * *': '每天 03:00',
+  '0 4 * * *': '每天 04:00',
+  '0 3 * * 1': '每周一 03:00',
+  '0 3 1 * *': '每月 1 号 03:00',
+  '0 * * * *': '每小时',
+  '* * * * *': '每分钟',
+}
+function describeCron(expr?: string) {
+  const e = (expr || '').trim()
+  if (!e) return '未设置'
+  if (CRON_DESC[e]) return CRON_DESC[e]
+  const m = e.match(/^\d+ (\d+) \* \* \*$/)
+  if (m) return `每天 ${String(m[1]).padStart(2, '0')}:00`
+  const h = e.match(/^\d+ (\d+) \* \* (\d+)$/)
+  if (h) return `每周 ${['日','一','二','三','四','五','六'][Number(h[2])] || h[2]} ${String(h[1]).padStart(2, '0')}:00`
+  return `自定义：${e}`
+}
+
 onMounted(() => {
   loadSetting()
   loadArchives()
@@ -853,4 +916,5 @@ onMounted(() => {
 .block { margin-bottom: 16px; }
 .card-head { display: flex; justify-content: space-between; align-items: center; }
 .form { max-width: 560px; }
+.muted { color: var(--el-text-color-secondary); font-size: 12px; }
 </style>
