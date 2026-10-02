@@ -120,6 +120,8 @@ const { t } = useI18n()
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.roles.includes('admin'))
 
+defineOptions({ name: 'RepoManageDrawer' })
+
 const visible = ref(false)
 /** add = 直接进添加表单（右上角「增加软件源」） */
 const mode = ref<'list' | 'add'>('list')
@@ -213,10 +215,6 @@ function fmtTime(ts: number | null | undefined): string {
 }
 
 defineExpose({ open })
-</script>
-
-<script lang="ts">
-export default { name: 'RepoManageDrawer' }
 </script>
 
 <style scoped>

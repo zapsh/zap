@@ -172,6 +172,8 @@ import {
 
 const { t } = useI18n()
 
+defineOptions({ name: 'ServiceConfPython' })
+
 const loading = ref(false)
 const refreshing = ref(false)
 const installingUv = ref(false)
@@ -347,10 +349,6 @@ async function setDefault(v: string) {
 }
 
 onMounted(load)
-</script>
-
-<script lang="ts">
-export default { name: 'ServiceConfPython' }
 </script>
 
 <style scoped>

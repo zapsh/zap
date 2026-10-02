@@ -174,6 +174,8 @@ import {
   setNodeRegistry,
 } from '@/api/serverEnv'
 
+defineOptions({ name: 'ServiceConfNodejs' })
+
 const { t } = useI18n()
 
 const loading = ref(false)
@@ -337,10 +339,6 @@ async function act(action: string, rawVersion: string) {
 }
 
 onMounted(load)
-</script>
-
-<script lang="ts">
-export default { name: 'ServiceConfNodejs' }
 </script>
 
 <style scoped>
