@@ -35,7 +35,7 @@
     </el-card>
 
     <el-tabs v-model="tab">
-      <el-tab-pane label="备份清单" name="archives">
+      <el-tab-pane v-if="isAdmin" label="备份清单" name="archives">
         <!-- 立即备份 -->
         <el-card shadow="never" class="block">
           <template #header>
@@ -154,47 +154,7 @@
         </el-card>
       </el-tab-pane>
 
-      <el-tab-pane label="备份任务" name="jobs">
-        <div class="card-head">
-          <span>备份任务</span>
-          <el-button type="primary" @click="openJobDialog(null)">新建任务</el-button>
-        </div>
-        <el-table :data="jobs" v-loading="loadingJobs" size="small">
-          <el-table-column prop="name" label="名称" min-width="160" />
-          <el-table-column prop="target_type" label="类型" width="80" />
-          <el-table-column label="计划(cron)" min-width="160">
-            <template #default="{ row }">
-              <div>{{ describeCron(row.schedule) }}</div>
-              <div class="muted">{{ row.schedule }}</div>
-            </template>
-          </el-table-column>
-          <el-table-column label="保留份数" width="80">
-            <template #default="{ row }">{{ row.retain_count }}</template>
-          </el-table-column>
-          <el-table-column label="启用" width="90">
-            <template #default="{ row }">
-              <el-switch v-model="row.enabled" :active-value="1" :inactive-value="0"
-                @change="onToggleJob(row)" />
-            </template>
-          </el-table-column>
-          <el-table-column label="上次运行" width="200">
-            <template #default="{ row }">
-              <span v-if="row.last_run_at">{{ formatTime(row.last_run_at) }}</span>
-              <el-tag v-if="row.last_status === 1" size="small" type="success">成功</el-tag>
-              <el-tag v-else-if="row.last_status === -1" size="small" type="danger">失败</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="220">
-            <template #default="{ row }">
-              <el-button text type="primary" @click="onRunJob(row)">立即执行</el-button>
-              <el-button text type="primary" @click="openJobDialog(row)">编辑</el-button>
-              <el-button text type="danger" @click="onDeleteJob(row)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-
-      <el-tab-pane label="备份策略" name="policy">
+      <el-tab-pane v-if="isAdmin" label="备份策略" name="policy">
         <el-card shadow="never" class="block">
           <template #header>
             <div class="card-head">
@@ -206,6 +166,10 @@
             <el-form-item label="允许用户自助备份">
               <el-switch v-model="policy.allow_user_backup" />
               <span class="tip">关闭后，普通用户无法自助备份自己的站点 / 数据库</span>
+            </el-form-item>
+            <el-form-item label="允许用户定时备份">
+              <el-switch v-model="policy.allow_user_job" />
+              <span class="tip">关闭后，普通用户无法创建 / 修改定时备份任务（已有任务对其不可见、不可执行）</span>
             </el-form-item>
             <el-form-item label="全量备份模式">
               <el-radio-group v-model="policy.mode">
@@ -318,82 +282,6 @@
       </el-tab-pane>
     </el-tabs>
 
-    <!-- 任务编辑对话框 -->
-    <el-dialog v-model="jobDialog" :title="jobForm.id ? '编辑任务' : '新建任务'" width="560px">
-      <el-form :model="jobForm" label-width="96px">
-        <el-form-item label="任务名">
-          <el-input v-model="jobForm.name" />
-        </el-form-item>
-        <el-form-item label="备份类型">
-          <el-radio-group v-model="jobForm.target_type">
-            <el-radio value="dir">目录 / 文件</el-radio>
-            <el-radio value="db">数据库</el-radio>
-          </el-radio-group>
-        </el-form-item>
-
-        <template v-if="jobForm.target_type === 'dir'">
-          <el-form-item label="备份路径">
-            <el-input v-model="jobForm.dirPaths" type="textarea" :rows="3" placeholder="每行一个绝对路径" />
-          </el-form-item>
-        </template>
-        <template v-else>
-          <el-form-item label="数据库类型">
-            <el-select v-model="jobForm.engine" style="width:160px">
-              <el-option label="MySQL / MariaDB" value="mysql" />
-              <el-option label="SQLite" value="sqlite" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="数据库名">
-            <el-input v-model="jobForm.dbName" />
-          </el-form-item>
-          <el-collapse class="more-collapse">
-            <el-collapse-item title="更多连接信息（留空则用本机 zapadm 直连，填写后备份远程数据库）">
-              <el-form-item label="用户名">
-                <el-input v-model="jobForm.dbUser" placeholder="留空 = zapadm" />
-              </el-form-item>
-              <el-form-item label="密码">
-                <el-input v-model="jobForm.dbPass" type="password" show-password placeholder="留空 = 面板凭据" />
-              </el-form-item>
-              <el-form-item label="主机">
-                <el-input v-model="jobForm.dbHost" placeholder="127.0.0.1" />
-              </el-form-item>
-              <el-form-item label="端口">
-                <el-input v-model="jobForm.dbPort" placeholder="3306" />
-              </el-form-item>
-              <el-form-item v-if="jobForm.engine === 'sqlite'" label="数据库文件">
-                <el-input v-model="jobForm.dbPath" />
-              </el-form-item>
-            </el-collapse-item>
-          </el-collapse>
-        </template>
-
-        <el-form-item label="计划(cron)">
-          <el-select
-            v-model="jobForm.schedule"
-            filterable
-            allow-create
-            default-first-option
-            placeholder="如 0 3 * * *（每天 3 点）"
-            style="width: 100%"
-          >
-            <el-option label="每天 03:00" value="0 3 * * *" />
-            <el-option label="每天 04:00" value="0 4 * * *" />
-            <el-option label="每周一 03:00" value="0 3 * * 1" />
-            <el-option label="每月 1 号 03:00" value="0 3 1 * *" />
-            <el-option label="每小时" value="0 * * * *" />
-          </el-select>
-          <span class="tip">当前执行：{{ describeCron(jobForm.schedule) }}（标准 5 段 cron，可直接输入自定义表达式）</span>
-        </el-form-item>
-        <el-form-item label="保留份数">
-          <el-input-number v-model="jobForm.retain_count" :min="0" :max="999" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="jobDialog = false">取消</el-button>
-        <el-button type="primary" :loading="savingJob" @click="onSaveJob">保存</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 还原对话框 -->
     <el-dialog v-model="restoreDialog" title="还原" width="520px">
       <el-form :model="restoreForm" label-width="96px">
@@ -447,6 +335,10 @@ import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { http } from '@/utils/request'
 import DirPicker from '@/components/DirPicker.vue'
+import { useUserStore } from '@/stores/user'
+
+const userStore = useUserStore()
+const isAdmin = computed(() => (userStore.roles || []).includes('admin'))
 
 const tab = ref('archives')
 const dirPickerStore = ref(false)
@@ -454,7 +346,7 @@ const dirPickerExtra = ref(false)
 const running = ref(false)
 const savingSetting = ref(false)
 const setting = ref({ path: '', disk_free: 0, disk_total: 0 })
-const policy = ref<any>({ allow_user_backup: true, global_retain: 7, all_enabled: false, all_schedule: '', mode: 'home', dest: 'system', exclude_default: '', last_report: null })
+const policy = ref<any>({ allow_user_backup: true, allow_user_job: true, global_retain: 7, all_enabled: false, all_schedule: '', mode: 'home', dest: 'system', exclude_default: '', last_report: null })
 /** 全量备份计划：直接绑定 policy.all_schedule，可在下方 select 选预设或手输 cron */
 const savingPolicy = ref(false)
 const runningFull = ref(false)
@@ -492,10 +384,8 @@ async function saveSetting() {
 }
 const loadingArchives = ref(false)
 const loadingRecords = ref(false)
-const loadingJobs = ref(false)
 const archives = ref<any[]>([])
 const records = ref<any[]>([])
-const jobs = ref<any[]>([])
 
 const form = ref({
   kind: 'dir',
@@ -516,6 +406,7 @@ async function loadPolicy() {
     const d: any = await http.get('/system/backup/policy')
     policy.value = {
       allow_user_backup: d.data?.allow_user_backup !== false,
+      allow_user_job: d.data?.allow_user_job !== false,
       global_retain: d.data?.global_retain ?? 7,
       all_enabled: d.data?.all_enabled === true,
       all_schedule: d.data?.all_schedule || '',
@@ -533,6 +424,7 @@ async function savePolicy() {
   try {
     await http.post('/system/backup/policy', {
       allow_user: policy.value.allow_user_backup,
+      allow_user_job: policy.value.allow_user_job,
       global_retain: policy.value.global_retain,
       all_enabled: policy.value.all_enabled,
       all_schedule: policy.value.all_schedule.trim(),
@@ -607,7 +499,7 @@ async function onDeletePath(row: any) {
   }
 }
 
-// ── 归档 / 历史 / 任务 ──
+// ── 归档 / 历史 ──
 async function loadArchives() {
   loadingArchives.value = true
   try {
@@ -628,17 +520,6 @@ async function loadRecords() {
     ElMessage.error(e?.message || '加载失败')
   } finally {
     loadingRecords.value = false
-  }
-}
-async function loadJobs() {
-  loadingJobs.value = true
-  try {
-    const d: any = await http.get('/system/backup/jobs')
-    jobs.value = d.data?.jobs || []
-  } catch (e: any) {
-    ElMessage.error(e?.message || '加载失败')
-  } finally {
-    loadingJobs.value = false
   }
 }
 
@@ -746,135 +627,6 @@ async function onConfirmRestore() {
   }
 }
 
-// ── 任务 ──
-const jobDialog = ref(false)
-const savingJob = ref(false)
-const jobForm = ref({
-  id: 0,
-  name: '',
-  target_type: 'dir',
-  dirPaths: '',
-  engine: 'mysql',
-  dbName: '',
-  dbUser: '',
-  dbPass: '',
-  dbHost: '',
-  dbPort: '',
-  dbPath: '',
-  schedule: '0 3 * * *',
-  retain_count: 7,
-})
-
-function openJobDialog(row: any) {
-  if (row) {
-    let t: any = {}
-    try { t = JSON.parse(row.target || '{}') } catch {}
-    jobForm.value = {
-      id: row.id,
-      name: row.name,
-      target_type: row.target_type,
-      dirPaths: (t.paths || []).join('\n'),
-      engine: t.engine || 'mysql',
-      dbName: t.db_name || '',
-      dbUser: t.user || '',
-      dbPass: t.password || '',
-      dbHost: t.host || '',
-      dbPort: t.port ? String(t.port) : '',
-      dbPath: t.db_path || '',
-      schedule: row.schedule,
-      retain_count: row.retain_count,
-    }
-  } else {
-    jobForm.value = {
-      id: 0, name: '', target_type: 'dir', dirPaths: '', engine: 'mysql',
-      dbName: '', dbUser: '', dbPass: '', dbHost: '', dbPort: '', dbPath: '',
-      schedule: '0 3 * * *', retain_count: 7,
-    }
-  }
-  jobDialog.value = true
-}
-
-async function onSaveJob() {
-  const f = jobForm.value
-  if (!f.name.trim()) return ElMessage.warning('请填写任务名')
-  let target: any
-  if (f.target_type === 'dir') {
-    const paths = f.dirPaths.split('\n').map((s) => s.trim()).filter(Boolean)
-    if (!paths.length) return ElMessage.warning('请填写备份路径')
-    target = { paths }
-  } else {
-    if (!f.dbName.trim()) return ElMessage.warning('请填写数据库名')
-    target = {
-      engine: f.engine,
-      db_name: f.dbName,
-      user: f.dbUser,
-      password: f.dbPass,
-      host: f.dbHost,
-      port: parseInt(f.dbPort || '0', 10) || 0,
-      db_path: f.engine === 'sqlite' ? f.dbPath : undefined,
-    }
-  }
-  savingJob.value = true
-  try {
-    await http.post('/system/backup/job/save', {
-      id: f.id || undefined,
-      name: f.name.trim(),
-      target_type: f.target_type,
-      target: JSON.stringify(target),
-      schedule: f.schedule,
-      retain_count: f.retain_count,
-    })
-    ElMessage.success('已保存')
-    jobDialog.value = false
-    loadJobs()
-  } catch (e: any) {
-    ElMessage.error(e?.message || '保存失败')
-  } finally {
-    savingJob.value = false
-  }
-}
-
-async function onRunJob(row: any) {
-  try {
-    await http.post('/system/backup/job/run', { id: row.id })
-    ElMessage.success('已触发执行')
-    setTimeout(loadJobs, 1500)
-    setTimeout(loadRecords, 1500)
-  } catch (e: any) {
-    ElMessage.error(e?.message || '执行失败')
-  }
-}
-async function onToggleJob(row: any) {
-  try {
-    await http.post('/system/backup/job/save', {
-      id: row.id,
-      name: row.name,
-      target_type: row.target_type,
-      target: row.target,
-      schedule: row.schedule,
-      enabled: row.enabled,
-      retain_count: row.retain_count,
-    })
-  } catch (e: any) {
-    ElMessage.error(e?.message || '更新失败')
-    loadJobs()
-  }
-}
-async function onDeleteJob(row: any) {
-  try {
-    await ElMessageBox.confirm(`确认删除任务 ${row.name}？`, '提示', { type: 'warning' })
-  } catch {
-    return
-  }
-  try {
-    await http.post('/system/backup/job/delete', { id: row.id })
-    ElMessage.success('已删除')
-    loadJobs()
-  } catch (e: any) {
-    ElMessage.error(e?.message || '删除失败')
-  }
-}
-
 // ── 格式化 ──
 function formatBytes(n: number) {
   if (!n) return '0 B'
@@ -912,12 +664,14 @@ function describeCron(expr?: string) {
 }
 
 onMounted(() => {
-  loadSetting()
-  loadArchives()
-  loadRecords()
-  loadJobs()
-  loadPolicy()
-  loadPaths()
+  // 以下均为管理员专属接口，普通用户不调用以免 403
+  if (isAdmin.value) {
+    loadSetting()
+    loadArchives()
+    loadRecords()
+    loadPolicy()
+    loadPaths()
+  }
 })
 </script>
 

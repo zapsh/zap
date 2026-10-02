@@ -1455,6 +1455,7 @@ async fn init_backup_tables() {
         enabled INTEGER NOT NULL DEFAULT 1,
         retain_count INTEGER NOT NULL DEFAULT 7,
         cloud_id TEXT NOT NULL DEFAULT '',
+        owner TEXT NOT NULL DEFAULT '',
         last_run_at INTEGER NOT NULL DEFAULT 0,
         last_status INTEGER NOT NULL DEFAULT 0,
         last_message TEXT NOT NULL DEFAULT '',

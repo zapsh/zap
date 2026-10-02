@@ -49,8 +49,8 @@ pub fn start() {
 
 async fn tick() {
     let pool = get_db_pool().await;
-    let rows: Vec<(i64, String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, name, target_type, target, schedule, last_run_at \
+    let rows: Vec<(i64, String, String, String, String, i64, String)> = sqlx::query_as(
+        "SELECT id, name, target_type, target, schedule, last_run_at, owner \
          FROM backup_jobs WHERE enabled = 1",
     )
     .fetch_all(pool)
@@ -60,7 +60,7 @@ async fn tick() {
     let now = chrono::Local::now();
     let ts = now.timestamp();
 
-    for (id, name, target_type, target, schedule, last_run_at) in rows {
+    for (id, name, target_type, target, schedule, last_run_at, owner) in rows {
         let cron = match Cron::parse(&schedule) {
             Ok(c) => c,
             Err(e) => {
@@ -70,7 +70,7 @@ async fn tick() {
         };
         // 命中本分钟，且与上次运行间隔超过 60s（防同一分钟内重复触发）
         if cron.matches(&now) && (ts - last_run_at) > 60 {
-            tokio::spawn(run_job(id, name, target_type, target, ts));
+            tokio::spawn(run_job(id, name, target_type, target, owner, ts));
         }
     }
 
@@ -95,8 +95,37 @@ async fn tick() {
     }
 }
 
-async fn run_job(id: i64, name: String, target_type: String, target: String, ts: i64) {
-    let result = run_backup(&target_type, &target, &name, "", Some(id), "", None, &[], None, &[]).await;
+async fn run_job(id: i64, name: String, target_type: String, target: String, owner: String, ts: i64) {
+    // 按任务归属解析归档落盘根：管理员任务（owner 空）= 系统备份根；用户任务 = 其家目录 backups。
+    let root = match crate::routers::system_backup::resolve_job_root(&owner).await {
+        Ok(r) => r.0,
+        Err(e) => {
+            warn!("备份任务 {id}({name}) 解析归属根失败: {e}");
+            let pool = get_db_pool().await;
+            let _ = sqlx::query(
+                "UPDATE backup_jobs SET last_run_at=?, last_status=-1, last_message=? WHERE id=?",
+            )
+            .bind(ts)
+            .bind(&e.to_string())
+            .bind(id)
+            .execute(pool)
+            .await;
+            return;
+        }
+    };
+    let result = run_backup(
+        &target_type,
+        &target,
+        &name,
+        "",
+        Some(id),
+        &owner,
+        Some(&root),
+        &[],
+        None,
+        &[],
+    )
+    .await;
     let pool = get_db_pool().await;
     match result {
         Ok(_) => {

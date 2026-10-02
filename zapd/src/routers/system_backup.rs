@@ -83,6 +83,11 @@ async fn policy_allow_user_backup() -> bool {
     gs_get("backup_allow_user").await != "0"
 }
 
+/// 是否允许用户创建定时备份任务（默认开；管理员可在「备份策略」里关闭）。
+async fn policy_allow_user_job() -> bool {
+    gs_get("backup_allow_job").await != "0"
+}
+
 /// 全局保留份数（管理员全量备份 / 未设个人保留时采用）。
 async fn policy_global_retain() -> i64 {
     gs_get("backup_global_retain")
@@ -208,6 +213,40 @@ async fn user_backup_root(user_id: i64) -> Result<(String, String), ZapError> {
         return Err(ZapError::New(-1, format!("用户 {username} 的家目录尚未初始化")));
     }
     Ok((username, format!("{}/backups", home.trim_end_matches('/'))))
+}
+
+/// 取用户名对应的家目录（用于把用户任务归档落到其家目录 backups）。
+async fn home_of_username(username: &str) -> Result<String, ZapError> {
+    let pool = crate::db::get_db_pool().await;
+    let row: Option<(String,)> = sqlx::query_as("SELECT home_dir FROM user WHERE username=?")
+        .bind(username)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ZapError::New(-1, format!("读用户家目录失败: {e}")))?;
+    row.map(|r| r.0)
+        .filter(|h| !h.trim().is_empty())
+        .ok_or_else(|| ZapError::New(-1, format!("用户 {username} 家目录尚未初始化")))
+}
+
+/// 按任务 owner 解析归档落盘根：owner 为空（管理员任务）= 系统备份根；
+/// 否则取该用户家目录 backups（遵从「落盘位置」策略）。调度器与手动执行共用。
+pub async fn resolve_job_root(owner: &str) -> Result<(String, Option<String>), ZapError> {
+    if owner.trim().is_empty() {
+        return Ok((backup_root_path(), None));
+    }
+    let home = home_of_username(owner).await?;
+    Ok(resolve_full_root(&policy_backup_dest().await, &home, owner))
+}
+
+/// 判断 path 是否落在 root 目录内（含 root 自身），用于限制普通用户只能备份自己家目录。
+fn path_within(path: &str, root: &str) -> bool {
+    let Ok(cp) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let Ok(cr) = std::fs::canonicalize(root) else {
+        return false;
+    };
+    cp.starts_with(cr)
 }
 
 /// 库名是否带有「已存在用户」的前缀（用于区分有主库 / 无前缀库）。
@@ -408,6 +447,7 @@ struct BackupJobRow {
     enabled: i64,
     retain_count: i64,
     cloud_id: String,
+    owner: String,
     last_run_at: i64,
     last_status: i64,
     last_message: String,
@@ -1053,15 +1093,31 @@ pub async fn restore_db(
 }
 
 /// GET /system/backup/jobs —— 备份任务列表。
+///
+/// 管理员可见全部；普通用户仅见自己（owner = 登录名）的任务，且受「允许用户定时备份」开关约束。
 pub async fn jobs_list(claims: ValidatedClaims) -> ZapJsonResult {
-    require_admin(&claims)?;
+    let admin = is_admin(&claims);
+    if !admin && !policy_allow_user_job().await {
+        return Err(ZapError::New(-1, "管理员已关闭用户定时备份".to_string()));
+    }
     let pool = crate::db::get_db_pool().await;
-    let rows: Vec<BackupJobRow> = sqlx::query_as(
-        "SELECT id, name, target_type, target, schedule, enabled, retain_count, cloud_id, \
-         last_run_at, last_status, last_message FROM backup_jobs ORDER BY id DESC",
-    )
-    .fetch_all(pool)
-    .await
+    let rows: Vec<BackupJobRow> = if admin {
+        sqlx::query_as(
+            "SELECT id, name, target_type, target, schedule, enabled, retain_count, cloud_id, \
+             owner, last_run_at, last_status, last_message FROM backup_jobs ORDER BY id DESC",
+        )
+        .fetch_all(pool)
+        .await
+    } else {
+        sqlx::query_as(
+            "SELECT id, name, target_type, target, schedule, enabled, retain_count, cloud_id, \
+             owner, last_run_at, last_status, last_message FROM backup_jobs WHERE owner=? \
+             ORDER BY id DESC",
+        )
+        .bind(&claims.sub)
+        .fetch_all(pool)
+        .await
+    }
     .map_err(|e| ZapError::New(-1, format!("读任务失败: {e}")))?;
     Ok(Json(json!({ "code": 0, "message": "ok", "data": { "jobs": rows } })))
 }
@@ -1134,12 +1190,19 @@ pub async fn setting_save(
 }
 
 /// POST /system/backup/job/save —— 新建 / 更新备份任务。
+///
+/// 管理员：可建任意任务（含云同步 cloud_id）。
+/// 普通用户：受「允许用户定时备份」开关约束；任务归属自己（owner = 登录名），
+/// 且目录类只能备份家目录内路径、数据库类只能备份自己名下的库，不允许设置云同步。
 pub async fn job_save(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
     Json(payload): Json<BackupJobPayload>,
 ) -> ZapJsonResult {
-    require_admin(&claims)?;
+    let admin = is_admin(&claims);
+    if !admin && !policy_allow_user_job().await {
+        return Err(ZapError::New(-1, "管理员已关闭用户定时备份".to_string()));
+    }
     let name = payload.name.trim().to_string();
     if name.is_empty() {
         return Err(ZapError::New(-1, "任务名不能为空".to_string()));
@@ -1150,21 +1213,77 @@ pub async fn job_save(
     if payload.target.trim().is_empty() {
         return Err(ZapError::New(-1, "备份目标不能为空".to_string()));
     }
+
+    let mut target = payload.target.clone();
+
+    let owner = if admin {
+        String::new()
+    } else {
+        claims.sub.trim().to_string()
+    };
+
+    // 普通用户：校验作用域，防止越权备份他人数据
+    if !admin {
+        if payload.target_type == "dir" {
+            let t: DirTarget = serde_json::from_str(&target)
+                .map_err(|e| ZapError::New(-1, format!("目标解析失败: {e}")))?;
+            let home = home_of_username(&owner).await?;
+            for p in &t.paths {
+                if !path_within(p, &home) {
+                    return Err(ZapError::New(
+                        -1,
+                        format!("只能备份自己家目录内的路径（{home}）"),
+                    ));
+                }
+            }
+            // 不允许普通用户指定以其他身份执行（as_user 强制为 None）
+            target = serde_json::to_string(&DirTarget {
+                paths: t.paths,
+                as_user: None,
+            })
+            .map_err(|e| ZapError::New(-1, format!("目标序列化失败: {e}")))?;
+        } else {
+            let t: DbTarget = serde_json::from_str(&target)
+                .map_err(|e| ZapError::New(-1, format!("目标解析失败: {e}")))?;
+            if !t.db_name.starts_with(&format!("{}_", owner)) {
+                return Err(ZapError::New(-1, "只能备份自己名下的数据库".to_string()));
+            }
+        }
+    }
+
+    let cloud_id = if admin { payload.cloud_id.as_str() } else { "" };
     let ts = now_ts();
     let pool = crate::db::get_db_pool().await;
     let id = match payload.id {
         Some(id) if id > 0 => {
+            // 编辑：校验归属（普通用户只能改自己的任务）
+            if !admin {
+                let existing: Option<(String,)> =
+                    sqlx::query_as("SELECT owner FROM backup_jobs WHERE id=?")
+                        .bind(id)
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(|e| ZapError::New(-1, format!("读任务失败: {e}")))?;
+                match existing {
+                    None => return Err(ZapError::New(-1, "任务不存在".to_string())),
+                    Some((o,)) if o.as_str() != owner.as_str() => {
+                        return Err(ZapError::New(-1, "只能修改自己的任务".to_string()))
+                    }
+                    _ => {}
+                }
+            }
             sqlx::query(
                 "UPDATE backup_jobs SET name=?, target_type=?, target=?, schedule=?, \
-                 enabled=?, retain_count=?, cloud_id=?, updated_at=? WHERE id=?",
+                 enabled=?, retain_count=?, cloud_id=?, owner=?, updated_at=? WHERE id=?",
             )
             .bind(&name)
             .bind(&payload.target_type)
-            .bind(&payload.target)
+            .bind(&target)
             .bind(&payload.schedule)
             .bind(payload.enabled)
             .bind(payload.retain_count)
-            .bind(&payload.cloud_id)
+            .bind(cloud_id)
+            .bind(&owner)
             .bind(ts)
             .bind(id)
             .execute(pool)
@@ -1175,16 +1294,17 @@ pub async fn job_save(
         _ => {
             let rec = sqlx::query(
                 "INSERT INTO backup_jobs (name, target_type, target, schedule, enabled, \
-                 retain_count, cloud_id, created_at, updated_at) \
-                 VALUES (?,?,?,?,?,?,?,?,?)",
+                 retain_count, cloud_id, owner, created_at, updated_at) \
+                 VALUES (?,?,?,?,?,?,?,?,?,?)",
             )
             .bind(&name)
             .bind(&payload.target_type)
-            .bind(&payload.target)
+            .bind(&target)
             .bind(&payload.schedule)
             .bind(payload.enabled)
             .bind(payload.retain_count)
-            .bind(&payload.cloud_id)
+            .bind(cloud_id)
+            .bind(&owner)
             .bind(ts)
             .bind(ts)
             .execute(pool)
@@ -1209,8 +1329,25 @@ pub async fn job_delete(
     claims: ValidatedClaims,
     Json(payload): Json<BackupJobRunPayload>,
 ) -> ZapJsonResult {
-    require_admin(&claims)?;
+    let admin = is_admin(&claims);
     let pool = crate::db::get_db_pool().await;
+    if !admin {
+        if !policy_allow_user_job().await {
+            return Err(ZapError::New(-1, "管理员已关闭用户定时备份".to_string()));
+        }
+        let existing: Option<(String,)> = sqlx::query_as("SELECT owner FROM backup_jobs WHERE id=?")
+            .bind(payload.id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| ZapError::New(-1, format!("读任务失败: {e}")))?;
+        match existing {
+            None => return Err(ZapError::New(-1, "任务不存在".to_string())),
+            Some((o,)) if o.as_str() != claims.sub.trim() => {
+                return Err(ZapError::New(-1, "只能删除自己的任务".to_string()))
+            }
+            _ => {}
+        }
+    }
     let _ = sqlx::query("DELETE FROM backup_records WHERE job_id=?")
         .bind(payload.id)
         .execute(pool)
@@ -1228,20 +1365,61 @@ pub async fn job_run(
     claims: ValidatedClaims,
     Json(payload): Json<BackupJobRunPayload>,
 ) -> ZapJsonResult {
-    require_admin(&claims)?;
+    let admin = is_admin(&claims);
     let pool = crate::db::get_db_pool().await;
-    let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT name, target_type, target FROM backup_jobs WHERE id=?",
+    let row: Option<(String, String, String, String)> = sqlx::query_as(
+        "SELECT name, target_type, target, owner FROM backup_jobs WHERE id=?",
     )
     .bind(payload.id)
     .fetch_optional(pool)
     .await
     .map_err(|e| ZapError::New(-1, format!("读任务失败: {e}")))?;
-    let (name, target_type, target) = match row {
+    let (name, target_type, target, owner) = match row {
         Some(r) => r,
         None => return Err(ZapError::New(-1, "任务不存在".to_string())),
     };
-    let data = run_backup(&target_type, &target, &name, "", Some(payload.id), "", None, &[], None, &[]).await?;
+    if !admin {
+        if !policy_allow_user_job().await {
+            return Err(ZapError::New(-1, "管理员已关闭用户定时备份".to_string()));
+        }
+        if owner.as_str() != claims.sub.trim() {
+            return Err(ZapError::New(-1, "只能执行自己的任务".to_string()));
+        }
+        // 重新校验作用域（防止用户篡改 target 越权）
+        if target_type == "dir" {
+            let t: DirTarget = serde_json::from_str(&target)
+                .map_err(|e| ZapError::New(-1, format!("目标解析失败: {e}")))?;
+            let home = home_of_username(&owner).await?;
+            for p in &t.paths {
+                if !path_within(p, &home) {
+                    return Err(ZapError::New(
+                        -1,
+                        format!("只能备份自己家目录内的路径（{home}）"),
+                    ));
+                }
+            }
+        } else {
+            let t: DbTarget = serde_json::from_str(&target)
+                .map_err(|e| ZapError::New(-1, format!("目标解析失败: {e}")))?;
+            if !t.db_name.starts_with(&format!("{}_", owner)) {
+                return Err(ZapError::New(-1, "只能备份自己名下的数据库".to_string()));
+            }
+        }
+    }
+    let (eff_root, _) = resolve_job_root(&owner).await?;
+    let data = run_backup(
+        &target_type,
+        &target,
+        &name,
+        "",
+        Some(payload.id),
+        &owner,
+        Some(&eff_root),
+        &[],
+        None,
+        &[],
+    )
+    .await?;
     // 同步任务状态
     let (status, msg) = (1i64, "");
     let _ = sqlx::query(
@@ -1262,6 +1440,9 @@ pub async fn job_run(
 pub struct BackupPolicyPayload {
     #[serde(default)]
     pub allow_user: Option<bool>,
+    /// 是否允许普通用户创建定时备份任务（默认开）。
+    #[serde(default)]
+    pub allow_user_job: Option<bool>,
     #[serde(default)]
     pub global_retain: Option<i64>,
     #[serde(default)]
@@ -1280,9 +1461,12 @@ pub struct BackupPolicyPayload {
 }
 
 /// GET /system/backup/policy —— 读取全局备份策略。
-pub async fn policy_get(claims: ValidatedClaims) -> ZapJsonResult {
-    require_admin(&claims)?;
+///
+/// 只读且无非敏感字段，向所有登录角色开放：
+/// 普通用户在「备份任务」页需要据此判断「允许用户定时备份」开关是否开启。
+pub async fn policy_get(_claims: ValidatedClaims) -> ZapJsonResult {
     let allow = policy_allow_user_backup().await;
+    let allow_job = policy_allow_user_job().await;
     let retain = policy_global_retain().await;
     let all_enabled = gs_get("backup_all_enabled").await != "0";
     let all_schedule = gs_get("backup_all_schedule").await;
@@ -1295,6 +1479,7 @@ pub async fn policy_get(claims: ValidatedClaims) -> ZapJsonResult {
         "message": "ok",
         "data": {
             "allow_user_backup": allow,
+            "allow_user_job": allow_job,
             "global_retain": retain,
             "all_enabled": all_enabled,
             "all_schedule": all_schedule,
@@ -1314,6 +1499,9 @@ pub async fn policy_set(
     require_admin(&claims)?;
     if let Some(v) = payload.allow_user {
         gs_set("backup_allow_user", if v { "1" } else { "0" }).await;
+    }
+    if let Some(v) = payload.allow_user_job {
+        gs_set("backup_allow_job", if v { "1" } else { "0" }).await;
     }
     if let Some(v) = payload.global_retain {
         if v >= 0 {
