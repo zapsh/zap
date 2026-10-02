@@ -11,7 +11,7 @@
           ref="treeRef"
           :data="treeData"
           :props="treeProps"
-          node-key="path"
+          node-key="key"
           :load="loadTreeNode"
           lazy
           highlight-current
@@ -942,6 +942,12 @@ interface TreeNode {
   path: string
   is_dir: boolean
   children?: TreeNode[]
+  /**
+   * el-tree 的 node-key。家目录子树直接用绝对路径；系统根「/」子树加 `root:` 前缀——
+   * 同一目录（如 /home/admin/tmp）会同时出现在两棵树里，key 撞了的话
+   * setCurrentKey 永远命中后注册的系统树节点，看起来就是「选中最下面那棵」。
+   */
+  key: string
   /** 根节点的类型标记：家目录 / 系统根目录（普通目录不带） */
   icon?: 'home' | 'root'
 }
@@ -952,22 +958,25 @@ const treeData = ref<TreeNode[]>([])
 function buildTreeData(): TreeNode[] {
   const nodes: TreeNode[] = []
   if (homePath.value) {
-    nodes.push({ name: homePath.value, path: homePath.value, is_dir: true, icon: 'home' })
+    nodes.push({ name: homePath.value, path: homePath.value, is_dir: true, key: homePath.value, icon: 'home' })
   }
   // 普通用户到不了 home 之外（后端白名单），只有管理员需要这个入口
   if (isAdmin.value) {
-    nodes.push({ name: '/', path: '/', is_dir: true, icon: 'root' })
+    nodes.push({ name: '/', path: '/', is_dir: true, key: '/', icon: 'root' })
   }
   // 兜底：万一没拿到 home，也留个根目录入口，别让侧栏空着
   if (nodes.length === 0) {
-    nodes.push({ name: '/', path: '/', is_dir: true, icon: 'root' })
+    nodes.push({ name: '/', path: '/', is_dir: true, key: '/', icon: 'root' })
   }
   return nodes
 }
 
-/** el-tree 的 getNode 在节点不存在/未加载时会返回空值，统一兜成 null */
+/** el-tree 的 getNode 在节点不存在/未加载时会返回空值，统一兜成 null；
+ *  家目录子树没展开时，同名节点可能只存在于系统树（`root:` 前缀 key），兜底再查一次 */
 function treeNode(key: string) {
-  return treeRef.value?.getNode(key) ?? null
+  const tree = treeRef.value
+  if (!tree) return null
+  return tree.getNode(key) ?? tree.getNode(`root:${key}`) ?? null
 }
 
 /** 展开家目录、高亮当前目录（懒加载树里没加载到的层级保持原样） */
@@ -977,14 +986,21 @@ async function revealInTree() {
   if (!tree) return
   if (homePath.value) treeNode(homePath.value)?.expand()
   const current = currentPath.value
-  if (current && treeNode(current)) tree.setCurrentKey(current)
+  const node = current ? treeNode(current) : null
+  if (node) tree.setCurrentKey(node.key)
   else if (homePath.value) tree.setCurrentKey(homePath.value)
 }
 
-/** 导航后同步高亮：目标目录已经在树里（展开过）才动，避免误展开一堆分支 */
+/** 导航后同步高亮：目标目录已经在树里（展开过）才动，避免误展开一堆分支。
+ *  另一个坑：同一目录在两棵树里各有一个节点，若当前高亮已经是正确目录
+ *  （比如刚点的是另一棵树里的同名节点），保持不动，别把高亮拽到另一棵树去。 */
 function syncTree() {
   const current = currentPath.value
-  if (current && treeNode(current)) treeRef.value?.setCurrentKey(current)
+  if (!current) return
+  const cur = treeRef.value?.getCurrentNode?.() as TreeNode | undefined
+  if (cur && cur.path === current) return
+  const node = treeNode(current)
+  if (node) treeRef.value?.setCurrentKey(node.key)
 }
 
 /** 等待若干毫秒（轮询懒加载节点的 load 完成） */
@@ -1032,7 +1048,8 @@ async function revealPathInTree(target: string, isDir: boolean) {
     await nextTick()
   }
   const key = isDir ? norm : last > 0 ? prefixes[last - 1] : ''
-  if (key && treeNode(key)) tree.setCurrentKey(key)
+  const node = key ? treeNode(key) : null
+  if (node) tree.setCurrentKey(node.key)
 }
 
 /** 导航进某目录，并让左侧树自动定位到它 */
@@ -1200,6 +1217,15 @@ async function loadTreeNode(node: any, resolve: (data: TreeNode[]) => void) {
     resolve([])
     return
   }
+  // 系统根「/」子树里的节点 key 加前缀去重：这些绝对路径多半也出现在家目录子树里
+  const inSystemTree = (() => {
+    let p = node.parent
+    while (p) {
+      if (p.data?.icon === 'root') return true
+      p = p.parent
+    }
+    return false
+  })()
   try {
     const res = await listFiles(path)
     const entries = res.data?.entries || []
@@ -1210,6 +1236,7 @@ async function loadTreeNode(node: any, resolve: (data: TreeNode[]) => void) {
           name: e.name,
           path: e.path,
           is_dir: true,
+          key: inSystemTree ? `root:${e.path}` : e.path,
         })),
     )
   } catch {
