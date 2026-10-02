@@ -96,7 +96,7 @@ async fn tick() {
 }
 
 async fn run_job(id: i64, name: String, target_type: String, target: String, ts: i64) {
-    let result = run_backup(&target_type, &target, &name, "", Some(id), "", None).await;
+    let result = run_backup(&target_type, &target, &name, "", Some(id), "", None, &[], None, &[]).await;
     let pool = get_db_pool().await;
     match result {
         Ok(_) => {

@@ -249,6 +249,8 @@ pub async fn dir(
     as_user: Option<String>,
     _skip_owner_check: bool,
     backup_root: String,
+    exclude: Vec<String>,
+    exclude_file: Option<String>,
 ) -> Response {
     if name.is_empty() {
         return Response::err(-1, "归档名不能为空".to_string());
@@ -260,6 +262,19 @@ pub async fn dir(
         Ok(d) => d,
         Err(e) => return Response::err(-1, e),
     };
+    // 合并排除模式：管理员通用清单（inline）+ 用户自定义文件（root 读取，含注释/空行）
+    let mut excludes = exclude;
+    if let Some(f) = exclude_file.as_deref().filter(|s| !s.is_empty()) {
+        if let Ok(content) = std::fs::read_to_string(f) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                excludes.push(line.to_string());
+            }
+        }
+    }
     // 写盘前先确认磁盘空间够用
     let needed = dir_size(&paths);
     if let Err(e) = ensure_disk_space(&dest, needed) {
@@ -272,6 +287,12 @@ pub async fn dir(
 
     let mut cmd = crate::verbs::root_cmd("tar");
     cmd.arg("-czf").arg(&archive).current_dir("/");
+    for pat in &excludes {
+        let p = pat.trim();
+        if !p.is_empty() {
+            cmd.arg("--exclude").arg(p);
+        }
+    }
     for p in &paths {
         let rel = p.trim_start_matches('/');
         if rel.is_empty() {

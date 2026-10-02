@@ -1654,6 +1654,14 @@ pub enum Request {
         /// 备份根目录；空 = 默认
         #[serde(default)]
         backup_root: String,
+        /// 排除模式（相对/通配，作用于归档内的相对路径，如 `node_modules`、`.cache`、
+        /// `*/backups`）；与 `exclude_file` 合并后逐条作为 tar 的 `--exclude`。
+        #[serde(default)]
+        exclude: Vec<String>,
+        /// 额外排除文件绝对路径（由 zapexec 以 root 读取并合并，用于读不到家目录的 zapd
+        /// 把用户自定义排除清单交给 root 进程处理）；空 = 不读取。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exclude_file: Option<String>,
     },
     /// 备份：导出数据库（root 特权）。mysql 走 mysqldump，sqlite 走 sqlite3 .dump。
     #[serde(rename = "backup.db")]

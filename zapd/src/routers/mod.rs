@@ -9,7 +9,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use rust_embed::RustEmbed;
 use serde_json::json;
@@ -329,6 +329,9 @@ fn api_routers() -> Router {
             post(system_backup::my_retention_set),
         )
         .route("/system/backup/my", get(system_backup::my_list))
+        .route("/system/backup/paths", get(system_backup::paths_list))
+        .route("/system/backup/paths", post(system_backup::paths_add))
+        .route("/system/backup/paths", delete(system_backup::paths_delete))
         .route("/system/backup/all", post(system_backup::backup_all))
         .route("/system/backup/list", get(system_backup::list))
         .route("/system/backup/setting", get(system_backup::setting_get))

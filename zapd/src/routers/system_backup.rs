@@ -113,7 +113,86 @@ async fn user_retention(username: &str) -> i64 {
     policy_global_retain().await
 }
 
-/// 取用户家目录下的备份目录 `home/backups`，并返回归属用户名。
+/// 管理员通用排除清单（换行/逗号分隔）。空 KV 时回落到内置默认，覆盖最常见的缓存与
+/// 递归陷阱（home 备份必须排除 `backups`/`.zap`，否则会打包自己的备份目录）。
+fn default_exclude_list() -> Vec<String> {
+    vec![
+        ".cache".into(),
+        ".npm".into(),
+        ".composer".into(),
+        "tmp".into(),
+        "logs".into(),
+        "*.log".into(),
+        "backups".into(),
+        ".zap".into(),
+        ".git".into(),
+        "node_modules".into(),
+        "vendor".into(),
+    ]
+}
+
+/// 管理员通用排除清单（KV `backup_exclude_default`，留空用内置默认）。
+async fn policy_exclude_default() -> Vec<String> {
+    let raw = gs_get("backup_exclude_default").await;
+    if raw.trim().is_empty() {
+        return default_exclude_list();
+    }
+    raw.split(['\n', ',', ';'])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// 全量备份模式：`home` = 按家目录；`site` = 按站点+应用+库；`both` = 两者都跑。
+async fn policy_backup_mode() -> String {
+    let m = gs_get("backup_mode").await;
+    if matches!(m.as_str(), "home" | "site" | "both") {
+        m
+    } else {
+        "home".to_string()
+    }
+}
+
+/// 全量备份落盘位置：`home` = 各用户 `<home>/backups`（自己管理/还原）；
+/// `system` = 系统备份根（集中、管理员可见）。
+async fn policy_backup_dest() -> String {
+    let d = gs_get("backup_dest").await;
+    if matches!(d.as_str(), "home" | "system") {
+        d
+    } else {
+        "system".to_string()
+    }
+}
+
+/// 用户的自定义排除文件（root 读取）：`<home>/.zap/backup_exclude.txt`。
+fn user_exclude_file(home: &str) -> Option<String> {
+    let f = format!("{}/.zap/backup_exclude.txt", home.trim_end_matches('/'));
+    Some(f)
+}
+
+/// 额外备份目录（策略一站点附加目录 / 策略二用户家目录外路径），统一从此表读。
+async fn extra_paths(owner_type: &str, owner_id: i64) -> Vec<String> {
+    let pool = crate::db::get_db_pool().await;
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT path FROM backup_paths WHERE owner_type=? AND owner_id=? AND path<>''",
+    )
+    .bind(owner_type)
+    .bind(owner_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    rows.into_iter().map(|r| r.0).collect()
+}
+
+/// 计算某次全量备份的落盘根与归档属主：dest=home 且给了家目录 → 写 `<home>/backups`、
+/// 归档 chown 给该用户；否则写系统备份根（root 属主）。
+fn resolve_full_root(dest: &str, home: &str, owner: &str) -> (String, Option<String>) {
+    if dest == "home" && !home.trim().is_empty() {
+        (format!("{}/backups", home.trim_end_matches('/')), Some(owner.to_string()))
+    } else {
+        (backup_root_path(), None)
+    }
+}
 async fn user_backup_root(user_id: i64) -> Result<(String, String), ZapError> {
     let pool = crate::db::get_db_pool().await;
     let row: Option<(String, String)> =
@@ -313,6 +392,9 @@ pub async fn run_backup(
     job_id: Option<i64>,
     owner: &str,
     dest_root: Option<&str>,
+    excludes: &[String],
+    exclude_file: Option<&str>,
+    manifest: &[String],
 ) -> Result<Value, ZapError> {
     let ts = now_ts();
     // 定时任务给归档名加时间戳，避免覆盖上一次；手动用原名。
@@ -325,9 +407,10 @@ pub async fn run_backup(
     let system_root = backup_root_path();
     // dest_root 有值（用户家目录 backups，绝对路径）= 用户自助备份；否则落系统备份根。
     let eff_root = dest_root.unwrap_or(&system_root).to_string();
+    let manifest_str = serde_json::to_string(manifest).unwrap_or_else(|_| "[]".to_string());
     let rec = sqlx::query(
-        "INSERT INTO backup_records (job_id, kind, name, status, created_at, owner, dest_root) \
-         VALUES (?,?,?,0,?,?,?)",
+        "INSERT INTO backup_records (job_id, kind, name, status, created_at, owner, dest_root, manifest) \
+         VALUES (?,?,?,0,?,?,?,?)",
     )
     .bind(job_id.unwrap_or(0))
     .bind(target_type)
@@ -335,6 +418,7 @@ pub async fn run_backup(
     .bind(ts)
     .bind(owner)
     .bind(dest_root.unwrap_or(""))
+    .bind(&manifest_str)
     .execute(pool)
     .await
     .map_err(|e| ZapError::New(-1, format!("写备份记录失败: {e}")))?;
@@ -351,6 +435,8 @@ pub async fn run_backup(
                 as_user: t.as_user,
                 skip_owner_check: false,
                 backup_root: eff_root.clone(),
+                exclude: excludes.to_vec(),
+                exclude_file: exclude_file.map(|s| s.to_string()),
             })
             .await?
         }
@@ -490,7 +576,7 @@ pub async fn create_dir(
     let target =
         serde_json::to_string(&DirTarget { paths: payload.paths, as_user: payload.as_user })
             .map_err(|e| ZapError::New(-1, format!("参数序列化失败: {e}")))?;
-    let data = run_backup("dir", &target, &name, &payload.dest_dir, None, "", None).await?;
+    let data = run_backup("dir", &target, &name, &payload.dest_dir, None, "", None, &[], None, &[]).await?;
     let _ = audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
@@ -524,7 +610,7 @@ pub async fn create_db(
         db_path: payload.db_path,
     })
     .map_err(|e| ZapError::New(-1, format!("参数序列化失败: {e}")))?;
-    let data = run_backup("db", &target, &name, &payload.dest_dir, None, "", None).await?;
+    let data = run_backup("db", &target, &name, &payload.dest_dir, None, "", None, &[], None, &[]).await?;
     let _ = audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
@@ -578,7 +664,22 @@ pub async fn db_quick(
         db_path: None,
     })
     .map_err(|e| ZapError::New(-1, format!("参数序列化失败: {e}")))?;
-    let data = run_backup("db", &target, &name, "", None, &owner, Some(&root)).await?;
+    let home = root.trim_end_matches("/backups").trim_end_matches('/');
+    let excludes = policy_exclude_default().await;
+    let exf = user_exclude_file(home);
+    let data = run_backup(
+        "db",
+        &target,
+        &name,
+        "",
+        None,
+        &owner,
+        Some(&root),
+        &excludes,
+        exf.as_deref(),
+        &[name.clone()],
+    )
+    .await?;
     // 按用户个人保留份数清理旧归档
     prune_by_owner(&owner, retain, &root).await;
     let _ = audit::log(
@@ -634,17 +735,47 @@ pub async fn site_quick(
     // 站点归属到其主人的家目录 backups，并取该用户的保留份数
     let (owner, root) = user_backup_root(uid).await?;
     let retain = user_retention(&owner).await;
+    let home = root.trim_end_matches("/backups").trim_end_matches('/');
     let arc_name = if name.trim().is_empty() {
         format!("site-{}", payload.id)
     } else {
         name.trim().to_string()
     };
+    // 策略一（手动版）：站点文档根 + 应用工作目录 + 客户追加目录，一并打包
+    let pool = crate::db::get_db_pool().await;
+    let mut paths: Vec<String> = vec![web_root.to_string()];
+    let apps: Vec<(String,)> = sqlx::query_as(
+        "SELECT workdir FROM site_apps WHERE site_id=? AND workdir<>''",
+    )
+    .bind(payload.id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for (w,) in apps {
+        paths.push(w);
+    }
+    let extra = extra_paths("site", payload.id).await;
+    paths.extend(extra);
+    let excludes = policy_exclude_default().await;
+    let exf = user_exclude_file(home);
     let target = serde_json::to_string(&DirTarget {
-        paths: vec![web_root.to_string()],
+        paths: paths.clone(),
         as_user: None,
     })
     .map_err(|e| ZapError::New(-1, format!("参数序列化失败: {e}")))?;
-    let data = run_backup("dir", &target, &arc_name, "", None, &owner, Some(&root)).await?;
+    let data = run_backup(
+        "dir",
+        &target,
+        &arc_name,
+        "",
+        None,
+        &owner,
+        Some(&root),
+        &excludes,
+        exf.as_deref(),
+        &paths,
+    )
+    .await?;
     // 按用户个人保留份数清理旧归档
     prune_by_owner(&owner, retain, &root).await;
     let _ = audit::log(
@@ -1044,7 +1175,7 @@ pub async fn job_run(
         Some(r) => r,
         None => return Err(ZapError::New(-1, "任务不存在".to_string())),
     };
-    let data = run_backup(&target_type, &target, &name, "", Some(payload.id), "", None).await?;
+    let data = run_backup(&target_type, &target, &name, "", Some(payload.id), "", None, &[], None, &[]).await?;
     // 同步任务状态
     let (status, msg) = (1i64, "");
     let _ = sqlx::query(
@@ -1071,6 +1202,15 @@ pub struct BackupPolicyPayload {
     pub all_enabled: Option<bool>,
     #[serde(default)]
     pub all_schedule: Option<String>,
+    /// 全量备份策略：`home`=按家目录；`site`=按站点+应用+库；`both`=两者都跑。
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// 落盘位置：`home`=各用户 `<home>/backups`；`system`=系统备份根。
+    #[serde(default)]
+    pub dest: Option<String>,
+    /// 管理员通用排除清单（换行/逗号分隔；空 = 内置默认）。
+    #[serde(default)]
+    pub exclude_default: Option<String>,
 }
 
 /// GET /system/backup/policy —— 读取全局备份策略。
@@ -1080,6 +1220,10 @@ pub async fn policy_get(claims: ValidatedClaims) -> ZapJsonResult {
     let retain = policy_global_retain().await;
     let all_enabled = gs_get("backup_all_enabled").await != "0";
     let all_schedule = gs_get("backup_all_schedule").await;
+    let mode = policy_backup_mode().await;
+    let dest = policy_backup_dest().await;
+    let exclude_default = gs_get("backup_exclude_default").await;
+    let report = gs_get("backup_all_report").await;
     Ok(Json(json!({
         "code": 0,
         "message": "ok",
@@ -1088,6 +1232,10 @@ pub async fn policy_get(claims: ValidatedClaims) -> ZapJsonResult {
             "global_retain": retain,
             "all_enabled": all_enabled,
             "all_schedule": all_schedule,
+            "mode": mode,
+            "dest": dest,
+            "exclude_default": exclude_default,
+            "last_report": serde_json::from_str::<Value>(&report).unwrap_or(Value::Null),
         },
     })))
 }
@@ -1112,8 +1260,183 @@ pub async fn policy_set(
     if let Some(v) = payload.all_schedule {
         gs_set("backup_all_schedule", v.trim()).await;
     }
+    if let Some(v) = payload.mode {
+        let m = v.trim().to_string();
+        if matches!(m.as_str(), "home" | "site" | "both") {
+            gs_set("backup_mode", &m).await;
+        }
+    }
+    if let Some(v) = payload.dest {
+        let d = v.trim().to_string();
+        if matches!(d.as_str(), "home" | "system") {
+            gs_set("backup_dest", &d).await;
+        }
+    }
+    if let Some(v) = payload.exclude_default {
+        gs_set("backup_exclude_default", v.trim()).await;
+    }
     let _ = audit::log(Some(&claims), None, "backup_policy_set", "", "").await;
     Ok(Json(json!({ "code": 0, "message": "策略已更新" })))
+}
+
+// ── 额外备份目录（策略一站点附加目录 / 策略二用户家目录外路径）──────
+
+#[derive(Debug, Deserialize, Default)]
+pub struct BackupPathPayload {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub owner_type: String,
+    #[serde(default)]
+    pub owner_id: i64,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct BackupPathListQuery {
+    #[serde(default)]
+    pub owner_type: String,
+    #[serde(default)]
+    pub owner_id: i64,
+}
+
+/// 校验登录用户对某 owner_type/owner_id 是否有权管理其额外备份目录（admin 任意；用户仅自己/自己站点）。
+async fn assert_path_owner(claims: &ValidatedClaims, owner_type: &str, owner_id: i64) -> Result<(), ZapError> {
+    if is_admin(claims) {
+        return Ok(());
+    }
+    let uid = claims.id as i64;
+    if owner_type == "user" {
+        if owner_id == uid {
+            return Ok(());
+        }
+    } else if owner_type == "site" {
+        let pool = crate::db::get_db_pool().await;
+        let ok: Option<(i64,)> = sqlx::query_as("SELECT id FROM site WHERE id=? AND user_id=?")
+            .bind(owner_id)
+            .bind(uid)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+        if ok.is_some() {
+            return Ok(());
+        }
+    }
+    Err(ZapError::New(403, "无权限管理该资源的备份目录".to_string()))
+}
+
+/// GET /system/backup/paths —— 额外备份目录列表。
+pub async fn paths_list(claims: ValidatedClaims, Query(q): Query<BackupPathListQuery>) -> ZapJsonResult {
+    let pool = crate::db::get_db_pool().await;
+    let rows: Vec<(i64, String, i64, String, String, i64)> = if is_admin(&claims) {
+        if q.owner_type.is_empty() {
+            sqlx::query_as(
+                "SELECT id, owner_type, owner_id, path, note, COALESCE(created_at,0) \
+                 FROM backup_paths ORDER BY id DESC",
+            )
+            .fetch_all(pool)
+            .await
+        } else {
+            sqlx::query_as(
+                "SELECT id, owner_type, owner_id, path, note, COALESCE(created_at,0) \
+                 FROM backup_paths WHERE owner_type=? AND owner_id=? ORDER BY id DESC",
+            )
+            .bind(&q.owner_type)
+            .bind(q.owner_id)
+            .fetch_all(pool)
+            .await
+        }
+    } else {
+        let uid = claims.id as i64;
+        let mut items: Vec<(i64, String, i64, String, String, i64)> = sqlx::query_as(
+            "SELECT id, owner_type, owner_id, path, note, COALESCE(created_at,0) \
+             FROM backup_paths WHERE owner_type='user' AND owner_id=?",
+        )
+        .bind(uid)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        let owned: Vec<(i64,)> = sqlx::query_as("SELECT id FROM site WHERE user_id=?")
+            .bind(uid)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+        for (sid,) in owned {
+            let s: Vec<(i64, String, i64, String, String, i64)> = sqlx::query_as(
+                "SELECT id, owner_type, owner_id, path, note, COALESCE(created_at,0) \
+                 FROM backup_paths WHERE owner_type='site' AND owner_id=?",
+            )
+            .bind(sid)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+            items.extend(s);
+        }
+        Ok(items)
+    }
+    .map_err(|e| ZapError::New(-1, format!("查询失败: {e}")))?;
+    let data: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, ot, oid, path, note, created)| {
+            json!({"id":id,"owner_type":ot,"owner_id":oid,"path":path,"note":note,"created_at":created})
+        })
+        .collect();
+    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "items": data } })))
+}
+
+/// POST /system/backup/paths —— 新增额外备份目录（admin 或资源主人）。
+pub async fn paths_add(claims: ValidatedClaims, Json(p): Json<BackupPathPayload>) -> ZapJsonResult {
+    let owner_type = p.owner_type.trim();
+    if !matches!(owner_type, "site" | "user") {
+        return Err(ZapError::New(-1, "owner_type 仅支持 site / user".to_string()));
+    }
+    let path = p.path.trim();
+    if path.is_empty() || !path.starts_with('/') {
+        return Err(ZapError::New(-1, "目录必须为绝对路径".to_string()));
+    }
+    assert_path_owner(&claims, owner_type, p.owner_id).await?;
+    let pool = crate::db::get_db_pool().await;
+    let ts = now_ts();
+    sqlx::query(
+        "INSERT INTO backup_paths (owner_type, owner_id, path, note, created_at, updated_at) \
+         VALUES (?,?,?,?,?,?)",
+    )
+    .bind(owner_type)
+    .bind(p.owner_id)
+    .bind(path)
+    .bind(p.note.trim())
+    .bind(ts)
+    .bind(ts)
+    .execute(pool)
+    .await
+    .map_err(|e| ZapError::New(-1, format!("写入失败: {e}")))?;
+    Ok(Json(json!({ "code": 0, "message": "已添加" })))
+}
+
+/// DELETE /system/backup/paths —— 删除额外备份目录（admin 或资源主人）。
+pub async fn paths_delete(claims: ValidatedClaims, Json(p): Json<BackupPathPayload>) -> ZapJsonResult {
+    let pool = crate::db::get_db_pool().await;
+    let row: Option<(String, i64)> = sqlx::query_as("SELECT owner_type, owner_id FROM backup_paths WHERE id=?")
+        .bind(p.id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let (ot, oid) = match row {
+        Some(x) => x,
+        None => return Err(ZapError::New(-1, "记录不存在".to_string())),
+    };
+    assert_path_owner(&claims, &ot, oid).await?;
+    sqlx::query("DELETE FROM backup_paths WHERE id=?")
+        .bind(p.id)
+        .execute(pool)
+        .await
+        .map_err(|e| ZapError::New(-1, format!("删除失败: {e}")))?;
+    Ok(Json(json!({ "code": 0, "message": "已删除" })))
 }
 
 // ── 个人备份保留份数（任意登录用户）────────────────────────────
@@ -1225,11 +1548,100 @@ pub async fn backup_all(claims: ValidatedClaims) -> ZapJsonResult {
     Ok(Json(json!({ "code": 0, "message": "已启动全量备份（后台执行）" })))
 }
 
-/// 全量备份实现：遍历所有站点（有文档根）与数据库，按资源主人打标写入系统备份根，
-/// 并对每个主人按全局保留份数清理（用户之后可从系统目录还原自己的副本）。
+/// 全量备份执行报告（落 KV `backup_all_report`，供前端展示上次结果）。
+#[derive(Debug, Default, Serialize)]
+struct BackupAllReport {
+    started_at: i64,
+    finished_at: i64,
+    mode: String,
+    dest: String,
+    ok: u64,
+    fail: u64,
+    failures: Vec<Value>,
+}
+
+/// 全量备份实现：按 `backup_mode`（home/site/both）遍历用户/站点；数据库单独一遍
+/// （库既不在家目录也不在站点目录，故两种策略都补一份库备份；无前缀库归管理员）。
+/// 每个资源按主人打标写入目标根（`<home>/backups` 或系统根），并按全局保留份数清理。
 pub async fn run_backup_all() {
-    let system_root = backup_root_path();
+    let mode = policy_backup_mode().await;
+    let dest = policy_backup_dest().await;
     let retain = policy_global_retain().await;
+    let excludes = policy_exclude_default().await;
+    let mut report = BackupAllReport {
+        started_at: now_ts(),
+        mode: mode.clone(),
+        dest: dest.clone(),
+        ..Default::default()
+    };
+
+    if matches!(mode.as_str(), "home" | "both") {
+        backup_all_home(&mut report, &dest, retain, &excludes).await;
+    }
+    if matches!(mode.as_str(), "site" | "both") {
+        backup_all_sites(&mut report, &dest, retain, &excludes).await;
+    }
+    // 库不在家目录/站点目录内，两种文件策略都补一份库备份
+    backup_all_dbs(&mut report, &dest, retain).await;
+
+    report.finished_at = now_ts();
+    let summary = serde_json::to_string(&report).unwrap_or_else(|_| "{}".to_string());
+    gs_set("backup_all_report", &summary).await;
+    let _ = audit::log(
+        None,
+        None,
+        "backup_all",
+        &mode,
+        &format!("dest={dest} ok={} fail={}", report.ok, report.fail),
+    )
+    .await;
+}
+
+/// 策略二：遍历用户表，整目录 + 客户追加的家目录外路径，套用管理员通用排除 + 用户自定义排除。
+async fn backup_all_home(report: &mut BackupAllReport, dest: &str, retain: i64, excludes: &[String]) {
+    let pool = crate::db::get_db_pool().await;
+    let users: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, username, home_dir FROM user WHERE home_dir<>''",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for (uid, username, home) in users {
+        let home = home.trim();
+        if home.is_empty() {
+            continue;
+        }
+        let (root, as_user) = resolve_full_root(dest, home, &username);
+        let mut paths: Vec<String> = vec![home.to_string()];
+        let extra = extra_paths("user", uid).await;
+        paths.extend(extra);
+        let exf = user_exclude_file(home);
+        let target = match serde_json::to_string(&DirTarget {
+            paths: paths.clone(),
+            as_user: as_user.clone(),
+        }) {
+            Ok(t) => t,
+            Err(e) => {
+                report.fail += 1;
+                report.failures.push(json!({"kind":"home","name":username,"error":format!("序列化失败: {e}")}));
+                continue;
+            }
+        };
+        match run_backup("dir", &target, &username, "", None, &username, Some(&root), excludes, exf.as_deref(), &paths).await {
+            Ok(_) => {
+                report.ok += 1;
+                prune_by_owner(&username, retain, &root).await;
+            }
+            Err(e) => {
+                report.fail += 1;
+                report.failures.push(json!({"kind":"home","name":username,"error":e.to_string()}));
+            }
+        }
+    }
+}
+
+/// 策略一：遍历站点，文档根 + 应用工作目录 + 客户追加目录一并打包（库在 `backup_all_dbs` 统一处理）。
+async fn backup_all_sites(report: &mut BackupAllReport, dest: &str, retain: i64, excludes: &[String]) {
     let pool = crate::db::get_db_pool().await;
     let sites: Vec<(i64, i64, String, String)> = sqlx::query_as(
         "SELECT id, user_id, name, web_root FROM site WHERE web_root<>''",
@@ -1238,25 +1650,58 @@ pub async fn run_backup_all() {
     .await
     .unwrap_or_default();
     for (id, uid, name, web_root) in sites {
-        let (owner, _) = match user_backup_root(uid).await {
+        let (owner, home_backups) = match user_backup_root(uid).await {
             Ok(x) => x,
             Err(_) => continue,
         };
-        let target = match serde_json::to_string(&DirTarget {
-            paths: vec![web_root.trim().to_string()],
-            as_user: None,
-        }) {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
+        let home = home_backups.trim_end_matches("/backups").trim_end_matches('/');
+        let (root, as_user) = resolve_full_root(dest, home, &owner);
+        let mut paths: Vec<String> = vec![web_root.trim().to_string()];
+        let apps: Vec<(String,)> = sqlx::query_as(
+            "SELECT workdir FROM site_apps WHERE site_id=? AND workdir<>''",
+        )
+        .bind(id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        for (w,) in apps {
+            paths.push(w);
+        }
+        let extra = extra_paths("site", id).await;
+        paths.extend(extra);
+        let exf = user_exclude_file(home);
         let arc = if name.trim().is_empty() {
             format!("site-{}", id)
         } else {
             name.trim().to_string()
         };
-        let _ = run_backup("dir", &target, &arc, "", None, &owner, None).await;
-        prune_by_owner(&owner, retain, &system_root).await;
+        let target = match serde_json::to_string(&DirTarget {
+            paths: paths.clone(),
+            as_user: as_user.clone(),
+        }) {
+            Ok(t) => t,
+            Err(e) => {
+                report.fail += 1;
+                report.failures.push(json!({"kind":"site","name":arc,"error":format!("序列化失败: {e}")}));
+                continue;
+            }
+        };
+        match run_backup("dir", &target, &arc, "", None, &owner, Some(&root), excludes, exf.as_deref(), &paths).await {
+            Ok(_) => {
+                report.ok += 1;
+                prune_by_owner(&owner, retain, &root).await;
+            }
+            Err(e) => {
+                report.fail += 1;
+                report.failures.push(json!({"kind":"site","name":arc,"error":e.to_string()}));
+            }
+        }
     }
+}
+
+/// 数据库备份：有前缀库归对应用户，无前缀/无法解析前缀的库归管理员（写 admin 家目录或系统根）。
+async fn backup_all_dbs(report: &mut BackupAllReport, dest: &str, retain: i64) {
+    let pool = crate::db::get_db_pool().await;
     let dbs: Vec<(String,)> = sqlx::query_as(
         "SELECT schema_name FROM information_schema.schemata \
          WHERE schema_name NOT IN ('mysql','information_schema','performance_schema','sys') \
@@ -1265,16 +1710,32 @@ pub async fn run_backup_all() {
     .fetch_all(pool)
     .await
     .unwrap_or_default();
+    let socket = crate::routers::database::socket_path().await;
     for (db,) in dbs {
-        let (owner, _) = match db_owner_root(&db).await {
-            Ok(x) => x,
-            Err(_) => continue,
+        let (owner, home) = match db_owner_root(&db).await {
+            Ok((o, h)) => (o, h.trim_end_matches("/backups").trim_end_matches('/').to_string()),
+            Err(_) => {
+                // 无前缀库归管理员
+                let admin_home: Option<(String,)> = sqlx::query_as(
+                    "SELECT home_dir FROM user WHERE username='admin' LIMIT 1",
+                )
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
+                let h = admin_home.map(|(x,)| x.trim().to_string()).unwrap_or_default();
+                ("admin".to_string(), h)
+            }
         };
+        let (root, _as_user) = resolve_full_root(dest, &home, &owner);
         let pwd = match zap_crypto::read_cred("mysql", "zapadm") {
             Ok(p) => p,
-            Err(_) => continue,
+            Err(e) => {
+                report.fail += 1;
+                report.failures.push(json!({"kind":"db","name":db,"error":format!("读凭据失败: {e}")}));
+                continue;
+            }
         };
-        let socket = crate::routers::database::socket_path().await;
         let target = match serde_json::to_string(&DbTarget {
             engine: "mysql".to_string(),
             db_name: db.clone(),
@@ -1282,13 +1743,25 @@ pub async fn run_backup_all() {
             password: pwd,
             host: "127.0.0.1".to_string(),
             port: 3306,
-            socket,
+            socket: socket.clone(),
             db_path: None,
         }) {
             Ok(t) => t,
-            Err(_) => continue,
+            Err(e) => {
+                report.fail += 1;
+                report.failures.push(json!({"kind":"db","name":db,"error":format!("序列化失败: {e}")}));
+                continue;
+            }
         };
-        let _ = run_backup("db", &target, &db, "", None, &owner, None).await;
-        prune_by_owner(&owner, retain, &system_root).await;
+        match run_backup("db", &target, &db, "", None, &owner, Some(&root), &[], None, &[db.clone()]).await {
+            Ok(_) => {
+                report.ok += 1;
+                prune_by_owner(&owner, retain, &root).await;
+            }
+            Err(e) => {
+                report.fail += 1;
+                report.failures.push(json!({"kind":"db","name":db,"error":e.to_string()}));
+            }
+        }
     }
 }

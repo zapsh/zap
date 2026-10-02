@@ -194,6 +194,26 @@
               <el-switch v-model="policy.allow_user_backup" />
               <span class="tip">关闭后，普通用户无法自助备份自己的站点 / 数据库</span>
             </el-form-item>
+            <el-form-item label="全量备份模式">
+              <el-radio-group v-model="policy.mode">
+                <el-radio value="home">按家目录</el-radio>
+                <el-radio value="site">按站点+应用+库</el-radio>
+                <el-radio value="both">两者都跑</el-radio>
+              </el-radio-group>
+              <span class="tip">home=遍历用户家目录；site=遍历站点文档根+应用工作目录+库；both=两者</span>
+            </el-form-item>
+            <el-form-item label="落盘位置">
+              <el-radio-group v-model="policy.dest">
+                <el-radio value="home">用户家目录 backups</el-radio>
+                <el-radio value="system">系统备份目录</el-radio>
+              </el-radio-group>
+              <span class="tip">home=各用户 &lt;home&gt;/backups（自己管理/还原）；system=集中系统目录</span>
+            </el-form-item>
+            <el-form-item label="默认排除列表">
+              <el-input v-model="policy.exclude_default" type="textarea" :rows="4"
+                placeholder="每行一个模式，如 node_modules、.cache、*.log" style="max-width:480px" />
+              <span class="tip">管理员通用排除（家目录备份内置含 backups/.zap 防自我递归）；用户可在 &lt;home&gt;/.zap/backup_exclude.txt 追加</span>
+            </el-form-item>
             <el-form-item label="全局保留份数">
               <el-input-number v-model="policy.global_retain" :min="0" :max="999" />
               <span class="tip">用户未单独设置时的默认保留份数</span>
@@ -205,9 +225,59 @@
             <el-form-item label="全量备份计划(cron)">
               <el-input v-model="policy.all_schedule" placeholder="如 0 4 * * *（每天 4 点）" style="max-width:240px" />
             </el-form-item>
+            <el-form-item label="上次全量结果" v-if="policy.last_report">
+              <span class="tip">
+                成功 {{ policy.last_report.ok }} / 失败 {{ policy.last_report.fail }}
+                <template v-if="policy.last_report.finished_at">（{{ formatTime(policy.last_report.finished_at) }}）</template>
+                <span v-if="policy.last_report.fail" style="color:#f56c6c">，详见审计日志</span>
+              </span>
+            </el-form-item>
             <el-form-item>
               <el-button type="primary" :loading="savingPolicy" @click="savePolicy">保存策略</el-button>
               <el-button :loading="runningFull" @click="runFull">立即全量备份</el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+
+        <!-- 额外备份目录（管理员） -->
+        <el-card shadow="never" class="block">
+          <template #header>
+            <div class="card-head">
+              <span>额外备份目录</span>
+              <el-button text type="primary" @click="loadPaths">刷新</el-button>
+            </div>
+          </template>
+          <el-table :data="paths" v-loading="loadingPaths" size="small" empty-text="暂无额外目录">
+            <el-table-column prop="owner_type" label="类型" width="90">
+              <template #default="{ row }">{{ row.owner_type === 'site' ? '站点' : '用户' }}</template>
+            </el-table-column>
+            <el-table-column prop="owner_id" label="归属ID" width="90" />
+            <el-table-column prop="path" label="目录" min-width="220" />
+            <el-table-column prop="note" label="备注" min-width="120" />
+            <el-table-column label="操作" width="100">
+              <template #default="{ row }">
+                <el-button text type="danger" @click="onDeletePath(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-form :inline="true" class="form" style="margin-top:12px">
+            <el-form-item label="类型">
+              <el-select v-model="pathForm.owner_type" style="width:110px">
+                <el-option label="用户" value="user" />
+                <el-option label="站点" value="site" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="归属ID">
+              <el-input v-model="pathForm.owner_id" type="number" style="width:110px" />
+            </el-form-item>
+            <el-form-item label="目录">
+              <el-input v-model="pathForm.path" placeholder="绝对路径" style="width:260px" />
+            </el-form-item>
+            <el-form-item label="备注">
+              <el-input v-model="pathForm.note" style="width:160px" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="savingPath" @click="onAddPath">添加</el-button>
             </el-form-item>
           </el-form>
         </el-card>
@@ -320,9 +390,13 @@ const tab = ref('archives')
 const running = ref(false)
 const savingSetting = ref(false)
 const setting = ref({ path: '', disk_free: 0, disk_total: 0 })
-const policy = ref({ allow_user_backup: true, global_retain: 7, all_enabled: false, all_schedule: '' })
+const policy = ref<any>({ allow_user_backup: true, global_retain: 7, all_enabled: false, all_schedule: '', mode: 'home', dest: 'system', exclude_default: '', last_report: null })
 const savingPolicy = ref(false)
 const runningFull = ref(false)
+const loadingPaths = ref(false)
+const savingPath = ref(false)
+const paths = ref<any[]>([])
+const pathForm = ref({ owner_type: 'user', owner_id: 0, path: '', note: '' })
 const diskPercent = computed(() => {
   const t = setting.value.disk_total
   if (!t) return 0
@@ -380,6 +454,10 @@ async function loadPolicy() {
       global_retain: d.data?.global_retain ?? 7,
       all_enabled: d.data?.all_enabled === true,
       all_schedule: d.data?.all_schedule || '',
+      mode: d.data?.mode || 'home',
+      dest: d.data?.dest || 'system',
+      exclude_default: d.data?.exclude_default || '',
+      last_report: d.data?.last_report ?? null,
     }
   } catch (e: any) {
     ElMessage.error(e?.message || '加载策略失败')
@@ -393,6 +471,9 @@ async function savePolicy() {
       global_retain: policy.value.global_retain,
       all_enabled: policy.value.all_enabled,
       all_schedule: policy.value.all_schedule.trim(),
+      mode: policy.value.mode,
+      dest: policy.value.dest,
+      exclude_default: policy.value.exclude_default,
     })
     ElMessage.success('策略已更新')
   } catch (e: any) {
@@ -410,6 +491,54 @@ async function runFull() {
     ElMessage.error(e?.message || '启动失败')
   } finally {
     runningFull.value = false
+  }
+}
+
+// ── 额外备份目录（管理员）──
+async function loadPaths() {
+  loadingPaths.value = true
+  try {
+    const d: any = await http.get('/system/backup/paths')
+    paths.value = d.data?.items || []
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载失败')
+  } finally {
+    loadingPaths.value = false
+  }
+}
+async function onAddPath() {
+  const f = pathForm.value
+  if (!f.path.trim()) return ElMessage.warning('请填写目录')
+  if (!['site', 'user'].includes(f.owner_type)) return ElMessage.warning('类型有误')
+  savingPath.value = true
+  try {
+    await http.post('/system/backup/paths', {
+      owner_type: f.owner_type,
+      owner_id: Number(f.owner_id) || 0,
+      path: f.path.trim(),
+      note: f.note.trim(),
+    })
+    ElMessage.success('已添加')
+    pathForm.value = { owner_type: 'user', owner_id: 0, path: '', note: '' }
+    loadPaths()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '添加失败')
+  } finally {
+    savingPath.value = false
+  }
+}
+async function onDeletePath(row: any) {
+  try {
+    await ElMessageBox.confirm(`确认删除 ${row.path}？`, '提示', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await http.delete('/system/backup/paths', { data: { id: row.id } })
+    ElMessage.success('已删除')
+    loadPaths()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '删除失败')
   }
 }
 
@@ -698,6 +827,7 @@ onMounted(() => {
   loadRecords()
   loadJobs()
   loadPolicy()
+  loadPaths()
 })
 </script>
 

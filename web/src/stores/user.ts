@@ -156,6 +156,7 @@ export const useUserStore = defineStore(
 
     return {
       token,
+      userId,
       name,
       avatar,
       roles,

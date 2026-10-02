@@ -238,6 +238,31 @@ async fn migrate_add_columns() {
     // 还原 / 删除时据此把对应目录作为安全根传入 zapexec 的 assert_in_root。
     ensure_column("backup_records", "owner", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("backup_records", "dest_root", "TEXT NOT NULL DEFAULT ''").await;
+    // 备份清单：记录本次归档实际包含的来源路径（站点 = web_root + 应用 workdir + 客户目录；
+    // 家目录 = home + 额外路径），还原「到原路径」时据此把 tar 解包回绝对位置。
+    ensure_column("backup_records", "manifest", "TEXT NOT NULL DEFAULT ''").await;
+    init_backup_paths_table().await;
+}
+
+/// 额外备份目录：客户在策略一下为站点追加的目录、或策略二下为用户追加的家目录外路径
+/// （如 Docker 卷挂载点）。`owner_type` 区分归属维度，读取入口统一。
+async fn init_backup_paths_table() {
+    if table_exists("backup_paths").await {
+        return;
+    }
+    let sql = r#"
+    CREATE TABLE backup_paths (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        owner_type TEXT NOT NULL DEFAULT 'site',
+        owner_id INTEGER NOT NULL DEFAULT 0,
+        path TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        created_at INTEGER,
+        updated_at INTEGER
+    );
+    CREATE INDEX idx_backup_paths_owner ON backup_paths(owner_type, owner_id);
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
 }
 
 /// 菜单能力门禁赋值（**老库升级**用）。

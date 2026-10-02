@@ -667,7 +667,9 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
             backup_root,
-        } => backup::dir(name, paths, dest_dir, as_user, skip_owner_check, backup_root).await,
+            exclude,
+            exclude_file,
+        } => backup::dir(name, paths, dest_dir, as_user, skip_owner_check, backup_root, exclude, exclude_file).await,
         Request::BackupDb {
             name,
             engine,
