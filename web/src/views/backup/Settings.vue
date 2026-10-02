@@ -10,7 +10,11 @@
       </template>
       <el-form label-width="96px" class="form">
         <el-form-item label="存储目录">
-          <el-input v-model="setting.path" placeholder="如 /data/backups（绝对路径，留空=默认 {ZAP_PATH}/data/backup）" />
+          <div class="dp-row">
+            <el-input v-model="setting.path" placeholder="如 /data/backups（绝对路径，留空=默认 {ZAP_PATH}/data/backup）" readonly />
+            <el-button @click="dirPickerStore = true">选择目录</el-button>
+          </div>
+          <DirPicker v-model="dirPickerStore" :start-path="setting.path" confirm-text="选此目录" @confirm="(p) => setting.path = p" />
         </el-form-item>
         <el-form-item label="磁盘占用">
           <el-progress
@@ -294,7 +298,11 @@
               <el-input v-model="pathForm.owner_id" type="number" style="width:110px" />
             </el-form-item>
             <el-form-item label="目录">
-              <el-input v-model="pathForm.path" placeholder="绝对路径" style="width:260px" />
+              <div class="dp-row">
+                <el-input v-model="pathForm.path" placeholder="绝对路径" readonly style="width:260px" />
+                <el-button @click="dirPickerExtra = true">选择目录</el-button>
+              </div>
+              <DirPicker v-model="dirPickerExtra" :start-path="pathForm.path" confirm-text="选此目录" @confirm="(p) => pathForm.path = p" />
             </el-form-item>
             <el-form-item label="备注">
               <el-input v-model="pathForm.note" style="width:160px" />
@@ -438,8 +446,11 @@
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { http } from '@/utils/request'
+import DirPicker from '@/components/DirPicker.vue'
 
 const tab = ref('archives')
+const dirPickerStore = ref(false)
+const dirPickerExtra = ref(false)
 const running = ref(false)
 const savingSetting = ref(false)
 const setting = ref({ path: '', disk_free: 0, disk_total: 0 })
@@ -916,4 +927,5 @@ onMounted(() => {
 .card-head { display: flex; justify-content: space-between; align-items: center; }
 .form { max-width: 560px; }
 .muted { color: var(--el-text-color-secondary); font-size: 12px; }
+.dp-row { display: flex; align-items: center; gap: 8px; }
 </style>
