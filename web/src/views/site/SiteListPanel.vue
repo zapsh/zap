@@ -3067,9 +3067,8 @@ onMounted(() => {
                 </el-select>
                 <span class="form-hint">{{ t('site.secWafModeHint') }}</span>
               </el-form-item>
-              <el-form-item :label="t('site.secWafAudit')">
-                <el-switch v-model="sec.waf_audit" />
-                <span class="form-hint">{{ t('site.secWafAuditHint') }}</span>
+              <el-form-item :label="t('site.secWafLog')">
+                <span class="form-hint">{{ t('site.secWafLogHint') }}</span>
               </el-form-item>
               <el-form-item :label="t('site.secWafRules')">
                 <el-input

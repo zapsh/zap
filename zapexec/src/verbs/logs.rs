@@ -47,7 +47,8 @@ fn kind_of(kind: &str) -> &'static str {
     if k.eq_ignore_ascii_case("error") {
         "error"
     } else if k.eq_ignore_ascii_case("waf") {
-        // WAF 独立审计日志：开启站点 WAF 审计时由 ModSecurity 写入
+        // WAF 审计日志并非独立文件：ModSecurity-nginx 把命中事件统一写进 nginx 的 error_log，
+        // 这里的 waf 只是 error_log 中 "ModSecurity" 行的过滤视图（见 current_log / read）。
         "waf"
     } else {
         "access"
@@ -55,7 +56,10 @@ fn kind_of(kind: &str) -> &'static str {
 }
 
 fn current_log(dir: &Path, kind: &str) -> PathBuf {
-    dir.join(format!("{kind}.log"))
+    // waf 复用 error.log：ModSecurity-nginx 的审计日志是全局单例，命中事件统一落在
+    // nginx 的 error_log 里，面板用 "waf" kind 过滤出其中的 ModSecurity 行来呈现。
+    let file = if kind == "waf" { "error" } else { kind };
+    dir.join(format!("{file}.log"))
 }
 
 fn gz_of(p: &Path) -> PathBuf {
@@ -248,7 +252,8 @@ pub async fn rotate(log_roots: Vec<String>, keep_days: u32) -> Response {
             if !dir.is_dir() {
                 continue;
             }
-            for kind in ["access", "error", "waf"] {
+            // waf 复用 error.log，不单独切割（error 已处理）
+            for kind in ["access", "error"] {
                 let cur = current_log(&dir, kind);
                 let Ok(meta) = std::fs::metadata(&cur) else {
                     continue;
@@ -310,7 +315,12 @@ pub async fn list(log_root: String) -> Response {
         for kind in ["access", "error", "waf"] {
             let p = current_log(&dir, kind);
             if std::fs::metadata(&p).is_ok() {
-                current.push(file_json(&p, kind, "current", ""));
+                let mut j = file_json(&p, kind, "current", "");
+                // waf 视图实际读 error.log，UI 上仍呈现为 waf.log，避免用户困惑
+                if kind == "waf" {
+                    j["name"] = json!("waf.log");
+                }
+                current.push(j);
             }
         }
         let mut archives: Vec<serde_json::Value> = Vec::new();
@@ -325,14 +335,23 @@ pub async fn list(log_root: String) -> Response {
                 let Some(date) = archive_date(&name) else {
                     continue;
                 };
-                let kind = if name.starts_with("error.log-") {
-                    "error"
-                } else if name.starts_with("waf.log-") {
-                    "waf"
-                } else {
-                    "access"
-                };
-                items.push((name.clone(), file_json(&path, kind, "archive", &date)));
+                let is_error = name.starts_with("error.log-");
+                let is_waf = name.starts_with("waf.log-");
+                let is_access = name.starts_with("access.log-");
+                if is_error || is_waf || is_access {
+                    if is_error {
+                        items.push((name.clone(), file_json(&path, "error", "archive", &date)));
+                        // error.log 归档同时作为 WAF 审计视图的历史来源
+                        items.push((
+                            format!("{name}#waf"),
+                            file_json(&path, "waf", "archive", &date),
+                        ));
+                    } else if is_waf {
+                        items.push((name.clone(), file_json(&path, "waf", "archive", &date)));
+                    } else {
+                        items.push((name.clone(), file_json(&path, "access", "archive", &date)));
+                    }
+                }
             }
             items.sort_by(|a, b| b.0.cmp(&a.0)); // 名称倒序 = 日期倒序
             archives = items.into_iter().map(|(_, v)| v).collect();
@@ -391,6 +410,15 @@ pub async fn read(
             (archived_text(&p)?, p)
         };
         let picked = pick_lines(&text, want, &keyword, &status);
+        // waf 视图：只保留 error_log 里 ModSecurity 的命中行（用户关键词仍作为二次过滤）
+        let picked = if kind == "waf" {
+            picked
+                .into_iter()
+                .filter(|l| l.contains("ModSecurity"))
+                .collect()
+        } else {
+            picked
+        };
         Ok(Response::ok(
             "ok",
             Some(json!({
@@ -410,8 +438,10 @@ pub async fn read(
 pub async fn clear(log_root: String, kind: String) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let dir = safe_log_root(&log_root)?;
+        // waf 复用 error.log，清空「全部」时跳过 waf（避免与 error 重复 truncate 同一文件）；
+        // 单独指定 kind=waf 时仍清空 error.log（即 WAF 日志所在文件）。
         let kinds: Vec<&str> = if kind.trim().is_empty() {
-            vec!["access", "error", "waf"]
+            vec!["access", "error"]
         } else {
             vec![kind_of(&kind)]
         };

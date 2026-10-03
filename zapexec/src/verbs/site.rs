@@ -802,9 +802,10 @@ fn render_security(
     site_id: i64,
     sec: Option<&SiteSecuritySpec>,
     waf_ready: bool,
-    // 站点独立 WAF 审计日志的**完整文件路径**（来自 VhostRenderSpec.waf_log，
-    // 形如 {log_root}/waf.log）。None = 未规划日志目录，不渲染 SecAuditLog。
-    waf_log_path: Option<&str>,
+    // 预留参数：曾经用于渲染每站点独立 waf.log（SecAuditLog），但 modsecurity-nginx 的
+    // 审计日志是全局单例、per-server 覆盖无效，命中事件统一写进 error_log；故不再使用，
+    // 保留形参以不影响调用方。
+    _waf_log_path: Option<&str>,
     dry_run_ok: bool,
 ) -> String {
     let Some(s) = sec else {
@@ -831,18 +832,11 @@ fn render_security(
             // 0 / 其它：跟随全局 modsecurity.conf 的形态，不输出引擎指令
             _ => {}
         }
-        // 站点独立审计日志：写入 {log_root}/waf.log（由调用方算好的完整路径，
-        // 即 VhostRenderSpec.waf_log），纳入面板轮转/查看/清空（kind = "waf"）。
-        // 只审计「相关」请求，避免高流量站点被日志拖垮。
-        if s.waf_audit {
-            if let Some(p) = waf_log_path.map(str::trim).filter(|d| !d.is_empty()) {
-                rules.push_str("SecAuditEngine RelevantOnly\n");
-                rules.push_str("SecAuditLogRelevantStatus \"^(?:5|4(?!04))\"\n");
-                rules.push_str("SecAuditLogType Serial\n");
-                rules.push_str("SecAuditLogParts ABIJDEFHZ\n");
-                rules.push_str(&format!("SecAuditLog {}\n", p.trim_end_matches('/')));
-            }
-        }
+        // 站点 WAF 审计日志：ModSecurity-nginx 的审计日志是「全局单例」——无论每站点怎么
+        // 设 SecAuditLog，命中事件都统一写进 nginx 的 error_log（由 http 级全局
+        // modsecurity.conf 决定），per-server 覆盖无效。因此不再渲染独立 waf.log；面板的
+        // 「WAF 日志」视图改为直接过滤 error_log 中带 "ModSecurity" 的行（见 logs.rs 的 waf kind）。
+
         let custom = s.waf_rules.trim();
         if !custom.is_empty() {
             rules.push_str(custom);
@@ -2613,6 +2607,9 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
 
     // 日志：面板规划了 log_root（{home}/logs/{site}）时生成独立 access/error 日志
     let (mut access_log, mut error_log, mut waf_log) = (None, None, None);
+    // 记下日志目录：发布流程里 `nginx -t` 以 root 身份运行，会把 WAF 审计日志 waf.log
+    // 预创建成 root:root，导致真正写日志的 www 进程无写权限。故校验通过后再归一次属主。
+    let mut log_dir: Option<PathBuf> = None;
     if let Some(lr) = log_root.as_deref() {
         let lr = lr.trim();
         if !lr.is_empty() {
@@ -2626,6 +2623,7 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
             error_log = Some(ldir.join("error.log").to_string_lossy().to_string());
             // WAF 独立审计日志：与 access/error 同目录，纳入面板轮转与查看
             waf_log = Some(ldir.join("waf.log").to_string_lossy().to_string());
+            log_dir = Some(ldir.clone());
         }
     }
 
@@ -2749,6 +2747,16 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
     }
     // 通过校验：留一份历史版本用于回滚
     super::webconf::backup_snapshot(site_id, "nginx", &content);
+
+    // 修复 WAF 审计日志权限：`nginx -t` 以 root 运行，会把 waf.log 预创建成 root:root，
+    // 而真正写日志的是 nginx 的 www 工作进程 → 无写权限、审计日志静默落空（现象就是
+    // WAF 命中信息只出现在 error.log，waf.log 一直 0 字节）。这里把日志目录（含刚被
+    // root 建出的 waf.log）重新归给 www，确保 worker 可写。失败不阻断发布，仅告警。
+    if let Some(d) = &log_dir {
+        if let Err(e) = fix_tree_owner(d, "www", true) {
+            tracing::warn!("重置站点日志目录属主失败（WAF 审计日志可能无写权限）: {e}");
+        }
+    }
 
     let data = json!({
         "site_id": site_id,
