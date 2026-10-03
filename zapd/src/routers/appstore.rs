@@ -455,14 +455,41 @@ pub async fn packages(claims: ValidatedClaims) -> ZapJsonResult {
     let owner = if is_admin { None } else { Some(claims.sub.clone()) };
     let pkgs = ast::scan_packages().await;
     let installed = ast::scan_installed(owner).await;
-    // 插件安装态（仅系统级）并入 installed_map：让商店标记「已安装」并做去重；
-    // 但 `installed` 本身仍只含站点类（webapps），不影响「已安装实例」页的展示。
+    // 插件安装态（仅系统级）并入 installed_map：让商店标记「已安装」；
+    // 注意：应用商店安装插件时会往 data/apps/plugins/<name> 写 meta.yaml，
+    // 于是同一插件会被 scan_installed（扫 data/apps）和 scan_plugin_installs（扫 $ZAP_PATH/plugins）各命中一次，
+    // 合并时必须按 pkg_path 去重，否则会重复计成「已安装 × 2」。
+    // `installed` 本身只含站点类（webapps），不影响「已安装实例」页的展示。
     let home = load_user_home(claims.id as i64)
         .await
         .map(|(h, _)| h)
         .unwrap_or_default();
     let mut installed_all = installed.clone();
-    installed_all.append(&mut ast::scan_plugin_installs(&home));
+    // 按 pkg_path 去重：插件已被 scan_installed 计入时，跳过 scan_plugin_installs 的重复记录，
+    // 但把它带的 level（system）补回原记录，保证普通用户的 system_shared 标记不丢。
+    let mut seen: std::collections::HashSet<String> = installed_all
+        .iter()
+        .filter_map(|i| i.get("pkg_path").and_then(|p| p.as_str()).map(|s| s.to_string()))
+        .collect();
+    for p in ast::scan_plugin_installs(&home) {
+        match p.get("pkg_path").and_then(|x| x.as_str()) {
+            Some(pkg) if seen.contains(pkg) => {
+                if p.get("level").and_then(|l| l.as_str()) == Some("system") {
+                    if let Some(ex) = installed_all
+                        .iter_mut()
+                        .find(|i| i.get("pkg_path").and_then(|x| x.as_str()) == Some(pkg))
+                    {
+                        ex["level"] = json!("system");
+                    }
+                }
+            }
+            Some(pkg) => {
+                seen.insert(pkg.to_string());
+                installed_all.push(p);
+            }
+            None => installed_all.push(p),
+        }
+    }
     // 一个包可以有多个实例（多版本 PHP / 多站点 WordPress），所以是列表而不是单值
     let mut installed_map: std::collections::HashMap<String, Vec<Value>> =
         std::collections::HashMap::new();
