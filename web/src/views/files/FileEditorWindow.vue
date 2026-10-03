@@ -102,6 +102,7 @@
               highlight-current
               :current-node-key="activePath || treeRootPath"
               @node-click="onTreeNodeClick"
+              @node-contextmenu="onTreeContextMenu"
             >
               <template #default="{ node, data }">
                 <span class="few-tree-node">
@@ -233,6 +234,84 @@
       <!-- 右下角拉伸手柄（全屏时隐藏） -->
       <div v-show="!expanded" class="few-resize" @mousedown.stop.prevent="startResize" />
     </div>
+
+    <!-- 左侧树右键菜单：新建目录 / 新建文件 / 重命名 / 删除 -->
+    <div v-if="treeMenuVisible" class="fm-context-backdrop" @click="closeTreeMenu" />
+    <div
+      v-if="treeMenuVisible"
+      ref="treeMenuRef"
+      class="fm-context-menu"
+      :style="{ left: treeMenuX + 'px', top: treeMenuY + 'px' }"
+      @click.stop
+    >
+      <div class="fm-context-item" @click="treeNewDir">
+        <el-icon><FolderAdd /></el-icon>
+        <span>{{ t('filesLocal.newDir') }}</span>
+      </div>
+      <div class="fm-context-item" @click="treeNewFile">
+        <el-icon><DocumentAdd /></el-icon>
+        <span>{{ t('filesLocal.newFile') }}</span>
+      </div>
+      <div class="fm-context-item" @click="treeRename">
+        <el-icon><Edit /></el-icon>
+        <span>{{ t('filesLocal.rename') }}</span>
+      </div>
+      <div class="fm-context-item danger" @click="treeDelete">
+        <el-icon><Delete /></el-icon>
+        <span>{{ t('common.delete') }}</span>
+      </div>
+    </div>
+
+    <!-- 新建目录 -->
+    <el-dialog v-model="mkdirVisible" :title="t('filesLocal.newDir')" width="400px">
+      <el-form @submit.prevent>
+        <el-form-item :label="t('filesLocal.dirName')">
+          <el-input
+            v-model="mkdirName"
+            :placeholder="t('filesLocal.dirNamePlaceholder')"
+            @keydown.enter.prevent="doMkdir"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="mkdirVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doMkdir">{{ t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 新建文件 -->
+    <el-dialog v-model="newFileVisible" :title="t('filesLocal.newFile')" width="400px">
+      <el-form @submit.prevent>
+        <el-form-item :label="t('filesLocal.fileName')">
+          <el-input
+            v-model="newFileName"
+            :placeholder="t('filesLocal.fileNamePlaceholder')"
+            @keydown.enter.prevent="doNewFile"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="newFileVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doNewFile">{{ t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 重命名 -->
+    <el-dialog v-model="renameVisible" :title="t('filesLocal.rename')" width="400px">
+      <el-form @submit.prevent>
+        <el-form-item :label="t('filesLocal.newName')">
+          <el-input
+            v-model="renameName"
+            :placeholder="t('filesLocal.newNamePlaceholder')"
+            @keydown.enter.prevent="doRename"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="renameVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doRename">{{ t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
   </Teleport>
 </template>
 
@@ -241,7 +320,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import CodeEditor from '@/components/CodeEditor.vue'
-import { getFileInfo, listFiles, readFile, writeFile, type FileEntry } from '@/api/file'
+import { getFileInfo, listFiles, readFile, writeFile, mkdir, deleteFile, renameFile, type FileEntry } from '@/api/file'
 import {
   LANG_OPTIONS,
   langFromPath,
@@ -251,9 +330,12 @@ import {
 } from '@/utils/editorLang'
 import {
   Close,
+  Delete,
   Document,
+  DocumentAdd,
   Edit,
   Folder,
+  FolderAdd,
   FolderOpened,
   FullScreen,
   FullScreenExit,
@@ -862,6 +944,192 @@ function onTreeNodeClick(data: TreeNode) {
   if (!data.is_dir) void openPath(data.path)
 }
 
+// ── 左侧树右键菜单（新建目录 / 新建文件 / 重命名 / 删除） ────
+
+const treeMenuVisible = ref(false)
+const treeMenuX = ref(0)
+const treeMenuY = ref(0)
+const treeMenuRef = ref<HTMLElement | null>(null)
+const treeMenuNode = ref<TreeNode | null>(null)
+/** 新建操作的目标父目录：目录节点 → 其下；文件节点 → 其父目录 */
+const createTargetDir = ref('')
+
+// 新建 / 重命名对话框
+const mkdirVisible = ref(false)
+const mkdirName = ref('')
+const newFileVisible = ref(false)
+const newFileName = ref('')
+const renameVisible = ref(false)
+const renameName = ref('')
+const renameTargetPath = ref('')
+
+/** 在指定目录下拼完整路径；dir 为空则回退到树根（家目录） */
+function joinInDir(dir: string, name: string): string {
+  const base = dir && dir.length ? dir : treeRootPath.value || '/'
+  return !base || base === '/' ? `/${name}` : `${base}/${name}`
+}
+
+/** 右键节点：文件在其父目录创建，目录在其下创建；先按鼠标位置放，再夹回视口 */
+async function onTreeContextMenu(event: Event, data: TreeNode) {
+  event.preventDefault()
+  const me = event as MouseEvent
+  treeMenuNode.value = data
+  createTargetDir.value = data.is_dir ? data.path : parentOf(data.path)
+  treeMenuX.value = me.clientX
+  treeMenuY.value = me.clientY
+  treeMenuVisible.value = true
+
+  await nextTick()
+  const el = treeMenuRef.value
+  if (!el) return
+  const margin = 8
+  const maxX = Math.max(margin, window.innerWidth - el.offsetWidth - margin)
+  const maxY = Math.max(margin, window.innerHeight - el.offsetHeight - margin)
+  treeMenuX.value = Math.min(Math.max(me.clientX, margin), maxX)
+  treeMenuY.value = Math.min(Math.max(me.clientY, margin), maxY)
+}
+
+function closeTreeMenu() {
+  treeMenuVisible.value = false
+}
+
+function treeNewDir() {
+  treeMenuVisible.value = false
+  mkdirName.value = ''
+  mkdirVisible.value = true
+}
+
+function treeNewFile() {
+  treeMenuVisible.value = false
+  newFileName.value = ''
+  newFileVisible.value = true
+}
+
+function treeRename() {
+  treeMenuVisible.value = false
+  const node = treeMenuNode.value
+  if (!node) return
+  renameTargetPath.value = node.path
+  renameName.value = node.name
+  renameVisible.value = true
+}
+
+async function treeDelete() {
+  treeMenuVisible.value = false
+  const node = treeMenuNode.value
+  if (!node) return
+  try {
+    await ElMessageBox.confirm(
+      t('filesLocal.delConfirmOne', { name: node.name }),
+      t('filesLocal.delWarning'),
+      { type: 'warning', confirmButtonText: t('filesLocal.delConfirmBtn') },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteFile(node.path)
+    ElMessage.success(t('filesLocal.deleteOk'))
+    closeTabsUnder(node.path)
+    await refreshTreeNode(parentOf(node.path))
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('filesLocal.deleteFailed'))
+  }
+}
+
+async function doMkdir() {
+  if (!mkdirName.value.trim()) {
+    ElMessage.warning(t('filesLocal.needDirName'))
+    return
+  }
+  const fullPath = joinInDir(createTargetDir.value, mkdirName.value.trim())
+  try {
+    await mkdir(fullPath)
+    ElMessage.success(t('filesLocal.dirCreated'))
+    mkdirVisible.value = false
+    await refreshTreeNode(createTargetDir.value)
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('filesLocal.errMkdir', { name: mkdirName.value }))
+  }
+}
+
+async function doNewFile() {
+  if (!newFileName.value.trim()) {
+    ElMessage.warning(t('filesLocal.needFileName'))
+    return
+  }
+  const fullPath = joinInDir(createTargetDir.value, newFileName.value.trim())
+  try {
+    await writeFile(fullPath, '')
+    ElMessage.success(t('filesLocal.fileCreated'))
+    newFileVisible.value = false
+    await refreshTreeNode(createTargetDir.value)
+    void openPath(fullPath)
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('filesLocal.errNewFile', { name: newFileName.value }))
+  }
+}
+
+async function doRename() {
+  if (!renameTargetPath.value || !renameName.value.trim()) {
+    ElMessage.warning(t('filesLocal.needNewName'))
+    return
+  }
+  const newPath = joinInDir(parentOf(renameTargetPath.value), renameName.value.trim())
+  try {
+    await renameFile(renameTargetPath.value, newPath)
+    ElMessage.success(t('filesLocal.renamed'))
+    renameVisible.value = false
+    renameOpenTabs(renameTargetPath.value, newPath)
+    await refreshTreeNode(parentOf(renameTargetPath.value))
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('filesLocal.errRename', { name: renameName.value }))
+  }
+}
+
+/** 刷新某个树节点（强制重新懒加载其下的子项），让新建/改名/删除立即可见 */
+async function refreshTreeNode(path: string) {
+  const tree = treeRef.value
+  if (!tree) {
+    await refreshTree()
+    return
+  }
+  const node = tree.store.getNode(path)
+  if (!node) {
+    await refreshTree()
+    return
+  }
+  node.loaded = false
+  await node.expand()
+  tree.setCurrentKey(path)
+}
+
+/** 删除节点后，关掉指向该路径（或其子路径）的已打开标签 */
+function closeTabsUnder(p: string) {
+  const norm = p.replace(/\/+$/, '')
+  const next = tabs.value.filter(
+    (tab) => tab.path !== norm && !tab.path.startsWith(norm + '/'),
+  )
+  tabs.value = next
+  if (!next.find((t) => t.path === activePath.value)) {
+    const last = next[next.length - 1]
+    activePath.value = last ? last.path : ''
+  }
+}
+
+/** 重命名节点后，同步更新指向该路径的已打开标签路径 */
+function renameOpenTabs(oldPath: string, newPath: string) {
+  const norm = oldPath.replace(/\/+$/, '')
+  const remap = (path: string) =>
+    path === norm
+      ? newPath
+      : path.startsWith(norm + '/')
+        ? newPath + path.slice(norm.length)
+        : path
+  for (const tab of tabs.value) tab.path = remap(tab.path)
+  activePath.value = remap(activePath.value)
+}
+
 // ── 快捷键：窗口内 Ctrl / Cmd + S 保存当前标签 ───────────────
 
 /**
@@ -1161,6 +1429,55 @@ watch(
       color: var(--el-color-primary);
     }
   }
+}
+
+// 左侧树右键菜单（与文件管理同款，复用时同名类）
+.fm-context-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1998;
+}
+
+.fm-context-menu {
+  position: fixed;
+  z-index: 1999;
+  min-width: 160px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  box-shadow: var(--el-box-shadow-light);
+  padding: 6px 0;
+}
+
+.fm-context-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--el-fill-color-light);
+    color: var(--el-color-primary);
+  }
+
+  &.danger:not(.disabled) {
+    color: var(--el-color-danger);
+
+    &:hover {
+      background: var(--el-color-danger-light-9);
+    }
+  }
+}
+
+.fm-context-divider {
+  height: 1px;
+  background: var(--el-border-color-lighter);
+  margin: 6px 0;
 }
 
 .few-tab {

@@ -1121,6 +1121,7 @@ const enUS: Messages = {
     delConfirmDirTip: ' All contents of the directories will be deleted.',
     delWarning: 'Warning',
     delConfirmBtn: 'Delete',
+    delConfirmOne: 'Delete "{name}"? This cannot be undone.',
     deleteOk: 'Deleted',
     deleteFailed: 'Delete failed',
 
@@ -1233,6 +1234,7 @@ const enUS: Messages = {
     noSlash: 'The name must not contain a slash',
     dirCreated: 'Folder created',
     errMkdir: 'Failed to create folder "{name}"',
+    errNewFile: 'Failed to create file "{name}"',
     needNewName: 'Enter a new name',
     renamed: 'Renamed',
     errRename: 'Failed to rename "{name}"',

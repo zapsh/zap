@@ -17,6 +17,7 @@
           highlight-current
           :expand-on-click-node="true"
           @node-click="onTreeNodeClick"
+          @node-contextmenu="onTreeContextMenu"
         >
           <template #default="{ node, data }">
             <span class="fm-tree-node">
@@ -102,11 +103,11 @@
           />
           <!-- 新建：目录 / 文件 收进同一按钮组 -->
           <el-button-group class="create-group">
-            <el-button size="small" @click="showMkdirDialog">
+            <el-button size="small" @click="openMkdirForCurrent">
               <el-icon><FolderAdd /></el-icon>
               {{ t('filesLocal.newDir') }}
             </el-button>
-            <el-button size="small" @click="showNewFileDialog">
+            <el-button size="small" @click="openNewFileForCurrent">
               <el-icon><DocumentAdd /></el-icon>
               {{ t('filesLocal.newFile') }}
             </el-button>
@@ -712,7 +713,11 @@
       放在里面会被容器裁掉；挪到 body 后只需自己处理视口边界。
     -->
     <Teleport to="body">
-      <div v-if="contextMenuVisible" class="fm-context-backdrop" @click="closeContextMenu" />
+      <div
+        v-if="contextMenuVisible || treeMenuVisible"
+        class="fm-context-backdrop"
+        @click="closeMenus"
+      />
       <div
         v-if="contextMenuVisible"
         ref="contextMenuRef"
@@ -791,6 +796,33 @@
           :class="{ disabled: !canRemove }"
           @click="removeFromMenu"
         >
+          <el-icon><Delete /></el-icon>
+          <span>{{ t('common.delete') }}</span>
+        </div>
+      </div>
+
+      <!-- 左侧目录树右键菜单：在该目录节点下新建（文件不在树里，树只含目录） -->
+      <div
+        v-if="treeMenuVisible"
+        ref="treeMenuRef"
+        class="fm-context-menu"
+        :style="{ left: treeMenuX + 'px', top: treeMenuY + 'px' }"
+        @click.stop
+      >
+        <div class="fm-context-item" @click="treeNewDir">
+          <el-icon><FolderAdd /></el-icon>
+          <span>{{ t('filesLocal.newDir') }}</span>
+        </div>
+        <div class="fm-context-item" @click="treeNewFile">
+          <el-icon><DocumentAdd /></el-icon>
+          <span>{{ t('filesLocal.newFile') }}</span>
+        </div>
+        <div class="fm-context-divider" />
+        <div class="fm-context-item" @click="treeRename">
+          <el-icon><Edit /></el-icon>
+          <span>{{ t('filesLocal.rename') }}</span>
+        </div>
+        <div class="fm-context-item danger" @click="treeDelete">
           <el-icon><Delete /></el-icon>
           <span>{{ t('common.delete') }}</span>
         </div>
@@ -932,6 +964,16 @@ const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const contextMenuRef = ref<HTMLElement | null>(null)
 
+// 左侧目录树右键菜单（新建目录 / 新建文件 / 重命名 / 删除）
+const treeMenuVisible = ref(false)
+const treeMenuX = ref(0)
+const treeMenuY = ref(0)
+const treeMenuRef = ref<HTMLElement | null>(null)
+/** 右键选中的树节点（供重命名 / 删除使用） */
+const treeMenuNode = ref<TreeNode | null>(null)
+/** 新建操作的目标父目录：来自目录树右键节点；空串表示用当前目录（工具栏按钮走这里） */
+const createTargetDir = ref('')
+
 // Tree / Table refs
 const treeRef = ref<InstanceType<typeof ElTree>>()
 const tableRef = ref<any>(null)
@@ -1068,6 +1110,8 @@ const openAfterCreate = ref(false)
 const renameVisible = ref(false)
 const renameTarget = ref<FileEntry | null>(null)
 const renameName = ref('')
+/** 重命名时的目标父目录；空串表示用当前目录（文件列表重命名走这里） */
+const renameBaseDir = ref('')
 const dupVisible = ref(false)
 const dupTarget = ref<FileEntry | null>(null)
 const dupName = ref('')
@@ -1365,6 +1409,20 @@ function joinCurrent(name: string): string {
   return !dir || dir === '/' ? `/${name}` : `${dir}/${name}`
 }
 
+/** 在指定目录下拼完整路径；dir 为空（工具栏按钮）则回退到当前目录 */
+function joinInDir(dir: string, name: string): string {
+  const base = dir && dir.length ? dir : currentPath.value
+  return !base || base === '/' ? `/${name}` : `${base}/${name}`
+}
+
+/** 取路径父目录（已到根返回 '/'） */
+function dirnameOf(p: string): string {
+  const s = p.replace(/\/+$/, '')
+  if (s === '' || s === '/') return '/'
+  const i = s.lastIndexOf('/')
+  return i <= 0 ? '/' : s.slice(0, i)
+}
+
 /** 同步选中态到 el-table 时，忽略其 selection-change 回灌，避免互相覆盖 */
 let syncingSelection = false
 
@@ -1486,6 +1544,82 @@ async function openContextMenu(event: MouseEvent, row?: FileEntry) {
 
 function closeContextMenu() {
   contextMenuVisible.value = false
+  treeMenuVisible.value = false
+}
+
+/** 遮罩点击：两个菜单（文件列表 / 目录树）一起关 */
+function closeMenus() {
+  contextMenuVisible.value = false
+  treeMenuVisible.value = false
+}
+
+/**
+ * 目录树右键菜单：左侧树只含目录节点，右键即在「该目录」下新建。
+ * 先按鼠标位置放一次，等 DOM 出来量到真实尺寸再夹回视口（菜单只有两项，简单夹取即可）。
+ */
+async function onTreeContextMenu(event: Event, data: TreeNode) {
+  event.preventDefault()
+  const me = event as MouseEvent
+  // 创建位置 = 右键目录节点的 path（文件不在树里，无需按父目录回退）
+  treeMenuNode.value = data
+  createTargetDir.value = data.path || currentPath.value
+  treeMenuX.value = me.clientX
+  treeMenuY.value = me.clientY
+  treeMenuVisible.value = true
+
+  await nextTick()
+  const el = treeMenuRef.value
+  if (!el) return
+  const margin = 8
+  const maxX = Math.max(margin, window.innerWidth - el.offsetWidth - margin)
+  const maxY = Math.max(margin, window.innerHeight - el.offsetHeight - margin)
+  treeMenuX.value = Math.min(Math.max(me.clientX, margin), maxX)
+  treeMenuY.value = Math.min(Math.max(me.clientY, margin), maxY)
+}
+
+function treeNewDir() {
+  treeMenuVisible.value = false
+  showMkdirDialog()
+}
+
+function treeNewFile() {
+  treeMenuVisible.value = false
+  showNewFileDialog()
+}
+
+function treeRename() {
+  treeMenuVisible.value = false
+  const node = treeMenuNode.value
+  if (!node) return
+  // 树只含目录：在其自身所在的父目录里改名
+  const entry = { path: node.path, name: node.name, is_dir: node.is_dir } as FileEntry
+  showRenameDialog(entry, dirnameOf(node.path))
+}
+
+async function treeDelete() {
+  treeMenuVisible.value = false
+  const node = treeMenuNode.value
+  if (!node) return
+  try {
+    await ElMessageBox.confirm(
+      t('filesLocal.delConfirmOne', { name: node.name }),
+      t('filesLocal.delWarning'),
+      { type: 'warning', confirmButtonText: t('filesLocal.delConfirmBtn') },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteFile(node.path)
+    ElMessage.success(t('filesLocal.deleteOk'))
+    // 删的是当前目录或其上级：回退到父目录，避免右侧列表指向已不存在的路径
+    if (currentPath.value === node.path || currentPath.value.startsWith(node.path + '/')) {
+      navigateTo(dirnameOf(node.path))
+    }
+    refreshTree()
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('filesLocal.deleteFailed'))
+  }
 }
 
 function openSelectedFromMenu() {
@@ -1626,16 +1760,30 @@ async function doMkdir() {
     ElMessage.warning(t('filesLocal.needDirName'))
     return
   }
-  const fullPath = joinCurrent(mkdirName.value.trim())
+  const targetDir = createTargetDir.value
+  const fullPath = joinInDir(targetDir, mkdirName.value.trim())
   try {
     await mkdir(fullPath)
     ElMessage.success(t('filesLocal.dirCreated'))
     mkdirVisible.value = false
-    loadFileList()
-    refreshTree()
+    // 在目录树右键的目标目录里建：重建树 + 跳过去让用户看到新目录
+    await refreshTree()
+    if (targetDir && targetDir !== currentPath.value) {
+      await navigateAndReveal(targetDir)
+    }
   } catch {
     // handled
   }
+}
+
+function openMkdirForCurrent() {
+  createTargetDir.value = '' // 工具栏按钮：建到当前目录
+  showMkdirDialog()
+}
+
+function openNewFileForCurrent() {
+  createTargetDir.value = '' // 工具栏按钮：建到当前目录
+  showNewFileDialog()
 }
 
 function showNewFileDialog() {
@@ -1649,12 +1797,16 @@ async function doNewFile() {
     ElMessage.warning(t('filesLocal.needFileName'))
     return
   }
-  const fullPath = joinCurrent(newFileName.value.trim())
+  const targetDir = createTargetDir.value
+  const fullPath = joinInDir(targetDir, newFileName.value.trim())
   try {
     await writeFile(fullPath, '')
     ElMessage.success(t('filesLocal.fileCreated'))
     newFileVisible.value = false
-    loadFileList()
+    await refreshTree()
+    if (targetDir && targetDir !== currentPath.value) {
+      await navigateAndReveal(targetDir)
+    }
     // 勾选了「创建后用编辑器打开」：直接打开刚建的文件
     if (openAfterCreate.value) {
       openInEditor({ path: fullPath } as FileEntry)
@@ -1664,9 +1816,10 @@ async function doNewFile() {
   }
 }
 
-function showRenameDialog(row: FileEntry) {
+function showRenameDialog(row: FileEntry, baseDir = '') {
   renameTarget.value = row
   renameName.value = row.name
+  renameBaseDir.value = baseDir
   renameVisible.value = true
 }
 
@@ -1675,7 +1828,8 @@ async function doRename() {
     ElMessage.warning(t('filesLocal.needNewName'))
     return
   }
-  const newPath = joinCurrent(renameName.value.trim())
+  const base = renameBaseDir.value || currentPath.value
+  const newPath = !base || base === '/' ? `/${renameName.value.trim()}` : `${base}/${renameName.value.trim()}`
 
   try {
     await renameFile(renameTarget.value.path, newPath)

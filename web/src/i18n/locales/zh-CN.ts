@@ -1138,6 +1138,7 @@ export default {
     delConfirmDirTip: '目录内所有内容将被删除。',
     delWarning: '警告',
     delConfirmBtn: '确认删除',
+    delConfirmOne: '确认删除「{name}」？此操作不可恢复。',
     deleteOk: '删除成功',
     deleteFailed: '删除失败',
 
@@ -1247,6 +1248,7 @@ export default {
     noSlash: '名称不能包含斜杠',
     dirCreated: '目录已创建',
     errMkdir: '创建目录「{name}」失败',
+    errNewFile: '创建文件「{name}」失败',
     needNewName: '请输入新名称',
     renamed: '已重命名',
     errRename: '重命名「{name}」失败',
