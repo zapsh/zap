@@ -191,6 +191,8 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     )
     .icon("material-symbols:database")
     .redirect("/database/index")
+    // 环境门禁：宿主机装了 MySQL/MariaDB 且 zapadm 凭据已配置才显示（见 zap::feature）
+    .feature("mysql")
     .affix(),
     MenuSeed::new(
         "database-index",
@@ -203,6 +205,7 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     )
     .parent("database")
     .icon("material-symbols:database")
+    .feature("mysql")
     .affix(),
     // ── 文件管理 ────────────────────────────────────────────
     MenuSeed::new("files", "文件管理", "menu", "/files", "Layout", R_ALL, 3)

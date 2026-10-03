@@ -749,11 +749,13 @@ async fn sync_seed_menus() {
         menu_seed::seed_role_menus(pool, &added).await;
     }
 
-    // 核心菜单（应用商店家族）的可见角色随种子收敛：老库里这些系统菜单的
-    // `roles` 字段与 `role_menus` 授权也同步成种子值（如应用商店收紧为仅 admin、
-    // 应用市场仅非 admin），否则「应用商店仍对全员可见」会与需求相悖。
-    // 只针对系统核心菜单，不动管理员自建 / 改过的其它菜单（先清后插，幂等）。
-    const CORE_SYNC_MENUS: &[&str] = &["appstore", "appstore-index", "installed", "system"];
+    // 核心菜单的可见角色 / 环境门禁随种子收敛：老库里这些系统菜单的
+    // `roles` 字段与 `role_menus` 授权同步成种子值（如应用商店收紧为仅 admin、
+    // 应用市场仅非 admin），且 `feature` 也同步（如「数据库」挂上 mysql 环境门禁，
+    // 没装 MySQL 或 zapadm 凭据没配好就不显示）。否则新建库有门禁、老库没有，
+    // 行为会不一致。只针对系统核心菜单，不动管理员自建 / 改过的其它菜单（幂等）。
+    const CORE_SYNC_MENUS: &[&str] =
+        &["appstore", "appstore-index", "installed", "system", "database", "database-index"];
     for seed in menu_seed::all_seeds() {
         if !CORE_SYNC_MENUS.contains(&seed.name) {
             continue;
@@ -770,6 +772,14 @@ async fn sync_seed_menus() {
             .bind(seed.roles)
             .bind(menu_id)
             .bind(seed.roles)
+            .execute(pool)
+            .await;
+        // 收敛 feature 字段（环境门禁）：老库里还是空串（当时还没这门禁），
+        // 这里同步成种子值；已自定义成别的（如非空串）则保留，不强行覆盖。
+        let _ = sqlx::query("UPDATE menus SET feature = ? WHERE id = ? AND feature <> ?")
+            .bind(seed.feature)
+            .bind(menu_id)
+            .bind(seed.feature)
             .execute(pool)
             .await;
         // 重新派生 role_menus，使其与种子 roles 完全一致（先清后插）

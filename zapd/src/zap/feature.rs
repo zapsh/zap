@@ -32,6 +32,7 @@ use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use zap_proto::Request;
+use zap_crypto;
 
 use crate::zapexec;
 
@@ -50,9 +51,17 @@ const DETECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// 容器管理（`/docker`）：宿主机装了 Docker 才给入口。
 pub const FEATURE_DOCKER: &str = "docker";
 
+/// 数据库管理（`/database`）：宿主机装了 MySQL/MariaDB **且** 面板管理用的
+/// `zapadm` 凭据已配置，才给入口。
+///
+/// 只装了引擎却没配 `zapadm` 凭据（面板靠它直连本机实例）的情况，数据库页既打不开
+/// 也建不了库，这种「装了但没配置好」与「没装」一样不显示入口——
+/// 否则用户点进去满屏报错、还以为面板坏了。
+pub const FEATURE_MYSQL: &str = "mysql";
+
 /// 所有已实现的能力。菜单管理页的「环境门禁」下拉据此出选项，
 /// 新增能力只要在这里登记，不必再改前端。
-pub const ALL: &[&str] = &[FEATURE_DOCKER];
+pub const ALL: &[&str] = &[FEATURE_DOCKER, FEATURE_MYSQL];
 
 type FeatureMap = HashMap<String, bool>;
 
@@ -149,6 +158,7 @@ async fn refresh() -> FeatureMap {
     for key in ALL {
         let value = match *key {
             FEATURE_DOCKER => probe_docker().await,
+            FEATURE_MYSQL => probe_database().await,
             // 没实现探测的能力不算「降格」，交给 `available` 的 fail-open 放行
             _ => None,
         };
@@ -212,6 +222,41 @@ async fn probe_docker() -> ProbeResult {
         // exec 没起 / IPC 不通 / 超时：不是「没装」，交给 `merge_results` 兜底
         Ok(Err(_)) | Err(_) => None,
     }
+}
+
+/// MySQL 是否可用：宿主机装了 MySQL/MariaDB **且** 面板管理用的 `zapadm` 凭据已配置。
+///
+/// 探测分两步，任一步失败都按对应语义处理：
+/// - 引擎是否安装：复用 zapexec 的 `service_conf.status`（与「服务配置」页同源，一次 IPC call），
+///   链路不通（exec 没起 / IPC 超时）不算「没装」，交给 `merge_results` 兜底。
+/// - 凭据是否就绪：本地直读 `/etc/zap/credentials/mysql_zapadm.cred`
+///   （与 `routers/database.rs` 的 `zapadm_password` 同源），读不到即视为未配置；
+///   这一步纯本地文件读取，不计入 IPC 抖动、也不影响降级判定。
+async fn probe_database() -> ProbeResult {
+    // 1) 引擎装了没（installed：MySQL / MariaDB 任一命中即可，service_conf 已二合一识别）
+    let installed = match tokio::time::timeout(
+        DETECT_TIMEOUT,
+        zapexec::call(Request::ServiceConfStatus {
+            service: "mysql".into(),
+        }),
+    )
+    .await
+    {
+        Ok(Ok(resp)) => resp
+            .data
+            .as_ref()
+            .and_then(|d| d.get("installed"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        // exec 没起 / IPC 不通 / 超时：不是「没装」，交给 `merge_results` 兜底
+        Ok(Err(_)) | Err(_) => return None,
+    };
+    if !installed {
+        return Some(false);
+    }
+    // 2) zapadm 凭据就绪没（面板直连用，没它数据库页打不开、库也建不了）
+    let cred_ok = zap_crypto::read_cred("mysql", "zapadm").is_ok();
+    Some(cred_ok)
 }
 
 #[cfg(test)]
