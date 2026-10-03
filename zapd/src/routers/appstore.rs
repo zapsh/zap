@@ -20,6 +20,7 @@ use crate::{
     },
     zapexec,
 };
+use crate::routers::plugins::load_user_home;
 use zap_proto::Request;
 
 /// 运行身份门禁：声明 `run_as: user`（或 `scope: site`）的包必须是 `webapps` 分类。
@@ -448,13 +449,24 @@ pub async fn repo_update(
 
 // ── 包列表 / 安装 / 卸载 / 升级 ─────────────────────────────
 
-pub async fn packages(_claims: ValidatedClaims) -> ZapJsonResult {
+pub async fn packages(claims: ValidatedClaims) -> ZapJsonResult {
+    let is_admin = crate::zap::jwt::is_admin(&claims);
+    // 非 admin 只看自己名下的站点应用「已安装」状态；admin 看全部
+    let owner = if is_admin { None } else { Some(claims.sub.clone()) };
     let pkgs = ast::scan_packages().await;
-    let installed = ast::scan_installed().await;
+    let installed = ast::scan_installed(owner).await;
+    // 插件安装态（系统级 + 当前用户级）并入 installed_map：让商店标记「已安装」并做去重；
+    // 但 `installed` 本身仍只含站点类（webapps），不影响「已安装实例」页的展示。
+    let home = load_user_home(claims.id as i64)
+        .await
+        .map(|(h, _)| h)
+        .unwrap_or_default();
+    let mut installed_all = installed.clone();
+    installed_all.append(&mut ast::scan_plugin_installs(&home));
     // 一个包可以有多个实例（多版本 PHP / 多站点 WordPress），所以是列表而不是单值
     let mut installed_map: std::collections::HashMap<String, Vec<Value>> =
         std::collections::HashMap::new();
-    for inst in &installed {
+    for inst in &installed_all {
         if let Some(p) = inst.get("pkg_path").and_then(|x| x.as_str()) {
             installed_map
                 .entry(p.to_string())
@@ -462,6 +474,12 @@ pub async fn packages(_claims: ValidatedClaims) -> ZapJsonResult {
                 .push(inst.clone());
         }
     }
+    // 系统级已装的插件名集合：普通用户看到这些时不让再装（共享，无需重复安装）
+    let system_installed: std::collections::HashSet<String> = installed_all
+        .iter()
+        .filter(|i| i.get("level").and_then(|l| l.as_str()) == Some("system"))
+        .filter_map(|i| i.get("pkg_path").and_then(|p| p.as_str()).map(|s| s.to_string()))
+        .collect();
     let mut items: Vec<Value> = Vec::new();
     for mut pkg in pkgs {
         let pkg_path = pkg
@@ -469,6 +487,7 @@ pub async fn packages(_claims: ValidatedClaims) -> ZapJsonResult {
             .and_then(|x| x.as_str())
             .unwrap_or_default()
             .to_string();
+        let cat = pkg_path.split('/').next().unwrap_or_default().to_string();
         if let Some(insts) = installed_map.get(&pkg_path) {
             if let Some(inst) = insts.first() {
                 // 兼容旧字段：取第一个实例（多实例时看 installed_instances）
@@ -497,6 +516,8 @@ pub async fn packages(_claims: ValidatedClaims) -> ZapJsonResult {
             pkg["installed"] = json!(false);
             pkg["installed_instances"] = json!([]);
         }
+        // 插件去重：系统级已装 → 对普通用户标记 system_shared（商店禁用安装按钮，共享无需重复）
+        pkg["system_shared"] = json!(cat == "plugins" && !is_admin && system_installed.contains(&pkg_path));
         items.push(pkg);
     }
     items.sort_by(|a, b| {
@@ -575,6 +596,22 @@ pub async fn install(
     check_pkg_roles(&claims, &payload.pkg_path).await?;
     // 运行身份门禁：run_as: user 仅 webapps 分类可用
     check_pkg_run_as(&payload.pkg_path).await?;
+    // 插件去重：系统级已装的插件对所有人共享，普通用户无需（也不能）再装一份到自己的用户目录
+    if !crate::zap::jwt::is_admin(&claims) && payload.pkg_path.starts_with("plugins/") {
+        if let Some(name) = payload.pkg_path.strip_prefix("plugins/") {
+            let sys = std::env::var("ZAP_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"))
+                .join("plugins")
+                .join(name);
+            if sys.is_dir() {
+                return Err(ZapError::New(
+                    -1,
+                    "该插件已由管理员安装到系统目录（全用户共享），无需重复安装".into(),
+                ));
+            }
+        }
+    }
     // 自定义包包含任意脚本，仅管理员可安装
     if payload.source == "custom" {
         require_admin(&claims)?;
@@ -591,6 +628,19 @@ pub async fn install(
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
 
+    // 插件类包：admin 装到系统目录（$ZAP_PATH/plugins），非 admin 装到自己的用户目录
+    // （<home>/.zap/plugins），与「上传插件」同一套隔离；其余分类忽略 level/home。
+    let (plugin_level, plugin_home) = if payload.pkg_path.starts_with("plugins/") {
+        if crate::zap::jwt::is_admin(&claims) {
+            ("system".to_string(), String::new())
+        } else {
+            let (home, _lu) = load_user_home(claims.id as i64).await?;
+            ("user".to_string(), home)
+        }
+    } else {
+        ("system".to_string(), String::new())
+    };
+
     // 注入操作者上下文：面板登录用户与虚拟主机运行模式（固定为独立系统用户）
     let req = Request::AppstoreInstall {
         pkg_path: payload.pkg_path.clone(),
@@ -603,6 +653,8 @@ pub async fn install(
         provision,
         user: Some(claims.sub.clone()),
         run_mode: Some(system_env::VHOST_MODE.to_string()),
+        level: Some(plugin_level),
+        home: Some(plugin_home),
         run_id: run_id.clone(),
     };
     // 编译型任务走并发组：同一时刻只允许一个编译在跑，后到的排队等自动放行
@@ -762,6 +814,18 @@ pub async fn upgrade(
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
 
+    // 插件类包：admin 升级到系统目录，非 admin 升级到自己的用户目录（与安装保持一致）
+    let (plugin_level, plugin_home) = if payload.pkg_path.starts_with("plugins/") {
+        if crate::zap::jwt::is_admin(&claims) {
+            ("system".to_string(), String::new())
+        } else {
+            let (home, _lu) = load_user_home(claims.id as i64).await?;
+            ("user".to_string(), home)
+        }
+    } else {
+        ("system".to_string(), String::new())
+    };
+
     let req = Request::AppstoreUpgrade {
         pkg_path: payload.pkg_path.clone(),
         source: payload.source.clone(),
@@ -774,6 +838,8 @@ pub async fn upgrade(
         provision: load_provision(&payload.pkg_path, payload.instance.as_deref()).await,
         user: Some(claims.sub.clone()),
         run_mode: Some(system_env::VHOST_MODE.to_string()),
+        level: Some(plugin_level),
+        home: Some(plugin_home),
         run_id: run_id.clone(),
     };
     // 升级同样是编译型任务，受同一把"全局只允许一个"的约束（后到的排队）

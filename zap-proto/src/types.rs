@@ -729,6 +729,13 @@ pub enum Request {
         /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
+        /// 插件类包经应用商店安装时的落盘级别：admin → system（$ZAP_PATH/plugins）；
+        /// 非 admin → user（<home>/.zap/plugins）。仅 plugins 分类使用，其余忽略。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        level: Option<String>,
+        /// 安装者面板用户的家目录（level=user 时定位用户级插件目录用）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        home: Option<String>,
         run_id: String,
     },
     /// 卸载包：执行 uninstall.sh 并删除已安装目录
@@ -783,6 +790,12 @@ pub enum Request {
         /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
+        /// 插件类包经应用商店升级时的落盘级别（同 AppstoreInstall.level）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        level: Option<String>,
+        /// 安装者面板用户的家目录（level=user 时定位用户级插件目录用）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        home: Option<String>,
         run_id: String,
     },
     /// 运行自定义脚本（仅限 `{data}/users/<username>/scripts/` 内）
@@ -2004,6 +2017,8 @@ mod tests {
                 provision: None,
                 user: None,
                 run_mode: None,
+                level: None,
+                home: None,
                 run_id: "r1".into(),
             })
             .unwrap(),
@@ -2025,6 +2040,8 @@ mod tests {
                 ),
                 user: None,
                 run_mode: None,
+                level: None,
+                home: None,
                 run_id: "r2".into(),
             })
             .unwrap(),

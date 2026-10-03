@@ -3742,6 +3742,7 @@ export default {
     tabPlugins: '插件',
     multiInstanceHint: '该包已安装多个实例，请在「已安装」中按实例操作',
     tagInstalled: '已安装',
+    tagSystemShared: '系统已装（共享）',
     tagNotInstalled: '未安装',
     tagMultiVersion: '多版本',
     tagCustom: '自定义',
@@ -3919,12 +3920,6 @@ export default {
     unsavedClose: '存在未保存的修改，确定放弃并关闭？',
     unsavedTitle: '未保存',
     discard: '放弃修改',
-  },
-
-  /** 应用市场（reseller / user：仅 Web 应用 + 插件，可按包授权 scope 安装） */
-  appMarket: {
-    title: '应用市场',
-    subtitle: '面向租户的应用目录：仅提供 Web 应用与插件，可按各包的授权范围（scope）安装 / 升级 / 卸载。',
   },
 
   /** 运行日志抽屉（应用商店 / 脚本共用） */

@@ -199,11 +199,13 @@ pub async fn dispatch(req: Request) -> Response {
             provision,
             user,
             run_mode,
+            level,
+            home,
             run_id,
         } => {
             appstore::install(
                 pkg_path, source, repo_id, version, action, options, instance, provision, user,
-                run_mode, run_id,
+                run_mode, level, home, run_id,
             )
             .await
         }
@@ -233,6 +235,8 @@ pub async fn dispatch(req: Request) -> Response {
             provision,
             user,
             run_mode,
+            level,
+            home,
             run_id,
         } => {
             appstore::upgrade(
@@ -247,6 +251,8 @@ pub async fn dispatch(req: Request) -> Response {
                 provision,
                 user,
                 run_mode,
+                level,
+                home,
                 run_id,
             )
             .await

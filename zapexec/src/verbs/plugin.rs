@@ -152,11 +152,17 @@ pub(crate) fn write_install_meta(
 ///
 /// install.sh 每次整目录 `cp` 都会覆盖 manifest，所以必须在脚本 success 后补写（install /
 /// upgrade / 重跑 各路径都调它）。非 `plugins` 类包不走插件引擎，直接跳过。
-pub(crate) fn write_appstore_plugin_source(cat: &str, name: &str, pkg_path: &str) {
+pub(crate) fn write_appstore_plugin_source(
+    cat: &str,
+    name: &str,
+    pkg_path: &str,
+    base: &Path,
+    level: &str,
+) {
     if cat != "plugins" {
         return;
     }
-    let dir = zap_path().join("plugins").join(name);
+    let dir = base.join(name);
     if !dir.is_dir() {
         return;
     }
@@ -165,7 +171,7 @@ pub(crate) fn write_appstore_plugin_source(cat: &str, name: &str, pkg_path: &str
         "appstore",
         pkg_path,
         chrono::Utc::now().timestamp(),
-        "system",
+        level,
     ) {
         warn!("AppStore 插件 {name} 写回安装来源失败: {e}");
     }
@@ -464,6 +470,15 @@ pub async fn plugin_install(
         }
 
         let target = base.join(&effective);
+        // 用户级插件若与系统级同名：系统级已对所有人共享，普通用户无需（也不能）再装一份
+        if level == "user" {
+            let sys = zap_path().join("plugins").join(&effective);
+            if sys.is_dir() {
+                return Err(format!(
+                    "插件 {effective} 已以系统级安装（全用户共享），无需重复安装；如需自定义请联系管理员"
+                ));
+            }
+        }
         if target.exists() {
             if !force {
                 return Err(format!(

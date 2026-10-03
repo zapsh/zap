@@ -102,6 +102,8 @@ export interface AppPackage {
     owner?: string | null
     site_id?: string | number | null
   }>
+  /** 插件去重：系统级已装（全用户共享），普通用户只读、不能再装 */
+  system_shared?: boolean
 }
 
 export interface RunItem {

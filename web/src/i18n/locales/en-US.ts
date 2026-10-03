@@ -3771,6 +3771,7 @@ const enUS: Messages = {
     tabPlugins: 'Plugins',
     multiInstanceHint: 'This package has several instances; operate per instance on the Installed tab',
     tagInstalled: 'Installed',
+    tagSystemShared: 'Installed system-wide (shared)',
     tagNotInstalled: 'Not Installed',
     tagMultiVersion: 'Multi-Version',
     tagCustom: 'Custom',
@@ -3959,13 +3960,6 @@ const enUS: Messages = {
     unsavedClose: 'There are unsaved changes. Discard them and close?',
     unsavedTitle: 'Unsaved',
     discard: 'Discard Changes',
-  },
-
-  /** App Market (reseller / user: only Web apps + plugins, install gated by package scope) */
-  appMarket: {
-    title: 'App Market',
-    subtitle:
-      'Tenant-facing catalog: only Web apps and plugins. Install / upgrade / uninstall are gated by each package\'s authorized scope.',
   },
 
   /** Run log drawer (shared by app store / scripts) */

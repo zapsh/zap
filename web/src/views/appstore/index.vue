@@ -3,10 +3,7 @@
     <!-- 页内导航：应用商店是单一菜单，已安装 / 我的站点应用都在本页切换 -->
     <div class="view-tabs">
       <el-radio-group v-model="activeTab" size="default">
-        <el-radio-button value="store">{{ t('appstore.tabStore') }}</el-radio-button>
-        <el-radio-button value="installed">{{ t('appstore.tabInstalled') }}</el-radio-button>
-        <el-radio-button value="mine">{{ t('appstore.tabMine') }}</el-radio-button>
-        <el-radio-button value="plugins">{{ t('appstore.tabPlugins') }}</el-radio-button>
+        <el-radio-button v-for="tab in tabs" :key="tab.value" :value="tab.value">{{ tab.label }}</el-radio-button>
       </el-radio-group>
       <div class="view-tabs__actions">
         <!-- 任务队列入口：编译/安装是排队的，这里看得到排到哪了 -->
@@ -16,14 +13,14 @@
             {{ activeCount }}
           </el-tag>
         </el-button>
-        <el-button size="small" :icon="Goods" @click="repoDrawerRef?.open('list')">
+        <el-button v-if="isAdmin" size="small" :icon="Goods" @click="repoDrawerRef?.open('list')">
           {{ t('appstore.manageRepos') }}
         </el-button>
         <el-button
+          v-if="isAdmin"
           size="small"
           type="primary"
           :icon="Plus"
-          :disabled="!isAdmin"
           @click="repoDrawerRef?.open('add')"
         >
           {{ t('appstore.addSource') }}
@@ -79,6 +76,18 @@ const packagesRef = ref<InstanceType<typeof AppStorePackages> | null>(null)
 const { t } = useI18n()
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.roles.includes('admin'))
+
+/** 页签：站点应用相关（已安装 / 我的）对全员开放；插件管理全员可见
+ *  —— 系统级插件只读，用户级插件各自管理（上传 / 卸载），由插件页内按 level 二次把关 */
+const tabs = computed(() => {
+  const list = [
+    { value: 'store', label: t('appstore.tabStore') },
+    { value: 'installed', label: t('appstore.tabInstalled') },
+    { value: 'mine', label: t('appstore.tabMine') },
+    { value: 'plugins', label: t('appstore.tabPlugins') },
+  ]
+  return list
+})
 
 /** 当前页签：store=应用商店；installed=已安装实例；mine=我的站点应用；plugins=插件管理 */
 const activeTab = ref<'store' | 'installed' | 'mine' | 'plugins'>('store')

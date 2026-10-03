@@ -304,7 +304,7 @@ pub async fn plugin_uninstall(
     Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
 }
 
-async fn load_user_home(uid: i64) -> Result<(String, String), ZapError> {
+pub(crate) async fn load_user_home(uid: i64) -> Result<(String, String), ZapError> {
     let pool = db::get_db_pool().await;
     let row: Option<(String, String)> =
         sqlx::query_as::<_, (String, String)>("SELECT home_dir, linux_user FROM user WHERE id = ?")

@@ -1615,10 +1615,26 @@ pub async fn install(
     provision: Option<BTreeMap<String, String>>,
     user: Option<String>,
     run_mode: Option<String>,
+    level: Option<String>,
+    home: Option<String>,
     run_id: String,
 ) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let (cat, name) = validate_pkg_path(&pkg_path)?;
+        // 插件类包落盘级别：admin（或未指定）→ 系统目录 $ZAP_PATH/plugins；
+        // 非 admin → 安装者自己的用户目录 <home>/.zap/plugins（与上传插件同款隔离）。
+        // 仅 plugins 分类使用，其余分类忽略。
+        let (plugin_base, plugin_level) = if cat == "plugins" {
+            match level.as_deref() {
+                Some("user") if !home.as_deref().unwrap_or("").is_empty() => (
+                    Path::new(home.as_deref().unwrap()).join(".zap").join("plugins"),
+                    "user".to_string(),
+                ),
+                _ => (zap_path().join("plugins"), "system".to_string()),
+            }
+        } else {
+            (zap_path().join("plugins"), "system".to_string())
+        };
         let pkg_dir = find_package(&pkg_path, &source, repo_id.as_deref())?;
         // 运行身份：webapps 建站包（run_as: user / scope: site）降权为 Linux 账号执行
         let run_as = resolve_run_as(&pkg_dir, &cat, user.as_deref())?;
@@ -1636,6 +1652,8 @@ pub async fn install(
             "provision": provision.clone(),
             "user": user.clone(),
             "run_mode": run_mode.clone(),
+            "level": level.clone(),
+            "home": home.clone(),
         });
         let snapshot = prepare_snapshot(&run_id, &pkg_dir, &spec)?;
         let (script, interpreter) = script_file(&snapshot, "install", "install.sh")?;
@@ -1657,6 +1675,11 @@ pub async fn install(
             "PKG_SRC_PATH".into(),
             pkg_dir.to_string_lossy().into_owned(),
         ));
+        // 插件类包：告诉 install.sh 把插件装到哪个根目录（system = $ZAP_PATH/plugins，
+        // user = <home>/.zap/plugins），确保非 admin 的插件只落进自己的用户目录
+        if cat == "plugins" {
+            env.push(("PLUGIN_BASE".into(), plugin_base.to_string_lossy().into_owned()));
+        }
         if let Some(a) = action.as_deref()
             && !a.is_empty()
         {
@@ -1698,7 +1721,13 @@ pub async fn install(
                     tracing::error!("写入 {done_pkg_path} 安装元数据失败: {e}");
                 }
                 // plugins 类包：install.sh 整目录 cp 会覆盖 manifest，安装成功后补写来源
-                crate::verbs::plugin::write_appstore_plugin_source(&done_cat, &name, &done_pkg_path);
+                crate::verbs::plugin::write_appstore_plugin_source(
+                    &done_cat,
+                    &name,
+                    &done_pkg_path,
+                    &plugin_base,
+                    &plugin_level,
+                );
             }
             cleanup_snapshot(&done_run_id, code);
         });
@@ -1838,10 +1867,24 @@ pub async fn upgrade(
     provision: Option<BTreeMap<String, String>>,
     user: Option<String>,
     run_mode: Option<String>,
+    level: Option<String>,
+    home: Option<String>,
     run_id: String,
 ) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let (cat, name) = validate_pkg_path(&pkg_path)?;
+        // 插件类包落盘级别（同 install）：admin → 系统目录，非 admin → 用户目录
+        let (plugin_base, plugin_level) = if cat == "plugins" {
+            match level.as_deref() {
+                Some("user") if !home.as_deref().unwrap_or("").is_empty() => (
+                    Path::new(home.as_deref().unwrap()).join(".zap").join("plugins"),
+                    "user".to_string(),
+                ),
+                _ => (zap_path().join("plugins"), "system".to_string()),
+            }
+        } else {
+            (zap_path().join("plugins"), "system".to_string())
+        };
         // 按实例定位槽位（站点类在用户私有目录下）；旧布局自动兜底
         let slot = resolve_slot_with_legacy(
             &cat,
@@ -1880,6 +1923,8 @@ pub async fn upgrade(
             "provision": provision.clone(),
             "user": user.clone(),
             "run_mode": run_mode.clone(),
+            "level": level.clone(),
+            "home": home.clone(),
         });
         let snapshot = prepare_snapshot(&run_id, &pkg_dir, &spec)?;
         let mut env = task_env(&snapshot, &app_path, &name, Some(&version), &run_id);
@@ -1891,6 +1936,10 @@ pub async fn upgrade(
             "PKG_SRC_PATH".into(),
             pkg_dir.to_string_lossy().into_owned(),
         ));
+        // 插件类包：升级（含 uninstall→install 兜底）同样要落到正确的根目录
+        if cat == "plugins" {
+            env.push(("PLUGIN_BASE".into(), plugin_base.to_string_lossy().into_owned()));
+        }
         env.push(("APP_OLD_VERSION".into(), old_version.clone()));
         env.push(("APP_INSTANCE".into(), slot.instance.clone()));
         // 站点 / 数据库信息：优先用面板回传的，没有就自己读安装时落盘的 provision.json
@@ -1958,7 +2007,13 @@ pub async fn upgrade(
                     tracing::error!("写入 {done_pkg_path} 升级元数据失败: {e}");
                 }
                 // plugins 类包：升级（uninstall→install 兜底）也会覆盖 manifest，补写来源
-                crate::verbs::plugin::write_appstore_plugin_source(&done_cat, &name, &done_pkg_path);
+                crate::verbs::plugin::write_appstore_plugin_source(
+                    &done_cat,
+                    &name,
+                    &done_pkg_path,
+                    &plugin_base,
+                    &plugin_level,
+                );
             }
             cleanup_snapshot(&done_run_id, code);
         });
@@ -2075,6 +2130,14 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
         let old_version = spec["old_version"].as_str().unwrap_or("").to_string();
         // 运行身份：与首次执行一致（快照里的 app.yaml + run.json 记录的面板用户）
         let cat = pkg_path.split('/').next().unwrap_or("").to_string();
+        // 插件类包重跑也要落到与首次相同的根目录（system / user），从 spec 还原级别
+        let plugin_level = spec["level"].as_str().unwrap_or("system").to_string();
+        let plugin_home = spec["home"].as_str().unwrap_or("").to_string();
+        let plugin_base: PathBuf = if plugin_level == "user" && !plugin_home.is_empty() {
+            Path::new(&plugin_home).join(".zap").join("plugins")
+        } else {
+            zap_path().join("plugins")
+        };
         // 槽位：重跑必须落在与首次相同的实例上（旧布局自动兜底）
         let provision: Option<BTreeMap<String, String>> = spec
             .get("provision")
@@ -2108,6 +2171,10 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
         let provision: Option<BTreeMap<String, String>> =
             serde_json::from_value(spec["provision"].clone()).unwrap_or(None);
         push_provision_env(&mut env, provision.as_ref());
+        // 插件类包：重跑时按首次记录的级别把插件装到对应根目录
+        if cat == "plugins" {
+            env.push(("PLUGIN_BASE".into(), plugin_base.to_string_lossy().into_owned()));
+        }
         let build = build_dir(&new_run_id);
         if let RunAs::User(u) = &run_as {
             prepare_user_run(&mut env, &[app_path.clone(), build], u)?;
@@ -2185,7 +2252,13 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                         };
                         let _ = write_meta(&done_app, &meta);
                         // plugins 类包：重跑 install/升级 同样覆盖 manifest，补写来源
-                        crate::verbs::plugin::write_appstore_plugin_source(&category, &done_name, &pkg_path);
+                        crate::verbs::plugin::write_appstore_plugin_source(
+                            &category,
+                            &done_name,
+                            &pkg_path,
+                            &plugin_base,
+                            &plugin_level,
+                        );
                     }
                     // 成功清掉本次重跑的快照（以及被重跑的那次）；失败留下供继续编辑
                     cleanup_snapshot(&done_run_id, code);
@@ -2222,7 +2295,13 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                         };
                         let _ = write_meta(&done_app, &meta);
                         // plugins 类包：重跑 install/升级 同样覆盖 manifest，补写来源
-                        crate::verbs::plugin::write_appstore_plugin_source(&category, &done_name, &pkg_path);
+                        crate::verbs::plugin::write_appstore_plugin_source(
+                            &category,
+                            &done_name,
+                            &pkg_path,
+                            &plugin_base,
+                            &plugin_level,
+                        );
                     }
                     // 成功清掉本次重跑的快照（以及被重跑的那次）；失败留下供继续编辑
                     cleanup_snapshot(&done_run_id, code);

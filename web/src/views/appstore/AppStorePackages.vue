@@ -35,7 +35,10 @@
             <div class="cell-name">
               <span class="cell-name__title">{{ row.name }}</span>
               <div class="cell-name__tags">
-                <el-tag v-if="row.installed" size="small" type="success" effect="light">{{
+                <el-tag v-if="row.system_shared && !isAdmin" size="small" type="warning" effect="light">{{
+                  t('appstore.tagSystemShared')
+                }}</el-tag>
+                <el-tag v-else-if="row.installed" size="small" type="success" effect="light">{{
                   (row.installed_instances || []).length > 1
                     ? `${t('appstore.tagInstalled')} × ${(row.installed_instances || []).length}`
                     : t('appstore.tagInstalled')
@@ -338,8 +341,23 @@ const CAT_KEY: Record<string, string> = {
   tools: 'catTools',
 }
 const ALL_CATS = Object.keys(CAT_KEY)
+
+/**
+ * 可见分类：
+ * - 显式传了 categories（如市场页只给 webapps+plugins）则用它；
+ * - 否则按角色收敛：admin 看全部；非 admin 给 webapps + plugins。
+ *   插件安装目录由包的 roles 决定：仅声明了 admin 的包 → 系统目录（全用户共享）；
+ *   声明了非 admin 角色的包 → 装到安装者自己的用户目录。故非 admin 也能在商店
+ *   看到/安装插件，只是落到各自用户目录，与「上传插件」同一套隔离。
+ * 再叠加包 app.yaml 的 roles 白名单（canViewPkg）做 scope 门禁。
+ */
+const effectiveCategories = computed<string[] | null>(() => {
+  if (props.categories && props.categories.length) return props.categories
+  return isAdmin.value ? null : ['webapps', 'plugins']
+})
+
 const visibleCategories = computed(() => {
-  const cats = props.categories && props.categories.length ? props.categories : ALL_CATS
+  const cats = effectiveCategories.value ?? ALL_CATS
   return cats.map((v) => ({ value: v, label: t(`appstore.${CAT_KEY[v]}`) }))
 })
 
@@ -359,6 +377,8 @@ function canViewPkg(pkg: AppPackage): boolean {
  * custom 包仅管理员；官方包按 roles 命中白名单方可操作。后端同逻辑二次校验。
  */
 function canOperatePkg(pkg: AppPackage): boolean {
+  // 系统级已装的插件对普通用户只读：不能安装 / 升级 / 卸载（共享，由管理员管理）
+  if (pkg.system_shared && !isAdmin.value) return false
   if (pkg.source === 'custom') return isAdmin.value
   return canViewPkg(pkg)
 }
@@ -373,9 +393,9 @@ const keyword = ref('')
 const filteredPackages = computed(() => {
   // 先按包角色白名单过滤（admin 恒可见；roles 空 = 仅 admin；命中角色也可见）
   let list = packages.value.filter(canViewPkg)
-  // 组件限定分类（市场页只给 webapps + plugins）
-  if (props.categories && props.categories.length) {
-    list = list.filter((p) => props.categories!.includes(p.category))
+  // 组件限定分类（admin 全量；非 admin 仅 webapps + plugins）
+  if (effectiveCategories.value && effectiveCategories.value.length) {
+    list = list.filter((p) => effectiveCategories.value!.includes(p.category))
   }
   if (activeCategory.value !== 'all') {
     list = list.filter((p) => p.category === activeCategory.value)
