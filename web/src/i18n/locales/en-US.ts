@@ -3961,6 +3961,13 @@ const enUS: Messages = {
     discard: 'Discard Changes',
   },
 
+  /** App Market (reseller / user: only Web apps + plugins, install gated by package scope) */
+  appMarket: {
+    title: 'App Market',
+    subtitle:
+      'Tenant-facing catalog: only Web apps and plugins. Install / upgrade / uninstall are gated by each package\'s authorized scope.',
+  },
+
   /** Run log drawer (shared by app store / scripts) */
   runLogDrawer: {
     title: 'Run Log',

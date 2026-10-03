@@ -335,7 +335,7 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
         "menu",
         "/appstore",
         "Layout",
-        R_ALL,
+        R_ADMIN,
         7,
     )
     .icon("material-symbols:storefront")
@@ -347,11 +347,37 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
         "menu",
         "index",
         "appstore/index",
-        R_ALL,
+        R_ADMIN,
         1,
     )
     .parent("appstore")
     .icon("material-symbols:storefront")
+    .affix(),
+    // ── 应用市场（仅非 admin：user / reseller / demo 可见；admin 不可见）────
+    // 只暴露 Web 应用 + 插件两类；安装/升级/卸载按包 app.yaml 的 roles 白名单（scope）门禁。
+    MenuSeed::new(
+        "app-market",
+        "应用市场",
+        "menu",
+        "/appstore/market",
+        "Layout",
+        "user,reseller,demo",
+        7,
+    )
+    .icon("material-symbols:shopping-bag")
+    .redirect("/appstore/market/index")
+    .affix(),
+    MenuSeed::new(
+        "app-market-index",
+        "应用市场",
+        "menu",
+        "index",
+        "appstore/market",
+        "user,reseller,demo",
+        1,
+    )
+    .parent("app-market")
+    .icon("material-symbols:shopping-bag")
     .affix(),
     // 已安装应用改成应用商店页内的 nav pill，入口隐藏（路由仍可达）
     MenuSeed::new(
@@ -360,7 +386,7 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
         "menu",
         "installed",
         "appstore/installed",
-        R_ADMIN_USER_RESELLER,
+        R_ADMIN,
         2,
     )
     .parent("appstore")
@@ -987,20 +1013,23 @@ mod tests {
             .unwrap()
         }
         let admin = grants(&pool, "admin").await;
-        // 管理员拿到全部入口（含「客户管理」，现 admin / reseller 都可见）
-        let expected: Vec<String> = all_seeds().map(|s| s.name.to_string()).collect();
+        // 管理员拿到「roles 含 admin」的全部入口；应用市场特意排除 admin（仅非 admin 可见）
+        let expected_admin: Vec<String> = all_seeds()
+            .filter(|s| s.roles.split(',').any(|r| r.trim() == "admin"))
+            .map(|s| s.name.to_string())
+            .collect();
         assert_eq!(
             admin.iter().collect::<std::collections::BTreeSet<_>>(),
-            expected.iter().collect::<std::collections::BTreeSet<_>>(),
+            expected_admin.iter().collect::<std::collections::BTreeSet<_>>(),
             "管理员可见菜单与种子不一致"
         );
-        // demo 是最小集合：仪表盘 / 终端 / 文件 / 应用商店 / 计划任务 / 文档 / About ZAP
+        // demo 是最小集合：仪表盘 / 终端 / 文件 / 应用市场 / 计划任务 / 文档 / About ZAP
         let demo = grants(&pool, "demo").await;
         for must in [
             "dashboard",
             "terminal-index",
             "files-index",
-            "appstore-index",
+            "app-market-index",
             "crontab-index",
             "docs-faq",
         ] {
@@ -1022,14 +1051,14 @@ mod tests {
         // 与「旧库最终态」对齐的可见条数（防止重构悄悄改了可见范围）
         assert_eq!(demo.len(), 15, "demo 可见菜单数变化");
         let reseller = grants(&pool, "reseller").await;
-        assert_eq!(reseller.len(), 29, "reseller 可见菜单数变化");
+        assert_eq!(reseller.len(), 28, "reseller 可见菜单数变化");
         // 客户管理（admin / reseller 都可见）
         assert!(reseller.iter().any(|n| n == "reseller-users"));
         assert!(admin.iter().any(|n| n == "reseller-users"));
 
         // 自动化脚本是 admin 专属
         let user = grants(&pool, "user").await;
-        assert_eq!(user.len(), 31, "user 可见菜单数变化");
+        assert_eq!(user.len(), 30, "user 可见菜单数变化");
         assert!(
             !user.iter().any(|n| n == "automation-scripts"),
             "自动化脚本必须仅 admin 可见"

@@ -3921,6 +3921,12 @@ export default {
     discard: '放弃修改',
   },
 
+  /** 应用市场（reseller / user：仅 Web 应用 + 插件，可按包授权 scope 安装） */
+  appMarket: {
+    title: '应用市场',
+    subtitle: '面向租户的应用目录：仅提供 Web 应用与插件，可按各包的授权范围（scope）安装 / 升级 / 卸载。',
+  },
+
   /** 运行日志抽屉（应用商店 / 脚本共用） */
   runLogDrawer: {
     title: '运行日志',

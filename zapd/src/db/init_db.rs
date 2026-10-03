@@ -748,6 +748,57 @@ async fn sync_seed_menus() {
         info!("补种菜单 {} 条，同步授权", added.len());
         menu_seed::seed_role_menus(pool, &added).await;
     }
+
+    // 核心菜单（应用商店家族）的可见角色随种子收敛：老库里这些系统菜单的
+    // `roles` 字段与 `role_menus` 授权也同步成种子值（如应用商店收紧为仅 admin、
+    // 应用市场仅非 admin），否则「应用商店仍对全员可见」会与需求相悖。
+    // 只针对系统核心菜单，不动管理员自建 / 改过的其它菜单（先清后插，幂等）。
+    const CORE_SYNC_MENUS: &[&str] = &[
+        "appstore",
+        "appstore-index",
+        "installed",
+        "app-market",
+        "app-market-index",
+    ];
+    for seed in menu_seed::all_seeds() {
+        if !CORE_SYNC_MENUS.contains(&seed.name) {
+            continue;
+        }
+        let menu_id = ids
+            .get(seed.name)
+            .copied()
+            .or_else(|| added.get(seed.name).copied());
+        let Some(menu_id) = menu_id else {
+            continue;
+        };
+        // 收敛 roles 字段（标注）
+        let _ = sqlx::query("UPDATE menus SET roles = ? WHERE id = ? AND roles <> ?")
+            .bind(seed.roles)
+            .bind(menu_id)
+            .bind(seed.roles)
+            .execute(pool)
+            .await;
+        // 重新派生 role_menus，使其与种子 roles 完全一致（先清后插）
+        let _ = sqlx::query("DELETE FROM role_menus WHERE menu_id = ?")
+            .bind(menu_id)
+            .execute(pool)
+            .await;
+        for role in seed
+            .roles
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO role_menus (role_id, menu_id) \
+                 SELECT r.id, ? FROM roles r WHERE r.role_key = ?",
+            )
+            .bind(menu_id)
+            .bind(role)
+            .execute(pool)
+            .await;
+        }
+    }
 }
 
 /// 建表 + 播种菜单（仅新建库）。
