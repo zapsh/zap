@@ -78,9 +78,7 @@ pub(super) fn find_nginx_conf_file() -> Option<PathBuf> {
         "/etc/nginx/nginx.conf",
         "/usr/local/nginx/conf/nginx.conf",
         "/usr/local/openresty/nginx/conf/nginx.conf",
-        "/www/server/nginx/conf/nginx.conf",
         "/opt/nginx/conf/nginx.conf",
-        "/usr/local/etc/nginx/nginx.conf",
     ] {
         cands.push(PathBuf::from(p));
     }
@@ -804,7 +802,9 @@ fn render_security(
     site_id: i64,
     sec: Option<&SiteSecuritySpec>,
     waf_ready: bool,
-    log_dir: Option<&str>,
+    // 站点独立 WAF 审计日志的**完整文件路径**（来自 VhostRenderSpec.waf_log，
+    // 形如 {log_root}/waf.log）。None = 未规划日志目录，不渲染 SecAuditLog。
+    waf_log_path: Option<&str>,
     dry_run_ok: bool,
 ) -> String {
     let Some(s) = sec else {
@@ -831,18 +831,16 @@ fn render_security(
             // 0 / 其它：跟随全局 modsecurity.conf 的形态，不输出引擎指令
             _ => {}
         }
-        // 站点独立审计日志：落到站点日志目录下的 waf.log，纳入面板轮转/查看/清空
-        // （kind = "waf"）。只审计「相关」请求，避免高流量站点被日志拖垮。
+        // 站点独立审计日志：写入 {log_root}/waf.log（由调用方算好的完整路径，
+        // 即 VhostRenderSpec.waf_log），纳入面板轮转/查看/清空（kind = "waf"）。
+        // 只审计「相关」请求，避免高流量站点被日志拖垮。
         if s.waf_audit {
-            if let Some(dir) = log_dir.map(str::trim).filter(|d| !d.is_empty()) {
+            if let Some(p) = waf_log_path.map(str::trim).filter(|d| !d.is_empty()) {
                 rules.push_str("SecAuditEngine RelevantOnly\n");
                 rules.push_str("SecAuditLogRelevantStatus \"^(?:5|4(?!04))\"\n");
                 rules.push_str("SecAuditLogType Serial\n");
                 rules.push_str("SecAuditLogParts ABIJDEFHZ\n");
-                rules.push_str(&format!(
-                    "SecAuditLog {}/waf.log\n",
-                    dir.trim_end_matches('/')
-                ));
+                rules.push_str(&format!("SecAuditLog {}\n", p.trim_end_matches('/')));
             }
         }
         let custom = s.waf_rules.trim();
@@ -3073,14 +3071,21 @@ mod tests {
         assert!(!render_location_body(&l, 0, 1, false, true).contains("modsecurity"));
     }
 
-    /// 站点独立审计日志：有 log_root 时渲染 SecAuditLog 到 <log_root>/waf.log
+    /// 站点独立审计日志：传入的 waf_log_path 已是完整文件路径（{log_root}/waf.log），
+    /// 直接作为 SecAuditLog，不再二次拼接（否则会变成 waf.log/waf.log）。
     #[test]
     fn waf_audit_log_is_per_site() {
         let sec = SiteSecuritySpec {
             waf_enable: true,
             ..Default::default()
         };
-        let s = render_security(7, Some(&sec), true, Some("/home/u/logs/site1"), true);
+        let s = render_security(
+            7,
+            Some(&sec),
+            true,
+            Some("/home/u/logs/site1/waf.log"),
+            true,
+        );
         assert!(s.contains("SecAuditEngine RelevantOnly"), "{s}");
         assert!(s.contains("SecAuditLog /home/u/logs/site1/waf.log"), "{s}");
         // 没有站点日志目录（未规划 log_root）时不落审计日志，避免写到不可控路径
