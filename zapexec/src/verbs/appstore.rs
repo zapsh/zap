@@ -1621,20 +1621,9 @@ pub async fn install(
 ) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let (cat, name) = validate_pkg_path(&pkg_path)?;
-        // 插件类包落盘级别：admin（或未指定）→ 系统目录 $ZAP_PATH/plugins；
-        // 非 admin → 安装者自己的用户目录 <home>/.zap/plugins（与上传插件同款隔离）。
-        // 仅 plugins 分类使用，其余分类忽略。
-        let (plugin_base, plugin_level) = if cat == "plugins" {
-            match level.as_deref() {
-                Some("user") if !home.as_deref().unwrap_or("").is_empty() => (
-                    Path::new(home.as_deref().unwrap()).join(".zap").join("plugins"),
-                    "user".to_string(),
-                ),
-                _ => (zap_path().join("plugins"), "system".to_string()),
-            }
-        } else {
-            (zap_path().join("plugins"), "system".to_string())
-        };
+        // 插件类包只装系统目录 $ZAP_PATH/plugins（仅管理员可装），不再落到任何用户家目录；
+        // 与「上传插件」统一，用户只能使用、不能自行安装。
+        let (plugin_base, plugin_level) = (zap_path().join("plugins"), "system".to_string());
         let pkg_dir = find_package(&pkg_path, &source, repo_id.as_deref())?;
         // 运行身份：webapps 建站包（run_as: user / scope: site）降权为 Linux 账号执行
         let run_as = resolve_run_as(&pkg_dir, &cat, user.as_deref())?;
@@ -1675,8 +1664,7 @@ pub async fn install(
             "PKG_SRC_PATH".into(),
             pkg_dir.to_string_lossy().into_owned(),
         ));
-        // 插件类包：告诉 install.sh 把插件装到哪个根目录（system = $ZAP_PATH/plugins，
-        // user = <home>/.zap/plugins），确保非 admin 的插件只落进自己的用户目录
+        // 插件类包：告诉 install.sh 把插件装到系统目录 $ZAP_PATH/plugins（仅系统级）
         if cat == "plugins" {
             env.push(("PLUGIN_BASE".into(), plugin_base.to_string_lossy().into_owned()));
         }
@@ -2130,14 +2118,11 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
         let old_version = spec["old_version"].as_str().unwrap_or("").to_string();
         // 运行身份：与首次执行一致（快照里的 app.yaml + run.json 记录的面板用户）
         let cat = pkg_path.split('/').next().unwrap_or("").to_string();
-        // 插件类包重跑也要落到与首次相同的根目录（system / user），从 spec 还原级别
+        // 插件类包重跑也落到系统目录 $ZAP_PATH/plugins（与首次一致，仅系统级）
+        let plugin_base: PathBuf = zap_path().join("plugins");
+        // 仅用于写回 spec（前端重跑展示），实际落盘级别已固定为 system
         let plugin_level = spec["level"].as_str().unwrap_or("system").to_string();
-        let plugin_home = spec["home"].as_str().unwrap_or("").to_string();
-        let plugin_base: PathBuf = if plugin_level == "user" && !plugin_home.is_empty() {
-            Path::new(&plugin_home).join(".zap").join("plugins")
-        } else {
-            zap_path().join("plugins")
-        };
+        let _plugin_home = spec["home"].as_str().unwrap_or("").to_string();
         // 槽位：重跑必须落在与首次相同的实例上（旧布局自动兜底）
         let provision: Option<BTreeMap<String, String>> = spec
             .get("provision")

@@ -455,7 +455,7 @@ pub async fn packages(claims: ValidatedClaims) -> ZapJsonResult {
     let owner = if is_admin { None } else { Some(claims.sub.clone()) };
     let pkgs = ast::scan_packages().await;
     let installed = ast::scan_installed(owner).await;
-    // 插件安装态（系统级 + 当前用户级）并入 installed_map：让商店标记「已安装」并做去重；
+    // 插件安装态（仅系统级）并入 installed_map：让商店标记「已安装」并做去重；
     // 但 `installed` 本身仍只含站点类（webapps），不影响「已安装实例」页的展示。
     let home = load_user_home(claims.id as i64)
         .await
@@ -628,18 +628,14 @@ pub async fn install(
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
 
-    // 插件类包：admin 装到系统目录（$ZAP_PATH/plugins），非 admin 装到自己的用户目录
-    // （<home>/.zap/plugins），与「上传插件」同一套隔离；其余分类忽略 level/home。
-    let (plugin_level, plugin_home) = if payload.pkg_path.starts_with("plugins/") {
-        if crate::zap::jwt::is_admin(&claims) {
-            ("system".to_string(), String::new())
-        } else {
-            let (home, _lu) = load_user_home(claims.id as i64).await?;
-            ("user".to_string(), home)
-        }
-    } else {
-        ("system".to_string(), String::new())
-    };
+    // 插件类包只由管理员装到系统目录 $ZAP_PATH/plugins；普通用户只能使用，不能自行安装。
+    if payload.pkg_path.starts_with("plugins/") && !crate::zap::jwt::is_admin(&claims) {
+        return Err(ZapError::New(
+            -1,
+            "插件仅管理员可安装（装到系统目录、全用户共享）；普通用户只能使用已安装的插件".into(),
+        ));
+    }
+    let (plugin_level, plugin_home) = ("system".to_string(), String::new());
 
     // 注入操作者上下文：面板登录用户与虚拟主机运行模式（固定为独立系统用户）
     let req = Request::AppstoreInstall {

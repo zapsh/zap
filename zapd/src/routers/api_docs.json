@@ -214,7 +214,7 @@
       "name": "插件 Plugin",
       "description": "Lua 插件的安装 / 卸载、列表与运行；权限点 plugin:view / run / install / uninstall",
       "endpoints": [
-        { "method": "GET", "path": "/plugin/list", "summary": "插件列表（系统级 + 当前用户级）", "params": [
+        { "method": "GET", "path": "/plugin/list", "summary": "插件列表（统一在系统级 $ZAP_PATH/plugins）", "params": [
           { "name": "slot", "type": "string", "required": false, "desc": "按 ui.placement 槽位过滤，如 site.detail；留空返回全部" },
           { "name": "scope", "type": "string", "required": false, "desc": "按运行作用域过滤：site / system" }
         ] },

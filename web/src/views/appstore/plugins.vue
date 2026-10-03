@@ -17,11 +17,7 @@
       </div>
     </el-card>
 
-    <!-- 列表页签：全部插件（系统级 + 我的） / 我的插件（仅用户级） -->
-    <el-radio-group v-model="activeTab" size="small" class="plugin-tabs">
-      <el-radio-button value="all">{{ t('devPlugins.tabAll') }}</el-radio-button>
-      <el-radio-button value="mine">{{ t('devPlugins.tabMine') }}</el-radio-button>
-    </el-radio-group>
+    <!-- 插件统一装在系统目录，所有用户共享；不再区分「我的」 -->
 
     <!-- 列表 -->
     <el-card shadow="never" class="table-card">
@@ -39,14 +35,9 @@
 
         <el-table-column :label="t('devPlugins.colLevel')" width="120">
           <template #default="{ row }">
-            <el-tooltip
-              :content="
-                row.level === 'system' ? t('devPlugins.levelSystemTip') : t('devPlugins.levelUserTip')
-              "
-              placement="top"
-            >
-              <el-tag :type="row.level === 'system' ? 'warning' : 'info'" effect="plain" size="small">
-                {{ row.level === 'system' ? t('devPlugins.levelSystem') : t('devPlugins.levelUser') }}
+            <el-tooltip :content="t('devPlugins.levelSystemTip')" placement="top">
+              <el-tag type="warning" effect="plain" size="small">
+                {{ t('devPlugins.levelSystem') }}
               </el-tag>
             </el-tooltip>
           </template>
@@ -102,10 +93,7 @@
     <el-dialog v-model="uploadVisible" :title="t('devPlugins.uploadTitle')" width="520px">
       <el-form label-width="110px">
         <el-form-item :label="t('devPlugins.uploadLevel')">
-          <el-radio-group v-model="uploadForm.level">
-            <el-radio value="user">{{ t('devPlugins.levelUser') }}</el-radio>
-            <el-radio value="system" :disabled="!isAdmin">{{ t('devPlugins.levelSystem') }}</el-radio>
-          </el-radio-group>
+          <span class="form-tip">{{ t('devPlugins.levelSystemTip') }}</span>
           <div v-if="!isAdmin" class="form-tip">{{ t('devPlugins.adminOnly') }}</div>
         </el-form-item>
         <el-form-item :label="t('devPlugins.uploadName')">
@@ -161,11 +149,8 @@ const rows = ref<PluginInfo[]>([])
 const loading = ref(false)
 const submitting = ref(false)
 
-// 列表页签：全部（系统级 + 用户级合并）/ 我的插件（仅当前用户级）
-const activeTab = ref<'all' | 'mine'>('all')
-const visibleRows = computed(() =>
-  activeTab.value === 'mine' ? rows.value.filter((r) => r.level === 'user') : rows.value,
-)
+// 插件统一装在系统目录，所有用户共享；直接展示全部
+const visibleRows = computed(() => rows.value)
 
 // 系统级插件会以 root 身份运行，只有 admin 能装 / 卸；前端先拦一道，后端再兜一次
 const isAdmin = computed(() => (userStore.roles || []).includes('admin'))
@@ -202,14 +187,14 @@ function fmtTime(ts: number) {
 const uploadVisible = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const uploadForm = ref<{
-  level: 'system' | 'user'
+  level: 'system'
   force: boolean
   name: string
   file: File | null
-}>({ level: 'user', force: false, name: '', file: null })
+}>({ level: 'system', force: false, name: '', file: null })
 
 function openUpload() {
-  uploadForm.value = { level: 'user', force: false, name: '', file: null }
+  uploadForm.value = { level: 'system', force: false, name: '', file: null }
   uploadVisible.value = true
 }
 
@@ -223,7 +208,7 @@ async function submitUpload() {
     ElMessage.warning(t('devPlugins.uploadNoFile'))
     return
   }
-  if (uploadForm.value.level === 'system' && !isAdmin.value) {
+  if (!isAdmin.value) {
     ElMessage.warning(t('devPlugins.adminOnly'))
     return
   }
@@ -261,7 +246,7 @@ async function onUninstall(row: PluginInfo) {
     return
   }
   try {
-    await pluginUninstall({ name: row.name, level: row.level || 'user' })
+    await pluginUninstall({ name: row.name, level: row.level || 'system' })
     ElMessage.success(t('devPlugins.uninstallOk'))
     await load()
   } catch (e: any) {

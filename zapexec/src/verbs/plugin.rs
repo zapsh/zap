@@ -1,7 +1,7 @@
 //! 插件运行时（mlua 嵌入 zapexec）。
 //!
-//! 插件是放在 `$ZAP_PATH/plugins/<name>/`（系统级）或 `$HOME/.zap/plugins/<name>/`（用户级）
-//! 的目录，含 `manifest.yaml` + `main.lua`。`main.lua` 定义 `on_run(ctx)`，通过全局表 `zap`
+//! 插件只装在 `$ZAP_PATH/plugins/<name>/`（系统级，仅管理员可安装）。普通用户只能「使用」插件
+//! （运行 / 查看界面），不能自行安装，也不能再把插件放进自己的家目录。`main.lua` 定义 `on_run(ctx)`，通过全局表 `zap`
 //! 调用受限能力：
 //!   - `zap.log(msg)`                   打印日志（回传前端）
 //!   - `zap.option(name)`               读取运行选项
@@ -21,10 +21,11 @@
 //! 安全边界：
 //!   - 插件只能声明结构化 UI（manifest），不能注入前端代码；
 //!   - 执行身份由 scope 决定：scope=site 降到站点账号；scope=user 降到调用方面板用户的 Linux 账号；
-//!     scope=system 才以 root 执行；
-//!   - **用户级插件不允许 `scope: system`**：否则普通用户往 `~/.zap/plugins` 放一个
-//!     插件就能以 root 执行任意命令（提权）。`scope=user` 两个级别都允许，但运行时始终降到调用方用户——
-//!     即使是管理员安装的系统级插件，被普通用户触发时也只拥有触发者自己的权限，不会提权。
+//!     scope=system 才以 root 执行（仅管理员安装的插件才能声明）；
+//!   - 插件统一由管理员装进 `$ZAP_PATH/plugins`，运行时 `scope` 只决定降到哪个身份，
+//!     不跨出插件目录、不拿比声明更高的权限；
+//!   - 插件子进程套用资源笼子（`resource::TaskResource`：rlimit + NO_NEW_PRIVS + 可选 cgroup），
+//!     防 fork 炸弹 / 写满磁盘 / 吃满 CPU；同步运行另有墙钟超时兜底。
 //!   - 插件名只允许 `[A-Za-z0-9_-]`，目录越界即拒绝。
 
 use std::collections::HashMap;
@@ -44,6 +45,14 @@ fn zap_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"))
 }
+
+/// 同步插件运行的墙钟超时（秒）：超时后放弃等待并杀掉子进程（组）。
+/// 资源笼子的 `RLIMIT_CPU` 是兜底，这里防止请求线程被一个卡住的插件永久占住。
+/// 长任务请改用 `async: true` 的插件（由前端取消，不占同步线程）。
+const PLUGIN_SYNC_TIMEOUT_SECS: u64 = 1800;
+
+/// 资源笼子 run_id 用的进程内自增序号，保证每次 `zap.run` 的 cgroup 叶子目录不重名。
+static PLUGIN_RES_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn is_plugin_name(s: &str) -> bool {
     !s.is_empty()
@@ -67,12 +76,12 @@ fn read_manifest(dir: &Path) -> Result<serde_yaml::Value, String> {
     Err("未找到 manifest.yaml".into())
 }
 
-/// 插件的两级安装位置：系统级（`system`）与用户级（`user`）。
-fn plugin_base(level: &str, home: &str) -> Result<PathBuf, String> {
+/// 插件只装在系统级目录 `$ZAP_PATH/plugins`（`system`），仅管理员可写、所有用户共享。
+/// 已移除用户级（`~/.zap/plugins`）：避免普通用户自行放置插件并以 root 执行。
+fn plugin_base(level: &str, _home: &str) -> Result<PathBuf, String> {
     match level {
         "system" => Ok(zap_path().join("plugins")),
-        "user" => Ok(Path::new(home).join(".zap").join("plugins")),
-        other => Err(format!("未知的插件安装级别: {other}（应为 system 或 user）")),
+        other => Err(format!("未知的插件安装级别: {other}（已废弃用户级，仅支持 system）")),
     }
 }
 
@@ -316,7 +325,7 @@ pub async fn plugin_ui(_actor: String, home: String, name: String, level: String
     }
 }
 
-/// 列出插件（系统级 + 当前用户级），按 placement 槽位 / scope 过滤。
+/// 列出插件（统一在系统级 `$ZAP_PATH/plugins`），按 placement 槽位 / scope 过滤。
 pub async fn plugin_list(
     _actor: String,
     home: String,
@@ -324,11 +333,8 @@ pub async fn plugin_list(
     scope: Option<String>,
 ) -> Response {
     let zap = zap_path();
-    // 用户级插件目录固定为 <home>/.zap/plugins；系统级为 <zap>/plugins
-    let bases: Vec<(PathBuf, &str)> = vec![
-        (zap.join("plugins"), "system"),
-        (Path::new(&home).join(".zap").join("plugins"), "user"),
-    ];
+    // 插件只装在系统级目录，所有用户共享；不再扫描任何用户家目录
+    let bases: Vec<(PathBuf, &str)> = vec![(zap.join("plugins"), "system")];
     info!(
         "plugin_list: home={home:?} slot={slot:?} scope={scope:?} zap={}",
         zap.display()
@@ -390,11 +396,10 @@ pub async fn plugin_list(
 /// 安装插件：`source` 目前仅支持 `archive`（已落盘的 zip / tar.gz 包，由面板上传而来）。
 ///
 /// 流程：解包到临时目录 → 定位插件根 → 校验 manifest.yaml + main.lua →
-/// 落地到 `<base>/<name>` → 把来源 / 安装时间写回 manifest.yaml → 放开读权限
-/// （用户级插件由站点账号读取）。
+/// 落地到 `<base>/<name>` → 把来源 / 安装时间写回 manifest.yaml → 放开读权限。
 ///
-/// 不写任何注册表 / 独立 Meta 文件：列表靠扫描目录 + 读 manifest.yaml 里的 `zap_install`，
-/// 用户插件由用户自己管理。
+/// 不写任何注册表 / 独立 Meta 文件：列表靠扫描系统目录 + 读 manifest.yaml 里的 `zap_install`。
+/// 插件只装在系统级目录（`$ZAP_PATH/plugins`），仅管理员可安装，普通用户只能使用。
 pub async fn plugin_install(
     _actor: String,
     home: String,
@@ -433,13 +438,6 @@ pub async fn plugin_install(
         if m.get("ui").and_then(|u| u.get("placement")).is_none() {
             return Err("manifest 缺少 ui.placement，无法在前端呈现入口".into());
         }
-        // 用户级插件禁止 scope=system：否则等于把 root 执行权发给普通用户
-        if level == "user" && manifest_str(&m, "scope").unwrap_or("system") == "system" {
-            return Err(
-                "用户级插件不允许 scope: system（会以 root 执行），请改为 scope: site 或 scope: user"
-                    .into(),
-            );
-        }
         // 校验 scope 取值，避免未知值被静默当成 root 执行
         let scope_decl = manifest_str(&m, "scope").unwrap_or("system");
         if scope_decl != "site" && scope_decl != "user" && scope_decl != "system" {
@@ -470,15 +468,6 @@ pub async fn plugin_install(
         }
 
         let target = base.join(&effective);
-        // 用户级插件若与系统级同名：系统级已对所有人共享，普通用户无需（也不能）再装一份
-        if level == "user" {
-            let sys = zap_path().join("plugins").join(&effective);
-            if sys.is_dir() {
-                return Err(format!(
-                    "插件 {effective} 已以系统级安装（全用户共享），无需重复安装；如需自定义请联系管理员"
-                ));
-            }
-        }
         if target.exists() {
             if !force {
                 return Err(format!(
@@ -720,12 +709,8 @@ pub async fn plugin_run(
         return Response::err(-1, "非法 action（只允许字母数字与下划线，≤32 字符）");
     }
     let zap = zap_path();
-    let home_path = Path::new(&home);
-    // 用户级优先：同名插件用户自己的版本覆盖系统级
-    let candidates: [(PathBuf, &str); 2] = [
-        (home_path.join(".zap").join("plugins").join(&name), "user"),
-        (zap.join("plugins").join(&name), "system"),
-    ];
+    // 插件只装在系统级目录，所有用户共享
+    let candidates: [(PathBuf, &str); 1] = [(zap.join("plugins").join(&name), "system")];
     let (dir, level) = match candidates.iter().find(|(p, _)| p.is_dir()) {
         Some((p, l)) => (p.clone(), *l),
         None => return Response::err(-1, format!("插件不存在: {name}")),
@@ -735,14 +720,6 @@ pub async fn plugin_run(
         Err(e) => return Response::err(-1, e),
     };
     let declared = manifest_str(&manifest, "scope").unwrap_or("system");
-    // 用户级插件禁止以 root 运行，否则普通用户放个插件就能拿到 root 执行权
-    if level == "user" && declared == "system" {
-        return Response::err(
-            -1,
-            "用户级插件不允许 scope: system（会以 root 执行），请改为 scope: site 或 scope: user"
-                .to_string(),
-        );
-    }
     let scope = declared.to_string();
     let (run_user, run_root) = match scope.as_str() {
         "site" => match (site_root.clone(), site_linux_user.clone()) {
@@ -862,17 +839,47 @@ pub async fn plugin_run(
         options,
         action,
     };
-    let out = tokio::task::spawn_blocking(move || -> Result<String, String> {
-        run_lua(
-            &code,
-            &ctx,
-            None,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(std::sync::Mutex::new(None)),
-        )
-    })
-    .await
-    .unwrap_or_else(|e| Err(format!("插件执行线程崩溃: {e}")));
+    // 同步运行套一层墙钟超时：超时则置取消标志，看门狗杀掉子进程（组），请求不再被永久占住。
+    let cancel = Arc::new(AtomicBool::new(false));
+    let child_pid = Arc::new(std::sync::Mutex::new(None::<(u32, bool)>));
+    let cancel_w = cancel.clone();
+    let child_pid_w = child_pid.clone();
+    std::thread::spawn(move || loop {
+        if cancel_w.load(Ordering::SeqCst) {
+            if let Some((pid, session_leader)) = child_pid_w.lock().unwrap().take() {
+                unsafe {
+                    if session_leader {
+                        libc::kill(-(pid as i32), libc::SIGKILL);
+                    } else {
+                        libc::kill(pid as i32, libc::SIGKILL);
+                    }
+                }
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    });
+    let cancel_run = cancel.clone();
+    let child_pid_run = child_pid.clone();
+    let out = tokio::time::timeout(
+        Duration::from_secs(PLUGIN_SYNC_TIMEOUT_SECS),
+        tokio::task::spawn_blocking(move || -> Result<String, String> {
+            run_lua(&code, &ctx, None, cancel_run, child_pid_run)
+        }),
+    )
+    .await;
+    let out = match out {
+        Ok(join) => join.unwrap_or_else(|e| Err(format!("插件执行线程崩溃: {e}"))),
+        Err(_) => {
+            cancel.store(true, Ordering::SeqCst);
+            // 给看门狗一点时间杀掉子进程（组），避免孤儿进程残留
+            std::thread::sleep(Duration::from_millis(300));
+            Err(format!(
+                "插件同步执行超过 {} 秒被终止（长任务请改用 async 插件）",
+                PLUGIN_SYNC_TIMEOUT_SECS
+            ))
+        }
+    };
 
     match out {
         Ok(log) => Response::ok("插件执行完成", Some(json!({ "log": log }))),
@@ -903,11 +910,10 @@ fn sandbox_libs() -> mlua::StdLib {
 }
 
 /// 自动加载的公共函数库目录（按此顺序，后者可覆盖前者）：
-/// 系统级 → 用户级 → 插件自带的 `lib/`。
-fn shared_lib_dirs(home: &str, plugin_dir: &Path) -> Vec<PathBuf> {
+/// 系统级 → 插件自带的 `lib/`。
+fn shared_lib_dirs(_home: &str, plugin_dir: &Path) -> Vec<PathBuf> {
     vec![
         zap_path().join("data/plugins/_lib"),
-        Path::new(home).join(".zap").join("plugins").join("_lib"),
         plugin_dir.join("lib"),
     ]
 }
@@ -1228,7 +1234,7 @@ fn run_lua(
         .set("zap", zap_tbl)
         .map_err(|e| format!("注入 zap 失败: {e}"))?;
 
-    // 自动加载公共函数库（系统级 → 用户级 → 插件自带 lib/），先于 main.lua
+    // 自动加载公共函数库（系统级 → 插件自带 lib/），先于 main.lua
     for dir in shared_lib_dirs(&ctx.home, &ctx.plugin_dir) {
         if let Err(e) = load_lua_dir(&lua, &dir) {
             return Err(format!("加载公共函数库 {} 失败: {e}", dir.display()));
@@ -1263,7 +1269,7 @@ fn run_lua(
 /// 把一个目录下的 `*.lua` 按文件名顺序加载进沙箱（公共函数库）。
 fn load_lua_dir(lua: &mlua::Lua, dir: &Path) -> Result<(), String> {
     let Ok(rd) = std::fs::read_dir(dir) else {
-        return Ok(()); // 目录不存在很正常（用户级库可选）
+        return Ok(()); // 目录不存在很正常（公共库可选）
     };
     let mut files: Vec<PathBuf> = rd
         .flatten()
@@ -1381,15 +1387,28 @@ fn run_capture(
 ) -> Result<String, String> {
     use std::io::{Read, Write};
     let session_leader = user.is_some(); // exec_as_user 走 setsid，pid 即进程组号
+    // 资源笼子：降权命令（站点账号 / 面板用户）套一份，防 fork 炸弹 / 写满盘 / 吃满 CPU。
+    // root 命令（scope=system，管理员插件）保持官方脚本策略不做限制。
+    let resource = user.map(|_| {
+        std::sync::Arc::new(super::resource::TaskResource::prepare(&format!(
+            "zapplug-{}-{}",
+            std::process::id(),
+            PLUGIN_RES_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        )))
+    });
     let mut cmd = match user {
         Some(u) => {
             let (mut c, acc) = super::user_cmd(program, u).map_err(|e| format!("降权失败: {e}"))?;
             let (uid, gid) = (acc.uid, acc.gid);
+            let res_w = resource.clone();
             let _ = unsafe {
                 c.pre_exec(move || {
                     libc::setsid();
                     super::cloexec_inherited_fds();
                     super::drop_privileges(uid, gid)?;
+                    if let Some(res) = &res_w {
+                        res.enter();
+                    }
                     Ok(())
                 })
             };
@@ -1460,6 +1479,10 @@ fn run_capture(
     let status = child
         .wait()
         .map_err(|e| format!("等待 {program} 失败: {e}"))?;
+    // 回收资源笼子（删掉本次命令的 cgroup 叶子目录，未部署 slice 时是空操作）
+    if let Some(res) = resource {
+        res.finish();
+    }
     if let Some(t) = stdin_thread {
         let _ = t.join();
     }
@@ -1606,11 +1629,10 @@ mod tests {
 
     #[test]
     fn path_helpers() {
-        // 用户级插件目录必须落在 home 下，系统级在 $ZAP_PATH 下
+        // 插件统一装在系统目录 $ZAP_PATH/plugins；用户级已移除
         let sys = plugin_base("system", "/home/u1").unwrap();
         assert!(sys.ends_with("plugins"));
-        let usr = plugin_base("user", "/home/u1").unwrap();
-        assert_eq!(usr, Path::new("/home/u1").join(".zap").join("plugins"));
+        assert!(plugin_base("user", "/home/u1").is_err());
         assert!(plugin_base("bogus", "/home/u1").is_err());
     }
 }

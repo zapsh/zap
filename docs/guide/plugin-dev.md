@@ -11,8 +11,7 @@ my-plugin/
 └── lib/*.lua       可选，插件自带的私有函数库（自动加载）
 ```
 
-- **系统级**：`$ZAP_PATH/plugins/<name>/` —— 所有用户可见，**仅管理员**可安装
-- **用户级**：`$HOME/.zap/plugins/<name>/` —— 仅本人可见，登录用户自己就能装
+- **系统级**：`$ZAP_PATH/plugins/<name>/` —— 所有用户可见，**仅管理员**可安装（普通用户只能使用，不能自行安装）
 
 以 `.` 或 `_` 开头的目录（`_lib`、`.git`）不会被当作插件。
 
@@ -53,7 +52,7 @@ function on_run(ctx)
 end
 ```
 
-把目录拷到 `$HOME/.zap/plugins/hello/`（或 `$ZAP_PATH/plugins/hello/`），
+把目录拷到 `$ZAP_PATH/plugins/hello/`（仅管理员可写），
 打开「站点详情 → 插件」就能看到入口。
 
 ### 非站点插件：`scope: user`
@@ -96,7 +95,7 @@ end
 | `name` | ✓ | 插件标识，**只允许字母数字、下划线、连字符**，必须与目录名一致 |
 | `title` | | 展示标题，缺省用 `name` |
 | `version` / `description` / `author` / `homepage` | | 元信息，管理页展示 |
-| `scope` | | `site`（以站点 Linux 账号运行，需站点上下文）/ `user`（以调用方面板用户账号运行，不绑定站点）/ `system`（以 root 运行，仅系统级插件可用）。**用户级插件不允许 `system`** |
+| `scope` | | `site`（以站点 Linux 账号运行，需站点上下文）/ `user`（以调用方面板用户账号运行，不绑定站点）/ `system`（以 root 运行，仅管理员安装的插件可用） |
 | `async` | | `true` 时后台执行，日志走 SSE 实时回传，前端可取消 |
 | `ui.placement` | ✓ | 入口挂载位置，见下表 |
 | `ui.label` | | 入口按钮文案 |
@@ -209,8 +208,7 @@ options:
 `main.lua` 之前，zapexec 会按以下顺序自动加载目录下的 `*.lua`，**无需 `require`**：
 
 1. `$ZAP_PATH/data/plugins/_lib/` —— 系统级公共库（随发行包提供 `zap.lua`）
-2. `$HOME/.zap/plugins/_lib/` —— 用户级公共库
-3. `<plugin_dir>/lib/` —— 插件自带的私有库
+2. `<plugin_dir>/lib/` —— 插件自带的私有库
 
 后者可覆盖前者。
 
@@ -387,7 +385,7 @@ end
 | Lua 沙箱 | 无 `io` / `os` / `package` / `debug`；文件只能经 `zap.fs.*` 按 scope 降权访问 |
 | `scope: site` | `user_cmd` + `drop_privileges`（清附加组 → setgid → setuid）降到站点账号 |
 | `scope: user` | 降到触发请求的面板用户账号（同 `site` 的降权路径）；管理员装的系统级插件被普通用户触发时也仅该用户权限 |
-| `scope: system` | 仅系统级插件可用；**用户级插件声明 `system` 会在安装和运行两处被拒** |
+| `scope: system` | 仅管理员安装的插件可用（声明 `system` 的插件只能由管理员安装到系统目录） |
 | 路径校验 | 安装解包挡 `..` 与绝对路径；卸载与 `ui.html` 读取都做 canonicalize 越界检查 |
 | HTML 界面 | iframe 无 `allow-same-origin`，只能经 postMessage 由父页面代跑 |
 | 权限点 | `plugin:view` / `plugin:run` / `plugin:install` / `plugin:uninstall` |

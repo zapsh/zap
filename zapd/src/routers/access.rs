@@ -482,8 +482,8 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::action("system.cloud", "delete")),
     ),
     // ── 插件：view / run / install / uninstall ──
-    // `install` 与 `uninstall` 按级别在 handler 里二次校验：系统级插件会以 root 运行，
-    // 只有管理员能装 / 卸；用户级插件只作用于本人站点，登录用户即可。
+    // `install` 与 `uninstall` 在 handler 里二次校验：插件统一由管理员装到系统目录（可能以 root 运行），
+    // 仅管理员能装 / 卸；列表 / 运行对全员开放，普通用户只能使用已安装插件。
     (
         "/plugin/list",
         Required::User,

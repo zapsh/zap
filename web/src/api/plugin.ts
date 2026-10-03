@@ -29,8 +29,8 @@ export interface PluginInfo {
   async?: boolean
   options: PluginOption[]
   actions: PluginAction
-  /** 安装级别：system = 系统级（管理员），user = 用户级（仅本人可见） */
-  level?: 'system' | 'user'
+  /** 安装级别：统一 system（管理员安装到 $ZAP_PATH/plugins，全用户共享、仅可使用） */
+  level?: 'system'
   version?: string
   description?: string
   author?: string
@@ -53,7 +53,7 @@ export function pluginList(params: { slot?: string; scope?: string; site_id?: nu
 }
 
 /** 取插件自带的 HTML 界面内容（渲染进沙箱 iframe）。 */
-export function pluginUi(params: { name: string; level?: 'system' | 'user' }) {
+export function pluginUi(params: { name: string; level?: 'system' }) {
   return http.get('/plugin/ui', { params })
 }
 
@@ -83,7 +83,7 @@ export function pluginCancel(task_id: string) {
  */
 export function pluginInstallUpload(payload: {
   file: File
-  level: 'system' | 'user'
+  level: 'system'
   force?: boolean
   name?: string
 }) {
@@ -95,7 +95,7 @@ export function pluginInstallUpload(payload: {
   return http.post('/plugin/install', fd, { timeout: 600000 })
 }
 
-/** 卸载插件（删除整个插件目录）。 */
-export function pluginUninstall(payload: { name: string; level: 'system' | 'user' }) {
+/** 卸载插件（删除整个插件目录，仅管理员）。 */
+export function pluginUninstall(payload: { name: string; level: 'system' }) {
   return http.post('/plugin/uninstall', payload)
 }

@@ -729,11 +729,10 @@ pub enum Request {
         /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
-        /// 插件类包经应用商店安装时的落盘级别：admin → system（$ZAP_PATH/plugins）；
-        /// 非 admin → user（<home>/.zap/plugins）。仅 plugins 分类使用，其余忽略。
+        /// 插件类包经应用商店安装时的落盘级别：统一 system（$ZAP_PATH/plugins），仅管理员可装。
         #[serde(skip_serializing_if = "Option::is_none")]
         level: Option<String>,
-        /// 安装者面板用户的家目录（level=user 时定位用户级插件目录用）
+        /// 安装者面板用户的家目录（预留字段，插件统一装系统目录后不再用于定位插件目录）
         #[serde(skip_serializing_if = "Option::is_none")]
         home: Option<String>,
         run_id: String,
@@ -790,10 +789,10 @@ pub enum Request {
         /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
-        /// 插件类包经应用商店升级时的落盘级别（同 AppstoreInstall.level）
+        /// 插件类包经应用商店升级时的落盘级别（同 AppstoreInstall.level，统一 system）
         #[serde(skip_serializing_if = "Option::is_none")]
         level: Option<String>,
-        /// 安装者面板用户的家目录（level=user 时定位用户级插件目录用）
+        /// 安装者面板用户的家目录（预留字段）
         #[serde(skip_serializing_if = "Option::is_none")]
         home: Option<String>,
         run_id: String,
@@ -1596,7 +1595,7 @@ pub enum Request {
     /// 同样是长会话：连接期间持续推送事件，断开即结束，因此也走 `Message::StreamOpen`。
     #[serde(rename = "docker.events")]
     DockerEvents,
-    /// 列出可用插件（系统级 + 当前用户级），按 placement 槽位与 scope 过滤
+    /// 列出可用插件（统一在系统级 $ZAP_PATH/plugins），按 placement 槽位与 scope 过滤
     #[serde(rename = "plugin.list")]
     PluginList {
         actor: String,
@@ -1628,7 +1627,7 @@ pub enum Request {
     },
     /// 安装插件。
     ///
-    /// `level`：`system`（`$ZAP_PATH/plugins/<name>`，管理员级）/ `user`（`<home>/.zap/plugins/<name>`）。
+    /// `level`：统一 `system`（`$ZAP_PATH/plugins/<name>`，管理员级；普通用户只能使用已安装插件）。
     /// `source` 决定来源：目前仅 `archive`（已落在磁盘上的 zip / tar.gz 包路径，由面板上传而来）。
     #[serde(rename = "plugin.install")]
     PluginInstall {

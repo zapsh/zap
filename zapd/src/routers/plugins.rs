@@ -3,9 +3,7 @@
 //! 复用应用商店的鉴权与站点归属校验：列表/运行前确认操作者身份与站点归属，
 //! 再把解析后的上下文（家目录 / 站点 root / 站点 Linux 账号）通过白名单动词传给 zapexec。
 //!
-//! 安装 / 卸载按两个级别隔离：
-//!   - `system`（`$ZAP_PATH/plugins/`）：仅管理员，插件可 root / 站点 / 用户身份运行；
-//!   - `user`（`<home>/.zap/plugins/`）：登录用户自己装，只能以站点账号或用户身份运行（不允许 root）。
+//! 插件统一装在系统级目录 `$ZAP_PATH/plugins/`，仅管理员可安装 / 卸载，所有用户共享、只能使用。
 //! 运行时身份由 manifest 的 `scope` 决定：`site`（站点账号）/ `user`（调用方面板用户账号）/ `system`（root）。
 
 use std::convert::Infallible;
@@ -44,7 +42,7 @@ pub struct PluginListQuery {
 #[derive(Deserialize)]
 pub struct PluginUiQuery {
     pub name: String,
-    /// `system` | `user`，默认 `user`
+    /// `system`，默认 `system`（所有插件装在系统目录，仅管理员可安装）
     #[serde(default)]
     pub level: Option<String>,
 }
@@ -63,7 +61,7 @@ pub struct PluginRunPayload {
 #[derive(Deserialize)]
 pub struct PluginUninstallPayload {
     pub name: String,
-    /// `system` | `user`，默认 `user`
+    /// `system`，默认 `system`
     #[serde(default)]
     pub level: Option<String>,
 }
@@ -152,7 +150,7 @@ fn plugin_upload_dir() -> PathBuf {
 fn normalize_level(level: Option<String>) -> String {
     match level.unwrap_or_default().as_str() {
         "system" => "system".to_string(),
-        _ => "user".to_string(),
+        _ => "system".to_string(),
     }
 }
 
@@ -173,7 +171,7 @@ pub async fn plugin_install_upload(
     Extension(client_addr): Extension<SocketAddr>,
     mut multipart: Multipart,
 ) -> ZapJsonResult {
-    let mut level = String::from("user");
+    let mut level = String::from("system");
     let mut force = false;
     let mut name = String::new();
     let mut staged: Option<PathBuf> = None;

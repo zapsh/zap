@@ -78,7 +78,7 @@ const userStore = useUserStore()
 const isAdmin = computed(() => userStore.roles.includes('admin'))
 
 /** 页签：站点应用相关（已安装 / 我的）对全员开放；插件管理全员可见
- *  —— 系统级插件只读，用户级插件各自管理（上传 / 卸载），由插件页内按 level 二次把关 */
+ *  —— 插件只装在系统目录、仅管理员可安装，普通用户只能使用，由插件页内按权限二次把关 */
 const tabs = computed(() => {
   const list = [
     { value: 'store', label: t('appstore.tabStore') },
