@@ -1069,6 +1069,8 @@ async function ensureNodeExpanded(node: any) {
 async function revealPathInTree(target: string, isDir: boolean) {
   const tree = treeRef.value
   if (!tree) return
+  // 重新构建树后根节点可能还没渲染，先等一拍再定位
+  await nextTick()
   const norm = (target || '/').replace(/\/+$/, '') || '/'
   const segs = norm.split('/').filter((s) => s)
   const prefixes: string[] = []
@@ -1078,14 +1080,22 @@ async function revealPathInTree(target: string, isDir: boolean) {
     prefixes.push(acc)
   }
   const firstNode = prefixes.length ? treeNode(prefixes[0]) : null
-  // 管理员有系统根「/」入口：路径不在家目录下时，先把根展开才能拿到 /etc、/home 等顶层子目录
   const rootNode = treeNode('/')
-  if (!firstNode && rootNode && !rootNode.expanded) await ensureNodeExpanded(rootNode)
+  if (!firstNode && rootNode && !rootNode.expanded) {
+    await ensureNodeExpanded(rootNode)
+  } else if (!rootNode && homePath.value) {
+    // 普通用户没有系统根「/」入口，家目录（如 /home/admin）才是顶层节点；
+    // 先把家目录展开，才能加载其下的子目录
+    const homeNode = treeNode(homePath.value)
+    if (homeNode && !homeNode.expanded) await ensureNodeExpanded(homeNode)
+  }
   const last = prefixes.length - 1
   const expandLast = isDir ? last : last - 1
   for (let i = 0; i <= expandLast; i++) {
     const node = treeNode(prefixes[i])
-    if (!node) break
+    // 顶层前缀（如 /home）未必是节点（家目录可能是 /home/admin），跳过缺失的前缀，
+    // 从真实存在的祖先节点继续向下展开，避免刷新后只停在家目录
+    if (!node) continue
     await ensureNodeExpanded(node)
     await nextTick()
   }
@@ -1297,7 +1307,8 @@ function onTreeNodeClick(data: TreeNode) {
 async function refreshTree() {
   // 换一个全新的根节点数组，el-tree 会丢掉懒加载缓存重新拉取
   treeData.value = buildTreeData()
-  await revealInTree()
+  // 重建后按「当前打开的目录」重新逐层展开并高亮，而不是退回家目录
+  await revealPathInTree(currentPath.value, true)
   refreshList()
 }
 
