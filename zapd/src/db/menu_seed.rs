@@ -612,8 +612,11 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .redirect("/system/automation")
     .affix()
     .hidden(),
-    // ── 系统设置（目录）──────────────────────────────────────
-    MenuSeed::new("system", "系统设置", "dir", "/system", "Layout", R_ALL, 12)
+    // ── 系统设置（目录）：仅管理员可见（其下子菜单均 R_ADMIN）。
+    // 普通用户/reseller/demo 不应看到「系统设置」——此前为让非 admin 能进 About ZAP
+    // 而把父目录设为 R_ALL，但 About ZAP 现已迁到首页快捷入口 / 页脚，不再挂在
+    // 本目录下，故这里收紧为 R_ADMIN，非 admin 不再出现这个（原本还是空的）入口。
+    MenuSeed::new("system", "系统设置", "dir", "/system", "Layout", R_ADMIN, 12)
         .icon("material-symbols:settings")
         .redirect("/system/access")
         .affix(),
@@ -1025,16 +1028,17 @@ mod tests {
             );
         }
         // 与「旧库最终态」对齐的可见条数（防止重构悄悄改了可见范围）
-        assert_eq!(demo.len(), 16, "demo 可见菜单数变化");
+        // 注：「系统设置」目录已收紧为仅 admin，故 demo 少 1 项
+        assert_eq!(demo.len(), 15, "demo 可见菜单数变化");
         let reseller = grants(&pool, "reseller").await;
-        assert_eq!(reseller.len(), 29, "reseller 可见菜单数变化");
+        assert_eq!(reseller.len(), 28, "reseller 可见菜单数变化");
         // 客户管理（admin / reseller 都可见）
         assert!(reseller.iter().any(|n| n == "reseller-users"));
         assert!(admin.iter().any(|n| n == "reseller-users"));
 
         // 自动化脚本是 admin 专属
         let user = grants(&pool, "user").await;
-        assert_eq!(user.len(), 31, "user 可见菜单数变化");
+        assert_eq!(user.len(), 30, "user 可见菜单数变化");
         assert!(
             !user.iter().any(|n| n == "automation-scripts"),
             "自动化脚本必须仅 admin 可见"

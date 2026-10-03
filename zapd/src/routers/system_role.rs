@@ -297,11 +297,29 @@ pub async fn role_permissions_get(
 
 /// 权限点目录（角色权限配置页的数据源）：来自 `routers::access` 的权限矩阵，
 /// 保证「可勾选的权限点」与「实际生效的校验规则」是同一份定义。
-pub async fn permission_catalog(_claims: ValidatedClaims) -> ZapJsonResult {
+///
+/// 收紧：普通用户（团队成员创建者）只看到**自己实际拥有的权限点**，无法从全量目录里
+/// 挑出自己都没有的能力去给成员「放行」——成员权限本就继承自父账号，父账号能做的只是
+/// 从自己的权限里再 deny 掉几项。admin 恒直通，展示全部（角色权限配置页用）。
+pub async fn permission_catalog(claims: ValidatedClaims) -> ZapJsonResult {
+    let groups = if crate::zap::jwt::is_admin(&claims) {
+        crate::routers::access::permission_catalog()
+    } else {
+        let map = crate::routers::access::user_perm_map().await;
+        let mine = map.get(&(claims.id as i64)).cloned().unwrap_or_default();
+        crate::routers::access::permission_catalog()
+            .into_iter()
+            .map(|mut g| {
+                g.actions.retain(|a| mine.contains(&a.key));
+                g
+            })
+            .filter(|g| !g.actions.is_empty())
+            .collect()
+    };
     Ok(Json(json!({
         "code": 0,
         "message": "OK",
-        "data": { "groups": crate::routers::access::permission_catalog() },
+        "data": { "groups": groups },
     })))
 }
 

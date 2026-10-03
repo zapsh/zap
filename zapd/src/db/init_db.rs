@@ -753,7 +753,7 @@ async fn sync_seed_menus() {
     // `roles` 字段与 `role_menus` 授权也同步成种子值（如应用商店收紧为仅 admin、
     // 应用市场仅非 admin），否则「应用商店仍对全员可见」会与需求相悖。
     // 只针对系统核心菜单，不动管理员自建 / 改过的其它菜单（先清后插，幂等）。
-    const CORE_SYNC_MENUS: &[&str] = &["appstore", "appstore-index", "installed"];
+    const CORE_SYNC_MENUS: &[&str] = &["appstore", "appstore-index", "installed", "system"];
     for seed in menu_seed::all_seeds() {
         if !CORE_SYNC_MENUS.contains(&seed.name) {
             continue;
