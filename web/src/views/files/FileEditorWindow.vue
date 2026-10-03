@@ -59,6 +59,8 @@
             <el-icon><Refresh /></el-icon>
             {{ t('fileEditor.reload') }}
           </el-button>
+          <!-- 文件管理器插件槽位：与保存/重载同行，传入当前目录路径 -->
+          <PluginSlot placement-slot="file.editor" mode="toolbar" :cwd="currentDir" />
           <el-button
             size="small"
             text
@@ -320,6 +322,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import CodeEditor from '@/components/CodeEditor.vue'
+import PluginSlot from '@/components/PluginSlot.vue'
 import { getFileInfo, listFiles, readFile, writeFile, mkdir, deleteFile, renameFile, type FileEntry } from '@/api/file'
 import {
   LANG_OPTIONS,
@@ -410,6 +413,11 @@ function activateTab(tab: EditorTab) {
   activePath.value = tab.path
   scrollActiveIntoView()
 }
+
+/** 当前所在目录：左侧树基准目录优先，没有则取当前文件的父目录（供插件如 Git 作为工作目录） */
+const currentDir = computed(() =>
+  treeRootPath.value || (activePath.value ? parentOf(activePath.value) : ''),
+)
 
 /** 标签条滚动容器；切换标签后把当前标签滚进可视区 */
 const tabsScrollRef = ref<HTMLElement | null>(null)

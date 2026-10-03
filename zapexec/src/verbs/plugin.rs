@@ -986,12 +986,13 @@ fn run_lua(
         let child_pid_run = child_pid.clone();
         let logf_user = logf.clone();
         let logf_run = logf.clone();
-        let f_exec = lua.create_function(move |_, (prog, args): (String, mlua::Table)| {
+        let f_exec = lua.create_function(move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| {
             if scope != "system" {
                 return Err(mlua::Error::RuntimeError(
                     "只有 scope: system 才能 zap.exec（以 root 执行），请改用 zap.run 或 zap.exec_as_user".into(),
                 ));
             }
+            let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
             run_capture(
                 None,
                 &prog,
@@ -1000,6 +1001,7 @@ fn run_lua(
                 logf_exec.clone(),
                 cancel_exec.clone(),
                 child_pid_exec.clone(),
+                cwd,
             )
             .map_err(mlua::Error::RuntimeError)
         });
@@ -1009,18 +1011,22 @@ fn run_lua(
 
         let scope_run = ctx.scope.clone();
         let run_user_run = ctx.run_user.clone();
-        let f_user = lua.create_function(move |_, (prog, args): (String, mlua::Table)| match &run_user
+        let f_user = lua.create_function(move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| match &run_user
         {
-            Some(u) => run_capture(
-                Some(u),
-                &prog,
-                &table_to_vec(&args),
-                None,
-                logf_user.clone(),
-                cancel_user.clone(),
-                child_pid_user.clone(),
-            )
-            .map_err(mlua::Error::RuntimeError),
+            Some(u) => {
+                let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
+                run_capture(
+                    Some(u),
+                    &prog,
+                    &table_to_vec(&args),
+                    None,
+                    logf_user.clone(),
+                    cancel_user.clone(),
+                    child_pid_user.clone(),
+                    cwd,
+                )
+                .map_err(mlua::Error::RuntimeError)
+            }
             None => Err(mlua::Error::RuntimeError("site 作用域插件未提供运行账号".into())),
         });
         zap_tbl
@@ -1028,7 +1034,7 @@ fn run_lua(
             .map_err(|e| format!("{e}"))?;
 
         // zap.run：按 scope 自动选 root / 站点账号，插件不必自己判断作用域
-        let f_run = lua.create_function(move |_, (prog, args): (String, mlua::Table)| {
+        let f_run = lua.create_function(move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| {
             let user = match scope_run.as_str() {
                 "site" | "user" => run_user_run.clone(),
                 _ => None,
@@ -1036,6 +1042,7 @@ fn run_lua(
             if (scope_run == "site" || scope_run == "user") && user.is_none() {
                 return Err(mlua::Error::RuntimeError("该作用域插件未提供运行账号".into()));
             }
+            let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
             run_capture(
                 user.as_deref(),
                 &prog,
@@ -1044,6 +1051,7 @@ fn run_lua(
                 logf_run.clone(),
                 cancel_run.clone(),
                 child_pid_run.clone(),
+                cwd,
             )
             .map_err(mlua::Error::RuntimeError)
         });
@@ -1057,12 +1065,13 @@ fn run_lua(
         let logf_try = logf.clone();
         let cancel_try = cancel.clone();
         let child_pid_try = child_pid.clone();
-        let f_try = lua.create_function(move |_, (prog, args): (String, mlua::Table)| {
+        let f_try = lua.create_function(move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| {
             let user = match scope_try.as_str() {
                 "site" | "user" => run_user_try.clone(),
                 _ => None,
             };
             let argv = table_to_vec(&args);
+            let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
             match run_capture(
                 user.as_deref(),
                 &prog,
@@ -1071,6 +1080,7 @@ fn run_lua(
                 logf_try.clone(),
                 cancel_try.clone(),
                 child_pid_try.clone(),
+                cwd,
             ) {
                 Ok(s) => Ok((true, s)),
                 Err(s) => Ok((false, s)),
@@ -1109,6 +1119,7 @@ fn run_lua(
                         None,
                         Arc::new(AtomicBool::new(false)),
                         Arc::new(std::sync::Mutex::new(None)),
+                        None,
                     )
                     .map_err(mlua::Error::RuntimeError)
                 },
@@ -1369,11 +1380,40 @@ fn table_to_vec(t: &mlua::Table) -> Vec<String> {
     v
 }
 
+/// 从 Lua 侧 opts 表（zap.exec/run/try_run 的第三个可选参数）里取 `cwd`，
+/// 用于指定子进程工作目录（如 git 需要在仓库目录里跑）。
+/// 校验：必须是绝对路径、存在且为目录；空值视为「不指定」。
+fn extract_cwd(opts: &mlua::Value) -> Result<Option<PathBuf>, String> {
+    let t = match opts {
+        mlua::Value::Nil => return Ok(None),
+        mlua::Value::Table(t) => t,
+        _ => return Err("cwd 选项必须是表，例如 { cwd = '/abs/path' }".into()),
+    };
+    let raw = match t.get::<&str, mlua::Value>("cwd") {
+        Ok(mlua::Value::String(s)) => String::from_utf8_lossy(&s.as_bytes()).to_string(),
+        Ok(mlua::Value::Nil) => return Ok(None),
+        _ => return Ok(None),
+    };
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let p = PathBuf::from(raw.trim());
+    if !p.is_absolute() {
+        return Err(format!("cwd 必须是绝对路径: {raw}"));
+    }
+    let canon = std::fs::canonicalize(&p).map_err(|e| format!("cwd 解析失败 {raw}: {e}"))?;
+    if !canon.is_dir() {
+        return Err(format!("cwd 不是目录: {raw}"));
+    }
+    Ok(Some(canon))
+}
+
 /// 以指定身份执行命令并捕获合并输出（stdout + stderr）。
 ///
 /// `logf` 非空时（异步插件），子进程的标准输出/错误会被实时 tee 到该日志文件，
 /// 这样前端 SSE 能边跑边看进度；同步插件传 `None`，行为与原来一致（结束一次性返回）。
 /// `stdin` 非空时把内容喂给子进程的标准输入（`write_file` / `append_file` 用）。
+/// `cwd` 非空时切换到该目录执行（插件用于「在指定目录里跑命令」，如 git）。
 /// `cancel` / `child_pid` 用于异步插件的运行中取消：被取消时看门狗会杀掉本进程（组），
 /// 这里检测标志后提前结束拷贝循环。
 fn run_capture(
@@ -1384,6 +1424,7 @@ fn run_capture(
     logf: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>>,
     cancel: Arc<AtomicBool>,
     child_pid: Arc<std::sync::Mutex<Option<(u32, bool)>>>,
+    cwd: Option<PathBuf>,
 ) -> Result<String, String> {
     use std::io::{Read, Write};
     let session_leader = user.is_some(); // exec_as_user 走 setsid，pid 即进程组号
@@ -1416,6 +1457,9 @@ fn run_capture(
         }
         None => super::root_cmd(program),
     };
+    if let Some(cwd) = &cwd {
+        cmd.current_dir(cwd);
+    }
     let mut child = cmd
         .args(args)
         .stdin(if stdin.is_some() {

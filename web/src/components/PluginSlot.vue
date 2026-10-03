@@ -1,18 +1,34 @@
 <template>
   <div class="plugin-slot">
-    <div v-if="loading" class="form-tip">加载插件…</div>
-    <el-empty v-else-if="!plugins.length" :description="emptyText" :image-size="40" />
-    <div v-else class="plugin-list">
-      <el-card v-for="p in plugins" :key="p.name" shadow="never" class="plugin-card">
-        <div class="plugin-head">
-          <span class="plugin-title">{{ p.label || p.title }}</span>
-          <el-button size="small" type="primary" @click="openPlugin(p)">
-            {{ p.html ? '打开' : runLabel(p) }}
-          </el-button>
-        </div>
-        <div v-if="p.tab" class="plugin-sub">{{ p.tab }}</div>
-      </el-card>
-    </div>
+    <!-- 工具栏模式：内联「图标 + 文字」按钮，作为编辑器顶部工具栏的一部分 -->
+    <template v-if="mode === 'toolbar'">
+      <el-button
+        v-for="p in plugins"
+        :key="p.name"
+        size="small"
+        @click="openPlugin(p)"
+      >
+        <template v-if="p.icon" #icon><Icon :icon="p.icon" /></template>
+        {{ p.label || p.title }}
+      </el-button>
+    </template>
+
+    <!-- 列表模式（默认）：卡片 + 打开按钮 -->
+    <template v-else>
+      <div v-if="loading" class="form-tip">加载插件…</div>
+      <el-empty v-else-if="!plugins.length" :description="emptyText" :image-size="40" />
+      <div v-else class="plugin-list">
+        <el-card v-for="p in plugins" :key="p.name" shadow="never" class="plugin-card">
+          <div class="plugin-head">
+            <span class="plugin-title">{{ p.label || p.title }}</span>
+            <el-button size="small" type="primary" @click="openPlugin(p)">
+              {{ p.html ? '打开' : runLabel(p) }}
+            </el-button>
+          </div>
+          <div v-if="p.tab" class="plugin-sub">{{ p.tab }}</div>
+        </el-card>
+      </div>
+    </template>
 
     <el-dialog v-model="dialog" :title="current?.label || '运行插件'" width="480px">
       <el-form v-if="current" label-width="110px">
@@ -145,8 +161,17 @@ import {
 } from '@/api/plugin'
 import { getToken } from '@/utils/auth'
 import { API_BASE } from '@/utils/base'
+import { Icon } from '@/icons'
 
-const props = defineProps<{ placementSlot: string; siteId?: number; webRoot?: string }>()
+const props = defineProps<{
+  placementSlot: string
+  siteId?: number
+  webRoot?: string
+  /** 显示模式：list=卡片列表（默认）；toolbar=内联「图标+文字」按钮，用于编辑器工具栏等紧凑场景 */
+  mode?: 'list' | 'toolbar'
+  /** 当前工作目录（绝对路径）：随每次调用透传给插件（如 Git 插件在此目录下执行）。 */
+  cwd?: string
+}>()
 
 const loading = ref(false)
 const plugins = ref<PluginInfo[]>([])
@@ -311,6 +336,8 @@ async function handleRpc(d: any) {
   if (d.options && typeof d.options === 'object') {
     for (const [k, v] of Object.entries(d.options)) options[k] = String(v)
   }
+  // 透传当前工作目录：插件 UI 未自带 cwd 时，用文件管理器传入的目录兜底
+  if (props.cwd && !options.cwd) options.cwd = props.cwd
   try {
     const r: any = await pluginRun({ name: p.name, action, site_id: props.siteId, options })
     const body = r?.data ?? r
@@ -391,6 +418,8 @@ async function run() {
       options[opt.name] = (multiVal[opt.name] || []).join(' ')
     else options[opt.name] = form[opt.name] || ''
   }
+  // 透传当前工作目录（同 handleRpc）
+  if (props.cwd && !options.cwd) options.cwd = props.cwd
   let isAsync = false
   try {
     const r: any = await pluginRun({

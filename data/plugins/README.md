@@ -118,6 +118,8 @@ options:
 - `zap.try_run(prog, {args})` —— 同上，但失败不抛错，返回 `(ok, output)`
 - `zap.exec(prog, {args})` —— 强制以 root 执行（仅 `scope=system`；`site`/`user` 下被禁止）
 - `zap.exec_as_user(prog, {args})` —— 强制以运行账号执行：`site` 走站点账号，`user` 走面板用户账号
+- 以上四个都可再收一个可选的第三个参数 `{ cwd = '/abs/path' }`，让命令在指定目录里执行
+  （如 Git 插件在仓库目录跑 git）。`cwd` 必须是绝对路径、存在且为目录，否则被拒绝。
 - `zap.site_root()` / `zap.site_linux_user()` —— 当前站点文档根 / 运行账号（仅 `scope=site`，其余返回空）
 - `zap.home_dir()` —— 当前执行身份的家目录：`scope=system` 为调用方 home，`scope=site` 为站点账号 home，`scope=user` 为面板用户 home
 - `zap.plugin_dir()` —— 插件自身目录（读自带资源用）
