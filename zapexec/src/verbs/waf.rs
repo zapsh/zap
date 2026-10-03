@@ -182,7 +182,7 @@ fn engine_of(main_conf: &Path) -> String {
 }
 
 /// 解析 `SecAuditLog` 指向的文件（取第一个非相对路径项）。
-fn audit_log_of(main_conf: &Path) -> Option<PathBuf> {
+pub(crate) fn audit_log_of(main_conf: &Path) -> Option<PathBuf> {
     let content = std::fs::read_to_string(main_conf).ok()?;
     content
         .lines()
@@ -190,6 +190,12 @@ fn audit_log_of(main_conf: &Path) -> Option<PathBuf> {
         .map(|v| v.trim().trim_matches('"').to_string())
         .find(|v| v.starts_with('/'))
         .map(PathBuf::from)
+}
+
+/// 已安装 WAF 的审计日志路径（`SecAuditLog` 指向的绝对文件），未安装/未配置返回 `None`。
+/// 供日志轮转使用：无论 ModSecurity 模块当前是否加载，只要配置里声明了审计日志就轮转。
+pub fn audit_log_path() -> Option<PathBuf> {
+    require_installed().ok()?.audit_log
 }
 
 /// WAF 在当前机器上的完整画像。
@@ -727,8 +733,15 @@ pub async fn set_engine(mode: &str) -> Response {
     .await
 }
 
-/// `waf.audit`：审计日志尾部（`SecAuditLog` 指向的文件，只读）。
-pub async fn audit(lines: u32) -> Response {
+/// `waf.audit`：审计日志查看。
+///
+/// - `unique_id` 为空：返回 `SecAuditLog` 指向文件的尾部 `lines` 行（原始文本，兼容旧行为）。
+/// - `unique_id` 非空：从主日志里抽出该事务的**完整审计条目**（A~Z 各段），结构化解析出
+///   请求行、客户端与命中的规则（`id` / `msg` / `severity` / `tags` 等），便于「按 unique_id
+///   反查具体是哪条规则拦的」——error_log 里只印 949110（总分拦截器），真正规则在审计日志里。
+pub async fn audit(lines: u32, unique_id: &str) -> Response {
+    // run_blocking 的闭包要求 'static：把 &str 先转为拥有所有权的 String 再 move 进去
+    let uid_owned = unique_id.to_string();
     run_blocking(move || {
         let env = require_installed()?;
         let Some(log) = env.audit_log.clone() else {
@@ -738,13 +751,222 @@ pub async fn audit(lines: u32) -> Response {
             return Err(format!("审计日志不存在: {}", log.display()));
         }
         let n = lines.clamp(1, 2000);
-        let text = out_str("tail", &["-n", &n.to_string(), &log.display().to_string()]);
-        Ok(Response::ok(
-            "ok",
-            Some(json!({ "path": log.display().to_string(), "content": text })),
-        ))
+        let uid = uid_owned.trim();
+        if uid.is_empty() {
+            let text = out_str("tail", &["-n", &n.to_string(), &log.display().to_string()]);
+            return Ok(Response::ok(
+                "ok",
+                Some(json!({ "path": log.display().to_string(), "content": text })),
+            ));
+        }
+        // unique_id 模式：结构化抽取单条
+        if !is_safe_uid(uid) {
+            return Err("unique_id 非法（只允许字母、数字及 . _ : -，长度 ≤ 128）".to_string());
+        }
+        match extract_audit(&log, uid) {
+            Ok(v) => Ok(Response::ok("ok", Some(v))),
+            Err(e) => Err(e),
+        }
     })
     .await
+}
+
+/// 仅按 unique_id 反查单条审计明细（租户日志界面用）。
+///
+/// 与 `audit` 不同，本函数**只支持 unique_id 模式**，刻意不暴露尾部模式——
+/// 审计日志是全局文件，尾部模式会把其它租户的命中记录泄露给当前租户。unique_id 本身是
+/// 高熵随机串，租户只能拿到自己 error_log 里出现的 ID，不存在横向越权。
+pub async fn audit_by_unique_id(uid: &str) -> Response {
+    let uid_owned = uid.to_string();
+    run_blocking(move || {
+        let env = require_installed()?;
+        let Some(log) = env.audit_log.clone() else {
+            return Err("未配置 SecAuditLog，或审计日志文件不存在".to_string());
+        };
+        if !log.exists() {
+            return Err(format!("审计日志文件不存在: {}", log.display()));
+        }
+        let uid = uid_owned.trim();
+        if uid.is_empty() {
+            return Err("unique_id 不能为空".to_string());
+        }
+        if !is_safe_uid(uid) {
+            return Err("unique_id 非法（只允许字母、数字及 . _ : -，长度 ≤ 128）".to_string());
+        }
+        match extract_audit(&log, uid) {
+            Ok(v) => Ok(Response::ok("ok", Some(v))),
+            Err(e) => Err(e),
+        }
+    })
+    .await
+}
+
+/// unique_id 只允许安全字符（虽然后端只是读文件、无 shell 注入风险，仍收窄以免被当路径）。
+fn is_safe_uid(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+}
+
+/// 从审计日志抽取 `uid` 对应的完整条目并结构化解析（命中即停，不加载整文件）。
+fn extract_audit(log: &Path, uid: &str) -> Result<Value, String> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(log).map_err(|e| format!("读取审计日志失败: {e}"))?;
+    let mut block: Vec<String> = Vec::new();
+    let mut started = false;
+    for line in BufReader::new(file).lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if !started {
+            // 节 A 头部形如：`[<date>] <unique_id> <client_ip> <client_port> <server_ip> <server_port>`
+            // 用「行首为 [ 且含 uid」定位（节 H 里 `[unique_id "..."]` 行以 ModSecurity: 开头，不会误判）。
+            if line.starts_with('[') && line.contains(uid) {
+                started = true;
+                block.push(line);
+            }
+            continue;
+        }
+        // 结束分隔符 `--<txid>--Z--`（或下一个条目的 A 分隔符，兜底收尾）
+        if line.starts_with("--") && (line.ends_with("Z--") || line.ends_with("A--")) {
+            break;
+        }
+        block.push(line);
+    }
+    if block.is_empty() {
+        return Ok(json!({
+            "path": log.display().to_string(),
+            "found": false,
+            "unique_id": uid,
+            "content": "",
+            "messages": [],
+        }));
+    }
+    let raw = block.join("\n");
+
+    let mut header: Value = json!({});
+    let mut request_line = String::new();
+    let mut messages: Vec<Value> = Vec::new();
+    let mut in_b = false;
+    for line in &block {
+        if line.starts_with("--") {
+            if line.contains("B--") {
+                in_b = true;
+            }
+            continue;
+        }
+        if line.starts_with('[') && line.contains(uid) {
+            // 节 A 头部：先取 `[...]` 内的时间戳，再取其后字段
+            let ts = line
+                .trim_start_matches('[')
+                .split(']')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            let after = line.split_once(']').map(|(_, r)| r.trim()).unwrap_or("");
+            let f: Vec<&str> = after.split_whitespace().collect();
+            header = json!({
+                "timestamp": ts,
+                "unique_id": f.first().copied().unwrap_or(""),
+                "client_ip": f.get(1).copied().unwrap_or(""),
+                "client_port": f.get(2).copied().unwrap_or(""),
+                "server_ip": f.get(3).copied().unwrap_or(""),
+                "server_port": f.get(4).copied().unwrap_or(""),
+            });
+            continue;
+        }
+        if in_b && request_line.is_empty() {
+            request_line = line.clone();
+        }
+        if line.starts_with("ModSecurity:") {
+            if let Some(m) = parse_message_line(line) {
+                messages.push(m);
+            }
+        }
+    }
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
+    let request = json!({
+        "line": request_line,
+        "method": parts.first().copied().unwrap_or(""),
+        "uri": parts.get(1).copied().unwrap_or(""),
+        "protocol": parts.get(2).copied().unwrap_or(""),
+    });
+    Ok(json!({
+        "path": log.display().to_string(),
+        "found": true,
+        "unique_id": uid,
+        // 兼容旧的纯文本视图：content 也带上原始块
+        "content": raw,
+        "header": header,
+        "request": request,
+        "messages": messages,
+        "raw": raw,
+    }))
+}
+
+/// 解析节 H 里一行 `ModSecurity: …` 的命中信息，抽取 id / msg / severity / tags 等。
+fn parse_message_line(line: &str) -> Option<Value> {
+    let body = line.strip_prefix("ModSecurity: ")?;
+    // action：到 ". Matched" 为止（拦截行是 "Access denied with code 403 (phase 2). Matched …"）
+    let action = body.split(". Matched").next().unwrap_or(body).trim().to_string();
+    let grab = |key: &str| -> String {
+        let tag = format!("[{key} \"");
+        line.find(&tag)
+            .and_then(|s| {
+                let rest = &line[s + tag.len()..];
+                rest.find('"').map(|e| rest[..e].to_string())
+            })
+            .unwrap_or_default()
+    };
+    let id = grab("id");
+    if id.is_empty() {
+        return None;
+    }
+    // tags 可能有多个
+    let mut tags: Vec<String> = Vec::new();
+    let tag_prefix = "[tag \"";
+    let mut idx = 0;
+    while let Some(p) = line[idx..].find(tag_prefix) {
+        let s = idx + p + tag_prefix.len();
+        let rest = &line[s..];
+        if let Some(e) = rest.find('"') {
+            tags.push(rest[..e].to_string());
+            idx = s + e + 1;
+        } else {
+            break;
+        }
+    }
+    let sev_raw = grab("severity");
+    Some(json!({
+        "action": action,
+        "id": id,
+        "msg": grab("msg"),
+        "severity": sev_name(&sev_raw),
+        "severity_raw": sev_raw,
+        "file": grab("file"),
+        "line": grab("line"),
+        "data": grab("data"),
+        "tags": tags,
+    }))
+}
+
+/// ModSecurity 数字 severity → 名称（0 最严重）。
+fn sev_name(n: &str) -> String {
+    match n {
+        "0" => "EMERGENCY",
+        "1" => "ALERT",
+        "2" => "CRITICAL",
+        "3" => "ERROR",
+        "4" => "WARNING",
+        "5" => "NOTICE",
+        "6" => "INFO",
+        "7" => "DEBUG",
+        _ => n,
+    }
+    .to_string()
 }
 
 // ── 安装（长任务）───────────────────────────────────────────
@@ -1306,5 +1528,56 @@ mod tests {
     fn nginx_source_version_is_parsed() {
         let v = "nginx/1.31.5";
         assert_eq!(v.split('/').last().unwrap(), "1.31.5");
+    }
+
+    /// 按 unique_id 反查审计日志：应抽中对应条目并结构化解析出请求行与命中规则。
+    #[test]
+    fn audit_query_extracts_by_unique_id() {
+        let dir = std::env::temp_dir().join("zap-waf-audit-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("modsec_audit.log");
+        let entry = r#"[03/Oct/2026:10:49:43 +0800] 179099578356.410307 192.168.11.1 57505 192.168.11.133 80
+---1CBbeaHx---B--
+GET /index.php?cmd=/usr/bin/bash HTTP/1.1
+Host: w4u.cn
+
+---1CBbeaHx---H--
+ModSecurity: Warning. Matched "Operator PmFromFile" [file "/etc/zap/nginx/modsecurity/rules/REQUEST-932-APPLICATION-ATTACK-RCE.conf"] [line "706"] [id "932160"] [msg "Remote Command Execution: Unix Shell Code Found"] [data "Matched Data: bin/bash found within ARGS:cmd: /usr/bin/bash"] [severity "2"] [tag "application-multi"] [tag "language-shell"] [tag "attack-rce"] [unique_id "179099578356.410307"]
+ModSecurity: Access denied with code 403 (phase 2). Matched "Ge" [file "/etc/zap/nginx/modsecurity/rules/REQUEST-949-BLOCKING-EVALUATION.conf"] [line "222"] [id "949110"] [msg "Inbound Anomaly Score Exceeded (Total Score: 5)"] [data ""] [severity "0"] [tag "anomaly-evaluation"] [tag "OWASP_CRS"] [unique_id "179099578356.410307"]
+
+---1CBbeaHx---Z--
+"#;
+        std::fs::write(&log, entry).unwrap();
+
+        let v = extract_audit(&log, "179099578356.410307").unwrap();
+        assert!(v["found"].as_bool().unwrap());
+        assert_eq!(v["header"]["client_ip"].as_str().unwrap(), "192.168.11.1");
+        assert_eq!(v["header"]["server_ip"].as_str().unwrap(), "192.168.11.133");
+        assert_eq!(v["request"]["method"].as_str().unwrap(), "GET");
+        assert_eq!(
+            v["request"]["uri"].as_str().unwrap(),
+            "/index.php?cmd=/usr/bin/bash"
+        );
+
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        let ids: Vec<&str> = msgs.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"932160"));
+        assert!(ids.contains(&"949110"));
+
+        let first = msgs
+            .iter()
+            .find(|m| m["id"].as_str().unwrap() == "932160")
+            .unwrap();
+        assert_eq!(first["severity"].as_str().unwrap(), "CRITICAL");
+        let tags = first["tags"].as_array().unwrap();
+        assert!(tags.contains(&json!("attack-rce")));
+
+        // 不存在的 uid 应返回 found=false
+        let missing = extract_audit(&log, "nope-not-there").unwrap();
+        assert!(!missing["found"].as_bool().unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

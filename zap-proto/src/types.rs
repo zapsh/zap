@@ -937,6 +937,8 @@ pub enum Request {
     },
     /// 站点 nginx 日志轮转（root）：按天把 access.log / error.log 切割为
     /// `{kind}.log-YYYYMMDD` 并 gzip 归档，清理超期归档，最后通知 nginx 重新打开日志。
+    /// 同时轮转全局 WAF 审计日志（`SecAuditLog` 指向的文件，如 `/var/log/modsec_audit.log`，
+    /// 该文件由 ModSecurity 持有 fd、不随 nginx reopen 重开，故用 copytruncate）。
     #[serde(rename = "site.log_rotate")]
     SiteLogRotate {
         /// 待轮转的站点日志目录（面板规划 `{home}/logs/{site_id}-{name}`）
@@ -977,6 +979,14 @@ pub enum Request {
         /// access | error；空 = 两者都清空
         #[serde(default)]
         kind: String,
+    },
+    /// 站点日志：按 unique_id 反查 WAF 审计明细（租户日志界面用）。
+    /// 复用全局 WAF 审计日志（`SecAuditLog`），仅支持 unique_id 反查，刻意不暴露尾部模式，
+    /// 以免向租户泄露其它租户的审计记录。unique_id 取自 error_log 命中行末尾 `[unique_id "..."]`。
+    #[serde(rename = "site.log_audit")]
+    SiteLogAudit {
+        /// 要反查的 unique_id
+        unique_id: String,
     },
     /// 部署（或重新部署）站点应用：准备运行时依赖 -> 写 systemd unit -> 重新启动。
     /// 幂等：同一个 (site_id, name) 重复调用即「改配置后重新部署」。
@@ -1336,9 +1346,11 @@ pub enum Request {
     /// 保存一个 WAF 规则文件：写前备份，`nginx -t` 不过就回滚。
     #[serde(rename = "waf.conf_save")]
     WafConfSave { path: String, content: String },
-    /// WAF 审计日志尾部（`SecAuditLog` 指向的文件）。
+    /// WAF 审计日志查看。
+    /// - `unique_id` 为空：返回 `SecAuditLog` 指向文件的尾部 `lines` 行（原始文本，兼容旧行为）。
+    /// - `unique_id` 非空：从主日志抽取该事务的完整审计条目并结构化解析（命中规则明细）。
     #[serde(rename = "waf.audit")]
-    WafAudit { lines: u32 },
+    WafAudit { lines: u32, unique_id: String },
     /// 一键开启 WAF：组件（libmodsecurity + 模块 .so）已在盘上、只是没挂到 nginx 上时，
     /// 补齐 `load_module` 与 conf.d 启用文件并重载。缺组件则拒绝（那属于安装）。
     #[serde(rename = "waf.enable")]

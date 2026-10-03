@@ -371,7 +371,67 @@
       top="6vh"
       append-to-body
     >
-      <pre class="waf-audit mono">{{ auditText || t('waf.auditEmpty') }}</pre>
+      <div class="waf-audit-bar">
+        <el-input
+          v-model="auditUid"
+          :placeholder="t('waf.auditUidPlaceholder')"
+          clearable
+          style="max-width: 380px"
+          @keyup.enter="runAuditQuery"
+        />
+        <el-button type="primary" :loading="auditLoading" @click="runAuditQuery">
+          {{ t('waf.auditQuery') }}
+        </el-button>
+        <el-button @click="openAudit">{{ t('waf.auditTail') }}</el-button>
+      </div>
+
+      <!-- 按 unique_id 查到的结构化明细 -->
+      <div v-if="auditDetail && auditDetail.found" class="waf-audit-detail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item :label="t('waf.auditReqLine')">
+            {{ auditDetail.request?.line }}
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('waf.auditClient')">
+            {{ auditDetail.header?.client_ip }}:{{ auditDetail.header?.client_port }}
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('waf.auditTime')">
+            {{ auditDetail.header?.timestamp }}
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('waf.auditServer')">
+            {{ auditDetail.header?.server_ip }}:{{ auditDetail.header?.server_port }}
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <div class="waf-audit-sub">{{ t('waf.auditRules') }}</div>
+        <el-table :data="auditDetail.messages" size="small" border>
+          <el-table-column prop="id" label="ID" width="110" />
+          <el-table-column prop="action" :label="t('waf.auditAction')" width="200" />
+          <el-table-column prop="severity" :label="t('waf.auditSeverity')" width="120" />
+          <el-table-column prop="msg" :label="t('waf.auditMsg')" min-width="200" />
+          <el-table-column :label="t('waf.auditRule')" min-width="220">
+            <template #default="{ row }">
+              {{ row.file.split('/').pop() }} : {{ row.line }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="data" :label="t('waf.auditData')" min-width="220" />
+        </el-table>
+
+        <el-collapse class="waf-audit-raw">
+          <el-collapse-item :title="t('waf.auditRaw')">
+            <pre class="mono">{{ auditDetail.raw }}</pre>
+          </el-collapse-item>
+        </el-collapse>
+      </div>
+
+      <el-alert
+        v-else-if="auditDetail && !auditDetail.found"
+        type="info"
+        :closable="false"
+        :title="t('waf.auditNotFound')"
+      />
+
+      <!-- 尾部模式（未输入 unique_id） -->
+      <pre v-else class="waf-audit mono">{{ auditText || t('waf.auditEmpty') }}</pre>
     </el-dialog>
 
     <AppStoreLogDrawer ref="logDrawer" />
@@ -413,6 +473,7 @@ import {
   getWafStatus,
   setWafEngine,
   enableWaf,
+  type WafAuditData,
   installWaf,
   saveWafConf,
   type WafStatus,
@@ -729,6 +790,9 @@ const ruleLoading = ref(false)
 const ruleSaving = ref(false)
 const auditVisible = ref(false)
 const auditText = ref('')
+const auditUid = ref('')
+const auditLoading = ref(false)
+const auditDetail = ref<WafAuditData | null>(null)
 /** 安装任务轮询（编译分钟级），完成后刷新状态 */
 let wafTimer: number | undefined
 
@@ -837,12 +901,33 @@ async function saveRule() {
 
 async function openAudit() {
   auditVisible.value = true
+  auditUid.value = ''
+  auditDetail.value = null
   auditText.value = ''
   try {
     const res = await getWafAudit(200)
     auditText.value = res.data.content
   } catch {
     /* interceptor 已提示 */
+  }
+}
+
+/** 按 unique_id 反查单条审计明细（来自 error_log 末尾的 [unique_id "..."]） */
+async function runAuditQuery() {
+  const uid = auditUid.value.trim()
+  if (!uid) {
+    openAudit()
+    return
+  }
+  auditLoading.value = true
+  auditDetail.value = null
+  try {
+    const res = await getWafAudit(200, uid)
+    auditDetail.value = res.data
+  } catch {
+    /* interceptor 已提示 */
+  } finally {
+    auditLoading.value = false
   }
 }
 
@@ -1111,6 +1196,34 @@ onUnmounted(() => {
   line-height: 1.6;
   background: var(--el-fill-color-light);
   border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.waf-audit-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.waf-audit-detail {
+  margin-top: 4px;
+}
+.waf-audit-sub {
+  font-weight: 600;
+  margin: 16px 0 8px;
+  color: var(--el-text-color-primary);
+}
+.waf-audit-raw {
+  margin-top: 12px;
+}
+.waf-audit-raw .mono {
+  max-height: 40vh;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
+  padding: 10px;
   white-space: pre-wrap;
   word-break: break-all;
 }

@@ -287,6 +287,14 @@ pub async fn rotate(log_roots: Vec<String>, keep_days: u32) -> Response {
             removed += prune_archives(&dir, keep);
         }
 
+        // 全局 WAF 审计日志（/var/log/modsec_audit.log）：ModSecurity 模块持有 fd、不随
+        // nginx USR1 重开，故用 copytruncate（拷贝→压缩→截断原文件），随主日志一并轮转。
+        if let Some(log) = super::waf::audit_log_path() {
+            if let Some(a) = rotate_one_audit_log(&log, keep) {
+                rotated.push(a);
+            }
+        }
+
         let reopened = if rotated.is_empty() {
             false
         } else {
@@ -305,6 +313,93 @@ pub async fn rotate(log_roots: Vec<String>, keep_days: u32) -> Response {
     .await
     .unwrap_or_else(|e| Ok(Response::err(-1, format!("任务执行失败: {e}"))))
     .unwrap_or_else(|e| Response::err(-1, e))
+}
+
+/// 轮转全局 WAF 审计日志（copytruncate：拷贝→压缩→截断原文件）。
+///
+/// 与站点 access/error 不同，审计日志由 ModSecurity 模块持有 fd、不会随 nginx `reopen`（USR1）
+/// 重新打开——若用 rename 方式，ModSecurity 仍往旧 inode 追加，等于没切。copytruncate 保留
+/// 原 inode、只把内容清空，ModSecurity 继续往同一文件写，不丢写也无需重启。
+///
+/// 返回归档信息；未安装 WAF / 未配置审计日志 / 日志为空时返回 `None`（空日志仍会清理过期归档）。
+fn rotate_one_audit_log(log: &Path, keep: u32) -> Option<serde_json::Value> {
+    if !log.is_file() {
+        return None;
+    }
+    let dir = log.parent()?;
+    let base = log.file_name()?.to_string_lossy().to_string();
+    let meta = std::fs::metadata(&log).ok()?;
+    let bytes = meta.len();
+    if bytes == 0 {
+        // 空日志不产归档，但顺手清掉过期归档
+        prune_named_archives(dir, &base, keep);
+        return None;
+    }
+    let stamp = Local::now().format("%Y%m%d").to_string();
+    let mut dest = dir.join(format!("{base}-{stamp}"));
+    let mut n = 1;
+    while dest.exists() || gz_of(&dest).exists() {
+        dest = dir.join(format!("{base}-{stamp}-{n}"));
+        n += 1;
+    }
+    // 拷贝当前内容到归档，再压缩
+    let copied = match root_cmd("cp").arg("-f").arg(&log).arg(&dest).output() {
+        Ok(o) if o.status.success() => dest,
+        _ => {
+            tracing::warn!("拷贝 WAF 审计日志失败: {}", log.display());
+            return None;
+        }
+    };
+    let archived = match root_cmd("gzip").arg("-f").arg(&copied).output() {
+        Ok(o) if o.status.success() => gz_of(&copied),
+        _ => copied,
+    };
+    // 截断原审计日志：保留 inode，ModSecurity 继续往同一文件追加
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .open(&log)
+        .and_then(|f| f.set_len(0))
+        .is_err()
+    {
+        tracing::warn!("截断 WAF 审计日志失败（归档已生成）: {}", log.display());
+    }
+    prune_named_archives(dir, &base, keep);
+    Some(json!({
+        "log_root": log.display().to_string(),
+        "kind": "waf-audit",
+        "archive": archived.display().to_string(),
+        "name": archived.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+        "bytes": bytes,
+    }))
+}
+
+/// 只清理指定基础名的归档（如 `modsec_audit.log-*`），避免误删同目录其它日志文件。
+fn prune_named_archives(dir: &Path, base: &str, keep_days: u32) -> usize {
+    let cutoff = (Local::now() - chrono::Duration::days(keep_days as i64))
+        .format("%Y%m%d")
+        .to_string();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let prefix = format!("{base}-");
+    let mut removed = 0;
+    for e in rd.flatten() {
+        let path = e.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        let Some(date) = archive_date(&name) else {
+            continue;
+        };
+        if date < cutoff && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// site.log_list：列出当前日志与归档
@@ -503,5 +598,65 @@ mod tests {
         assert_eq!(last2, vec!["l3", "l4 404"]);
         let kw = pick_lines(text, 10, "404", "");
         assert_eq!(kw, vec!["l2 404", "l4 404"]);
+    }
+
+    /// 审计日志 copytruncate：原文件被截断为 0，归档生成且含原始内容；过期归档被清、无关文件不动。
+    #[test]
+    fn audit_log_is_copytruncated_and_pruned() {
+        let dir = std::env::temp_dir().join("zap-audit-rotate-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("modsec_audit.log");
+        std::fs::write(&log, b"line1\nline2\n").unwrap();
+        // 一个超期归档 + 一个在保内归档 + 一个同名但非审计日志的文件（不应被删）
+        let old = dir.join("modsec_audit.log-20200101.gz");
+        std::fs::write(&old, b"old").unwrap();
+        let fresh = dir.join("modsec_audit.log-20990101.gz");
+        std::fs::write(&fresh, b"fresh").unwrap();
+        let unrelated = dir.join("other.log-20200101.gz");
+        std::fs::write(&unrelated, b"x").unwrap();
+
+        let a = rotate_one_audit_log(&log, 30).expect("应返回归档信息");
+        assert_eq!(a["kind"], "waf-audit");
+        assert_eq!(a["bytes"].as_u64().unwrap(), 12);
+
+        // 原文件被截断
+        let after = std::fs::read(&log).unwrap();
+        assert!(after.is_empty(), "原审计日志应被截断为 0 字节");
+
+        // 归档存在且可解压还原内容
+        let archived = dir.join(a["name"].as_str().unwrap());
+        assert!(archived.exists(), "应生成 gzip 归档");
+        let out = std::process::Command::new("gzip")
+            .args(["-dc"])
+            .arg(&archived)
+            .output()
+            .unwrap();
+        assert_eq!(out.stdout, b"line1\nline2\n");
+
+        // 超期归档被删、在保内保留、无关文件不动
+        assert!(!old.exists(), "超期归档应被清理");
+        assert!(fresh.exists(), "在保内归档应保留");
+        assert!(unrelated.exists(), "无关日志不应被误删");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_log_empty_is_skipped_but_pruned() {
+        let dir = std::env::temp_dir().join("zap-audit-rotate-empty-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("modsec_audit.log");
+        std::fs::write(&log, b"").unwrap();
+        let old = dir.join("modsec_audit.log-20200101.gz");
+        std::fs::write(&old, b"old").unwrap();
+
+        assert!(rotate_one_audit_log(&log, 30).is_none(), "空日志应返回 None");
+        assert!(!old.exists(), "空日志仍应清理过期归档");
+        // 原文件保持为空（不应被创建归档）
+        assert!(std::fs::read_dir(&dir).unwrap().count() == 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

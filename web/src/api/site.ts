@@ -1,5 +1,6 @@
 import { http } from '@/utils/request'
 import type { ApiResponse } from '@/types/api_response'
+import type { WafAuditData } from '@/api/waf'
 
 // ── 站点日志 ────────────────────────────────────────────────
 
@@ -53,6 +54,13 @@ export async function clearSiteLogs(id: number, kind = '') {
 /** 立即轮转（按天切割归档） */
 export async function rotateSiteLogs(id: number) {
   return http.post<ApiResponse>('/site/logs/rotate', { id })
+}
+
+/** 按 unique_id 反查 WAF 审计明细（租户日志界面，仅 unique_id 模式） */
+export async function getSiteLogAudit(id: number, uniqueId: string) {
+  return http.get<ApiResponse<WafAuditData>>('/site/logs/audit', {
+    params: { id, unique_id: uniqueId },
+  })
 }
 
 // ── 站点流量分析 ────────────────────────────────────────────

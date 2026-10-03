@@ -828,6 +828,7 @@ fn api_routers() -> Router {
         .route("/site/logs/archives", get(site::site_logs_archives))
         .route("/site/logs/clear", post(site::site_logs_clear))
         .route("/site/logs/rotate", post(site::site_logs_rotate))
+        .route("/site/logs/audit", get(site::site_logs_audit))
         .route("/site/traffic", get(site::site_traffic))
         // 站点应用（Application Manager）
         .route("/site/app/caps", get(app::app_caps))

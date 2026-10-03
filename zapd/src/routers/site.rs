@@ -3893,6 +3893,36 @@ pub async fn site_logs_archives(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct SiteLogsAuditQuery {
+    pub id: i64,
+    pub unique_id: String,
+}
+
+/// GET /api/site/logs/audit：按 unique_id 反查该站点 WAF 审计明细（仅 unique_id 模式）。
+///
+/// 归属校验走 `site_in_scope`：租户只能查自己站点 error_log 里出现的 ID；审计日志虽是全局文件，
+/// 但 unique_id 是高熵随机串，无法横向越权读取他人记录。动词层面也不暴露尾部模式。
+pub async fn site_logs_audit(
+    claims: ValidatedClaims,
+    Query(q): Query<SiteLogsAuditQuery>,
+) -> ZapJsonResult {
+    require_manageable(&claims)?;
+    site_in_scope(&claims, q.id).await?;
+    let resp = crate::zapexec::call(Request::SiteLogAudit {
+        unique_id: q.unique_id.trim().to_string(),
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({
+        "code": 0,
+        "message": "OK",
+        "data": resp.data.unwrap_or_default(),
+    })))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SiteLogsClearPayload {
     pub id: i64,
     /// access | error；空 = 两者都清空

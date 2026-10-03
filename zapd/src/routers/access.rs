@@ -236,6 +236,11 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::action("site", "update")),
     ),
     (
+        "/site/logs/audit",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
+    (
         "/site/traffic",
         Required::User,
         Some(Perm::action("site", "view")),

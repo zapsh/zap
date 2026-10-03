@@ -230,9 +230,11 @@ pub async fn engine(
 #[derive(Debug, Deserialize)]
 pub struct AuditQuery {
     pub lines: Option<u32>,
+    /// 传入则按 unique_id 抽取单条审计明细，否则返回尾部 `lines` 行
+    pub unique_id: Option<String>,
 }
 
-/// GET /system/waf/audit?lines=200
+/// GET /system/waf/audit?lines=200[&unique_id=...]
 pub async fn audit_log(
     claims: ValidatedClaims,
     Extension(addr): Extension<SocketAddr>,
@@ -242,6 +244,7 @@ pub async fn audit_log(
     let _ = addr;
     exec(Request::WafAudit {
         lines: q.lines.unwrap_or(200).clamp(1, 2000),
+        unique_id: q.unique_id.clone().unwrap_or_default(),
     })
     .await
 }

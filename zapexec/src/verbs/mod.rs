@@ -402,6 +402,7 @@ pub async fn dispatch(req: Request) -> Response {
             status,
         } => logs::read(log_root, kind, archive, lines, keyword, status).await,
         Request::SiteLogClear { log_root, kind } => logs::clear(log_root, kind).await,
+        Request::SiteLogAudit { unique_id } => waf::audit_by_unique_id(&unique_id).await,
         // ── 站点应用（Application Manager）─────────────────────
         Request::AppDeploy {
             site_id,
@@ -559,7 +560,7 @@ pub async fn dispatch(req: Request) -> Response {
         Request::WafConfList => waf::conf_list().await,
         Request::WafConfRead { path } => waf::conf_read(&path).await,
         Request::WafConfSave { path, content } => waf::conf_save(&path, &content).await,
-        Request::WafAudit { lines } => waf::audit(lines).await,
+        Request::WafAudit { lines, unique_id } => waf::audit(lines, &unique_id).await,
         Request::WafSetEngine { mode } => waf::set_engine(&mode).await,
         Request::WafEnable => waf::enable().await,
         Request::ServicesOverview => services::overview().await,

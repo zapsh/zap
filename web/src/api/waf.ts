@@ -91,9 +91,61 @@ export function setWafEngine(mode: 'On' | 'DetectionOnly' | 'Off') {
   }>('/system/waf/engine', { mode })
 }
 
-export function getWafAudit(lines = 200) {
-  return http.get<{ code: number; message: string; data: { path: string; content: string } }>(
+/** 单条审计命中规则（节 H 解析结果） */
+export interface WafAuditMessage {
+  /** 动作：Warning / Access denied with code 403 (phase 2) ... */
+  action: string
+  /** 规则 id（如 932160 / 949110） */
+  id: string
+  /** 规则描述（msg） */
+  msg: string
+  /** severity 名称（CRITICAL / WARNING ...） */
+  severity: string
+  /** severity 原始数字 */
+  severity_raw: string
+  /** 规则文件 */
+  file: string
+  /** 规则行号 */
+  line: string
+  /** 匹配到的具体数据 */
+  data: string
+  /** 标签（attack-rce / paranoia-level/1 ...） */
+  tags: string[]
+}
+
+/** 按 unique_id 查询返回的审计明细 */
+export interface WafAuditData {
+  path: string
+  /** 兼容旧视图：尾部模式时即原始文本；unique_id 模式时为该条原始块 */
+  content: string
+  /** 是否命中（unique_id 模式） */
+  found?: boolean
+  unique_id?: string
+  /** 节 A 头部 */
+  header?: {
+    timestamp: string
+    unique_id: string
+    client_ip: string
+    client_port: string
+    server_ip: string
+    server_port: string
+  }
+  /** 节 B 请求行 */
+  request?: {
+    line: string
+    method: string
+    uri: string
+    protocol: string
+  }
+  /** 节 H 命中的规则列表 */
+  messages?: WafAuditMessage[]
+  /** unique_id 模式下的完整原始条目 */
+  raw?: string
+}
+
+export function getWafAudit(lines = 200, unique_id?: string) {
+  return http.get<{ code: number; message: string; data: WafAuditData }>(
     '/system/waf/audit',
-    { params: { lines } },
+    { params: { lines, ...(unique_id ? { unique_id } : {}) } },
   )
 }

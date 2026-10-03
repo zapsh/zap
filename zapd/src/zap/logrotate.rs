@@ -21,10 +21,9 @@ pub async fn rotate_all() {
         .fetch_all(pool)
         .await
         .unwrap_or_default();
-    if roots.is_empty() {
-        return;
-    }
 
+    // 即便没有带独立日志目录的站点，全局 WAF 审计日志（/var/log/modsec_audit.log）仍要轮转，
+    // 因此即使 roots 为空也照常调用轮转（动词内部会轮转审计日志）。
     match crate::zapexec::call(Request::SiteLogRotate {
         log_roots: roots,
         keep_days: KEEP_DAYS,
