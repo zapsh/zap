@@ -72,6 +72,9 @@ export function menuToRoute(menuItem: MenuItem): RouteRecordRaw | null {
   if (menuItem.children?.length) {
     route.children = menuItem.children
       .filter((child) => child.type !== 'button')
+      // 与顶层一致：隐藏子菜单（如已合并进其它页签的旧入口）不注册路由，
+      // 否则会对其缺失的组件路径报错（组件不存在: ...）
+      .filter((child) => !child.meta?.hidden)
       .map((child) => menuToRoute(child))
       .filter((child): child is RouteRecordRaw => child !== null)
   }

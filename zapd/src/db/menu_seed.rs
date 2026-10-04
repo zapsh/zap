@@ -548,21 +548,6 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server")
     .icon("material-symbols:link")
     .affix(),
-    // 四层转发：TCP / UDP 端口转发（Nginx stream），仅管理员。
-    // 菜单隐藏：入口已并入「服务配置 → Nginx → 四层转发」，避免两处维护。
-    MenuSeed::new(
-        "server-stream",
-        "四层转发",
-        "menu",
-        "stream",
-        "server/stream/index",
-        R_ADMIN,
-        7,
-    )
-    .parent("server")
-    .icon("material-symbols:swap-horiz")
-    .affix()
-    .hidden(),
     MenuSeed::new(
         "server-firewall",
         "防火墙",

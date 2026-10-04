@@ -276,14 +276,12 @@ async fn init_backup_paths_table() {
 ///     .execute(pool).await;
 /// ```
 async fn sync_menu_features() {
-    // 四层转发收进「服务配置 → Nginx」页内（原独立菜单隐藏），老库升级时同步
+    // 四层转发收进「服务配置 → Nginx」页内（原独立菜单已废弃）：老库升级时清掉这条
+    // 指向不存在组件（server/stream/index）的死记录，避免前端注册路由时报「组件不存在」。
     let pool = get_db_pool().await;
-    let _ = sqlx::query(
-        "UPDATE menus SET hidden = 1, updated_at = strftime('%s','now') \
-         WHERE name = 'server-stream' AND hidden = 0",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("DELETE FROM menus WHERE name = 'server-stream'")
+        .execute(pool)
+        .await;
 }
 
 // ── user ───────────────────────────────────────────────────
