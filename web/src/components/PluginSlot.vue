@@ -186,6 +186,10 @@ const form = reactive<Record<string, string>>({})
 const boolVal = reactive<Record<string, boolean>>({})
 const multiVal = reactive<Record<string, string[]>>({})
 
+// iframe（ui.html）通过 zap.pickDir() / zap.pickFile() 发起的选择请求（pending）；
+// 选择器确认后由 replyPick 把结果回传 iframe，与表单内的 dir/file 选项共用同一套组件。
+const pickerReq = ref<{ id: string; type: 'dir' | 'file'; multiple: boolean } | null>(null)
+
 // 目录选择器：从站点根（webRoot）出发选目录，返回相对于站点根的相对路径，
 // 与插件 main.lua 里 `site_root .. "/" .. target` 的语义一致；无 webRoot 时返回绝对路径。
 const dirVisible = ref(false)
@@ -201,6 +205,13 @@ function onDirConfirm(absPath: string) {
   let rel = absPath
   if (root && absPath.startsWith(root)) {
     rel = absPath.slice(root.length).replace(/^\/+/, '')
+  }
+  // iframe 发起的选择请求：把结果回传 iframe，不写表单字段
+  if (pickerReq.value?.type === 'dir') {
+    replyPick(pickerReq.value.id, rel)
+    pickerReq.value = null
+    dirVisible.value = false
+    return
   }
   form[dirTarget.value] = rel
   dirVisible.value = false
@@ -219,8 +230,35 @@ function openFile(opt: PluginOption) {
   fileVisible.value = true
 }
 function onFileConfirm(paths: string[]) {
+  // iframe 发起的选择请求：回传绝对路径（多选用空格连接，与表单 files 一致），不写表单字段
+  if (pickerReq.value?.type === 'file') {
+    const data = pickerReq.value.multiple ? (paths || []).join(' ') : (paths?.[0] || '')
+    replyPick(pickerReq.value.id, data)
+    pickerReq.value = null
+    fileVisible.value = false
+    return
+  }
   form[fileTarget.value] = (paths || []).join(' ')
   fileVisible.value = false
+}
+
+/** iframe 通过 zap.pickDir() / zap.pickFile() 请求打开父页面的选择器（复用页面上的组件）。 */
+function openPicker(d: any) {
+  if (d.pick === 'file') {
+    pickerReq.value = { id: d.id, type: 'file', multiple: !!d.multiple }
+    fileMultiple.value = !!d.multiple
+    fileStartPath.value = (d.startPath as string) || props.webRoot || ''
+    fileVisible.value = true
+  } else {
+    pickerReq.value = { id: d.id, type: 'dir', multiple: false }
+    dirStartPath.value = (d.startPath as string) || props.webRoot || ''
+    dirVisible.value = true
+  }
+}
+
+/** 把选择结果回传给 iframe（与 RPC 桥的 pending 约定一致：{ ok, data }）。 */
+function replyPick(id: string, data: any) {
+  frameRef.value?.contentWindow?.postMessage({ __zapRpc: 1, id, ok: true, data }, '*')
 }
 
 type Choice = { label: string; value: string }
@@ -269,7 +307,29 @@ const RPC_BRIDGE = `<script>
   }
   window.zap = {
     call: call,
-    run: function (options, onLine) { return call('run', options, onLine); }
+    run: function (options, onLine) { return call('run', options, onLine); },
+    // 调用父页面的目录 / 文件选择器（与 manifest options 里的 type:dir / type:file 同一套组件），
+    // 返回 Promise：resolve 选择结果（dir 回传相对站点根路径；file 回传绝对路径，多选用空格连接）
+    pickDir: function (opts) {
+      return new Promise(function (resolve, reject) {
+        var id = 'p' + (++seq);
+        pending[id] = { resolve: resolve, reject: reject };
+        parent.postMessage(
+          { __zapRpc: 1, id: id, pick: 'dir', startPath: (opts && opts.startPath) || '', title: (opts && opts.title) || '' },
+          '*'
+        );
+      });
+    },
+    pickFile: function (opts) {
+      return new Promise(function (resolve, reject) {
+        var id = 'p' + (++seq);
+        pending[id] = { resolve: resolve, reject: reject };
+        parent.postMessage(
+          { __zapRpc: 1, id: id, pick: 'file', multiple: !!(opts && opts.multiple), startPath: (opts && opts.startPath) || '', title: (opts && opts.title) || '' },
+          '*'
+        );
+      });
+    }
   };
 })();
 <\/script>
@@ -363,6 +423,11 @@ function onWindowMessage(ev: MessageEvent) {
   if (!frame || ev.source !== frame.contentWindow) return
   const d = ev.data
   if (!d || d.__zapRpc !== 1 || !d.id) return
+  // iframe 请求打开目录 / 文件选择器（zap.pickDir / zap.pickFile）
+  if (d.pick) {
+    openPicker(d)
+    return
+  }
   void handleRpc(d)
 }
 
