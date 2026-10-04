@@ -53,7 +53,7 @@ export function pluginList(params: { slot?: string; scope?: string; site_id?: nu
 }
 
 /** 取插件自带的 HTML 界面内容（渲染进沙箱 iframe）。 */
-export function pluginUi(params: { name: string; level?: 'system' }) {
+export function pluginUi(params: { name: string }) {
   return http.get('/plugin/ui', { params })
 }
 
@@ -78,17 +78,15 @@ export function pluginCancel(task_id: string) {
 /**
  * 上传插件包安装（multipart）。
  *
- * 字段顺序很重要：`level` / `force` / `name` 要先 append，文件最后 append ——
+ * 字段顺序很重要：`force` / `name` 要先 append，文件最后 append ——
  * 后端按 multipart 字段到达顺序解析，文件放最后才能保证前面的选项已被读到。
  */
 export function pluginInstallUpload(payload: {
   file: File
-  level: 'system'
   force?: boolean
   name?: string
 }) {
   const fd = new FormData()
-  fd.append('level', payload.level)
   fd.append('force', payload.force ? 'true' : 'false')
   if (payload.name) fd.append('name', payload.name)
   fd.append('file', payload.file)
@@ -96,6 +94,6 @@ export function pluginInstallUpload(payload: {
 }
 
 /** 卸载插件（删除整个插件目录，仅管理员）。 */
-export function pluginUninstall(payload: { name: string; level: 'system' }) {
+export function pluginUninstall(payload: { name: string }) {
   return http.post('/plugin/uninstall', payload)
 }

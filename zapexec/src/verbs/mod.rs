@@ -199,13 +199,11 @@ pub async fn dispatch(req: Request) -> Response {
             provision,
             user,
             run_mode,
-            level,
-            home,
             run_id,
         } => {
             appstore::install(
                 pkg_path, source, repo_id, version, action, options, instance, provision, user,
-                run_mode, level, home, run_id,
+                run_mode, run_id,
             )
             .await
         }
@@ -235,8 +233,6 @@ pub async fn dispatch(req: Request) -> Response {
             provision,
             user,
             run_mode,
-            level,
-            home,
             run_id,
         } => {
             appstore::upgrade(
@@ -251,8 +247,6 @@ pub async fn dispatch(req: Request) -> Response {
                 provision,
                 user,
                 run_mode,
-                level,
-                home,
                 run_id,
             )
             .await
@@ -311,25 +305,22 @@ pub async fn dispatch(req: Request) -> Response {
             name,
             actor,
             home,
-            level,
             source,
             src,
             force,
         } => {
-            plugin::plugin_install(actor, home, name, level, source, src, force).await
+            plugin::plugin_install(actor, home, name, source, src, force).await
         }
         Request::PluginUninstall {
             name,
             actor,
             home,
-            level,
-        } => plugin::plugin_uninstall(actor, home, name, level).await,
+        } => plugin::plugin_uninstall(actor, home, name).await,
         Request::PluginUi {
             name,
             actor,
             home,
-            level,
-        } => plugin::plugin_ui(actor, home, name, level).await,
+        } => plugin::plugin_ui(actor, home, name).await,
         Request::AppstoreInstanceAction {
             pkg_path,
             instance,

@@ -465,24 +465,14 @@ pub async fn packages(claims: ValidatedClaims) -> ZapJsonResult {
         .map(|(h, _)| h)
         .unwrap_or_default();
     let mut installed_all = installed.clone();
-    // 按 pkg_path 去重：插件已被 scan_installed 计入时，跳过 scan_plugin_installs 的重复记录，
-    // 但把它带的 level（system）补回原记录，保证普通用户的 system_shared 标记不丢。
+    // 按 pkg_path 去重：插件已被 scan_installed 计入时，跳过 scan_plugin_installs 的重复记录
     let mut seen: std::collections::HashSet<String> = installed_all
         .iter()
         .filter_map(|i| i.get("pkg_path").and_then(|p| p.as_str()).map(|s| s.to_string()))
         .collect();
     for p in ast::scan_plugin_installs(&home) {
         match p.get("pkg_path").and_then(|x| x.as_str()) {
-            Some(pkg) if seen.contains(pkg) => {
-                if p.get("level").and_then(|l| l.as_str()) == Some("system") {
-                    if let Some(ex) = installed_all
-                        .iter_mut()
-                        .find(|i| i.get("pkg_path").and_then(|x| x.as_str()) == Some(pkg))
-                    {
-                        ex["level"] = json!("system");
-                    }
-                }
-            }
+            Some(pkg) if seen.contains(pkg) => {}
             Some(pkg) => {
                 seen.insert(pkg.to_string());
                 installed_all.push(p);
@@ -501,12 +491,6 @@ pub async fn packages(claims: ValidatedClaims) -> ZapJsonResult {
                 .push(inst.clone());
         }
     }
-    // 系统级已装的插件名集合：普通用户看到这些时不让再装（共享，无需重复安装）
-    let system_installed: std::collections::HashSet<String> = installed_all
-        .iter()
-        .filter(|i| i.get("level").and_then(|l| l.as_str()) == Some("system"))
-        .filter_map(|i| i.get("pkg_path").and_then(|p| p.as_str()).map(|s| s.to_string()))
-        .collect();
     let mut items: Vec<Value> = Vec::new();
     for mut pkg in pkgs {
         let pkg_path = pkg
@@ -514,7 +498,6 @@ pub async fn packages(claims: ValidatedClaims) -> ZapJsonResult {
             .and_then(|x| x.as_str())
             .unwrap_or_default()
             .to_string();
-        let cat = pkg_path.split('/').next().unwrap_or_default().to_string();
         if let Some(insts) = installed_map.get(&pkg_path) {
             if let Some(inst) = insts.first() {
                 // 兼容旧字段：取第一个实例（多实例时看 installed_instances）
@@ -543,8 +526,6 @@ pub async fn packages(claims: ValidatedClaims) -> ZapJsonResult {
             pkg["installed"] = json!(false);
             pkg["installed_instances"] = json!([]);
         }
-        // 插件去重：系统级已装 → 对普通用户标记 system_shared（商店禁用安装按钮，共享无需重复）
-        pkg["system_shared"] = json!(cat == "plugins" && !is_admin && system_installed.contains(&pkg_path));
         items.push(pkg);
     }
     items.sort_by(|a, b| {
@@ -662,7 +643,6 @@ pub async fn install(
             "插件仅管理员可安装（装到系统目录、全用户共享）；普通用户只能使用已安装的插件".into(),
         ));
     }
-    let (plugin_level, plugin_home) = ("system".to_string(), String::new());
 
     // 注入操作者上下文：面板登录用户与虚拟主机运行模式（固定为独立系统用户）
     let req = Request::AppstoreInstall {
@@ -676,8 +656,6 @@ pub async fn install(
         provision,
         user: Some(claims.sub.clone()),
         run_mode: Some(system_env::VHOST_MODE.to_string()),
-        level: Some(plugin_level),
-        home: Some(plugin_home),
         run_id: run_id.clone(),
     };
     // 编译型任务走并发组：同一时刻只允许一个编译在跑，后到的排队等自动放行
@@ -837,18 +815,6 @@ pub async fn upgrade(
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
 
-    // 插件类包：admin 升级到系统目录，非 admin 升级到自己的用户目录（与安装保持一致）
-    let (plugin_level, plugin_home) = if payload.pkg_path.starts_with("plugins/") {
-        if crate::zap::jwt::is_admin(&claims) {
-            ("system".to_string(), String::new())
-        } else {
-            let (home, _lu) = load_user_home(claims.id as i64).await?;
-            ("user".to_string(), home)
-        }
-    } else {
-        ("system".to_string(), String::new())
-    };
-
     let req = Request::AppstoreUpgrade {
         pkg_path: payload.pkg_path.clone(),
         source: payload.source.clone(),
@@ -861,8 +827,6 @@ pub async fn upgrade(
         provision: load_provision(&payload.pkg_path, payload.instance.as_deref()).await,
         user: Some(claims.sub.clone()),
         run_mode: Some(system_env::VHOST_MODE.to_string()),
-        level: Some(plugin_level),
-        home: Some(plugin_home),
         run_id: run_id.clone(),
     };
     // 升级同样是编译型任务，受同一把"全局只允许一个"的约束（后到的排队）

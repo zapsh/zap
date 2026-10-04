@@ -1615,15 +1615,13 @@ pub async fn install(
     provision: Option<BTreeMap<String, String>>,
     user: Option<String>,
     run_mode: Option<String>,
-    level: Option<String>,
-    home: Option<String>,
     run_id: String,
 ) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let (cat, name) = validate_pkg_path(&pkg_path)?;
         // 插件类包只装系统目录 $ZAP_PATH/plugins（仅管理员可装），不再落到任何用户家目录；
         // 与「上传插件」统一，用户只能使用、不能自行安装。
-        let (plugin_base, plugin_level) = (zap_path().join("plugins"), "system".to_string());
+        let plugin_base = zap_path().join("plugins");
         let pkg_dir = find_package(&pkg_path, &source, repo_id.as_deref())?;
         // 运行身份：webapps 建站包（run_as: user / scope: site）降权为 Linux 账号执行
         let run_as = resolve_run_as(&pkg_dir, &cat, user.as_deref())?;
@@ -1641,8 +1639,6 @@ pub async fn install(
             "provision": provision.clone(),
             "user": user.clone(),
             "run_mode": run_mode.clone(),
-            "level": level.clone(),
-            "home": home.clone(),
         });
         let snapshot = prepare_snapshot(&run_id, &pkg_dir, &spec)?;
         let (script, interpreter) = script_file(&snapshot, "install", "install.sh")?;
@@ -1714,7 +1710,6 @@ pub async fn install(
                     &name,
                     &done_pkg_path,
                     &plugin_base,
-                    &plugin_level,
                 );
             }
             cleanup_snapshot(&done_run_id, code);
@@ -1855,24 +1850,12 @@ pub async fn upgrade(
     provision: Option<BTreeMap<String, String>>,
     user: Option<String>,
     run_mode: Option<String>,
-    level: Option<String>,
-    home: Option<String>,
     run_id: String,
 ) -> Response {
     tokio::task::spawn_blocking(move || -> Result<Response, String> {
         let (cat, name) = validate_pkg_path(&pkg_path)?;
-        // 插件类包落盘级别（同 install）：admin → 系统目录，非 admin → 用户目录
-        let (plugin_base, plugin_level) = if cat == "plugins" {
-            match level.as_deref() {
-                Some("user") if !home.as_deref().unwrap_or("").is_empty() => (
-                    Path::new(home.as_deref().unwrap()).join(".zap").join("plugins"),
-                    "user".to_string(),
-                ),
-                _ => (zap_path().join("plugins"), "system".to_string()),
-            }
-        } else {
-            (zap_path().join("plugins"), "system".to_string())
-        };
+        // 插件类包只装系统目录 $ZAP_PATH/plugins（仅系统级，所有用户共享）
+        let plugin_base = zap_path().join("plugins");
         // 按实例定位槽位（站点类在用户私有目录下）；旧布局自动兜底
         let slot = resolve_slot_with_legacy(
             &cat,
@@ -1911,8 +1894,6 @@ pub async fn upgrade(
             "provision": provision.clone(),
             "user": user.clone(),
             "run_mode": run_mode.clone(),
-            "level": level.clone(),
-            "home": home.clone(),
         });
         let snapshot = prepare_snapshot(&run_id, &pkg_dir, &spec)?;
         let mut env = task_env(&snapshot, &app_path, &name, Some(&version), &run_id);
@@ -2000,7 +1981,6 @@ pub async fn upgrade(
                     &name,
                     &done_pkg_path,
                     &plugin_base,
-                    &plugin_level,
                 );
             }
             cleanup_snapshot(&done_run_id, code);
@@ -2120,9 +2100,6 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
         let cat = pkg_path.split('/').next().unwrap_or("").to_string();
         // 插件类包重跑也落到系统目录 $ZAP_PATH/plugins（与首次一致，仅系统级）
         let plugin_base: PathBuf = zap_path().join("plugins");
-        // 仅用于写回 spec（前端重跑展示），实际落盘级别已固定为 system
-        let plugin_level = spec["level"].as_str().unwrap_or("system").to_string();
-        let _plugin_home = spec["home"].as_str().unwrap_or("").to_string();
         // 槽位：重跑必须落在与首次相同的实例上（旧布局自动兜底）
         let provision: Option<BTreeMap<String, String>> = spec
             .get("provision")
@@ -2242,7 +2219,6 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                             &done_name,
                             &pkg_path,
                             &plugin_base,
-                            &plugin_level,
                         );
                     }
                     // 成功清掉本次重跑的快照（以及被重跑的那次）；失败留下供继续编辑
@@ -2285,7 +2261,6 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
                             &done_name,
                             &pkg_path,
                             &plugin_base,
-                            &plugin_level,
                         );
                     }
                     // 成功清掉本次重跑的快照（以及被重跑的那次）；失败留下供继续编辑

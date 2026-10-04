@@ -11,7 +11,9 @@
           </div>
         </div>
         <div class="head-right">
-          <el-button :icon="Upload" @click="openUpload">{{ t('devPlugins.installUpload') }}</el-button>
+          <el-button v-if="isAdmin" :icon="Upload" @click="openUpload">
+            {{ t('devPlugins.installUpload') }}
+          </el-button>
           <el-button :icon="Refresh" circle :loading="loading" @click="load" />
         </div>
       </div>
@@ -30,16 +32,6 @@
               <span v-if="row.version" class="ver">v{{ row.version }}</span>
             </div>
             <div v-if="row.description" class="cell-desc">{{ row.description }}</div>
-          </template>
-        </el-table-column>
-
-        <el-table-column :label="t('devPlugins.colLevel')" width="120">
-          <template #default="{ row }">
-            <el-tooltip :content="t('devPlugins.levelSystemTip')" placement="top">
-              <el-tag type="warning" effect="plain" size="small">
-                {{ t('devPlugins.levelSystem') }}
-              </el-tag>
-            </el-tooltip>
           </template>
         </el-table-column>
 
@@ -75,7 +67,7 @@
               link
               type="danger"
               size="small"
-              :disabled="row.level === 'system' && !isAdmin"
+              :disabled="!isAdmin"
               @click="onUninstall(row)"
             >
               {{ t('devPlugins.uninstall') }}
@@ -92,10 +84,6 @@
     <!-- 上传安装 -->
     <el-dialog v-model="uploadVisible" :title="t('devPlugins.uploadTitle')" width="520px">
       <el-form label-width="110px">
-        <el-form-item :label="t('devPlugins.uploadLevel')">
-          <span class="form-tip">{{ t('devPlugins.levelSystemTip') }}</span>
-          <div v-if="!isAdmin" class="form-tip">{{ t('devPlugins.adminOnly') }}</div>
-        </el-form-item>
         <el-form-item :label="t('devPlugins.uploadName')">
           <el-input
             v-model="uploadForm.name"
@@ -152,7 +140,8 @@ const submitting = ref(false)
 // 插件统一装在系统目录，所有用户共享；直接展示全部
 const visibleRows = computed(() => rows.value)
 
-// 系统级插件会以 root 身份运行，只有 admin 能装 / 卸；前端先拦一道，后端再兜一次
+// 插件统一由管理员安装到系统目录，只有 admin 能上传 / 卸载；前端先拦一道，后端再兜一次。
+// 运行身份由各插件 manifest 的 scope 决定（站点账号 / root），与安装级别无关。
 const isAdmin = computed(() => (userStore.roles || []).includes('admin'))
 
 async function load() {
@@ -187,14 +176,13 @@ function fmtTime(ts: number) {
 const uploadVisible = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const uploadForm = ref<{
-  level: 'system'
   force: boolean
   name: string
   file: File | null
-}>({ level: 'system', force: false, name: '', file: null })
+}>({ force: false, name: '', file: null })
 
 function openUpload() {
-  uploadForm.value = { level: 'system', force: false, name: '', file: null }
+  uploadForm.value = { force: false, name: '', file: null }
   uploadVisible.value = true
 }
 
@@ -216,7 +204,6 @@ async function submitUpload() {
   try {
     await pluginInstallUpload({
       file: uploadForm.value.file,
-      level: uploadForm.value.level,
       force: uploadForm.value.force,
       name: uploadForm.value.name,
     })
@@ -232,7 +219,7 @@ async function submitUpload() {
 
 // ── 卸载 ────────────────────────────────────────────────────
 async function onUninstall(row: PluginInfo) {
-  if (row.level === 'system' && !isAdmin.value) {
+  if (!isAdmin.value) {
     ElMessage.warning(t('devPlugins.adminOnly'))
     return
   }
@@ -246,7 +233,7 @@ async function onUninstall(row: PluginInfo) {
     return
   }
   try {
-    await pluginUninstall({ name: row.name, level: row.level || 'system' })
+    await pluginUninstall({ name: row.name })
     ElMessage.success(t('devPlugins.uninstallOk'))
     await load()
   } catch (e: any) {

@@ -45,6 +45,8 @@
       ref="packagesRef"
       v-if="activeTab === 'store'"
       :on-multi-instance-uninstall="() => (activeTab = 'installed')"
+      @open-queue="openQueue"
+      @queue-changed="loadQueueCount"
     />
 
     <!-- 任务队列抽屉：应用商店自己的任务（安装 / 升级 / 脚本 / 仓库同步） -->

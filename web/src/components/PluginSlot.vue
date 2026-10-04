@@ -438,7 +438,7 @@ async function openHtml(p: PluginInfo) {
   htmlDialog.value = true
   htmlLoading.value = true
   try {
-    const r: any = await pluginUi({ name: p.name, level: p.level || 'system' })
+    const r: any = await pluginUi({ name: p.name })
     const body = r?.data ?? r
     const payload = body?.data ?? body
     const html = String(payload?.html || '')

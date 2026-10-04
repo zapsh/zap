@@ -1172,14 +1172,14 @@ pub async fn scan_installed(owner: Option<String>) -> Vec<Value> {
 /// 扫描插件安装态，供应用商店标记「已安装」并做去重：
 /// - 系统级 `$ZAP_PATH/plugins/<name>`：全用户共享，对所有人算「已安装」。
 ///
-/// 返回与 [`scan_installed`] 同构的 meta（带 `pkg_path` / `level`），直接并入
+/// 返回与 [`scan_installed`] 同构的 meta（带 `pkg_path`），直接并入
 /// `installed_map` 即可。插件不带 `version`（避免在这里解析 YAML，展示处回退为 `-`）。
 pub fn scan_plugin_installs(_home: &str) -> Vec<Value> {
     let zap = std::env::var("ZAP_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"));
     let mut items: Vec<Value> = Vec::new();
-    let mut scan_dir = |base: PathBuf, level: &str| {
+    let mut scan_dir = |base: PathBuf| {
         let Ok(rd) = std::fs::read_dir(&base) else {
             return;
         };
@@ -1197,7 +1197,6 @@ pub fn scan_plugin_installs(_home: &str) -> Vec<Value> {
             }
             items.push(json!({
                 "pkg_path": format!("plugins/{name}"),
-                "level": level,
                 "version": Value::Null,
                 "source": Value::Null,
                 "installed_at": Value::Null,
@@ -1205,7 +1204,7 @@ pub fn scan_plugin_installs(_home: &str) -> Vec<Value> {
         }
     };
     // 插件只装在系统目录，所有用户共享；不再扫描任何用户家目录
-    scan_dir(zap.join("plugins"), "system");
+    scan_dir(zap.join("plugins"));
     items
 }
 

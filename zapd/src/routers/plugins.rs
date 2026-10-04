@@ -42,9 +42,6 @@ pub struct PluginListQuery {
 #[derive(Deserialize)]
 pub struct PluginUiQuery {
     pub name: String,
-    /// `system`，默认 `system`（所有插件装在系统目录，仅管理员可安装）
-    #[serde(default)]
-    pub level: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,9 +58,6 @@ pub struct PluginRunPayload {
 #[derive(Deserialize)]
 pub struct PluginUninstallPayload {
     pub name: String,
-    /// `system`，默认 `system`
-    #[serde(default)]
-    pub level: Option<String>,
 }
 
 /// 读取插件自带的 HTML 界面文件内容（前端塞进沙箱 iframe 渲染）。
@@ -72,12 +66,10 @@ pub async fn plugin_ui(
     Query(q): Query<PluginUiQuery>,
 ) -> ZapJsonResult {
     let (home, _linux_user) = load_user_home(claims.id as i64).await?;
-    let level = normalize_level(q.level.clone());
     let resp = crate::zapexec::call(Request::PluginUi {
         name: q.name.clone(),
         actor: claims.sub.clone(),
         home,
-        level,
     })
     .await?;
     if resp.code != 0 {
@@ -147,13 +139,6 @@ fn plugin_upload_dir() -> PathBuf {
     base.join("data/plugins/tmp/uploads")
 }
 
-fn normalize_level(level: Option<String>) -> String {
-    match level.unwrap_or_default().as_str() {
-        "system" => "system".to_string(),
-        _ => "system".to_string(),
-    }
-}
-
 /// 系统级插件只有管理员能装 / 卸：它们可以以 root 身份运行。
 fn require_admin_for(claims: &ValidatedClaims, level: &str) -> Result<(), ZapError> {
     if level == "system" && !is_admin(claims) {
@@ -162,16 +147,16 @@ fn require_admin_for(claims: &ValidatedClaims, level: &str) -> Result<(), ZapErr
     Ok(())
 }
 
-/// 上传插件包安装（multipart）：字段 `level` / `force` / `name`，文件字段为 zip / tar.gz。
+/// 上传插件包安装（multipart）：字段 `force` / `name`，文件字段为 zip / tar.gz。
+/// 插件统一装到系统目录 `$ZAP_PATH/plugins`，无需指定级别。
 ///
 /// 文件先落到面板数据盘再交给 zapexec 解包，避免把整个包读进内存。
-/// 建议前端把文件字段放在最后，这样前面的 `level` 等字段已先被读到。
+/// 建议前端把文件字段放在最后，这样前面的 `force` 等字段已先被读到。
 pub async fn plugin_install_upload(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
     mut multipart: Multipart,
 ) -> ZapJsonResult {
-    let mut level = String::from("system");
     let mut force = false;
     let mut name = String::new();
     let mut staged: Option<PathBuf> = None;
@@ -191,7 +176,6 @@ pub async fn plugin_install_upload(
         let file_name = field.file_name().unwrap_or("").to_string();
         if file_name.is_empty() {
             match field.name().unwrap_or("") {
-                "level" => level = field.text().await.unwrap_or_default(),
                 "force" => {
                     let v = field.text().await.unwrap_or_default();
                     force = v == "true" || v == "1" || v == "on";
@@ -235,8 +219,7 @@ pub async fn plugin_install_upload(
     let Some(path) = staged else {
         return Err(ZapError::New(-1, "没有收到插件包文件".into()));
     };
-    let level = normalize_level(Some(level));
-    require_admin_for(&claims, &level)?;
+    require_admin_for(&claims, "system")?;
 
     let (home, _linux_user) = load_user_home(claims.id as i64).await?;
     let src = path.display().to_string();
@@ -244,7 +227,6 @@ pub async fn plugin_install_upload(
         name: name.trim().to_string(),
         actor: claims.sub.clone(),
         home,
-        level: level.clone(),
         source: "archive".to_string(),
         src: src.clone(),
         force,
@@ -261,7 +243,7 @@ pub async fn plugin_install_upload(
         Some(&*claims),
         Some(client_addr.ip().to_string().as_str()),
         "plugin_install",
-        &format!("{level}:archive"),
+        &format!("system:archive"),
         &src,
     )
     .await;
@@ -274,8 +256,7 @@ pub async fn plugin_uninstall(
     Extension(client_addr): Extension<SocketAddr>,
     Json(payload): Json<PluginUninstallPayload>,
 ) -> ZapJsonResult {
-    let level = normalize_level(payload.level);
-    require_admin_for(&claims, &level)?;
+    require_admin_for(&claims, "system")?;
     let name = payload.name.trim().to_string();
     if name.is_empty() {
         return Err(ZapError::New(-1, "缺少插件名".into()));
@@ -285,7 +266,6 @@ pub async fn plugin_uninstall(
         name: name.clone(),
         actor: claims.sub.clone(),
         home,
-        level: level.clone(),
     })
     .await?;
     if resp.code != 0 {
@@ -295,7 +275,7 @@ pub async fn plugin_uninstall(
         Some(&*claims),
         Some(client_addr.ip().to_string().as_str()),
         "plugin_uninstall",
-        &format!("{level}:{name}"),
+        &format!("system:{name}"),
         "",
     )
     .await;

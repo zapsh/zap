@@ -78,11 +78,8 @@ fn read_manifest(dir: &Path) -> Result<serde_yaml::Value, String> {
 
 /// 插件只装在系统级目录 `$ZAP_PATH/plugins`（`system`），仅管理员可写、所有用户共享。
 /// 已移除用户级（`~/.zap/plugins`）：避免普通用户自行放置插件并以 root 执行。
-fn plugin_base(level: &str, _home: &str) -> Result<PathBuf, String> {
-    match level {
-        "system" => Ok(zap_path().join("plugins")),
-        other => Err(format!("未知的插件安装级别: {other}（已废弃用户级，仅支持 system）")),
-    }
+fn plugin_base() -> PathBuf {
+    zap_path().join("plugins")
 }
 
 /// 旧版安装记录文件名：曾写在插件目录内供列表页展示来源 / 安装时间。
@@ -106,7 +103,6 @@ pub(crate) fn write_install_meta(
     source: &str,
     src: &str,
     installed_at: i64,
-    level: &str,
 ) -> Result<(), String> {
     // 安装来源已移除 git，现在只有 `archive`（上传包）/ `appstore`（应用商店）两种合法值；
     // 做归一化兜底，任何非二者的值（含历史 `git`）都统一写成 `archive`，写回不再保留 git 来源。
@@ -142,10 +138,6 @@ pub(crate) fn write_install_meta(
         serde_yaml::Value::String("installed_at".into()),
         serde_yaml::Value::Number(serde_yaml::Number::from(installed_at)),
     );
-    meta.insert(
-        serde_yaml::Value::String("level".into()),
-        serde_yaml::Value::String(level.to_string()),
-    );
     map.insert(
         serde_yaml::Value::String("zap_install".into()),
         serde_yaml::Value::Mapping(meta),
@@ -166,7 +158,6 @@ pub(crate) fn write_appstore_plugin_source(
     name: &str,
     pkg_path: &str,
     base: &Path,
-    level: &str,
 ) {
     if cat != "plugins" {
         return;
@@ -180,7 +171,6 @@ pub(crate) fn write_appstore_plugin_source(
         "appstore",
         pkg_path,
         chrono::Utc::now().timestamp(),
-        level,
     ) {
         warn!("AppStore 插件 {name} 写回安装来源失败: {e}");
     }
@@ -191,7 +181,7 @@ fn manifest_str<'a>(m: &'a serde_yaml::Value, key: &str) -> Option<&'a str> {
 }
 
 /// 把一个插件目录整理成前端需要的描述对象。
-fn describe(dir: &Path, name: &str, level: &str) -> Result<Value, String> {
+fn describe(dir: &Path, name: &str) -> Result<Value, String> {
     let m = read_manifest(dir)?;
     let ui = m.get("ui");
     let ui_str = |k: &str| {
@@ -243,8 +233,6 @@ fn describe(dir: &Path, name: &str, level: &str) -> Result<Value, String> {
         "actions": serde_json::to_value(m.get("actions").cloned().unwrap_or(serde_yaml::Value::Null)).unwrap_or(Value::Null),
         // 自带 HTML 界面：值为 manifest 里 ui.html 声明的相对文件名，空串表示没有
         "html": ui_html_file(&m).unwrap_or_default(),
-        // ── 安装管理相关 ──
-        "level": level,
         "version": manifest_str(&m, "version").unwrap_or("").to_string(),
         "description": manifest_str(&m, "description").unwrap_or("").to_string(),
         "author": manifest_str(&m, "author").unwrap_or("").to_string(),
@@ -295,14 +283,11 @@ fn ui_html_file(m: &serde_yaml::Value) -> Option<String> {
 /// `allow-same-origin`，所以这份 HTML 拿不到面板的 DOM / Cookie / localStorage，
 /// 也发不出带凭据的请求；它要调后端只能走 `postMessage` 让父页面代跑
 /// `plugin.run`，权限与 scope 仍旧由后端把关。
-pub async fn plugin_ui(_actor: String, home: String, name: String, level: String) -> Response {
+pub async fn plugin_ui(_actor: String, _home: String, name: String) -> Response {
     if !is_plugin_name(&name) {
         return Response::err(-1, "非法插件名".to_string());
     }
-    let base = match plugin_base(&level, &home) {
-        Ok(b) => b,
-        Err(e) => return Response::err(-1, e),
-    };
+    let base = plugin_base();
     let dir = base.join(&name);
     let m = match read_manifest(&dir) {
         Ok(m) => m,
@@ -334,16 +319,16 @@ pub async fn plugin_list(
 ) -> Response {
     let zap = zap_path();
     // 插件只装在系统级目录，所有用户共享；不再扫描任何用户家目录
-    let bases: Vec<(PathBuf, &str)> = vec![(zap.join("plugins"), "system")];
+    let bases: Vec<PathBuf> = vec![zap.join("plugins")];
     info!(
         "plugin_list: home={home:?} slot={slot:?} scope={scope:?} zap={}",
         zap.display()
     );
-    for (base, level) in &bases {
-        info!("  base={} level={level} exists={}", base.display(), base.exists());
+    for base in &bases {
+        info!("  base={} exists={}", base.display(), base.exists());
     }
     let mut items = Vec::new();
-    for (base, level) in &bases {
+    for base in &bases {
         let Ok(rd) = std::fs::read_dir(base) else {
             warn!("  read_dir 失败（跳过）: {}", base.display());
             continue;
@@ -381,7 +366,7 @@ pub async fn plugin_list(
                     continue;
                 }
             }
-            match describe(&p, &name, level) {
+            match describe(&p, &name) {
                 Ok(v) => items.push(v),
                 Err(e) => warn!("  插件 {name} 描述失败（跳过）: {e}"),
             }
@@ -402,9 +387,8 @@ pub async fn plugin_list(
 /// 插件只装在系统级目录（`$ZAP_PATH/plugins`），仅管理员可安装，普通用户只能使用。
 pub async fn plugin_install(
     _actor: String,
-    home: String,
+    _home: String,
     name: String,
-    level: String,
     source: String,
     src: String,
     force: bool,
@@ -413,10 +397,7 @@ pub async fn plugin_install(
     if !name.is_empty() && !is_plugin_name(&name) {
         return Response::err(-1, "非法插件名（只允许字母数字、下划线、连字符）");
     }
-    let base = match plugin_base(&level, &home) {
-        Ok(b) => b,
-        Err(e) => return Response::err(-1, e),
-    };
+    let base = plugin_base();
 
     let zap = zap_path();
     let tmp_root = zap.join("data/plugins/tmp");
@@ -471,7 +452,7 @@ pub async fn plugin_install(
         if target.exists() {
             if !force {
                 return Err(format!(
-                    "插件 {effective} 已存在于 {level} 级，如需覆盖请勾选「覆盖安装」"
+                    "插件 {effective} 已存在于 system 级，如需覆盖请勾选「覆盖安装」"
                 ));
             }
             std::fs::remove_dir_all(&target).map_err(|e| format!("移除旧版本失败: {e}"))?;
@@ -496,7 +477,6 @@ pub async fn plugin_install(
             &source,
             &src,
             chrono::Utc::now().timestamp(),
-            &level,
         ) {
             warn!("写入插件安装信息失败（已忽略）: {e}");
         }
@@ -513,9 +493,9 @@ pub async fn plugin_install(
     let _ = std::fs::remove_dir_all(&work);
 
     match res {
-        Ok(effective) => match describe(&base.join(&effective), &effective, &level) {
+        Ok(effective) => match describe(&base.join(&effective), &effective) {
             Ok(info) => {
-                info!("插件安装完成: {effective} ({level}) 来自 {source}");
+                info!("插件安装完成: {effective} (system) 来自 {source}");
                 Response::ok("插件安装完成", Some(info))
             }
             Err(e) => Response::err(-1, format!("插件已安装但读取信息失败: {e}")),
@@ -530,20 +510,16 @@ pub async fn plugin_install(
 /// 卸载插件：删除 `<base>/<name>` 整个目录。
 pub async fn plugin_uninstall(
     _actor: String,
-    home: String,
+    _home: String,
     name: String,
-    level: String,
 ) -> Response {
     if !is_plugin_name(&name) {
         return Response::err(-1, "非法插件名");
     }
-    let base = match plugin_base(&level, &home) {
-        Ok(b) => b,
-        Err(e) => return Response::err(-1, e),
-    };
+    let base = plugin_base();
     let target = base.join(&name);
     if !target.is_dir() {
-        return Response::err(-1, format!("{level} 级插件不存在: {name}"));
+        return Response::err(-1, format!("system 级插件不存在: {name}"));
     }
     // 路径穿越兜底：canonicalize 后必须仍在 base 之内
     let (Ok(canon_target), Ok(canon_base)) = (target.canonicalize(), base.canonicalize()) else {
@@ -554,7 +530,7 @@ pub async fn plugin_uninstall(
     }
     match std::fs::remove_dir_all(&canon_target) {
         Ok(()) => {
-            info!("插件已卸载: {name} ({level})");
+            info!("插件已卸载: {name} (system)");
             Response::ok("插件已卸载", None)
         }
         Err(e) => Response::err(-1, format!("卸载失败: {e}")),
@@ -710,11 +686,10 @@ pub async fn plugin_run(
     }
     let zap = zap_path();
     // 插件只装在系统级目录，所有用户共享
-    let candidates: [(PathBuf, &str); 1] = [(zap.join("plugins").join(&name), "system")];
-    let (dir, level) = match candidates.iter().find(|(p, _)| p.is_dir()) {
-        Some((p, l)) => (p.clone(), *l),
-        None => return Response::err(-1, format!("插件不存在: {name}")),
-    };
+    let dir = zap.join("plugins").join(&name);
+    if !dir.is_dir() {
+        return Response::err(-1, format!("插件不存在: {name}"));
+    }
     let manifest = match read_manifest(&dir) {
         Ok(m) => m,
         Err(e) => return Response::err(-1, e),
@@ -787,7 +762,6 @@ pub async fn plugin_run(
         });
         let ctx = RunCtx {
             scope: scope.clone(),
-            level: level.to_string(),
             run_user: run_user.clone(),
             run_root: run_root.clone(),
             home: home.clone(),
@@ -831,7 +805,6 @@ pub async fn plugin_run(
 
     let ctx = RunCtx {
         scope,
-        level: level.to_string(),
         run_user,
         run_root,
         home,
@@ -890,8 +863,6 @@ pub async fn plugin_run(
 /// 一次插件执行的上下文。
 struct RunCtx {
     scope: String,
-    /// `system` | `user`
-    level: String,
     run_user: Option<String>,
     run_root: Option<String>,
     home: String,
@@ -1129,7 +1100,7 @@ fn run_lua(
                 .map_err(|e| format!("{e}"))?;
         }
     }
-    // zap.site_root / zap.site_linux_user / zap.home_dir / zap.plugin_dir / zap.scope / zap.level
+    // zap.site_root / zap.site_linux_user / zap.home_dir / zap.plugin_dir / zap.scope
     {
         let run_root = ctx.run_root.clone();
         let run_user3 = ctx.run_user.clone();
@@ -1137,7 +1108,6 @@ fn run_lua(
         let home_dir = ctx.home.clone();
         let plugin_dir = ctx.plugin_dir.display().to_string();
         let scope = ctx.scope.clone();
-        let level = ctx.level.clone();
         // site_root / site_linux_user 仅 scope=site 有值；scope=user 返回空（无站点概念）
         let f_root = {
             let s = scope_for_ctx.clone();
@@ -1176,10 +1146,6 @@ fn run_lua(
         let f_scope = lua.create_function(move |_, ()| Ok(scope.clone()));
         zap_tbl
             .set("scope", f_scope.map_err(|e| format!("{e}"))?)
-            .map_err(|e| format!("{e}"))?;
-        let f_level = lua.create_function(move |_, ()| Ok(level.clone()));
-        zap_tbl
-            .set("level", f_level.map_err(|e| format!("{e}"))?)
             .map_err(|e| format!("{e}"))?;
     }
     // zap.canceled：异步插件可轮询判断用户是否点了取消，用于提前自己收尾
@@ -1269,7 +1235,6 @@ fn run_lua(
     let ctx_tbl = lua.create_table().map_err(|e| format!("{e}"))?;
     ctx_tbl.set("action", ctx.action.clone()).map_err(|e| format!("{e}"))?;
     ctx_tbl.set("scope", ctx.scope.clone()).map_err(|e| format!("{e}"))?;
-    ctx_tbl.set("level", ctx.level.clone()).map_err(|e| format!("{e}"))?;
     on_run
         .call::<_, ()>(ctx_tbl)
         .map_err(|e| format!("on_run 执行失败: {e}"))?;
@@ -1635,7 +1600,6 @@ mod tests {
 
         let ctx = RunCtx {
             scope: "site".to_string(),
-            level: "user".to_string(),
             run_user: Some("nobody".to_string()),
             run_root: Some("/tmp".to_string()),
             home: "/tmp".to_string(),
@@ -1674,9 +1638,7 @@ mod tests {
     #[test]
     fn path_helpers() {
         // 插件统一装在系统目录 $ZAP_PATH/plugins；用户级已移除
-        let sys = plugin_base("system", "/home/u1").unwrap();
+        let sys = plugin_base();
         assert!(sys.ends_with("plugins"));
-        assert!(plugin_base("user", "/home/u1").is_err());
-        assert!(plugin_base("bogus", "/home/u1").is_err());
     }
 }

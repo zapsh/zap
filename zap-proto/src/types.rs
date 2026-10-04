@@ -729,12 +729,6 @@ pub enum Request {
         /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
-        /// 插件类包经应用商店安装时的落盘级别：统一 system（$ZAP_PATH/plugins），仅管理员可装。
-        #[serde(skip_serializing_if = "Option::is_none")]
-        level: Option<String>,
-        /// 安装者面板用户的家目录（预留字段，插件统一装系统目录后不再用于定位插件目录）
-        #[serde(skip_serializing_if = "Option::is_none")]
-        home: Option<String>,
         run_id: String,
     },
     /// 卸载包：执行 uninstall.sh 并删除已安装目录
@@ -789,12 +783,6 @@ pub enum Request {
         /// 虚拟主机运行模式：固定 system（每个面板用户一个独立 Linux 账号）；注入 ZAP_RUN_MODE
         #[serde(skip_serializing_if = "Option::is_none")]
         run_mode: Option<String>,
-        /// 插件类包经应用商店升级时的落盘级别（同 AppstoreInstall.level，统一 system）
-        #[serde(skip_serializing_if = "Option::is_none")]
-        level: Option<String>,
-        /// 安装者面板用户的家目录（预留字段）
-        #[serde(skip_serializing_if = "Option::is_none")]
-        home: Option<String>,
         run_id: String,
     },
     /// 运行自定义脚本（仅限 `{data}/users/<username>/scripts/` 内）
@@ -1634,8 +1622,6 @@ pub enum Request {
         name: String,
         actor: String,
         home: String,
-        /// `system` | `user`
-        level: String,
         /// 来源类型：`archive`
         source: String,
         /// archive 时为包路径
@@ -1650,8 +1636,6 @@ pub enum Request {
         name: String,
         actor: String,
         home: String,
-        /// `system` | `user`
-        level: String,
     },
     /// 读取插件自带的 HTML 界面（`manifest.yaml` 里 `ui.html` 指向的文件）。
     ///
@@ -1662,8 +1646,6 @@ pub enum Request {
         name: String,
         actor: String,
         home: String,
-        /// `system` | `user`
-        level: String,
     },
     /// 备份：列出备份目录下的归档（root 特权）。
     #[serde(rename = "backup.list")]
@@ -2016,8 +1998,6 @@ mod tests {
                 provision: None,
                 user: None,
                 run_mode: None,
-                level: None,
-                home: None,
                 run_id: "r1".into(),
             })
             .unwrap(),
@@ -2039,8 +2019,6 @@ mod tests {
                 ),
                 user: None,
                 run_mode: None,
-                level: None,
-                home: None,
                 run_id: "r2".into(),
             })
             .unwrap(),

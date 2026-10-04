@@ -1,6 +1,6 @@
 <template>
   <div class="appstore-packages">
-    <!-- 分类 + 搜索 + 任务队列入口 -->
+    <!-- 分类 + 搜索（任务队列入口统一在父页，避免重复按钮） -->
     <div class="filter-bar">
       <el-radio-group v-model="activeCategory" size="small">
         <el-radio-button value="all">{{ t('appstore.catAll') }}</el-radio-button>
@@ -18,12 +18,6 @@
         >
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
-        <el-button size="small" :icon="List" @click="openQueue">
-          {{ t('appstore.queueBtn') }}
-          <el-tag v-if="activeCount" size="small" type="warning" effect="dark" round>
-            {{ activeCount }}
-          </el-tag>
-        </el-button>
       </div>
     </div>
 
@@ -35,10 +29,7 @@
             <div class="cell-name">
               <span class="cell-name__title">{{ row.name }}</span>
               <div class="cell-name__tags">
-                <el-tag v-if="row.system_shared && !isAdmin" size="small" type="warning" effect="light">{{
-                  t('appstore.tagSystemShared')
-                }}</el-tag>
-                <el-tag v-else-if="row.installed" size="small" type="success" effect="light">{{
+                <el-tag v-if="row.installed" size="small" type="success" effect="light">{{
                   (row.installed_instances || []).length > 1
                     ? `${t('appstore.tagInstalled')} × ${(row.installed_instances || []).length}`
                     : t('appstore.tagInstalled')
@@ -207,11 +198,6 @@
       </el-table>
     </div>
 
-    <!-- 任务队列抽屉 -->
-    <el-drawer v-model="queueVisible" :title="t('appstore.queueTitle')" size="72%" destroy-on-close>
-      <TaskQueuePanel ref="queuePanelRef" kind="appstore" @changed="onQueueChanged" />
-    </el-drawer>
-
     <!-- 安装/升级选项对话框 -->
     <el-dialog
       v-model="optDialogVisible"
@@ -301,10 +287,8 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
-import { List, Search, InfoFilled } from '@/icons'
+import { Search, InfoFilled } from '@/icons'
 import { useUserStore } from '@/stores/user'
-import TaskQueuePanel from '@/components/TaskQueuePanel.vue'
-import { getTasks } from '@/api/task'
 import {
   getPackages,
   installPackage,
@@ -321,7 +305,7 @@ import {
 import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
 
 const props = defineProps<{
-  /** 仅展示这些分类（如市场页传 ['webapps','plugins']）；不传 = 全部 */
+  /** 仅展示这些分类（如市场页只给 webapps）；不传 = 全部 */
   categories?: string[]
   /** 多实例卸载时父页（完整商店）跳到「已安装」页签；市场页不传则仅提示 */
   onMultiInstanceUninstall?: () => void
@@ -344,16 +328,16 @@ const ALL_CATS = Object.keys(CAT_KEY)
 
 /**
  * 可见分类：
- * - 显式传了 categories（如市场页只给 webapps+plugins）则用它；
- * - 否则按角色收敛：admin 看全部；非 admin 给 webapps + plugins。
- *   插件安装目录由包的 roles 决定：仅声明了 admin 的包 → 系统目录（全用户共享）；
- *   声明了非 admin 角色的包 → 装到安装者自己的用户目录。故非 admin 也能在商店
- *   看到/安装插件，只是落到各自用户目录，与「上传插件」同一套隔离。
+ * - 显式传了 categories 则用它；
+ * - 否则按角色收敛：admin 看全部；非 admin 只给 webapps。
+ *   插件不再提供用户侧安装（用户目录插件已移除）：全部由管理员装到系统目录
+ *   （$ZAP_PATH/plugins）全用户共享，商店的「插件」分类对非 admin 隐藏，
+ *   普通用户通过各插件注入的入口直接使用。
  * 再叠加包 app.yaml 的 roles 白名单（canViewPkg）做 scope 门禁。
  */
 const effectiveCategories = computed<string[] | null>(() => {
   if (props.categories && props.categories.length) return props.categories
-  return isAdmin.value ? null : ['webapps', 'plugins']
+  return isAdmin.value ? null : ['webapps']
 })
 
 const visibleCategories = computed(() => {
@@ -377,8 +361,6 @@ function canViewPkg(pkg: AppPackage): boolean {
  * custom 包仅管理员；官方包按 roles 命中白名单方可操作。后端同逻辑二次校验。
  */
 function canOperatePkg(pkg: AppPackage): boolean {
-  // 系统级已装的插件对普通用户只读：不能安装 / 升级 / 卸载（共享，由管理员管理）
-  if (pkg.system_shared && !isAdmin.value) return false
   if (pkg.source === 'custom') return isAdmin.value
   return canViewPkg(pkg)
 }
@@ -737,7 +719,7 @@ async function doInstall(
       logDrawerRef.value?.openDrawer(resp.data.run_id, `${actName} ${pkg.name}`)
     }
     trackRun(resp.data.run_id, `${pkg.title || pkg.name} ${actName}`)
-    loadQueueCount()
+    emit('queue-changed')
     return true
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e.message || t('appstore.startFailed', { action: actName }))
@@ -837,7 +819,6 @@ async function doUpgrade(pkg: AppPackage, options?: FormOptions): Promise<boolea
       logDrawerRef.value?.openDrawer(resp.data.run_id, `${t('appstore.btnUpgrade')} ${pkg.name}`)
     }
     trackRun(resp.data.run_id, `${pkg.title || pkg.name} ${t('appstore.btnUpgrade')}`)
-    loadQueueCount()
     return true
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e.message || t('appstore.upgradeFailed'))
@@ -846,28 +827,13 @@ async function doUpgrade(pkg: AppPackage, options?: FormOptions): Promise<boolea
 }
 
 // ── 任务队列入口 ────────────────────────────────────────────
+// 队列按钮 / 抽屉统一放在父页（appstore/index.vue，覆盖全部页签），
+// 本组件只在任务排队时发事件让父页打开，避免出现两个「任务队列」按钮。
 
-const queueVisible = ref(false)
-const queuePanelRef = ref<InstanceType<typeof TaskQueuePanel> | null>(null)
-const activeCount = ref(0)
-
-async function loadQueueCount() {
-  try {
-    const res = await getTasks({ kind: 'appstore', status: 'pending,running', page_size: 1 })
-    activeCount.value = res.data?.total ?? 0
-  } catch {
-    // 角标只是提示
-  }
-}
+const emit = defineEmits<{ (e: 'open-queue'): void; (e: 'queue-changed'): void }>()
 
 function openQueue() {
-  queueVisible.value = true
-  queuePanelRef.value?.load()
-  loadQueueCount()
-}
-
-function onQueueChanged() {
-  loadQueueCount()
+  emit('open-queue')
 }
 
 // ── 后台任务完成跟踪 ───────────────────────────────────────
@@ -883,7 +849,6 @@ function trackRun(runId: string, label: string) {
       if (!item || item.status === 'running' || item.status === 'pending') return
       window.clearInterval(timer)
       runPolls.delete(runId)
-      loadQueueCount()
       if (item.status === 'success') {
         ElMessage.success(t('appstore.runSuccess', { label }))
       } else {
@@ -918,7 +883,6 @@ const logDrawerRef = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
 
 onMounted(() => {
   loadPackages()
-  loadQueueCount()
 })
 
 /** 供父页在「软件园」增删源后触发刷新 */
