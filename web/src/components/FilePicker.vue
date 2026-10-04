@@ -51,8 +51,8 @@
         <span class="fp-item__name" :title="d.path">{{ d.name }}</span>
       </div>
 
-      <!-- 文件 -->
-      <label
+      <!-- 文件：整行可点击选中；多选时勾选框单独处理，避免整行点击重复触发 -->
+      <div
         v-for="f in files"
         :key="f.path"
         class="fp-item fp-item--file"
@@ -61,16 +61,17 @@
             ? selectedFiles.includes(f.path)
             : singleSelected === f.path,
         }"
+        @click="onFileClick(f.path)"
       >
         <el-checkbox
           v-if="props.multiple"
           :model-value="selectedFiles.includes(f.path)"
-          @click.prevent="toggle(f.path)"
+          @click.stop.prevent="toggle(f.path)"
         />
         <el-icon><Document /></el-icon>
-        <span class="fp-item__name" :title="f.path" @click="onFileClick(f.path)">{{ f.name }}</span>
+        <span class="fp-item__name" :title="f.path">{{ f.name }}</span>
         <span class="fp-item__size">{{ sizeText(f.size) }}</span>
-      </label>
+      </div>
 
       <el-empty
         v-if="!loading && !dirs.length && !files.length"
