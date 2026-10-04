@@ -868,15 +868,15 @@ prepare_install_env() {
     ensure_user "${user}" "$@" || return 1
   fi
 
-  lock_dir="${ZAP_DATA_PATH:-/tmp}/tmp"
+  # 依赖锁写到持久化的 data/state(不落在 data/tmp 临时区,避免被系统清理误删)
+  lock_dir="${ZAP_DATA_PATH:-/tmp}/state"
   ensure_dir "${PKG_PATH:-/tmp/pkg}" "${BUILD_PATH:-/tmp/build}" "${lock_dir}" \
     || log_warn "部分运行目录创建失败(PKG_PATH/BUILD_PATH 由执行器确保)"
 
   log_info "系统: ${OS_PRETTY:-${OS_NAME:-unknown}}, arch: ${OS_ARCH:-unknown} (alias: ${OS_ARCH_ALIAS:-unknown})"
 
   lock="${lock_dir}/system_deps.lock"
-  # 旧锁名是 preinstall.lock:一并认,免得升级后每台机器都重跑一次包管理器
-  if [ "${ZAP_FORCE_DEPS:-0}" != "1" ] && { [ -f "$lock" ] || [ -f "${lock_dir}/preinstall.lock" ]; }; then
+  if [ "${ZAP_FORCE_DEPS:-0}" != "1" ] && [ -f "$lock" ]; then
     log_info "检测到依赖锁 ${lock},系统编译依赖已就绪,跳过安装"
     return 0
   fi

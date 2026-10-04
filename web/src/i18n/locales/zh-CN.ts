@@ -808,7 +808,7 @@ export default {
     copyFailedManual: '复制失败，请手动选择复制',
 
     cacheTitle: '缓存清理',
-    cacheSubtitle: '释放应用商店遗留的安装日志与编译产物',
+    cacheSubtitle: '释放应用商店遗留的安装日志、编译产物与临时上传文件',
     cacheHint: '清理已结束任务的安装日志与运行现场（编译目录）；正在运行或排队中的任务不会被清理。',
     cacheRefresh: '计算占用',
     cacheClean: '清理选中',
@@ -818,6 +818,8 @@ export default {
     cacheItemCache: '软件包下载缓存',
     cacheItemCronLogs: '计划任务日志',
     cacheItemDockerLogs: 'Docker 构建日志',
+    cacheItemUploadTmp: '应用商店上传暂存',
+    cacheItemPluginUploadTmp: '插件上传暂存',
     cacheColItem: '项目',
     cacheColCount: '可清理条目',
     cacheColSize: '占用空间',

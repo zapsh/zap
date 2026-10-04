@@ -132,11 +132,13 @@ pub async fn plugin_run(
 // ── 安装 / 卸载 ────────────────────────────────────────────
 
 /// 系统级插件目录落在 zapexec 侧（`$ZAP_PATH/plugins`），这里只负责收上传包。
+///
+/// 暂存目录落在 `data/tmp/plugin_uploads`：放在 `data/tmp` 下方便系统统一清理，
+/// 用独立子目录（与应用商店上传的 `data/tmp/upload` 同构），清理逻辑只扫这些
+/// 子目录即可。依赖安装锁 `system_deps.lock` 已迁到持久化的 `data/state`，
+/// 不在此临时树内，不会被清理误删。
 fn plugin_upload_dir() -> PathBuf {
-    let base = std::env::var("ZAP_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"));
-    base.join("data/plugins/tmp/uploads")
+    crate::zap::appstore::data_dir().join("tmp").join("plugin_uploads")
 }
 
 /// 系统级插件只有管理员能装 / 卸：它们可以以 root 身份运行。

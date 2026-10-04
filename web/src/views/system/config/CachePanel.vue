@@ -83,6 +83,8 @@ const LABELS: Record<string, string> = {
   appstore_cache: 'zapCfg.cacheItemCache',
   user_cron_logs: 'zapCfg.cacheItemCronLogs',
   user_docker_logs: 'zapCfg.cacheItemDockerLogs',
+  appstore_upload_tmp: 'zapCfg.cacheItemUploadTmp',
+  plugin_upload_tmp: 'zapCfg.cacheItemPluginUploadTmp',
 }
 function labelOf(id: string): string {
   const k = LABELS[id]

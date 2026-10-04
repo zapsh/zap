@@ -784,7 +784,7 @@ const enUS: Messages = {
     copyFailedManual: 'Copy failed, please select and copy manually',
 
     cacheTitle: 'Cache Cleanup',
-    cacheSubtitle: 'Free up leftover install logs and build artifacts from the app store',
+    cacheSubtitle: 'Free up leftover install logs, build artifacts and temporary upload files from the app store',
     cacheHint: 'Cleans install logs and run snapshots (build dirs) of finished tasks; tasks that are running or queued will NOT be cleaned.',
     cacheRefresh: 'Calculate',
     cacheClean: 'Clean selected',
@@ -794,6 +794,8 @@ const enUS: Messages = {
     cacheItemCache: 'Package download cache',
     cacheItemCronLogs: 'Cron job logs',
     cacheItemDockerLogs: 'Docker build logs',
+    cacheItemUploadTmp: 'App store upload temp',
+    cacheItemPluginUploadTmp: 'Plugin upload temp',
     cacheColItem: 'Item',
     cacheColCount: 'Cleanable',
     cacheColSize: 'Size',

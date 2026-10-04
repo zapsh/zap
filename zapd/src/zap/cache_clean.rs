@@ -1,4 +1,4 @@
-//! AppStore 缓存 / 产物清理：安装日志、运行现场（编译产物）、下载缓存。
+//! 缓存 / 产物清理：安装日志、运行现场（编译产物）、下载缓存，以及 `data/tmp` 下的临时上传暂存。
 //!
 //! 设计目标：
 //! - 清理**已结束**任务的遗留（日志 / `runs/<id>/` 目录 / 下载缓存目录），释放磁盘；
@@ -33,6 +33,11 @@ pub const TARGET_APPSTORE_CACHE: &str = "appstore_cache";
 pub const TARGET_USER_CRON_LOGS: &str = "user_cron_logs";
 /// Docker 构建日志：`{data}/users/<用户名>/docker-build-logs/run-<task_id>.log`
 pub const TARGET_USER_DOCKER_LOGS: &str = "user_docker_logs";
+/// 应用商店上传暂存（`data/tmp/upload`）：纯临时文件（按 `用户id-时间戳` 命名），
+/// 不对应任何运行任务，可直接整体清空。
+pub const TARGET_APPSTORE_UPLOAD_TMP: &str = "appstore_upload_tmp";
+/// 插件上传暂存（`data/tmp/plugin_uploads`）：同上，纯临时文件，可直接清理。
+pub const TARGET_PLUGIN_UPLOAD_TMP: &str = "plugin_upload_tmp";
 
 /// 单个目标的扫描结果（清理前预览用）。
 #[derive(Debug, Serialize)]
@@ -364,18 +369,21 @@ async fn clean_runs(dir: &Path, protected: &HashSet<String>) -> CleanResult {
 
 // ── 下载缓存 ────────────────────────────────────────────
 
-fn analyze_cache(dir: &Path) -> TargetStat {
+/// 通用「整目录清空」型目标的扫描：统计目录下全部条目。
+///
+/// 用于**纯临时目录**（如下载缓存、上传暂存）——不对应任何运行任务，
+/// 因此无需运行中保护，可直接整体清理。
+fn analyze_whole_dir(id: &'static str, dir: &Path) -> TargetStat {
     let mut count = 0u64;
     let mut size = 0u64;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
-            let p = e.path();
-            size += dir_size(&p);
+            size += dir_size(&e.path());
             count += 1;
         }
     }
     TargetStat {
-        id: TARGET_APPSTORE_CACHE,
+        id,
         count,
         size,
         protected: 0,
@@ -383,7 +391,8 @@ fn analyze_cache(dir: &Path) -> TargetStat {
     }
 }
 
-async fn clean_cache(dir: &Path) -> CleanResult {
+/// 通用「整目录清空」型目标的清理：删除目录下每个条目（无需运行中保护）。
+async fn clean_whole_dir(id: &'static str, dir: &Path) -> CleanResult {
     let mut removed = 0u64;
     let mut freed = 0u64;
     let mut failed = 0u64;
@@ -400,7 +409,7 @@ async fn clean_cache(dir: &Path) -> CleanResult {
         }
     }
     CleanResult {
-        id: TARGET_APPSTORE_CACHE,
+        id,
         removed,
         freed,
         skipped_running: 0,
@@ -416,13 +425,21 @@ pub async fn analyze_all() -> Vec<TargetStat> {
     vec![
         analyze_logs(&appstore::logs_dir(), &protected),
         analyze_runs(&root.join("runs"), &protected),
-        analyze_cache(&root.join("cache")),
+        analyze_whole_dir(TARGET_APPSTORE_CACHE, &root.join("cache")),
         analyze_user_logs(TARGET_USER_CRON_LOGS, &users, "cron-logs", &protected),
         analyze_user_logs(
             TARGET_USER_DOCKER_LOGS,
             &users,
             "docker-build-logs",
             &protected,
+        ),
+        analyze_whole_dir(
+            TARGET_APPSTORE_UPLOAD_TMP,
+            &appstore::data_dir().join("tmp").join("upload"),
+        ),
+        analyze_whole_dir(
+            TARGET_PLUGIN_UPLOAD_TMP,
+            &appstore::data_dir().join("tmp").join("plugin_uploads"),
         ),
     ]
 }
@@ -441,7 +458,23 @@ pub async fn clean(targets: &[String]) -> Result<Vec<CleanResult>, ZapError> {
             TARGET_APPSTORE_RUNS => {
                 out.push(clean_runs(&root.join("runs"), &protected).await)
             }
-            TARGET_APPSTORE_CACHE => out.push(clean_cache(&root.join("cache")).await),
+            TARGET_APPSTORE_CACHE => {
+                out.push(clean_whole_dir(TARGET_APPSTORE_CACHE, &root.join("cache")).await)
+            }
+            TARGET_APPSTORE_UPLOAD_TMP => out.push(
+                clean_whole_dir(
+                    TARGET_APPSTORE_UPLOAD_TMP,
+                    &appstore::data_dir().join("tmp").join("upload"),
+                )
+                .await,
+            ),
+            TARGET_PLUGIN_UPLOAD_TMP => out.push(
+                clean_whole_dir(
+                    TARGET_PLUGIN_UPLOAD_TMP,
+                    &appstore::data_dir().join("tmp").join("plugin_uploads"),
+                )
+                .await,
+            ),
             TARGET_USER_CRON_LOGS => {
                 out.push(
                     clean_user_logs(TARGET_USER_CRON_LOGS, &users, "cron-logs", &protected).await,
