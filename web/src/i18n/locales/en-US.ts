@@ -3040,6 +3040,7 @@ const enUS: Messages = {
     autosslDisabled: 'Disable AutoSSL event notifications.',
     prefsSaved: 'Preferences saved',
     tabLogins: 'Login history',
+    tabSshKeys: 'SSH Keys',
     loginsDesc:
       'Last 50 sign-in attempts, including failures. If you see an unfamiliar entry, change your password and sign out all devices right away.',
     logoutAllBtn: 'Sign out all devices',

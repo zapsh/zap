@@ -6,6 +6,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import QRCode from 'qrcode'
 import { useUserStore } from '@/stores/user'
 import TeamPanel from '@/views/team/TeamPanel.vue'
+import SshKeyManager from '@/components/SshKeyManager.vue'
 import {
   updateUser,
   totpSetup,
@@ -524,8 +525,7 @@ async function logoutAllDevices() {
         </el-tab-pane>
 
         <!-- 登录记录 -->
-        <el-tab-pane :label="t('profilePage.tabLogins')" name="logins">
-          <div class="logins-panel" v-loading="loginsLoading">
+        <el-tab-pane :label="t('profilePage.tabLogins')" name="logins">          <div class="logins-panel" v-loading="loginsLoading">
             <div class="logins-head">
               <p class="logins-desc">{{ t('profilePage.loginsDesc') }}</p>
               <el-button type="danger" plain :loading="logoutAllLoading" @click="logoutAllDevices">
@@ -571,6 +571,11 @@ async function logoutAllDevices() {
               />
             </div>
           </div>
+        </el-tab-pane>
+
+        <!-- SSH 密钥：本人家目录 ~/.ssh 下的密钥管理（与终端「我的 SSH 密钥」同源） -->
+        <el-tab-pane :label="t('profilePage.tabSshKeys')" name="sshkeys">
+          <SshKeyManager />
         </el-tab-pane>
       </el-tabs>
     </el-card>

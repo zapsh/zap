@@ -3005,6 +3005,7 @@ export default {
     secretCopied: '密钥已复制',
     copyFailed: '复制失败，请手动复制',
     tabLogins: '登录记录',
+    tabSshKeys: 'SSH 密钥',
     loginsDesc:
       '最近 50 次登录尝试（含失败）。若发现不认识的记录，请立即修改密码并下线所有设备。',
     logoutAllBtn: '下线所有设备',
