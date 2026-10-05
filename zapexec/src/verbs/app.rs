@@ -27,6 +27,55 @@ fn valid_version(v: &str) -> bool {
     !v.is_empty() && v.len() <= 16 && v.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
+// ── Go / Rust 工具链（编译型，单版本，管理员手动安装）─────────────
+
+/// Go / Rust 工具链可执行文件所在目录：管理员装到这些位置之一即可，无需多版本管理。
+/// 编译型语言只在「构建」阶段需要工具链；运行时是 workdir 下的原生二进制，不需要工具链。
+fn toolchain_bin_dir(app_type: &str) -> Option<String> {
+    let bin = match app_type {
+        "go" => "go",
+        "rust" => "cargo",
+        _ => return None,
+    };
+    for base in [
+        "/usr/local/bin",
+        "/usr/bin",
+        "/usr/local/go/bin",
+        "/root/.cargo/bin",
+    ] {
+        if Path::new(base).join(bin).exists() {
+            return Some(base.to_string());
+        }
+    }
+    None
+}
+
+/// 构建命令前把工具链目录塞进 PATH（找不到就交给 shell 自己找），
+/// 免得站点用户 `su` 环境里找不到 go / cargo。
+fn with_toolchain_path(app_type: &str, cmd: &str) -> String {
+    match toolchain_bin_dir(app_type) {
+        Some(dir) => format!("PATH={dir}:$PATH {cmd}"),
+        None => cmd.to_string(),
+    }
+}
+
+/// 探测工具链是否已安装（供部署向导提示）：已知目录 OR 当前 PATH 里能找到。
+fn toolchain_installed(app_type: &str) -> bool {
+    if toolchain_bin_dir(app_type).is_some() {
+        return true;
+    }
+    let bin = match app_type {
+        "go" => "go",
+        "rust" => "cargo",
+        _ => return false,
+    };
+    std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// 扫目录里形如 `python3.11` 的可执行文件，收集次要版本号（降序去重）
 fn scan_python_versions(dir: &str) -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -143,7 +192,9 @@ pub async fn runtimes() -> Response {
         let data = json!({
             "python": py,
             "nodejs": scan_node_versions(),
-        });
+            "go": toolchain_installed("go"),
+            "rust": toolchain_installed("rust"),
+            });
         Ok(Response::ok("运行时版本探测完成", Some(data)))
     })
     .await
@@ -614,6 +665,36 @@ fn prepare_deps(
                 }
             }
         }
+        "go" => {
+            // 编译型：依赖在 `go build` 时由 go.mod 自动拉取；勾选「安装依赖」仅做预取，
+            // 失败不致命（构建仍会拉）。
+            if install && workdir.join("go.mod").exists() {
+                let cmd = with_toolchain_path("go", "go mod download");
+                log_line(task_log, "预取 Go 依赖（go mod download）…\n");
+                if !run_as_stream(task_log, owner, workdir, &cmd, pid_path)? {
+                    if deploy_canceled(task_log) {
+                        return Err(DEPLOY_CANCELED.to_string());
+                    }
+                    log.push_str("go mod download 失败（构建时会自动拉取，可忽略）\n");
+                } else {
+                    log.push_str("Go 依赖预取完成\n");
+                }
+            }
+        }
+        "rust" => {
+            if install && workdir.join("Cargo.toml").exists() {
+                let cmd = with_toolchain_path("rust", "cargo fetch");
+                log_line(task_log, "预取 Rust 依赖（cargo fetch）…\n");
+                if !run_as_stream(task_log, owner, workdir, &cmd, pid_path)? {
+                    if deploy_canceled(task_log) {
+                        return Err(DEPLOY_CANCELED.to_string());
+                    }
+                    log.push_str("cargo fetch 失败（构建时会自动拉取，可忽略）\n");
+                } else {
+                    log.push_str("Rust 依赖预取完成\n");
+                }
+            }
+        }
         _ => {}
     }
     // npm 11 起默认跳过未批准的 install 脚本（install-scripts 白名单机制），
@@ -769,6 +850,27 @@ fn default_command(
                 }
             }
             Err("未找到入口：请填写入口文件（如 server.js）或在「启动命令」里自定义".to_string())
+        }
+        "go" => {
+            // 编译产物是 workdir 下的原生二进制：entry 填「相对工作目录的可执行路径」。
+            // 运行时不需要 go 工具链（systemd 以 WorkingDirectory 解析相对路径）。
+            let bin = entry.trim();
+            if bin.is_empty() {
+                return Err(
+                    "未找到入口：请填写编译产物路径（如 bin/应用名），或在「启动命令」里自定义".to_string(),
+                );
+            }
+            Ok(format!("./{}", bin.trim_start_matches('/').trim_start_matches('.')))
+        }
+        "rust" => {
+            let bin = entry.trim();
+            if bin.is_empty() {
+                return Err(
+                    "未找到入口：请填写编译产物路径（如 target/release/应用名），或在「启动命令」里自定义"
+                        .to_string(),
+                );
+            }
+            Ok(format!("./{}", bin.trim_start_matches('/').trim_start_matches('.')))
         }
         _ => Err(format!("不支持的应用类型：{app_type}")),
     }
@@ -1102,8 +1204,15 @@ pub async fn deploy(
         // 构建命令：在装完依赖之后、拉起进程之前跑（npm run build / 迁移脚本之类）
         let bc = build_cmd.trim();
         if !bc.is_empty() {
+            // 编译型（go/rust）：构建阶段才需要工具链，预先把工具链目录塞进 PATH，
+            // 免得站点用户 `su` 环境里找不到 go / cargo（运行时是原生二进制，无需工具链）。
+            let bc = if app_type == "go" || app_type == "rust" {
+                with_toolchain_path(&app_type, bc)
+            } else {
+                bc.to_string()
+            };
             log_line(&task_log, &format!("== 构建：{bc} =="));
-            if !run_as_stream(&task_log, &owner_user, &wd, bc, &pid_path)? {
+            if !run_as_stream(&task_log, &owner_user, &wd, &bc, &pid_path)? {
                 if deploy_canceled(&task_log) {
                     return Ok(Response::err(-130, DEPLOY_CANCELED));
                 }

@@ -416,7 +416,9 @@ pub struct LocationSpec {
 
 /// Application Manager 支持的应用类型。
 /// 新增类型 = 这里加一项 + 执行端 `verbs/app.rs` 里加一个「依赖准备 + 默认启动命令」分支。
-pub const APP_TYPES: &[&str] = &["python", "nodejs", "static"];
+/// 注：go / rust 为编译型语言，单版本、由管理员手动安装工具链；运行时是 workdir 下的
+/// 原生二进制，无需在 PATH 上保留工具链（仅构建阶段需要）。
+pub const APP_TYPES: &[&str] = &["python", "nodejs", "static", "go", "rust"];
 
 /// 类型是否受支持（套餐里配置的白名单也会先用它过滤一次）
 pub fn app_type_supported(t: &str) -> bool {
@@ -1005,7 +1007,7 @@ pub enum Request {
         site_id: i64,
         /// 应用名（站点内唯一，用于 unit 名 zap-app-{site_id}-{name}.service）
         name: String,
-        /// python | nodejs
+        /// python | nodejs | go | rust
         app_type: String,
         /// 运行时版本（如 `3.11` / `20`）；空 = 用系统默认版本
         #[serde(default, skip_serializing_if = "String::is_empty")]

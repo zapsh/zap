@@ -182,6 +182,8 @@ const quotaText = computed(() => {
 function typeLabel(v: string) {
   if (v === 'python') return 'Python'
   if (v === 'nodejs') return 'Node.js'
+  if (v === 'go') return 'Go'
+  if (v === 'rust') return 'Rust'
   if (v === 'static') return t('site.appTypeStatic')
   return v
 }

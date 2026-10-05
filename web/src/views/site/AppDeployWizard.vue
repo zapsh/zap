@@ -72,13 +72,17 @@
           </el-radio>
         </el-radio-group>
       </el-form-item>
-      <el-form-item v-if="!isStatic" :label="t('site.appVersion')">
+      <el-form-item v-if="!isStatic && !isCompiled" :label="t('site.appVersion')">
         <el-select v-model="form.runtime_version" style="width: 260px">
           <el-option value="" :label="t('site.appVersionDefault')" />
           <el-option v-for="v in versions" :key="v" :value="v" :label="versionLabel(v)" />
         </el-select>
         <span v-if="!versions.length" class="wz-tip-inline">{{ t('site.appVersionNone') }}</span>
       </el-form-item>
+      <div v-if="isCompiled && !toolchainOk" class="wz-tip" style="color: #e6a23c">
+        {{ form.app_type === 'go' ? 'Go' : 'Rust' }} 工具链未安装：请管理员将其装到
+        /usr/local/bin（或 /usr/local/go/bin、/root/.cargo/bin）后再部署，构建阶段需要它。
+      </div>
     </el-form>
 
     <!-- ── 2. 代码 ─────────────────────────────────── -->
@@ -117,7 +121,7 @@
       <el-form-item :label="t('site.appEntry')">
         <el-input
           v-model="form.entry"
-          :placeholder="isPython ? 'main.py / wsgi:app' : 'server.js'"
+          :placeholder="entryPlaceholder()"
           style="width: 100%"
         />
         <div class="wz-tip">{{ t('site.appEntryHint') }}</div>
@@ -129,7 +133,7 @@
       <el-form-item :label="t('site.appInstallDeps')">
         <el-switch v-model="form.install_deps" />
         <span class="wz-tip-inline">
-          {{ isPython ? 'pip install -r requirements.txt' : 'npm install / npm ci' }}
+          {{ depsHint() }}
         </span>
       </el-form-item>
     </el-form>
@@ -137,7 +141,7 @@
     <!-- ── 3. 运行 ─────────────────────────────────── -->
     <el-form v-show="step === 2" label-width="120px">
       <el-form-item :label="t('site.appBuildCmd')">
-        <el-input v-model="form.build_cmd" :placeholder="isPython ? 'alembic upgrade head' : 'npm run build'" style="width: 100%" />
+        <el-input v-model="form.build_cmd" :placeholder="buildPlaceholder()" style="width: 100%" />
         <div class="wz-tip">{{ t('site.appBuildCmdHint') }}</div>
       </el-form-item>
       <el-form-item v-if="!isStatic" :label="t('site.appStartCmd')">
@@ -286,12 +290,22 @@ const siteIdModel = computed({
     form.value.site_id = v ?? 0
   },
 })
-const runtimes = ref<{ python: string[]; nodejs: string[]; types: string[]; port_min: number; port_max: number }>({
+const runtimes = ref<{
+  python: string[]
+  nodejs: string[]
+  types: string[]
+  port_min: number
+  port_max: number
+  go: boolean
+  rust: boolean
+}>({
   python: [],
   nodejs: [],
   types: [],
   port_min: 0,
   port_max: 0,
+  go: false,
+  rust: false,
 })
 
 const form = ref({
@@ -334,16 +348,19 @@ const namePreviewPrefix = computed(() => {
 })
 const isPython = computed(() => form.value.app_type === 'python')
 const isStatic = computed(() => form.value.app_type === 'static')
+const isNode = computed(() => form.value.app_type === 'nodejs')
+// 编译型（Go/Rust）：单版本、管理员手动装工具链；入口是 workdir 下的原生二进制
+const isCompiled = computed(() => form.value.app_type === 'go' || form.value.app_type === 'rust')
 
 const typeOptions = computed(() => {
   const allowed = runtimes.value.types
-  const all = ['python', 'nodejs', 'static']
+  const all = ['python', 'nodejs', 'static', 'go', 'rust']
   if (!allowed.length) return all
   return all.filter((x) => allowed.includes(x))
 })
 
 const versions = computed(() =>
-  isPython.value ? runtimes.value.python : runtimes.value.nodejs,
+  isPython.value ? runtimes.value.python : isNode.value ? runtimes.value.nodejs : [],
 )
 
 const portRangeText = computed(() => {
@@ -357,11 +374,44 @@ const portRangeText = computed(() => {
 function typeLabel(v: string) {
   if (v === 'python') return 'Python'
   if (v === 'nodejs') return 'Node.js'
+  if (v === 'go') return 'Go'
+  if (v === 'rust') return 'Rust'
   if (v === 'static') return t('site.appTypeStatic')
   return v
 }
 function versionLabel(v: string) {
-  return isPython.value ? `Python ${v}` : `Node.js ${v}`
+  if (isPython.value) return `Python ${v}`
+  if (isNode.value) return `Node.js ${v}`
+  return v
+}
+// 编译型（Go/Rust）：入口 = 编译产物相对工作目录的路径
+const toolchainOk = computed(() =>
+  form.value.app_type === 'go'
+    ? runtimes.value.go
+    : form.value.app_type === 'rust'
+      ? runtimes.value.rust
+      : true,
+)
+function entryPlaceholder() {
+  if (isPython.value) return 'main.py / wsgi:app'
+  if (form.value.app_type === 'nodejs') return 'server.js'
+  if (form.value.app_type === 'go') return 'bin/应用名（编译产物相对路径）'
+  if (form.value.app_type === 'rust') return 'target/release/应用名'
+  return ''
+}
+function buildPlaceholder() {
+  if (isPython.value) return 'alembic upgrade head'
+  if (form.value.app_type === 'nodejs') return 'npm run build'
+  if (form.value.app_type === 'go') return 'go build -o bin/应用名 .'
+  if (form.value.app_type === 'rust') return 'cargo build --release'
+  return ''
+}
+function depsHint() {
+  if (isPython.value) return 'pip install -r requirements.txt'
+  if (form.value.app_type === 'nodejs') return 'npm install / npm ci'
+  if (form.value.app_type === 'go') return 'go mod download'
+  if (form.value.app_type === 'rust') return 'cargo fetch'
+  return ''
 }
 function siteNameOf(id: number) {
   return sites.value.find((s) => s.id === id)?.name || `#${id}`
@@ -391,6 +441,8 @@ async function loadMeta() {
       types: d.types || [],
       port_min: d.port_min || 0,
       port_max: d.port_max || 0,
+      go: !!d.go,
+      rust: !!d.rust,
     }
     // 套餐限制了类型时，落到第一个允许的类型
     if (runtimes.value.types.length && !runtimes.value.types.includes(form.value.app_type)) {
@@ -502,6 +554,22 @@ watch(
     const prev = (old || '').trim() || '/'
     if (cur !== '/' && prev === '/') form.value.strip_prefix = true
     if (cur === '/') form.value.strip_prefix = false
+  },
+)
+
+// 切到编译型（Go/Rust）时按应用名预填构建命令与产物路径；用户可改。
+watch(
+  () => form.value.app_type,
+  (t) => {
+    if (t !== 'go' && t !== 'rust') return
+    const n = (form.value.name || 'app').trim() || 'app'
+    if (t === 'go') {
+      if (!form.value.build_cmd.trim()) form.value.build_cmd = `go build -o bin/${n} .`
+      if (!form.value.entry.trim()) form.value.entry = `bin/${n}`
+    } else {
+      if (!form.value.build_cmd.trim()) form.value.build_cmd = 'cargo build --release'
+      if (!form.value.entry.trim()) form.value.entry = `target/release/${n}`
+    }
   },
 )
 

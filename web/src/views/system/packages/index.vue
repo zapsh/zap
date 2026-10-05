@@ -350,6 +350,8 @@
           <el-checkbox-group v-model="form.app_types">
             <el-checkbox value="python" label="Python" />
             <el-checkbox value="nodejs" label="Node.js" />
+            <el-checkbox value="go" label="Go" />
+            <el-checkbox value="rust" label="Rust" />
           </el-checkbox-group>
           <div class="form-tip">{{ t('packages.appTypesHint') }}</div>
         </el-form-item>
