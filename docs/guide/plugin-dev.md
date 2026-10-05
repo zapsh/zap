@@ -109,9 +109,11 @@ end
 
 | 值 | 位置 |
 | --- | --- |
-| `site.detail` | 站点详情抽屉 →「插件」标签页（当前唯一内置槽位） |
+| `site.detail` | 站点详情抽屉 →「插件」标签页 |
+| `file.editor` | 文件编辑器浮窗顶部工具栏（`mode="toolbar"`，父页面会把当前目录作为 `options.cwd` 透传） |
 
 过滤是**字符串相等**匹配：插件不区分站点上装了什么应用，只按槽位出现。
+一个插件只能挂一个槽位（`placement` 是单值字符串）。
 
 ---
 
@@ -285,6 +287,38 @@ ui.html ──postMessage──▶ 父页面 ──/plugin/run（带真实 JWT�
 父页面只认**自己那个 iframe** 发来的消息（`ev.source === iframe.contentWindow`），
 并会按 `action` 把请求转发给 `on_<action>`。权限点（`plugin:run`）与 `scope` 降权
 全在后端，绕过不了。
+
+### 返回结构化数据（JSON）
+
+所有调用的返回值只有**文本**一种形态（同步插件取 `zap.log()` 的内容）。想让页面
+拿到结构化状态做复杂 UI（表格 / 页签 / 勾选列表），约定做法是**日志里输出单行 JSON**：
+
+```lua
+function on_repo(ctx)
+  local staged, unstaged = collect_entries(ctx)
+  -- 只有这一行日志，前端 JSON.parse 即可拿到对象 / 数组
+  zap.log(zap.json_encode({ ok = true, branch = 'main', staged = staged, unstaged = unstaged }))
+end
+```
+
+```js
+async function callJson(action, extra) {
+  const text = await zap.call(action, extra)
+  return JSON.parse(text) // 前端再做容错：拿不到对象就当调用失败
+}
+```
+
+注意两点：
+
+- **该 action 里不要再 `zap.log` 其它内容**（比如 `zap.try_run` 的输出），混进去一行就 parse 不了；
+  需要调试信息时单独加 key，不要另起一行 log。
+- `zap.try_run` 失败时返回值里会带 `命令退出码 N:` 前缀，读取类调用要先判第一个返回值
+  （`local ok, out = zap.try_run(...)`），别把失败输出当结果。
+
+写好在这之上，一个 880px 弹窗内做多页签、勾选列表、表单设置都可以： Git 插件
+（`data/appstore/repos/appstore/plugins/git`）就是这套写法的参考实现。它同时演示了
+从 `file.editor` 槽位拿当前目录（`options.cwd`，缺失时父页面自动补文件管理器当前目录）、
+以及文件列表用 JSON 数组字符串传值（避免空格 / 逗号的文件名被拆坏）。
 
 ### 完整示例
 
