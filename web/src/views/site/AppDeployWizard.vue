@@ -72,7 +72,7 @@
           </el-radio>
         </el-radio-group>
       </el-form-item>
-      <el-form-item v-if="!isStatic && !isCompiled" :label="t('site.appVersion')">
+      <el-form-item v-if="isPython || isNode" :label="t('site.appVersion')">
         <el-select v-model="form.runtime_version" style="width: 260px">
           <el-option value="" :label="t('site.appVersionDefault')" />
           <el-option v-for="v in versions" :key="v" :value="v" :label="versionLabel(v)" />
@@ -118,7 +118,7 @@
           <span class="wz-tip-inline">{{ t('site.appGitDepthHint') }}</span>
         </el-form-item>
       </template>
-      <el-form-item :label="t('site.appEntry')">
+      <el-form-item v-if="!isGeneric" :label="t('site.appEntry')">
         <el-input
           v-model="form.entry"
           :placeholder="entryPlaceholder()"
@@ -130,7 +130,7 @@
         <el-switch v-model="form.create_venv" />
         <span class="wz-tip-inline">{{ t('site.appCreateVenvHint') }}</span>
       </el-form-item>
-      <el-form-item :label="t('site.appInstallDeps')">
+      <el-form-item v-if="!isGeneric" :label="t('site.appInstallDeps')">
         <el-switch v-model="form.install_deps" />
         <span class="wz-tip-inline">
           {{ depsHint() }}
@@ -144,7 +144,7 @@
         <el-input v-model="form.build_cmd" :placeholder="buildPlaceholder()" style="width: 100%" />
         <div class="wz-tip">{{ t('site.appBuildCmdHint') }}</div>
       </el-form-item>
-      <el-form-item v-if="!isStatic" :label="t('site.appStartCmd')">
+      <el-form-item v-if="!isStatic" :label="t('site.appStartCmd')" :required="isGeneric">
         <el-input v-model="form.command" :placeholder="t('site.appStartCmdPh')" style="width: 100%" />
         <div class="wz-tip">{{ t('site.appStartCmdHint') }}</div>
       </el-form-item>
@@ -351,10 +351,12 @@ const isStatic = computed(() => form.value.app_type === 'static')
 const isNode = computed(() => form.value.app_type === 'nodejs')
 // 编译型（Go/Rust）：单版本、管理员手动装工具链；入口是 workdir 下的原生二进制
 const isCompiled = computed(() => form.value.app_type === 'go' || form.value.app_type === 'rust')
+// 通用型（generic）：不编译、不准备依赖，用户自行提供启动命令（如 java -jar app.jar）
+const isGeneric = computed(() => form.value.app_type === 'generic')
 
 const typeOptions = computed(() => {
   const allowed = runtimes.value.types
-  const all = ['python', 'nodejs', 'static', 'go', 'rust']
+  const all = ['python', 'nodejs', 'static', 'go', 'rust', 'generic']
   if (!allowed.length) return all
   return all.filter((x) => allowed.includes(x))
 })
@@ -377,6 +379,7 @@ function typeLabel(v: string) {
   if (v === 'go') return 'Go'
   if (v === 'rust') return 'Rust'
   if (v === 'static') return t('site.appTypeStatic')
+  if (v === 'generic') return t('site.appTypeGeneric')
   return v
 }
 function versionLabel(v: string) {
@@ -404,6 +407,7 @@ function buildPlaceholder() {
   if (form.value.app_type === 'nodejs') return 'npm run build'
   if (form.value.app_type === 'go') return 'go build -o bin/应用名 .'
   if (form.value.app_type === 'rust') return 'cargo build --release'
+  if (form.value.app_type === 'generic') return '解压 / chmod +x 等（可选，留空则不构建）'
   return ''
 }
 function depsHint() {

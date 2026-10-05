@@ -665,6 +665,11 @@ fn prepare_deps(
                 }
             }
         }
+        "generic" => {
+            // 通用型：不编译、不准备依赖，用户自行提供启动命令（如 java -jar app.jar）。
+            // 构建命令（如有）由部署主流程以系统默认 PATH 执行，这里无需额外处理。
+            return Ok(String::new());
+        }
         "go" => {
             // 编译型：依赖在 `go build` 时由 go.mod 自动拉取；勾选「安装依赖」仅做预取，
             // 失败不致命（构建仍会拉）。
@@ -872,6 +877,9 @@ fn default_command(
             }
             Ok(format!("./{}", bin.trim_start_matches('/').trim_start_matches('.')))
         }
+        "generic" => Err(
+            "通用部署必须填写启动命令（如 java -jar app.jar）".to_string(),
+        ),
         _ => Err(format!("不支持的应用类型：{app_type}")),
     }
 }

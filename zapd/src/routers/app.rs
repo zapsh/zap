@@ -646,6 +646,16 @@ pub async fn app_deploy(
         ));
     }
 
+    // 通用部署（generic）不编译、不准备依赖：必须用户提供启动命令
+    if app_type == "generic"
+        && payload.command.as_deref().unwrap_or("").trim().is_empty()
+    {
+        return Err(ZapError::New(
+            -1,
+            "通用部署必须填写启动命令（如 java -jar app.jar）".to_string(),
+        ));
+    }
+
     let name = payload.name.trim().to_string();
     if !valid_app_name(&name) {
         return Err(ZapError::New(

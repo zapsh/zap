@@ -4426,6 +4426,7 @@ const enUS: Messages = {
     appNameInvalid: 'Name allows letters, digits, - and _ only',
     appType: 'Type',
     appTypeStatic: 'Static site',
+    appTypeGeneric: 'Generic',
     appUseGit: 'Pull from Git repo',
     appUseGitHint: 'Clone on deploy, pull on update (public repos only)',
     appRepoUrl: 'Repository URL',

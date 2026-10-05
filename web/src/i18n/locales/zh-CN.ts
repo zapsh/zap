@@ -4360,6 +4360,7 @@ export default {
     appNameInvalid: '应用名只能包含字母、数字、- 和 _',
     appType: '类型',
     appTypeStatic: '静态站点',
+    appTypeGeneric: '通用',
     appUseGit: '从 Git 仓库拉取',
     appUseGitHint: '部署时 clone 仓库，更新时 pull（仅支持公开仓库）',
     appRepoUrl: '仓库地址',

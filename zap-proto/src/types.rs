@@ -418,7 +418,9 @@ pub struct LocationSpec {
 /// 新增类型 = 这里加一项 + 执行端 `verbs/app.rs` 里加一个「依赖准备 + 默认启动命令」分支。
 /// 注：go / rust 为编译型语言，单版本、由管理员手动安装工具链；运行时是 workdir 下的
 /// 原生二进制，无需在 PATH 上保留工具链（仅构建阶段需要）。
-pub const APP_TYPES: &[&str] = &["python", "nodejs", "static", "go", "rust"];
+/// `generic` 为通用型：不编译、不准备依赖，由用户填写完整启动命令（如 `java -jar app.jar`），
+/// 适用于上传的 jar 包或其他任意语言 / 解释器；是否开放由套餐 `app_types` 白名单控制。
+pub const APP_TYPES: &[&str] = &["python", "nodejs", "static", "go", "rust", "generic"];
 
 /// 类型是否受支持（套餐里配置的白名单也会先用它过滤一次）
 pub fn app_type_supported(t: &str) -> bool {

@@ -352,6 +352,7 @@
             <el-checkbox value="nodejs" label="Node.js" />
             <el-checkbox value="go" label="Go" />
             <el-checkbox value="rust" label="Rust" />
+            <el-checkbox value="generic" label="通用" />
           </el-checkbox-group>
           <div class="form-tip">{{ t('packages.appTypesHint') }}</div>
         </el-form-item>
