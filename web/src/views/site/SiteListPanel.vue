@@ -1099,6 +1099,24 @@ function gotoApps(id: number) {
   router.push({ path: '/site', query: { tab: 'apps', site: String(id) } })
 }
 
+// 操作列下拉菜单命令分发：编辑常驻，其余（同步 / 应用管理 / 备份 / 删除）收进「更多」菜单
+function onOpCommand(cmd: string, row: SiteItem) {
+  switch (cmd) {
+    case 'sync':
+      syncSite(row.id)
+      break
+    case 'apps':
+      gotoApps(row.id)
+      break
+    case 'backup':
+      onBackupSite(row)
+      break
+    case 'delete':
+      removeRows([row])
+      break
+  }
+}
+
 // ── 一键备份站点目录 ───────────────────────────────────────────
 const backupId = ref(0)
 async function onBackupSite(row: SiteItem) {
@@ -2083,43 +2101,9 @@ onMounted(() => {
             </el-tooltip>
           </template>
         </el-table-column>
-        <!-- 操作：纯图标按钮，悬停显示文字说明 -->
-        <el-table-column :label="t('common.operation')" width="150" fixed="right" align="center">
+        <!-- 操作：编辑常驻，其余（同步 / 应用管理 / 备份 / 删除）收进「更多」下拉菜单 -->
+        <el-table-column :label="t('common.operation')" width="100" fixed="right" align="center">
           <template #default="{ row }">
-            <el-tooltip
-              :content="isSyncFailed(row) ? t('site.retry') : t('site.sync')"
-              placement="top"
-            >
-              <el-button
-                link
-                type="primary"
-                class="icon-btn"
-                :icon="Refresh"
-                :loading="syncingId === row.id"
-                :disabled="readonly || (syncingId !== 0 && syncingId !== row.id)"
-                @click.stop="syncSite(row.id)"
-              />
-            </el-tooltip>
-            <el-tooltip :content="t('site.appManage')" placement="top">
-              <el-button
-                link
-                type="primary"
-                class="icon-btn"
-                :icon="Folder"
-                @click.stop="gotoApps(row.id)"
-              />
-            </el-tooltip>
-            <el-tooltip content="备份站点目录" placement="top">
-              <el-button
-                link
-                type="primary"
-                class="icon-btn"
-                :icon="Box"
-                :loading="backupId === row.id"
-                :disabled="readonly || (backupId !== 0 && backupId !== row.id)"
-                @click.stop="onBackupSite(row)"
-              />
-            </el-tooltip>
             <el-tooltip :content="t('common.edit')" placement="top">
               <el-button
                 link
@@ -2130,16 +2114,36 @@ onMounted(() => {
                 @click.stop="openEdit(row)"
               />
             </el-tooltip>
-            <el-tooltip :content="t('common.delete')" placement="top">
-              <el-button
-                link
-                type="danger"
-                class="icon-btn"
-                :icon="Delete"
-                :disabled="readonly"
-                @click.stop="removeRows([row])"
-              />
-            </el-tooltip>
+            <el-dropdown
+              trigger="click"
+              placement="bottom-end"
+              @command="(c: string) => onOpCommand(c, row)"
+            >
+              <el-button link type="primary" class="icon-btn" :icon="MoreFilled" />
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    command="sync"
+                    :disabled="readonly || (syncingId !== 0 && syncingId !== row.id)"
+                  >
+                    <el-icon><Refresh /></el-icon
+                    >{{ isSyncFailed(row) ? t('site.retry') : t('site.sync') }}
+                  </el-dropdown-item>
+                  <el-dropdown-item command="apps">
+                    <el-icon><Folder /></el-icon>{{ t('site.appManage') }}
+                  </el-dropdown-item>
+                  <el-dropdown-item
+                    command="backup"
+                    :disabled="readonly || (backupId !== 0 && backupId !== row.id)"
+                  >
+                    <el-icon><Box /></el-icon>备份站点目录
+                  </el-dropdown-item>
+                  <el-dropdown-item command="delete" :disabled="readonly" divided>
+                    <el-icon><Delete /></el-icon>{{ t('common.delete') }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
