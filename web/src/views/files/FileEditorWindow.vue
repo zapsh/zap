@@ -925,6 +925,13 @@ async function loadTreeRoot() {
 }
 
 async function refreshTree() {
+  // 树根已经被钉在某个目录上（打开的文件 / 目录所在目录）时就地刷新，
+  // 别把它拽回家目录——否则用户在当前目录点一下刷新就跳回去了
+  const root = treeRootPath.value
+  if (root) {
+    await rootTreeAt(root)
+    return
+  }
   await loadTreeRoot()
   // 回到默认（家目录）根，清掉「以某目录为基准」的临时根
   treeRootPath.value = ''

@@ -944,7 +944,7 @@ const canDownloadDirectly = computed(
 const hasDirectory = computed(() => selectedItems.value.some((e) => e.is_dir))
 
 const canOpen = computed(() => selectionCount.value === 1)
-/** 「使用编辑器打开」：选中单项时打开该项；未选中时打开空窗口（左侧默认家目录） */
+/** 「使用编辑器打开」：选中单项时打开该项；未选中时以当前浏览目录为根打开（逐级回退到家目录） */
 const canOpenInEditor = computed(() => selectionCount.value <= 1)
 const canRename = computed(() => selectionCount.value === 1)
 const canDuplicate = computed(() => selectionCount.value === 1)
@@ -1204,9 +1204,11 @@ const pageActive = ref(true)
 
 function openInEditor(entry?: FileEntry | null) {
   const item = entry ?? singleSelected.value
-  // 没选具体项：打开一个空编辑器窗口，左侧树默认以家目录为根，由用户在窗口内挑文件
-  editorWinPath.value = item ? item.path : ''
-  editorWinIsDir.value = item ? !!item.is_dir : false
+  // 没选具体项：以「当前浏览的目录」为基准继续挑文件，还没定位过目录才退回家里
+  // （家目录也拿不到时留空，浮窗自己会向后端再问一次家目录）
+  const fallbackDir = currentPath.value || homePath.value
+  editorWinPath.value = item ? item.path : fallbackDir
+  editorWinIsDir.value = item ? !!item.is_dir : !!fallbackDir
   editorWinToken.value++
   editorWinMounted.value = true
   if (item) revealPathInTree(item.path, !!item.is_dir)
