@@ -236,6 +236,22 @@ export interface AllAppItem {
   active: boolean
   enabled: boolean
   pid: number
+  /** git 部署：仓库地址（为空 = 非 git 部署） */
+  repo_url?: string
+  /** 分支（空 = 执行端探测默认分支） */
+  branch?: string
+  /** 指定提交 / 标签（可选） */
+  git_ref?: string
+  /** 仓库内子目录 */
+  git_subdir?: string
+  /** 浅克隆深度（0 = 不浅克隆） */
+  git_depth?: number
+  /** 静态型：构建产物目录 */
+  output_dir?: string
+  /** 部署状态：pending / deploying / success / failed（提交即建记录，失败也留痕） */
+  deploy_status?: string
+  /** 最近一次部署 / 更新对应的后台任务号（打开实时日志用） */
+  task_id?: string
 }
 
 export function listAllApps() {
@@ -274,10 +290,27 @@ export interface SiteAppDeployPayload {
   strip_prefix?: boolean
   /** 填了就自动创建反代站点（site_id = 0 时生效） */
   domain?: string
+  /** 源代码仓库（公开仓库；为空 = 使用现有 workdir） */
+  repo_url?: string
+  /** 分支（空 = 执行端探测默认分支） */
+  branch?: string
+  /** 指定提交 / 标签（可选） */
+  git_ref?: string
+  /** 仓库内子目录（应用根不在仓库根时用） */
+  git_subdir?: string
+  /** 浅克隆深度（0 = 不浅克隆） */
+  git_depth?: number
+  /** 静态型：构建产物目录（相对 workdir；空 = 执行端自动探测） */
+  build_output?: string
 }
 
 export function deploySiteApp(p: SiteAppDeployPayload) {
   return http.post<ApiResponse>('/site/app/deploy', p)
+}
+
+/** 手动更新：从仓库拉取最新代码 + 重建（+ 重启 / 重同步） */
+export function gitUpdateSiteApp(site_id: number, name: string) {
+  return http.post<ApiResponse>('/site/app/git-update', { site_id, name })
 }
 
 /** start | stop | restart | enable | disable */

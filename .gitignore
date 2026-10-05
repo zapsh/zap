@@ -21,6 +21,7 @@ data/tmp/*
 data/plugins/logs/*
 data/cluster.*
 data/backups/
+data/task-logs/
 data/users/
 data/server_env.yaml
 data/update_config.yaml

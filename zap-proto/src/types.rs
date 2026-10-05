@@ -409,7 +409,7 @@ pub struct LocationSpec {
 
 /// Application Manager 支持的应用类型。
 /// 新增类型 = 这里加一项 + 执行端 `verbs/app.rs` 里加一个「依赖准备 + 默认启动命令」分支。
-pub const APP_TYPES: &[&str] = &["python", "nodejs"];
+pub const APP_TYPES: &[&str] = &["python", "nodejs", "static"];
 
 /// 类型是否受支持（套餐里配置的白名单也会先用它过滤一次）
 pub fn app_type_supported(t: &str) -> bool {
@@ -795,6 +795,9 @@ pub enum Request {
     /// 停止运行中的任务（按 run_id 杀进程组）
     #[serde(rename = "appstore.script_stop")]
     AppstoreScriptStop { run_id: String },
+    /// 终止运行中的部署任务：按日志路径找到 pid 文件，向进程组发 SIGTERM/SIGKILL。
+    #[serde(rename = "app.deploy_stop")]
+    AppDeployStop { log_path: String },
     /// 读取自定义脚本内容（编辑前读取）
     #[serde(rename = "appstore.script_read")]
     AppstoreScriptRead { path: String, username: String },
@@ -1039,6 +1042,30 @@ pub enum Request {
         /// 请求方是否为管理员：true 时跳过 `requester` 与 `owner_user` 的归属校验。
         #[serde(default)]
         skip_owner_check: bool,
+        /// 源代码仓库（公开仓库；为空 = 沿用现有 workdir，不做 git 操作）。
+        /// 部署时若 workdir 内无 `.git` 则 `git clone`，否则 `git pull` 拉取更新。
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        repo_url: String,
+        /// 分支（为空 = 执行端探测默认分支 main/master）
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        branch: String,
+        /// 指定提交 / 标签（clone 后 checkout，可选）
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        git_ref: String,
+        /// 仓库内子目录（应用根不在仓库根时用），相对仓库根
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        git_subdir: String,
+        /// 浅克隆深度（0 = 不浅克隆）
+        #[serde(default)]
+        git_depth: i64,
+        /// 静态型（app_type=static）：构建产物目录（相对 workdir）；
+        /// 为空时执行端自动探测 dist / build / public / _site / out / .output/public 之一
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        build_output: String,
+        /// 部署任务日志文件路径（zapd 生成）。执行端把实时进度追加到这里，
+        /// 前端经 WebSocket 边读边显示（git clone / npm install 这类分钟级任务尤其需要）。
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        log_path: String,
     },
     /// 探测服务器上已安装的应用运行时版本（`python` / `nodejs`），供部署向导下拉选择
     #[serde(rename = "app.runtimes")]

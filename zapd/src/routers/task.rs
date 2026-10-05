@@ -164,12 +164,20 @@ pub async fn cancel(
     if t.status == task::STATUS_PENDING {
         let _ = task::finish(&t.task_id, task::STATUS_CANCELED, -1).await;
     } else {
-        if t.kind == task::KIND_APPSTORE || t.kind == task::KIND_PHP {
-            match zapexec::call(Request::AppstoreScriptStop {
-                run_id: t.task_id.clone(),
-            })
-            .await
-            {
+        if t.kind == task::KIND_APPSTORE
+            || t.kind == task::KIND_PHP
+            || t.kind == task::KIND_APPDEPLOY
+        {
+            let stop_req = if t.kind == task::KIND_APPDEPLOY {
+                Request::AppDeployStop {
+                    log_path: t.log_path.clone(),
+                }
+            } else {
+                Request::AppstoreScriptStop {
+                    run_id: t.task_id.clone(),
+                }
+            };
+            match zapexec::call(stop_req).await {
                 Ok(resp) if resp.code != 0 => {
                     warn!("停止任务 {} 失败: {}", t.task_id, resp.message);
                 }
@@ -306,6 +314,43 @@ async fn handle_ws_log(mut socket: WebSocket, task_id: String) {
     let mut offset: u64 = 0;
 
     loop {
+        // 以 DB 任务状态为准：只要已落终态，立即推送 done（不依赖日志里的 __ZAP_DONE__ 标记是否落盘）。
+        // 否则后端已 finish、但日志完成标记因故未写入时，前端会一直卡在「运行中」，
+        // 而点击「结束」又会因为 DB 已是终态而提示「任务已结束」。
+        if let Some(latest) = task::get(&task_id).await.ok().flatten() {
+            if task::is_final(&latest.status) {
+                // 先把尚未推送的新日志推过去（去掉收尾标记行，避免重复展示）
+                if let Ok((text, _, _)) = task::read_log(&log_path, offset).await {
+                    if !text.is_empty() {
+                        let clean = task::strip_done_marker(&text);
+                        if !clean.is_empty()
+                            && socket
+                                .send(Message::Text(Utf8Bytes::from(
+                                    json!({ "type": "log", "data": clean }).to_string(),
+                                )))
+                                .await
+                                .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                let status = if latest.exit_code == 0 {
+                    "success"
+                } else {
+                    "failed"
+                };
+                let _ = socket
+                    .send(Message::Text(Utf8Bytes::from(
+                        json!({ "type": "done", "status": status, "exit_code": latest.exit_code })
+                            .to_string(),
+                    )))
+                    .await;
+                let _ = socket.close().await;
+                return;
+            }
+        }
+
         match task::read_log(&log_path, offset).await {
             Ok((text, exit_code, done)) => {
                 if !text.is_empty() {

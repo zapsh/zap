@@ -8,6 +8,7 @@
 //! - 日志落到站点日志目录下的 `app-<name>.log`（面板可 tail）
 //! - 新增应用类型 = `zap_proto::APP_TYPES` 加一项 + 本文件补一个「依赖准备 + 默认命令」分支
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -15,6 +16,7 @@ use zap_proto::{Response, app_type_supported};
 
 use super::env::uv_bin;
 use super::env::UV_PYTHON_INSTALL_DIR;
+use super::log_line;
 use super::root_cmd;
 
 // ── 运行时版本探测 ──────────────────────────────────────
@@ -263,6 +265,132 @@ fn run_as(user: &str, workdir: &Path, cmd: &str) -> Result<(bool, String), Strin
     Ok((out.status.success(), merged))
 }
 
+/// 把可能很长的命令输出裁剪到末尾 N 个字符，避免一次性把 npm/pip 的万字输出灌进部署日志。
+/// 诊断时真正有用的报错通常在尾部，故保留末尾。
+fn clip(s: &str) -> String {
+    const MAX: usize = 4000;
+    let n: usize = s.chars().count();
+    if n <= MAX {
+        return s.to_string();
+    }
+    let skip = n - MAX;
+    format!("…（前 {skip} 字符已省略）\n{}", s.chars().skip(skip).collect::<String>())
+}
+
+/// 部署被取消时 `app_deploy_stop` 写下的哨兵文案：所有步骤失败/返回时据此判断是否已取消。
+const DEPLOY_CANCELED: &str = "部署已取消";
+
+/// 把 `log` 路径的 `.log` 后缀换成 `ext`（同目录下生成 `.pid` / `.cancel` 哨兵）。
+fn swap_ext(log: &str, ext: &str) -> String {
+    if let Some(s) = log.strip_suffix(".log") {
+        format!("{s}.{ext}")
+    } else {
+        format!("{log}.{ext}")
+    }
+}
+
+/// 部署任务日志会被三方写入：zapexec(root)、zapd(面板用户)、站点用户
+/// （`run_as_stream` 里 `( cmd ) >> log` 的重定向以站点用户身份执行）。
+/// 这里以 root 预创建并放开为 0o666，同时**逐层给日志路径的祖先目录补 `o+x`（穿越位）**——
+/// 否则这些目录若落在受限 home 内（如开发机 `/home/zap` 为 0700），站点用户无 `x` 位便无法
+/// 访问日志文件，表现为 `( cmd ) >> log` 报 `Permission denied`，git/npm 输出全丢、失败原因
+/// 与 `__ZAP_DONE__` 完成标记都写不进日志。
+fn prepare_task_log(log: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::path::Path::new(log);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+        // 逐层确保 others 有执行(x)位，让站点用户能穿透到日志文件。
+        // 只加 x 不加 w/r，不开放目录的写/列读权限。
+        let mut cur = Some(parent.to_path_buf());
+        while let Some(mut p) = cur {
+            if let Ok(meta) = std::fs::metadata(&p) {
+                let mode = meta.permissions().mode();
+                if mode & 0o001 == 0 {
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode | 0o001));
+                }
+            }
+            if !p.pop() {
+                break;
+            }
+            cur = Some(p);
+        }
+    }
+    if !path.exists() {
+        let _ = std::fs::write(path, "");
+    }
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666));
+}
+
+/// 部署任务是否被请求取消：zapd 的 `AppDeployStop` 会写 `<log>.cancel` 哨兵。
+fn deploy_canceled(log: &str) -> bool {
+    std::path::Path::new(&swap_ext(log, "cancel")).exists()
+}
+
+/// 以站点用户身份跑一条命令，输出**实时追加**到 `log` 文件（前端 WebSocket 边跑边看）；
+/// 命令以 `setsid` 自立进程组，当前子进程 pid 写入 `pid_path`，便于 `AppDeployStop`
+/// 按进程组 `kill(-pid)` 整组终止（git clone / npm install 这类分钟级任务需要可中断）。
+/// 返回命令是否成功退出；若进程是被取消信号打死的且已取消，返回 `Err(DEPLOY_CANCELED)`。
+fn run_as_stream(
+    log: &str,
+    user: &str,
+    workdir: &Path,
+    cmd: &str,
+    pid_path: &str,
+) -> Result<bool, String> {
+    let bash = if Path::new("/bin/bash").exists() {
+        "/bin/bash"
+    } else {
+        "/bin/sh"
+    };
+    // 把用户命令包进子 shell，确保末尾的重定向对整个复合命令生效；
+    // 日志路径做单引号转义，避免路径里出现引号 / 空格 / 特殊字符破坏命令。
+    let safe = log.replace('\\', "\\\\").replace('\'', "'\\''");
+    let redirected = format!("( {cmd} ) >> '{safe}' 2>&1");
+    let mut c = root_cmd(bash);
+    c.arg("-c")
+        .arg(format!(
+            "if command -v runuser >/dev/null 2>&1; then \
+               exec runuser -u \"$ZAP_RUN_USER\" -- {bash} -c \"$ZAP_RUN_CMD\" 2>> '{safe}'; \
+             fi; \
+             exec su -s {bash} -c \"$ZAP_RUN_CMD\" \"$ZAP_RUN_USER\" 2>> '{safe}'"
+        ))
+        .env("ZAP_RUN_USER", user)
+        .env("ZAP_RUN_CMD", redirected)
+        .env("HOME", format!("/home/{user}"))
+        .env("UV_PYTHON_INSTALL_DIR", UV_PYTHON_INSTALL_DIR)
+        .current_dir(workdir);
+    // 自立进程组（setsid）：取消时 `kill(-pid)` 才能精准只杀本步的子树，
+    // 不会误伤 zapexec 主进程或其它并发任务。
+    unsafe {
+        c.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = c
+        .spawn()
+        .map_err(|e| format!("启动命令失败: {e}"))?;
+    // 记录当前步骤的进程组 leader pid，供取消逻辑整组终止
+    let _ = std::fs::write(pid_path, child.id().to_string());
+    let out = child
+        .wait()
+        .map_err(|e| format!("等待命令失败: {e}"))?;
+    if !out.success() && !deploy_canceled(log) {
+        // 失败时把退出码落进日志：上游只报"git 拉取失败"这类笼统信息，
+        // 退出码（如 127=命令不存在、128=git 致命错误）是关键排查线索。
+        let code = out
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "被信号终止".to_string());
+        log_line(log, &format!("（命令退出码：{code}）"));
+    }
+    if !out.success() && deploy_canceled(log) {
+        return Err(DEPLOY_CANCELED.to_string());
+    }
+    Ok(out.success())
+}
+
 fn systemctl(args: &[&str]) -> Result<(bool, String), String> {
     let mut c = root_cmd("/usr/bin/systemctl");
     let out = c
@@ -311,6 +439,7 @@ fn server_pkg(entry: &str, src: &str, req: &str) -> Option<&'static str> {
 }
 
 fn prepare_deps(
+    task_log: &str,
     app_type: &str,
     version: &str,
     create_venv: bool,
@@ -318,6 +447,7 @@ fn prepare_deps(
     owner: &str,
     install: bool,
     entry: &str,
+    pid_path: &str,
 ) -> Result<String, String> {
     let mut log = String::new();
     match app_type {
@@ -351,11 +481,13 @@ fn prepare_deps(
                         (format!("{py} -m venv .venv"), format!("{py} -m venv"))
                     }
                 };
-                let (ok, out) = run_as(owner, workdir, &cmd)?;
-                if !ok {
-                    return Err(format!("创建虚拟环境失败（{cmd}）：{out}"));
+                if !run_as_stream(task_log, owner, workdir, &cmd, pid_path)? {
+                    if deploy_canceled(task_log) {
+                        return Err(DEPLOY_CANCELED.to_string());
+                    }
+                    return Err(format!("创建虚拟环境失败（{cmd}）"));
                 }
-                log.push_str(&format!("已创建 .venv（{how}）\\n"));
+                log.push_str(&format!("已创建 .venv（{how}）\n"));
             }
             if install && req.exists() {
                 // 装依赖：uv pip > .venv/bin/pip > ensurepip 兜底。
@@ -383,15 +515,19 @@ fn prepare_deps(
                         ".venv/bin/pip install -r requirements.txt".to_string()
                     }
                 };
-                let (ok, out) = run_as(owner, workdir, &cmd)?;
-                if !ok {
-                    return Err(format!("依赖安装失败（{cmd}）：{out}"));
+                log_line(task_log, &format!("开始安装依赖（{cmd}）…\n"));
+                if !run_as_stream(task_log, owner, workdir, &cmd, pid_path)? {
+                    if deploy_canceled(task_log) {
+                        return Err(DEPLOY_CANCELED.to_string());
+                    }
+                    return Err(format!("依赖安装失败（{cmd}）"));
                 }
-                log.push_str(if uv.is_some() {
-                    "依赖安装完成（uv pip）\\n"
+                let summary = if uv.is_some() {
+                    "依赖安装完成（uv pip）"
                 } else {
-                    "依赖安装完成（pip）\\n"
-                });
+                    "依赖安装完成（pip）"
+                };
+                log.push_str(&format!("{summary}\n"));
             }
             // 需要生产级服务器但 venv 里没有 → 自动补装，
             // 别让用户为了能部署去改 requirements.txt。
@@ -445,15 +581,83 @@ fn prepare_deps(
                 },
                 None => npm.to_string(),
             };
-            let (ok, out) = run_as(owner, workdir, &cmd)?;
-            if !ok {
-                return Err(format!("{cmd} 失败：{out}"));
+            log_line(task_log, &format!("开始安装依赖（{cmd}）…\n"));
+            if !run_as_stream(task_log, owner, workdir, &cmd, pid_path)? {
+                if deploy_canceled(task_log) {
+                    return Err(DEPLOY_CANCELED.to_string());
+                }
+                return Err(format!("{cmd} 失败"));
             }
             log.push_str(&format!("依赖安装完成（{cmd}）\n"));
         }
+        "static" => {
+            // 静态站点多为 node 构建（vite / webpack）：需要依赖时跑 npm install / ci
+            if install {
+                let pkg = workdir.join("package.json");
+                if pkg.exists() {
+                    let npm = if workdir.join("package-lock.json").exists()
+                        || workdir.join("yarn.lock").exists()
+                        || workdir.join("pnpm-lock.yaml").exists()
+                    {
+                        "npm ci"
+                    } else {
+                        "npm install"
+                    };
+                    log_line(task_log, &format!("开始安装依赖（{npm}）…\n"));
+                    if !run_as_stream(task_log, owner, workdir, &npm, pid_path)? {
+                        if deploy_canceled(task_log) {
+                            return Err(DEPLOY_CANCELED.to_string());
+                        }
+                        return Err(format!("依赖安装失败（{npm}）"));
+                    }
+                    log.push_str(&format!("依赖安装完成（{npm}）\n"));
+                }
+            }
+        }
         _ => {}
     }
+    // npm 11 起默认跳过未批准的 install 脚本（install-scripts 白名单机制），
+    // 这类告警不影响安装成功（@parcel/watcher / esbuild 等通过 optionalDependencies
+    // 自带预编译二进制）。检测到时在日志里给出为什么跳过、以及如何消除告警。
+    if let Ok(content) = std::fs::read_to_string(task_log) {
+        if content.contains("npm warn install-scripts") {
+            log.push_str(&build_install_scripts_hint(&content));
+        }
+    }
     Ok(log)
+}
+
+/// 从任务日志里找出被 npm 11 跳过 install 脚本的包（形如 `@parcel/watcher@2.6.0`），
+/// 生成一段中文提示 + 可直接复制进 package.json 的 `allowScripts` 片段。
+fn build_install_scripts_hint(content: &str) -> String {
+    let mut pkgs: Vec<String> = Vec::new();
+    for line in content.lines() {
+        if let Some(rest) = line.split_once("npm warn install-scripts") {
+            // 形如：`  @parcel/watcher@2.6.0 (install: node scripts/build-from-source.js)`
+            if let Some(tok) = rest.1.trim().split_whitespace().next() {
+                if tok.contains('@') && !tok.starts_with('(') {
+                    pkgs.push(tok.to_string());
+                }
+            }
+        }
+    }
+    if pkgs.is_empty() {
+        return String::new();
+    }
+    let mut msg = String::from(
+        "提示：npm 11 默认跳过未批准 install 脚本（install-scripts 白名单），本次跳过了：",
+    );
+    msg.push_str(&pkgs.join("、"));
+    msg.push_str(
+        "。这些包通常通过 optionalDependencies 自带预编译二进制，一般不影响运行。\n\
+         若想消除该告警，可在 package.json 增加：\n  \"allowScripts\": { ",
+    );
+    let entries: Vec<String> = pkgs.iter().map(|p| format!("\"{p}\": true")).collect();
+    msg.push_str(&entries.join(", "));
+    msg.push_str(
+        " }\n或运行：npm install-scripts approve <包名>\n",
+    );
+    msg
 }
 
 /// 推导默认启动命令（用户填了 `command` 就不走这里）
@@ -637,6 +841,112 @@ where
 
 // ── 对外动词 ────────────────────────────────────────────
 
+/// 分支 / 提交 / 子目录：只允许字母数字与 `/ - _ .`，杜绝 git 参数注入
+fn git_token_ok(s: &str) -> bool {
+    s.is_empty() || s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+}
+
+/// 仓库地址：限 http(s)/git 协议，不得含空白或 `--`（防参数注入）
+fn valid_repo(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() || t.chars().any(|c| c.is_whitespace()) || t.contains("--") {
+        return false;
+    }
+    t.starts_with("http://")
+        || t.starts_with("https://")
+        || t.starts_with("git@")
+        || t.starts_with("git://")
+}
+
+/// 把仓库拉取到 `dest`：若 `dest/.git` 已存在则 pull，否则 clone。
+/// 各 git 步骤的输出**实时追加**到 `log`（部署任务日志），方便前端边跑边看；
+/// 返回最终工作目录（在 `dest` 基础上叠加 `git_subdir`）与当前 HEAD 短哈希。
+fn git_clone(
+    log: &str,
+    repo_url: &str,
+    branch: &str,
+    git_ref: &str,
+    git_subdir: &str,
+    git_depth: i64,
+    dest: &Path,
+    owner: &str,
+    pid_path: &str,
+) -> Result<(PathBuf, String), String> {
+    log_line(log, &format!("== 同步仓库 {repo_url} =="));
+    // 目标目录由调用方以站点用户身份建好（保证属主正确、clone 可写）
+    let ok = if dest.join(".git").exists() {
+        // 已克隆：fetch 后用 reset --hard 对齐到远程分支，不依赖本地分支的 tracking 配置
+        // （否则 git pull 会因 "no tracking information" 失败，例如首次部署超时打断后残留的仓库）。
+        let _ = run_as_stream(log, owner, dest, "git fetch --progress --all --tags", pid_path)?;
+        let target = if !branch.is_empty() {
+            format!("origin/{branch}")
+        } else {
+            // 未指定分支：对齐到 FETCH_HEAD（即远程默认分支）
+            "FETCH_HEAD".to_string()
+        };
+        run_as_stream(log, owner, dest, &format!("git reset --hard {target}"), pid_path)?
+    } else {
+        let mut cmd = String::from("git clone --progress");
+        if git_depth > 0 {
+            cmd.push_str(&format!(" --depth {git_depth}"));
+        }
+        if !branch.is_empty() {
+            cmd.push_str(&format!(" --branch {branch}"));
+        }
+        cmd.push_str(&format!(" {repo_url} ."));
+        run_as_stream(log, owner, dest, &cmd, pid_path)?
+    };
+    if !ok {
+        if deploy_canceled(log) {
+            return Err(DEPLOY_CANCELED.to_string());
+        }
+        return Err("git 拉取失败（详见部署日志）".to_string());
+    }
+    if !git_ref.is_empty() {
+        if !run_as_stream(log, owner, dest, &format!("git checkout {git_ref}"), pid_path)? {
+            if deploy_canceled(log) {
+                return Err(DEPLOY_CANCELED.to_string());
+            }
+            return Err(format!("git checkout 失败（{git_ref}）"));
+        }
+    }
+    let (_, head) = run_as(owner, dest, "git rev-parse --short HEAD")?;
+    let commit = head.lines().next().unwrap_or("").trim().to_string();
+    let wd = if git_subdir.is_empty() {
+        dest.to_path_buf()
+    } else {
+        dest.join(git_subdir)
+    };
+    if !wd.exists() {
+        return Err(format!("仓库子目录不存在：{git_subdir}"));
+    }
+    Ok((wd, commit))
+}
+
+/// 静态型构建产物目录：显式指定优先，否则按常见约定自动探测
+fn resolve_static_output(wd: &Path, build_output: &str) -> PathBuf {
+    if !build_output.is_empty() {
+        return wd.join(build_output);
+    }
+    for cand in [
+        "dist",
+        "build",
+        "public",
+        "_site",
+        "out",
+        ".output/public",
+        ".next",
+        ".vuepress/dist",
+        "docs/.vuepress/dist",
+    ] {
+        let p = wd.join(cand);
+        if p.is_dir() {
+            return p;
+        }
+    }
+    wd.to_path_buf()
+}
+
 /// 部署（幂等）：准备依赖 -> 渲染 unit -> daemon-reload -> 重启
 #[allow(clippy::too_many_arguments)]
 pub async fn deploy(
@@ -655,8 +965,15 @@ pub async fn deploy(
     install_deps: bool,
     owner_user: &str,
     log_dir: &str,
+    task_log: &str,
     requester: Option<String>,
     skip_owner_check: bool,
+    repo_url: &str,
+    branch: &str,
+    git_ref: &str,
+    git_subdir: &str,
+    git_depth: i64,
+    build_output: &str,
 ) -> Response {
     let (
         name,
@@ -669,8 +986,14 @@ pub async fn deploy(
         env,
         owner_user,
         log_dir,
+        task_log,
         requester,
         skip_owner_check,
+        repo_url,
+        branch,
+        git_ref,
+        git_subdir,
+        build_output,
     ) = (
         name.to_string(),
         app_type.to_string(),
@@ -682,8 +1005,14 @@ pub async fn deploy(
         env.to_string(),
         owner_user.to_string(),
         log_dir.to_string(),
+        task_log.to_string(),
         requester.clone(),
         skip_owner_check,
+        repo_url.to_string(),
+        branch.to_string(),
+        git_ref.to_string(),
+        git_subdir.to_string(),
+        build_output.to_string(),
     );
     blocking(move || {
         if !valid_name(&name) {
@@ -713,9 +1042,50 @@ pub async fn deploy(
                 return Err(format!("{f} 不能包含换行"));
             }
         }
-        let wd = check_workdir(&workdir, &owner_user)?;
+        prepare_task_log(&task_log);
+        log_line(&task_log, "开始部署…");
+        // 当前步骤进程组 leader 的 pid 写到这里，供 AppDeployStop 整组终止；
+        // 取消哨兵 <task_log>.cancel 由 zapd 的 stop 请求写入。
+        let pid_path = swap_ext(&task_log, "pid");
+        // 源代码：有仓库地址时先 clone / pull（以站点用户身份），否则沿用现有 workdir
+        let (wd, git_commit) = if !repo_url.is_empty() {
+            if !git_token_ok(&branch) || !git_token_ok(&git_ref) || !git_token_ok(&git_subdir) {
+                return Err("分支 / 提交 / 子目录含非法字符".to_string());
+            }
+            if !valid_repo(&repo_url) {
+                return Err(format!("非法的仓库地址：{repo_url}"));
+            }
+            let dest = PathBuf::from(&workdir);
+            // 越界防护：clone 目标必须落在站点用户家目录之内
+            let home = format!("/home/{owner_user}");
+            if !dest.starts_with(&home) {
+                return Err(format!("代码目录必须在 {home} 之内"));
+            }
+            // 目标目录以站点用户身份创建，确保后续 clone 可写（绝不 root 建目录）
+            if let Some(parent) = dest.parent() {
+                let _ = run_as(&owner_user, parent, &format!("mkdir -p {}", dest.display()))?;
+            }
+            let (wd, git_commit) = git_clone(
+                &task_log,
+                &repo_url,
+                &branch,
+                &git_ref,
+                &git_subdir,
+                git_depth,
+                &dest,
+                &owner_user,
+                &pid_path,
+            )?;
+            (wd, git_commit)
+        } else {
+            (check_workdir(&workdir, &owner_user)?, String::new())
+        };
 
-        let mut steps = prepare_deps(
+        if deploy_canceled(&task_log) {
+            return Ok(Response::err(-130, DEPLOY_CANCELED));
+        }
+        log_line(&task_log, &prepare_deps(
+            &task_log,
             &app_type,
             &runtime_version,
             create_venv,
@@ -723,16 +1093,44 @@ pub async fn deploy(
             &owner_user,
             install_deps,
             &entry,
-        )?;
+            &pid_path,
+        )?);
 
+        if deploy_canceled(&task_log) {
+            return Ok(Response::err(-130, DEPLOY_CANCELED));
+        }
         // 构建命令：在装完依赖之后、拉起进程之前跑（npm run build / 迁移脚本之类）
         let bc = build_cmd.trim();
         if !bc.is_empty() {
-            let (ok, out) = run_as(&owner_user, &wd, bc)?;
-            if !ok {
-                return Err(format!("构建命令失败：{out}"));
+            log_line(&task_log, &format!("== 构建：{bc} =="));
+            if !run_as_stream(&task_log, &owner_user, &wd, bc, &pid_path)? {
+                if deploy_canceled(&task_log) {
+                    return Ok(Response::err(-130, DEPLOY_CANCELED));
+                }
+                return Err("构建命令失败（详见部署日志）".to_string());
             }
-            steps.push_str("构建命令执行完成\n");
+            log_line(&task_log, "构建命令执行完成");
+        }
+
+        // 静态型：构建出静态文件后直接返回产物目录（由面板改写站点 web_root），
+        // 不托管 systemd 进程
+        if app_type == "static" {
+            let output = resolve_static_output(&wd, &build_output);
+            if !output.is_dir() {
+                return Err(format!(
+                    "未找到静态构建产物目录（已尝试 dist/build/public/_site/out 等，\
+                     或请在表单指定 build_output）：{}",
+                    output.display()
+                ));
+            }
+            log_line(&task_log, "已构建静态产物");
+            return Ok(Response::ok(
+                "部署完成（静态站点）",
+                Some(json!({
+                    "output_dir": output.to_string_lossy(),
+                    "git_commit": git_commit,
+                })),
+            ));
         }
 
         let exec = if !command.trim().is_empty() {
@@ -788,13 +1186,46 @@ pub async fn deploy(
         if !ok {
             return Err(format!("启动失败：{out}"));
         }
-        steps.push_str("已部署并启动\n");
+        log_line(&task_log, &format!("== 启动 ==\n{}\n已部署并启动", clip(&out)));
         Ok(Response::ok(
             "部署完成",
-            Some(json!({ "steps": steps, "unit": unit, "exec": exec })),
+            Some(json!({
+                "unit": unit,
+                "git_commit": git_commit,
+            })),
         ))
     })
     .await
+}
+
+/// 终止运行中的部署任务：读取 `<log>.pid` 里的进程组 leader pid，向整个进程组发
+/// SIGTERM，宽限 5 秒后 SIGKILL；并写 `<log>.cancel` 哨兵供执行侧各步骤间识别“已取消”。
+pub async fn app_deploy_stop(log_path: String) -> Response {
+    tokio::task::spawn_blocking(move || {
+        let pid_path = swap_ext(&log_path, "pid");
+        let cancel_path = swap_ext(&log_path, "cancel");
+        let pid: i32 = std::fs::read_to_string(&pid_path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .ok_or_else(|| "部署进程不存在或已结束".to_string())?;
+        // 先写哨兵，确保执行侧即使本步已结束、下步即将开始时也能感知取消
+        let _ = std::fs::write(&cancel_path, "");
+        let mut alive = unsafe { libc::kill(-pid, libc::SIGTERM) } == 0;
+        for _ in 0..5 {
+            if !alive {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            alive = unsafe { libc::kill(-pid, 0) } == 0;
+        }
+        if alive {
+            unsafe { libc::kill(-pid, libc::SIGKILL); }
+        }
+        Ok::<_, String>(Response::ok("已发送停止信号", None))
+    })
+    .await
+    .unwrap_or_else(|e| Ok(Response::err(-1, format!("任务执行失败: {e}"))))
+    .unwrap_or_else(|e| Response::err(-1, e))
 }
 
 /// start | stop | restart | enable | disable

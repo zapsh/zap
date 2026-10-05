@@ -257,6 +257,7 @@ pub async fn dispatch(req: Request) -> Response {
             username,
         } => appstore::script_run(path, run_id, username).await,
         Request::AppstoreScriptStop { run_id } => appstore::script_stop(run_id).await,
+        Request::AppDeployStop { log_path } => app::app_deploy_stop(log_path).await,
         Request::AppstoreScriptRead { path, username } => {
             appstore::script_read(path, username).await
         }
@@ -419,6 +420,13 @@ pub async fn dispatch(req: Request) -> Response {
             log_dir,
             requester,
             skip_owner_check,
+            repo_url,
+            branch,
+            git_ref,
+            git_subdir,
+            git_depth,
+            build_output,
+            log_path,
         } => {
             app::deploy(
                 site_id,
@@ -436,8 +444,15 @@ pub async fn dispatch(req: Request) -> Response {
                 install_deps,
                 &owner_user,
                 &log_dir,
+                &log_path,
                 requester,
                 skip_owner_check,
+                &repo_url,
+                &branch,
+                &git_ref,
+                &git_subdir,
+                git_depth,
+                &build_output,
             )
             .await
         }

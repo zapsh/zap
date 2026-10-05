@@ -38,7 +38,7 @@
           <div class="wz-tip">{{ t('site.appDomainHint') }}</div>
         </el-form-item>
       </template>
-      <el-form-item :label="t('site.appMount')">
+      <el-form-item v-if="!isStatic" :label="t('site.appMount')">
         <div class="mount-row">
           <el-select v-model="form.match_mode" class="mount-mode">
             <el-option value="" label="/path" />
@@ -70,7 +70,7 @@
           </el-radio>
         </el-radio-group>
       </el-form-item>
-      <el-form-item :label="t('site.appVersion')">
+      <el-form-item v-if="!isStatic" :label="t('site.appVersion')">
         <el-select v-model="form.runtime_version" style="width: 260px">
           <el-option value="" :label="t('site.appVersionDefault')" />
           <el-option v-for="v in versions" :key="v" :value="v" :label="versionLabel(v)" />
@@ -88,6 +88,30 @@
         </div>
         <div class="wz-tip">{{ t('site.appWorkdirTip') }}</div>
       </el-form-item>
+      <el-form-item :label="t('site.appUseGit')">
+        <el-switch v-model="form.use_git" />
+        <span class="wz-tip-inline">{{ t('site.appUseGitHint') }}</span>
+      </el-form-item>
+      <template v-if="form.use_git">
+        <el-form-item :label="t('site.appRepoUrl')" required>
+          <el-input v-model="form.repo_url" placeholder="https://github.com/user/repo.git" style="width: 100%" />
+          <div class="wz-tip">{{ t('site.appRepoUrlHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('site.appBranch')">
+          <el-input v-model="form.branch" :placeholder="t('site.appBranchPh')" style="width: 100%" />
+        </el-form-item>
+        <el-form-item :label="t('site.appGitSubdir')">
+          <el-input v-model="form.git_subdir" :placeholder="t('site.appGitSubdirPh')" style="width: 100%" />
+        </el-form-item>
+        <el-form-item v-if="isStatic" :label="t('site.appBuildOutput')">
+          <el-input v-model="form.build_output" :placeholder="t('site.appBuildOutputPh')" style="width: 100%" />
+          <div class="wz-tip">{{ t('site.appBuildOutputHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('site.appGitDepth')">
+          <el-input-number v-model="form.git_depth" :min="0" :max="50" style="width: 130px" />
+          <span class="wz-tip-inline">{{ t('site.appGitDepthHint') }}</span>
+        </el-form-item>
+      </template>
       <el-form-item :label="t('site.appEntry')">
         <el-input
           v-model="form.entry"
@@ -114,11 +138,11 @@
         <el-input v-model="form.build_cmd" :placeholder="isPython ? 'alembic upgrade head' : 'npm run build'" style="width: 100%" />
         <div class="wz-tip">{{ t('site.appBuildCmdHint') }}</div>
       </el-form-item>
-      <el-form-item :label="t('site.appStartCmd')">
+      <el-form-item v-if="!isStatic" :label="t('site.appStartCmd')">
         <el-input v-model="form.command" :placeholder="t('site.appStartCmdPh')" style="width: 100%" />
         <div class="wz-tip">{{ t('site.appStartCmdHint') }}</div>
       </el-form-item>
-      <el-form-item :label="t('site.appPort')">
+      <el-form-item v-if="!isStatic" :label="t('site.appPort')">
         <div class="wz-row">
           <el-switch v-model="form.auto_port" :active-text="t('site.appAutoPort')" />
           <el-input-number
@@ -156,6 +180,10 @@
           <span v-if="form.runtime_version"> · {{ versionLabel(form.runtime_version) }}</span>
         </el-descriptions-item>
         <el-descriptions-item :label="t('site.appWorkdir')">{{ form.workdir }}</el-descriptions-item>
+        <el-descriptions-item v-if="form.use_git && form.repo_url" :label="t('site.appRepoUrl')">
+          {{ form.repo_url }}
+          <span v-if="form.branch" class="wz-dim">@{{ form.branch }}</span>
+        </el-descriptions-item>
         <el-descriptions-item :label="t('site.appTarget')">
           <span v-if="form.target === 'site'">
             {{ siteNameOf(form.site_id) }}
@@ -185,6 +213,9 @@
         {{ t('site.appDeploy') }}
       </el-button>
     </template>
+
+    <!-- 部署是后台长任务：提交后在此实时查看 git 拉取 / 安装 / 构建进度 -->
+    <AppStoreLogDrawer ref="logDrawer" :simple="true" :stoppable="true" />
   </el-dialog>
 
   <!-- 项目目录：复用全局目录选择组件 -->
@@ -203,6 +234,7 @@ import { ElMessage } from 'element-plus'
 import { Folder } from '@/icons'
 import { http } from '@/utils/request'
 import DirPicker from '@/components/DirPicker.vue'
+import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
 import { deploySiteApp, getAppRuntimes } from '@/api/site'
 
 const props = defineProps<{
@@ -235,6 +267,7 @@ const visible = computed({
 
 const step = ref(0)
 const saving = ref(false)
+const logDrawer = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
 const dirVisible = ref(false)
 const sites = ref<SiteOption[]>([])
 
@@ -275,6 +308,13 @@ const form = ref({
   port: 0,
   env: '',
   autostart: true,
+  // git 部署（公开仓库）
+  use_git: false,
+  repo_url: '',
+  branch: '',
+  git_subdir: '',
+  build_output: '',
+  git_depth: 0,
 })
 
 const editing = computed(() => !!props.initial)
@@ -285,11 +325,13 @@ const namePreviewPrefix = computed(() => {
   return s?.owner ? `${s.owner}-` : 'user-'
 })
 const isPython = computed(() => form.value.app_type === 'python')
+const isStatic = computed(() => form.value.app_type === 'static')
 
 const typeOptions = computed(() => {
   const allowed = runtimes.value.types
-  if (!allowed.length) return ['python', 'nodejs']
-  return ['python', 'nodejs'].filter((x) => allowed.includes(x))
+  const all = ['python', 'nodejs', 'static']
+  if (!allowed.length) return all
+  return all.filter((x) => allowed.includes(x))
 })
 
 const versions = computed(() =>
@@ -305,7 +347,10 @@ const portRangeText = computed(() => {
 })
 
 function typeLabel(v: string) {
-  return v === 'python' ? 'Python' : v === 'nodejs' ? 'Node.js' : v
+  if (v === 'python') return 'Python'
+  if (v === 'nodejs') return 'Node.js'
+  if (v === 'static') return t('site.appTypeStatic')
+  return v
 }
 function versionLabel(v: string) {
   return isPython.value ? `Python ${v}` : `Node.js ${v}`
@@ -363,7 +408,7 @@ function next() {
       return
     }
   }
-  if (step.value === 1 && !form.value.workdir.trim()) {
+  if (step.value === 1 && !form.value.workdir.trim() && !form.value.use_git) {
     ElMessage.warning(t('site.appWorkdirRequired'))
     return
   }
@@ -392,13 +437,30 @@ async function submit() {
       mount_path: form.value.mount_path.trim() || '/',
       match_mode: form.value.match_mode,
       strip_prefix: form.value.strip_prefix,
+      repo_url: form.value.use_git ? form.value.repo_url.trim() : '',
+      branch: form.value.use_git ? form.value.branch.trim() : '',
+      git_subdir: form.value.use_git ? form.value.git_subdir.trim() : '',
+      git_depth: form.value.use_git ? form.value.git_depth : 0,
+      build_output: isStatic.value ? form.value.build_output.trim() : '',
     })
     const d = (res as any)?.data
+    // 部署会改站点配置（自动挂载反代 + 同步）：通知站点面板刷新
+    window.dispatchEvent(new CustomEvent('zap:sites-changed'))
+    // 部署是后台长任务：关闭向导并打开任务日志抽屉，实时查看 git 拉取 / 安装 / 构建进度
+    const taskId = d?.task_id
+    if (taskId) {
+      ElMessage.success(t('site.appDeployStarted'))
+      visible.value = false
+      emit('done')
+      logDrawer.value?.openDrawer(
+        taskId,
+        t('site.appDeployTaskTitle', { name: form.value.name }),
+      )
+      return
+    }
     ElMessage.success(
       d?.name ? t('site.appDeployOk', { name: d.name }) : t('site.appDeploySubmitted'),
     )
-    // 部署会改站点配置（自动挂载反代 + 同步）：通知站点面板刷新
-    window.dispatchEvent(new CustomEvent('zap:sites-changed'))
     if (d?.mounted) {
       ElMessage.info(t('site.appMounted', { path: d.mounted, port: d.port }))
     } else if (d?.synced === false) {
@@ -469,6 +531,13 @@ watch(visible, (v) => {
       form.value.env = i.env || ''
       form.value.create_venv = i.create_venv !== false
       form.value.install_deps = i.install_deps !== false
+      // git 部署元数据回显
+      form.value.repo_url = i.repo_url || ''
+      form.value.branch = i.branch || ''
+      form.value.git_subdir = i.git_subdir || ''
+      form.value.build_output = i.build_output || ''
+      form.value.git_depth = i.git_depth || 0
+      form.value.use_git = !!(i.repo_url || i.use_git)
     }
   })
 })

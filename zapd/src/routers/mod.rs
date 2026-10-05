@@ -836,6 +836,7 @@ fn api_routers() -> Router {
         .route("/site/app/list_all", get(app::app_list_all))
         .route("/site/app/list", get(app::app_list))
         .route("/site/app/deploy", post(app::app_deploy))
+        .route("/site/app/git-update", post(app::app_git_update))
         .route("/site/app/action", post(app::app_action))
         .route("/site/app/remove", post(app::app_remove))
         .route("/site/app/log", get(app::app_log))

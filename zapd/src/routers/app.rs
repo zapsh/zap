@@ -19,7 +19,7 @@ use tracing::info;
 use crate::{
     db,
     zap::{
-        ZapError, ZapJsonResult, audit,
+        ZapError, ZapJsonResult, audit, task,
         jwt::{self, ValidatedClaims},
     },
 };
@@ -84,6 +84,18 @@ pub struct AppDeployPayload {
     /// 是否把挂载前缀剥掉再转发（proxy_pass 带 URI）：挂 `/njs` 时
     /// `/njs/a` 转发给后端变成 `/a`。不传时子路径挂载默认剥离。
     pub strip_prefix: Option<bool>,
+    /// 源代码仓库（公开仓库；为空 = 使用现有 workdir）
+    pub repo_url: Option<String>,
+    /// 分支（为空 = 执行端探测默认分支）
+    pub branch: Option<String>,
+    /// 指定提交 / 标签（可选）
+    pub git_ref: Option<String>,
+    /// 仓库内子目录（应用根不在仓库根时用）
+    pub git_subdir: Option<String>,
+    /// 浅克隆深度（0 = 不浅克隆）
+    pub git_depth: Option<i64>,
+    /// 静态型（app_type=static）：构建产物目录（相对 workdir；为空 = 执行端自动探测）
+    pub build_output: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -288,6 +300,74 @@ async fn create_proxy_site(
         .ok_or_else(|| ZapError::New(-1, "反代站点创建失败：未拿到站点 ID".to_string()))
 }
 
+/// 为静态型应用自动建一个 `static` 站点（默认 web_root），部署拿到产物目录后再改写。
+async fn create_static_site(
+    claims: &jwt::Claims,
+    client_addr: SocketAddr,
+    domain: &str,
+    name: &str,
+) -> Result<i64, ZapError> {
+    let owner = if jwt::is_admin(claims) || jwt::is_reseller(claims) {
+        Some(claims.id as i64)
+    } else {
+        None
+    };
+    let add = site::SiteAddPayload {
+        user_id: owner,
+        name: Some(name.to_string()),
+        domains: vec![domain.to_string()],
+        ips: Vec::new(),
+        status: Some(1),
+        remark: Some(format!("应用 {name} 的静态站点（由应用部署自动创建）")),
+        php_instance: None,
+        site_type: "static".to_string(),
+        web_root_custom: false,
+        web_root: None,
+        web_root_sub: None,
+        upstreams: Vec::new(),
+        locations: Vec::new(),
+        ssl_cert_id: None,
+        force_https: false,
+        ssl_protocols: String::new(),
+        ssl_ciphers: String::new(),
+        ssl_prefer_server_ciphers: true,
+        ssl_http2: true,
+        sec: None,
+    };
+    let Json(v) = site::site_add(
+        jwt::ValidatedClaims(claims.clone()),
+        Extension(client_addr),
+        Json(add),
+    )
+    .await?;
+    v.get("data")
+        .and_then(|d| d.get("id"))
+        .and_then(|x| x.as_i64())
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ZapError::New(-1, "静态站点创建失败：未拿到站点 ID".to_string()))
+}
+
+/// 把站点 web_root 改写为构建产物目录（静态型部署后调用），并标记自定义目录。
+///
+/// 注意：`web_root_custom` 列在 `site_profile` 表，不在 `site` 表——
+/// 曾误写成 `UPDATE site SET web_root = ?, web_root_custom = 1`，因列不存在整条语句
+/// 失败（连 web_root 都没更新），且被 `let _ =` 静默吞掉，表现为“填了 build_output
+/// 却没生效”。这里分两条独立语句，分别更新两张表。
+async fn update_site_web_root(site_id: i64, web_root: &str) -> Result<(), ZapError> {
+    let pool = db::get_db_pool().await;
+    sqlx::query("UPDATE site SET web_root = ? WHERE id = ?")
+        .bind(web_root)
+        .bind(site_id)
+        .execute(pool)
+        .await
+        .map_err(|e| ZapError::New(-1, format!("改写站点目录失败：{e}")))?;
+    let _ = sqlx::query("UPDATE site_profile SET web_root_custom = 1 WHERE site_id = ?")
+        .bind(site_id)
+        .execute(pool)
+        .await;
+    Ok(())
+}
+
 /// 应用名合法性：会被拼进 systemd unit 名 `zap-app-{site_id}-{name}.service`，
 /// 所以只允许字母数字和 `-_.`；输入上限 48，留出前缀空间。
 fn valid_app_name(n: &str) -> bool {
@@ -434,9 +514,12 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
         String,
         i64,
         i64,
+        String,
+        String,
+        String,
     )> = sqlx::query_as(
         "SELECT id, name, app_type, runtime_version, build_cmd, workdir, entry, command, \
-                port, env, autostart, running \
+                port, env, autostart, running, git_commit, repo_url, output_dir \
              FROM site_apps WHERE site_id = ? ORDER BY id",
     )
     .bind(q.site_id)
@@ -486,6 +569,9 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
                 env,
                 autostart,
                 running,
+                git_commit,
+                repo_url,
+                output_dir,
             )| {
                 let st = live.get(&name).cloned().unwrap_or(json!({
                     "state": "unknown", "active": false, "enabled": false, "pid": 0,
@@ -503,6 +589,9 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
                     "env": env,
                     "autostart": autostart == 1,
                     "running": running == 1,
+                    "git_commit": git_commit,
+                    "repo_url": repo_url,
+                    "output_dir": output_dir,
                     "state": st.get("state").and_then(|v| v.as_str()).unwrap_or("unknown"),
                     "active": st.get("active").and_then(|v| v.as_bool()).unwrap_or(false),
                     "enabled": st.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -604,7 +693,9 @@ pub async fn app_deploy(
     let match_mode = payload.match_mode.clone().unwrap_or_default();
     let strip_prefix = payload.strip_prefix;
 
-    // 站点来源二选一：直接选已有站点，或填域名自动建一个反代站点
+    let is_static = app_type == "static";
+    // 站点来源二选一：直接选已有站点，或填域名自动建站。
+    // 静态型自动建站时先建「static」站点（默认 web_root），部署拿到产物目录后再改写 web_root。
     let site_id = if payload.site_id > 0 {
         site::site_in_scope(&claims, payload.site_id).await?;
         payload.site_id
@@ -612,20 +703,24 @@ pub async fn app_deploy(
         if domain.is_empty() {
             return Err(ZapError::New(
                 -1,
-                "请选择要部署到的站点，或填写域名自动创建反代站点".to_string(),
+                "请选择要部署到的站点，或填写域名自动创建站点".to_string(),
             ));
         }
-        create_proxy_site(
-            &claims,
-            client_addr,
-            &domain,
-            &name,
-            port,
-            &mount,
-            &match_mode,
-            strip_prefix.unwrap_or(mount != "/"),
-        )
-        .await?
+        if is_static {
+            create_static_site(&claims, client_addr, &domain, &name).await?
+        } else {
+            create_proxy_site(
+                &claims,
+                client_addr,
+                &domain,
+                &name,
+                port,
+                &mount,
+                &match_mode,
+                strip_prefix.unwrap_or(mount != "/"),
+            )
+            .await?
+        }
     };
 
     let ctx = load_site_ctx(site_id).await?;
@@ -697,7 +792,33 @@ pub async fn app_deploy(
         (lu, false)
     };
 
-    let resp = crate::zapexec::call(Request::AppDeploy {
+    let repo_url = payload.repo_url.clone().unwrap_or_default();
+    let branch = payload.branch.clone().unwrap_or_default();
+    let git_ref = payload.git_ref.clone().unwrap_or_default();
+    let git_subdir = payload.git_subdir.clone().unwrap_or_default();
+    let git_depth = payload.git_depth.unwrap_or(0);
+    let build_output = payload.build_output.clone().unwrap_or_default();
+
+    // 非静态型：先把反代挂载建好并同步（很快，不依赖构建结果）；
+    // 静态型由后台任务在构建出产物目录后再改写 web_root。
+    if !is_static {
+        let _ = site::ensure_app_location(
+            site_id,
+            &name,
+            port,
+            &mount,
+            &match_mode,
+            strip_prefix,
+        )
+        .await;
+        let _ = site::sync_one_site(site_id).await;
+    }
+
+    // 长任务（git clone / 安装依赖 / 构建 / 起进程）放进后台任务执行：handler 立即返回
+    // 任务号，前端通过任务日志查看进度，避免 HTTP 请求超时打断部署（前端断开也不会中断）。
+    let task_id = task::new_id();
+    let log_path = task::log_path_in(&task::logs_dir(), &task_id);
+    let req = Request::AppDeploy {
         site_id,
         name: name.clone(),
         app_type: app_type.clone(),
@@ -713,77 +834,269 @@ pub async fn app_deploy(
         install_deps,
         owner_user: ctx.owner.clone(),
         log_dir: ctx.log_root.clone(),
+        log_path: log_path.clone(),
         requester,
         skip_owner_check,
+        repo_url: repo_url.clone(),
+        branch: branch.clone(),
+        git_ref: git_ref.clone(),
+        git_subdir: git_subdir.clone(),
+        git_depth,
+        build_output: build_output.clone(),
+    };
+    // 提交即建记录：即使部署中途失败也保留，面板据此重跑 / 看日志。
+    if let Err(e) = persist_app(
+        site_id,
+        &name,
+        &app_type,
+        &runtime_version,
+        &build_cmd,
+        &workdir,
+        &entry,
+        &command,
+        port,
+        &env,
+        autostart,
+        install_deps,
+        &repo_url,
+        &branch,
+        &git_ref,
+        &git_subdir,
+        git_depth,
+        &build_output,
+        "",
+        "",
+        0,
+        "deploying",
+        &task_id,
+    )
+    .await
+    {
+        info!("app deploy: 预建记录失败（任务仍会提交）：{e}");
+    }
+    let payload = serde_json::to_string(&req)
+        .map_err(|e| ZapError::New(-1, format!("序列化部署参数失败：{e}")))?;
+    let title = if is_static {
+        format!("部署静态站点 {name}")
+    } else {
+        format!("部署应用 {name}")
+    };
+    let t = task::enqueue(task::NewTask {
+        task_id: task_id.clone(),
+        kind: task::KIND_APPDEPLOY.to_string(),
+        action: "deploy".to_string(),
+        pkg: name.clone(),
+        username: claims.sub.clone(),
+        title,
+        log_path: log_path.clone(),
+        job_key: String::new(),
+        group_key: String::new(),
+        group_limit: 0,
+        payload: payload.clone(),
     })
     .await?;
-    if resp.code != 0 {
-        return Err(exec_err(&resp));
+    if t.status == task::STATUS_RUNNING {
+        tokio::spawn(run_app_deploy_task(task_id.clone(), log_path, payload));
     }
-
-    let now = chrono::Utc::now().timestamp();
-    sqlx::query(
-        "INSERT INTO site_apps (site_id, name, app_type, runtime_version, build_cmd, workdir, \
-                entry, command, port, env, autostart, running, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) \
-         ON CONFLICT(site_id, name) DO UPDATE SET \
-           app_type = excluded.app_type, runtime_version = excluded.runtime_version, \
-           build_cmd = excluded.build_cmd, workdir = excluded.workdir, entry = excluded.entry, \
-           command = excluded.command, port = excluded.port, env = excluded.env, \
-           autostart = excluded.autostart, running = 1, updated_at = excluded.updated_at",
-    )
-    .bind(site_id)
-    .bind(&name)
-    .bind(&app_type)
-    .bind(&runtime_version)
-    .bind(&build_cmd)
-    .bind(&workdir)
-    .bind(&entry)
-    .bind(&command)
-    .bind(port)
-    .bind(&env)
-    .bind(i64::from(autostart))
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await
-    .map_err(|e| ZapError::New(-1, format!("保存应用配置失败：{e}")))?;
-
-    // 部署完只写库还不够：nginx 上没有这条反代，站点等于没同步
-    let mounted =
-        site::ensure_app_location(site_id, &name, port, &mount, &match_mode, strip_prefix)
-            .await
-            .unwrap_or(None);
-    let sync_ok = match site::sync_one_site(site_id).await {
-        Ok(_) => true,
-        Err(e) => {
-            info!("app deploy: site sync failed: site={site_id} err={e}");
-            false
-        }
-    };
 
     let _ = audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "app_deploy",
         &format!("site={} name={}", site_id, name),
-        &format!("type={app_type} workdir={workdir}"),
+        &format!("type={app_type} workdir={workdir} task={task_id}"),
     )
     .await;
     info!(
-        "app deploy: site={} name={} type={}",
-        site_id, name, app_type
+        "app deploy submitted: site={} name={} type={} task={}",
+        site_id, name, app_type, task_id
     );
     Ok(Json(json!({
         "code": 0,
-        "message": resp.message,
+        "message": "部署任务已提交，可在任务队列查看进度",
         "data": {
-            "site_id": site_id,
-            "name": name,
-            "port": port,
-            "mounted": mounted,
-            "synced": sync_ok,
-            "detail": resp.data.unwrap_or(Value::Null),
+            "task_id": task_id,
+            "status": t.status,
+        }
+    })))
+}
+
+/// POST /site/app/git-update —— 手动更新：从仓库拉取最新代码 + 重建（+ 重启 / 重同步）。
+///
+/// 直接复用部署逻辑（已克隆则 `git fetch` + `reset`、否则 `git clone`），故只需读回应用保存的
+/// git 元数据并重新下发 [`Request::AppDeploy`]，再按静态 / 进程型分别同步站点。
+#[derive(Deserialize)]
+pub struct AppGitUpdatePayload {
+    pub site_id: i64,
+    pub name: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AppGitRow {
+    site_id: i64,
+    name: String,
+    app_type: String,
+    runtime_version: String,
+    build_cmd: String,
+    workdir: String,
+    port: i64,
+    env: String,
+    autostart: i64,
+    entry: String,
+    command: String,
+    install_deps: i64,
+    branch: String,
+    git_ref: String,
+    git_subdir: String,
+    git_depth: i64,
+    build_output: String,
+    repo_url: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AppListRow {
+    id: i64,
+    site_id: i64,
+    site_name: String,
+    name: String,
+    app_type: String,
+    runtime_version: String,
+    build_cmd: String,
+    workdir: String,
+    entry: String,
+    command: String,
+    port: i64,
+    env: String,
+    autostart: i64,
+    running: i64,
+    deploy_status: String,
+    task_id: String,
+    git_commit: String,
+    output_dir: String,
+    repo_url: String,
+    branch: String,
+    git_ref: String,
+    git_subdir: String,
+    git_depth: i64,
+    build_output: String,
+}
+
+pub async fn app_git_update(
+    claims: ValidatedClaims,
+    Json(payload): Json<AppGitUpdatePayload>,
+) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let row: Option<AppGitRow> = sqlx::query_as(
+        "SELECT site_id, name, app_type, runtime_version, build_cmd, workdir, port, env, \
+                autostart, entry, command, install_deps, branch, git_ref, git_subdir, \
+                git_depth, build_output, repo_url \
+         FROM site_apps WHERE site_id = ? AND name = ?",
+    )
+    .bind(payload.site_id)
+    .bind(&payload.name)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ZapError::New(-1, format!("读取应用失败：{e}")))?;
+    let row = row.ok_or_else(|| ZapError::New(-1, "应用不存在或已被删除".to_string()))?;
+
+    // 权限：站点必须在当前用户可见范围内；普通用户只能更新自己的应用
+    site::site_in_scope(&claims, row.site_id).await?;
+    let (requester, skip_owner_check) = if jwt::is_admin(&claims) {
+        (None, true)
+    } else {
+        let lu: Option<String> =
+            sqlx::query_scalar("SELECT linux_user FROM user WHERE id = ?")
+                .bind(claims.id as i64)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten()
+                .filter(|u: &String| !u.trim().is_empty());
+        (lu, false)
+    };
+
+    let ctx = load_site_ctx(row.site_id).await?;
+
+    let task_id = task::new_id();
+    let log_path = task::log_path_in(&task::logs_dir(), &task_id);
+
+    // 复用部署逻辑（已克隆则 git fetch + reset、否则 git clone），整段长任务放进后台执行，
+    // handler 立即返回任务号，避免 HTTP 请求超时打断更新。
+    let req = Request::AppDeploy {
+        site_id: row.site_id,
+        name: row.name.clone(),
+        app_type: row.app_type.clone(),
+        runtime_version: row.runtime_version.clone(),
+        build_cmd: row.build_cmd.clone(),
+        create_venv: false,
+        workdir: row.workdir.clone(),
+        entry: row.entry.clone(),
+        command: row.command.clone(),
+        port: row.port,
+        env: row.env.clone(),
+        autostart: row.autostart != 0,
+        install_deps: row.install_deps != 0,
+        owner_user: ctx.owner.clone(),
+        log_dir: ctx.log_root.clone(),
+        requester,
+        skip_owner_check,
+        repo_url: row.repo_url.clone(),
+        branch: row.branch.clone(),
+        git_ref: row.git_ref.clone(),
+        git_subdir: row.git_subdir.clone(),
+        git_depth: row.git_depth,
+        build_output: row.build_output.clone(),
+        log_path: log_path.clone(),
+    };
+    // 重新部署：状态置 deploying 并记录新任务号，便于面板实时看日志 / 状态。
+    {
+        let pool = db::get_db_pool().await;
+        let _ = sqlx::query(
+            "UPDATE site_apps SET deploy_status = 'deploying', task_id = ? \
+             WHERE site_id = ? AND name = ?",
+        )
+        .bind(&task_id)
+        .bind(row.site_id)
+        .bind(&row.name)
+        .execute(pool)
+        .await;
+    }
+    let payload = serde_json::to_string(&req)
+        .map_err(|e| ZapError::New(-1, format!("序列化部署参数失败：{e}")))?;
+    let title = format!("更新应用 {}", row.name);
+    let t = task::enqueue(task::NewTask {
+        task_id: task_id.clone(),
+        kind: task::KIND_APPDEPLOY.to_string(),
+        action: "git_update".to_string(),
+        pkg: row.name.clone(),
+        username: claims.sub.clone(),
+        title,
+        log_path: log_path.clone(),
+        job_key: String::new(),
+        group_key: String::new(),
+        group_limit: 0,
+        payload: payload.clone(),
+    })
+    .await?;
+    if t.status == task::STATUS_RUNNING {
+        tokio::spawn(run_app_deploy_task(task_id.clone(), log_path, payload));
+    }
+
+    let _ = audit::log(
+        Some(&claims),
+        None,
+        "app_git_update",
+        &format!("site={} name={}", row.site_id, row.name),
+        &format!("task={task_id}"),
+    )
+    .await;
+
+    Ok(Json(json!({
+        "code": 0,
+        "message": "更新任务已提交，可在任务队列查看进度",
+        "data": {
+            "task_id": task_id,
+            "status": t.status,
         }
     })))
 }
@@ -828,32 +1141,18 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
     let base = "SELECT a.id, a.site_id, s.name AS site_name, a.name, a.app_type, \
                        a.runtime_version, a.build_cmd, a.workdir, a.entry, a.command, \
-                       a.port, a.env, a.autostart, a.running \
+                       a.port, a.env, a.autostart, a.running, \
+                       a.deploy_status, a.task_id, a.git_commit, a.output_dir, \
+                       a.repo_url, a.branch, a.git_ref, a.git_subdir, a.git_depth, a.build_output \
                 FROM site_apps a JOIN site s ON s.id = a.site_id";
-    type Row = (
-        i64,
-        i64,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        String,
-        i64,
-        i64,
-    );
-    let rows: Vec<Row> = if jwt::is_admin(&claims) {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let rows: Vec<AppListRow> = if jwt::is_admin(&claims) {
+        sqlx::query_as::<_, AppListRow>(sqlx::AssertSqlSafe(format!(
             "{base} ORDER BY s.name, a.name"
         )))
         .fetch_all(pool)
         .await?
     } else if jwt::is_reseller(&claims) {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        sqlx::query_as::<_, AppListRow>(sqlx::AssertSqlSafe(format!(
             "{base} WHERE s.user_id = ? OR s.user_id IN (SELECT id FROM user WHERE owner_id = ?) \
                  ORDER BY s.name, a.name"
         )))
@@ -862,7 +1161,7 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
         .fetch_all(pool)
         .await?
     } else {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        sqlx::query_as::<_, AppListRow>(sqlx::AssertSqlSafe(format!(
             "{base} WHERE s.user_id = ? ORDER BY s.name, a.name"
         )))
         .bind(claims.id as i64)
@@ -875,11 +1174,11 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
         std::collections::HashMap::new();
     let mut seen_sites: std::collections::HashSet<i64> = std::collections::HashSet::new();
     for r in &rows {
-        if !seen_sites.insert(r.1) {
+        if !seen_sites.insert(r.site_id) {
             continue;
         }
-        for (app, p, m) in site::app_mounts(r.1).await {
-            mounts.insert((r.1, app), (p, m));
+        for (app, p, m) in site::app_mounts(r.site_id).await {
+            mounts.insert((r.site_id, app), (p, m));
         }
     }
 
@@ -888,7 +1187,7 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
         std::collections::HashMap::new();
     let mut by_site: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
     for r in &rows {
-        by_site.entry(r.1).or_default().push(r.3.clone());
+        by_site.entry(r.site_id).or_default().push(r.name.clone());
     }
     for (sid, names) in by_site {
         if let Ok(resp) = crate::zapexec::call(Request::AppStatus {
@@ -918,22 +1217,32 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
     let apps: Vec<Value> = rows
         .into_iter()
         .map(
-            |(
-                id,
-                site_id,
-                site_name,
-                name,
-                app_type,
-                runtime_version,
-                build_cmd,
-                workdir,
-                entry,
-                command,
-                port,
-                env,
-                autostart,
-                running,
-            )| {
+            |AppListRow {
+                 id,
+                 site_id,
+                 site_name,
+                 name,
+                 app_type,
+                 runtime_version,
+                 build_cmd,
+                 workdir,
+                 entry,
+                 command,
+                 port,
+                 env,
+                 autostart,
+                 running,
+                 deploy_status,
+                 task_id,
+                 git_commit,
+                 output_dir,
+                 repo_url,
+                 branch,
+                 git_ref,
+                 git_subdir,
+                 git_depth,
+                 build_output,
+             }| {
                 let st = live
                     .get(&(site_id, name.clone()))
                     .cloned()
@@ -961,6 +1270,16 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
                     "env": env,
                     "autostart": autostart == 1,
                     "running": running == 1,
+                    "deploy_status": deploy_status,
+                    "task_id": task_id,
+                    "git_commit": git_commit,
+                    "output_dir": output_dir,
+                    "repo_url": repo_url,
+                    "branch": branch,
+                    "git_ref": git_ref,
+                    "git_subdir": git_subdir,
+                    "git_depth": git_depth,
+                    "build_output": build_output,
                     "state": st.get("state").and_then(|v| v.as_str()).unwrap_or("unknown"),
                     "active": st.get("active").and_then(|v| v.as_bool()).unwrap_or(false),
                     "enabled": st.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -1071,6 +1390,242 @@ pub async fn app_log(claims: ValidatedClaims, Query(q): Query<AppLogQuery>) -> Z
     Ok(Json(
         json!({ "code": 0, "message": "ok", "data": { "lines": lines } }),
     ))
+}
+
+/// 把应用配置落库（主键冲突则更新）。`deploy_status`/`task_id` 让面板在部署中、失败时
+/// 也能看到记录并打开实时日志；`running` 仅在部署成功时置 1。
+#[allow(clippy::too_many_arguments)]
+async fn persist_app(
+    site_id: i64,
+    name: &str,
+    app_type: &str,
+    runtime_version: &str,
+    build_cmd: &str,
+    workdir: &str,
+    entry: &str,
+    command: &str,
+    port: i64,
+    env: &str,
+    autostart: bool,
+    install_deps: bool,
+    repo_url: &str,
+    branch: &str,
+    git_ref: &str,
+    git_subdir: &str,
+    git_depth: i64,
+    build_output: &str,
+    git_commit: &str,
+    output_dir: &str,
+    running: i64,
+    deploy_status: &str,
+    task_id: &str,
+) -> Result<(), ZapError> {
+    let pool = db::get_db_pool().await;
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO site_apps (site_id, name, app_type, runtime_version, build_cmd, workdir, \
+                entry, command, port, env, autostart, install_deps, running, \
+                repo_url, branch, git_ref, git_subdir, git_depth, build_output, git_commit, output_dir, \
+                deploy_status, task_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(site_id, name) DO UPDATE SET \
+           app_type = excluded.app_type, runtime_version = excluded.runtime_version, \
+           build_cmd = excluded.build_cmd, workdir = excluded.workdir, entry = excluded.entry, \
+           command = excluded.command, port = excluded.port, env = excluded.env, \
+           autostart = excluded.autostart, install_deps = excluded.install_deps, \
+           running = excluded.running, updated_at = excluded.updated_at, \
+           repo_url = excluded.repo_url, branch = excluded.branch, git_ref = excluded.git_ref, \
+           git_subdir = excluded.git_subdir, git_depth = excluded.git_depth, \
+           build_output = excluded.build_output, git_commit = excluded.git_commit, \
+           output_dir = excluded.output_dir, deploy_status = excluded.deploy_status, \
+           task_id = excluded.task_id",
+    )
+    .bind(site_id)
+    .bind(name)
+    .bind(app_type)
+    .bind(runtime_version)
+    .bind(build_cmd)
+    .bind(workdir)
+    .bind(entry)
+    .bind(command)
+    .bind(port)
+    .bind(env)
+    .bind(i64::from(autostart))
+    .bind(i64::from(install_deps))
+    .bind(running)
+    .bind(repo_url)
+    .bind(branch)
+    .bind(git_ref)
+    .bind(git_subdir)
+    .bind(git_depth)
+    .bind(build_output)
+    .bind(git_commit)
+    .bind(output_dir)
+    .bind(deploy_status)
+    .bind(task_id)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(|e| ZapError::New(-1, format!("保存应用配置失败：{e}")))?;
+    Ok(())
+}
+
+/// 单独更新部署状态（部署失败时调用，记录仍保留）。
+async fn set_app_deploy_status(site_id: i64, name: &str, status: &str) {
+    let pool = db::get_db_pool().await;
+    if let Err(e) = sqlx::query(
+        "UPDATE site_apps SET deploy_status = ? WHERE site_id = ? AND name = ?",
+    )
+    .bind(status)
+    .bind(site_id)
+    .bind(name)
+    .execute(pool)
+    .await
+    {
+        info!(
+            "set_app_deploy_status 失败: site={site_id} name={name} status={status} err={e}"
+        );
+    }
+}
+
+/// 把一段文本写入任务日志文件（供前端任务抽屉展示进度）。
+fn write_task_log(log_path: &str, content: &str) -> std::io::Result<()> {
+    if let Some(p) = std::path::Path::new(log_path).parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    std::fs::write(log_path, content)
+}
+
+/// 追加一段文本到任务日志文件（部署等实时任务用：zapexec 边跑边写，
+/// zapd 只在末尾补「持久化配置 / 同步站点」结果与完成标记，绝不覆盖）。
+fn append_task_log(log_path: &str, content: &str) -> std::io::Result<()> {
+    if let Some(p) = std::path::Path::new(log_path).parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    writeln!(f, "{content}")
+}
+
+/// 后台执行部署 / 更新任务：调用 zapexec 完成 git 拉取、安装依赖、构建（及起进程），
+/// 落库并同步站点。在 `tokio` 后台任务中运行，前端通过任务日志查看进度，
+/// 不受 HTTP 请求超时影响；即使前端断开连接，部署也会完整跑完。
+pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: String) {
+    let req = match serde_json::from_str::<Request>(&payload) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = write_task_log(&log_path, &format!("部署参数解析失败：{e}\n"));
+            let _ = task::finish(&task_id, task::STATUS_FAILED, -1).await;
+            return;
+        }
+    };
+    let (site_id, name, app_type, runtime_version, build_cmd, create_venv, workdir, entry,
+        command, port, env, autostart, install_deps, owner_user, log_dir, requester,
+        skip_owner_check, repo_url, branch, git_ref, git_subdir, git_depth, build_output,
+        log_path) = match req {
+        Request::AppDeploy { site_id, name, app_type, runtime_version, build_cmd, create_venv,
+        workdir, entry, command, port, env, autostart, install_deps, owner_user, log_dir,
+        requester, skip_owner_check, repo_url, branch, git_ref, git_subdir, git_depth,
+        build_output, log_path } => (site_id, name, app_type, runtime_version, build_cmd, create_venv,
+        workdir, entry, command, port, env, autostart, install_deps, owner_user, log_dir,
+        requester, skip_owner_check, repo_url, branch, git_ref, git_subdir, git_depth,
+        build_output, log_path),
+        _ => {
+            let _ = task::finish(&task_id, task::STATUS_FAILED, -1).await;
+            return;
+        }
+    };
+
+    let resp = match crate::zapexec::call(Request::AppDeploy {
+        site_id, name: name.clone(), app_type: app_type.clone(), runtime_version: runtime_version.clone(),
+        build_cmd: build_cmd.clone(), create_venv, workdir: workdir.clone(), entry: entry.clone(),
+        command: command.clone(), port, env: env.clone(), autostart, install_deps,
+        owner_user: owner_user.clone(), log_dir: log_dir.clone(), log_path: log_path.clone(), requester, skip_owner_check,
+        repo_url: repo_url.clone(), branch: branch.clone(), git_ref: git_ref.clone(),
+        git_subdir: git_subdir.clone(), git_depth, build_output: build_output.clone(),
+    })
+    .await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = append_task_log(&log_path, &format!("调用执行端失败：{e}"));
+            let _ = append_task_log(&log_path, &format!("{} -1", task::DONE_MARKER));
+            let _ = set_app_deploy_status(site_id, &name, "failed");
+            let _ = task::finish(&task_id, task::STATUS_FAILED, -1).await;
+            return;
+        }
+    };
+
+    if resp.code != 0 {
+        // 用户中途取消：执行侧返回约定文案，任务置为 canceled（而非 failed）
+        let canceled = resp.message == "部署已取消";
+        if canceled {
+            let _ = append_task_log(&log_path, "部署已取消");
+            let _ = append_task_log(&log_path, &format!("{} {}", task::DONE_MARKER, -1));
+        } else {
+            let _ = append_task_log(&log_path, &format!("部署失败：{}", resp.message));
+            let _ = append_task_log(&log_path, &format!("{} {}", task::DONE_MARKER, resp.code));
+        }
+        let _ = set_app_deploy_status(
+            site_id,
+            &name,
+            if canceled { "canceled" } else { "failed" },
+        );
+        let _ = task::finish(
+            &task_id,
+            if canceled {
+                task::STATUS_CANCELED
+            } else {
+                task::STATUS_FAILED
+            },
+            if canceled { -1 } else { resp.code },
+        )
+        .await;
+        return;
+    }
+
+    let git_commit = resp.data.as_ref()
+        .and_then(|d| d.get("git_commit"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let output_dir = resp.data.as_ref()
+        .and_then(|d| d.get("output_dir"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // 落库（应用配置 + 最新 commit / 产物目录；主键冲突则更新）
+    if let Err(e) = persist_app(site_id, &name, &app_type, &runtime_version, &build_cmd, &workdir,
+        &entry, &command, port, &env, autostart, install_deps, &repo_url, &branch, &git_ref,
+        &git_subdir, git_depth, &build_output, &git_commit,
+        output_dir.as_deref().unwrap_or(""), 1, "success", &task_id).await {
+        let _ = append_task_log(&log_path, &format!("保存应用配置失败：{e}"));
+        let _ = append_task_log(&log_path, &format!("{} -1", task::DONE_MARKER));
+        let _ = set_app_deploy_status(site_id, &name, "failed");
+        let _ = task::finish(&task_id, task::STATUS_FAILED, -1).await;
+        return;
+    }
+
+    // 同步站点：静态型改写 web_root，进程型位置首次部署已建，这里重同步确保生效
+    let is_static = app_type == "static";
+    let mut sync_ok = true;
+    if is_static {
+        if let Some(ref od) = output_dir {
+            let _ = update_site_web_root(site_id, od).await;
+        }
+    }
+    if let Err(e) = site::sync_one_site(site_id).await {
+        sync_ok = false;
+        info!("app deploy task: site sync failed: site={site_id} err={e}");
+    }
+
+    // 重量级步骤（git / 依赖 / 构建 / 启动）已由 zapexec 实时写入日志；这里只补面板侧结果。
+    let _ = append_task_log(&log_path, &format!("部署完成（commit={git_commit}）\nsync={sync_ok}"));
+    let _ = append_task_log(&log_path, &format!("{} 0", task::DONE_MARKER));
+    let _ = task::finish(&task_id, task::STATUS_SUCCESS, 0).await;
 }
 
 #[cfg(test)]

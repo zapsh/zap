@@ -40,6 +40,7 @@
           <div class="app-cell">
             <span class="app-name">{{ row.name }}</span>
             <span class="app-dir">{{ row.workdir }}</span>
+            <span v-if="row.git_commit" class="app-ver">@{{ row.git_commit }}</span>
           </div>
         </template>
       </el-table-column>
@@ -72,6 +73,13 @@
           {{ stateLabel(row) }}
         </template>
       </el-table-column>
+      <el-table-column :label="t('site.appColDeployStatus')" width="110" align="center">
+        <template #default="{ row }">
+          <el-tag :type="deployStatusType(row)" size="small" effect="light">
+            {{ deployStatusLabel(row) }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column :label="t('common.operation')" width="260" fixed="right">
         <template #default="{ row }">
           <el-button link type="success" :disabled="row.active" @click="act(row, 'start')">
@@ -82,6 +90,9 @@
           </el-button>
           <el-button link type="primary" @click="act(row, 'restart')">
             {{ t('site.appRestart') }}
+          </el-button>
+          <el-button link type="primary" @click="updateRow(row)">
+            {{ t('site.appRedeploy') }}
           </el-button>
           <el-button link @click="openLog(row)">{{ t('site.appLog') }}</el-button>
           <el-button link @click="openEdit(row)">{{ t('common.edit') }}</el-button>
@@ -105,6 +116,9 @@
     <el-drawer v-model="logVisible" :title="logTitle" size="60%">
       <pre class="log-box">{{ logText }}</pre>
     </el-drawer>
+
+    <!-- 更新是后台长任务：打开任务日志抽屉实时查看进度 -->
+    <AppStoreLogDrawer ref="deployLogDrawer" :simple="true" :stoppable="true" />
   </el-card>
 </template>
 
@@ -116,9 +130,10 @@ import { useUserStore } from '@/stores/user'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search } from '@/icons'
 import { http } from '@/utils/request'
-import { getAppRuntimes, listAllApps, removeSiteApp, siteAppAction } from '@/api/site'
+import { getAppRuntimes, gitUpdateSiteApp, listAllApps, removeSiteApp, siteAppAction } from '@/api/site'
 import type { AllAppItem } from '@/api/site'
 import AppDeployWizard from './AppDeployWizard.vue'
+import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -137,6 +152,7 @@ const wizardInitial = ref<Record<string, unknown> | null>(null)
 const logVisible = ref(false)
 const logText = ref('')
 const logTitle = ref('')
+const deployLogDrawer = ref<InstanceType<typeof AppStoreLogDrawer> | null>(null)
 const quota = ref<{ port_min: number; port_max: number }>({ port_min: 0, port_max: 0 })
 const allowed = ref(true)
 
@@ -164,7 +180,10 @@ const quotaText = computed(() => {
 })
 
 function typeLabel(v: string) {
-  return v === 'python' ? 'Python' : v === 'nodejs' ? 'Node.js' : v
+  if (v === 'python') return 'Python'
+  if (v === 'nodejs') return 'Node.js'
+  if (v === 'static') return t('site.appTypeStatic')
+  return v
 }
 
 /** 挂载点按 nginx 写法显示：精确 `= /api`、优先前缀 `^~ /api` */
@@ -179,6 +198,22 @@ function stateLabel(r: AllAppItem) {
   if (r.active) return t('site.appRunning')
   if (r.running) return t('site.appDown')
   return t('site.appStopped')
+}
+
+/** 部署状态徽标文字（历史记录 deploy_status 为空按 success 处理） */
+function deployStatusLabel(r: AllAppItem) {
+  const s = r.deploy_status || 'success'
+  if (s === 'deploying') return t('site.appDeploying')
+  if (s === 'failed') return t('site.appDeployFailed')
+  if (s === 'pending') return t('site.appDeployPending')
+  return t('site.appDeploySuccess')
+}
+
+function deployStatusType(r: AllAppItem) {
+  const s = r.deploy_status || 'success'
+  if (s === 'deploying') return 'warning'
+  if (s === 'failed') return 'danger'
+  return 'success'
 }
 
 async function load() {
@@ -231,7 +266,34 @@ async function act(row: AllAppItem, action: string) {
   }
 }
 
+async function updateRow(row: AllAppItem) {
+  try {
+    const res = await gitUpdateSiteApp(row.site_id, row.name)
+    const taskId = (res as any)?.data?.task_id
+    if (taskId) {
+      ElMessage.success(t('site.appGitUpdateStarted'))
+      deployLogDrawer.value?.openDrawer(
+        taskId,
+        t('site.appGitUpdateTaskTitle', { name: row.name }),
+      )
+      return
+    }
+    ElMessage.success(t('site.appGitUpdateDone'))
+    load()
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('site.appGitUpdateFailed'))
+  }
+}
+
 async function openLog(row: AllAppItem) {
+  // 有后台任务号时直接打开实时日志抽屉（部署 / 更新进度与报错都在这里）
+  if (row.task_id) {
+    deployLogDrawer.value?.openDrawer(
+      row.task_id,
+      t('site.appLogTaskTitle', { name: row.name }),
+    )
+    return
+  }
   logTitle.value = `${row.site_name} / ${row.name}`
   try {
     const res = await http.get<{ code: number; data: { lines: string[] } }>('/site/app/log', {

@@ -9,7 +9,7 @@
           t('runLogDrawer.exitCode', { code: exitCode })
         }}</span>
         <el-button
-          v-if="!simple"
+          v-if="!simple || stoppable"
           size="small"
           type="danger"
           plain
@@ -124,6 +124,7 @@ import {
   retryRun,
   type RunFileItem,
 } from '@/api/appstore'
+import { cancelTask } from '@/api/task'
 import { useUserStore } from '@/stores/user'
 import { taskWsUrl } from '@/api/task'
 import CodeEditor from '@/components/CodeEditor.vue'
@@ -134,7 +135,10 @@ import CodeEditor from '@/components/CodeEditor.vue'
  * 非脚本类运行（如镜像构建）复用本抽屉时没有可终止的任务句柄，
  * 也拿不到 appstore 的运行快照，留着这些按钮只会报错。
  */
-const props = withDefaults(defineProps<{ simple?: boolean }>(), { simple: false })
+const props = withDefaults(
+  defineProps<{ simple?: boolean; stoppable?: boolean; stopHandler?: () => Promise<void> }>(),
+  { simple: false, stoppable: false },
+)
 
 /** `retried`：抽屉内重跑成功后带出新任务号，好让列表刷新 */
 const emit = defineEmits<{ (e: 'retried', runId: string): void }>()
@@ -331,7 +335,13 @@ async function handleStop() {
   if (!runId.value) return
   stopping.value = true
   try {
-    await stopScript({ run_id: runId.value })
+    if (props.stopHandler) {
+      await props.stopHandler()
+    } else if (props.stoppable) {
+      await cancelTask(runId.value)
+    } else {
+      await stopScript({ run_id: runId.value })
+    }
     ElMessage.success(t('runLogDrawer.stopSent'))
     statusText.value = t('runLogDrawer.statusStopped')
     statusTagType.value = 'warning'

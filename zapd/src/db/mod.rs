@@ -23,7 +23,11 @@ pub async fn get_db_pool_opt() -> Option<&'static SqlitePool> {
             let filename = crate::config::get_config().read().unwrap().db.path.clone();
             let options = SqliteConnectOptions::new()
                 .filename(filename)
-                .create_if_missing(true);
+                .create_if_missing(true)
+                // 并发场景（部署任务频繁读写 + 面板高频读库）下，未设此项时 UPDATE
+                // 会直接报 "database is locked" 而失败；设超时让 sqlite 自旋等待而非报错，
+                // 否则 `set_app_deploy_status` 等更新可能被静默丢弃（状态卡在 deploying）。
+                .busy_timeout(std::time::Duration::from_secs(5));
             SqlitePoolOptions::new()
                 .max_connections(50)
                 .connect_with(options)

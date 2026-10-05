@@ -176,6 +176,21 @@ async fn migrate_add_columns() {
     ensure_column("packages", "app_port_span", "INTEGER NOT NULL DEFAULT 0").await;
     ensure_column("site_apps", "runtime_version", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("site_apps", "build_cmd", "TEXT NOT NULL DEFAULT ''").await;
+    // 应用：git 部署元数据（公开仓库拉取 + 手动更新用）
+    ensure_column("site_apps", "repo_url", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_apps", "branch", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_apps", "git_ref", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_apps", "git_subdir", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_apps", "git_depth", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("site_apps", "build_output", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_apps", "git_commit", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_apps", "output_dir", "TEXT NOT NULL DEFAULT ''").await;
+    ensure_column("site_apps", "install_deps", "INTEGER NOT NULL DEFAULT 0").await;
+    // 部署状态：pending(历史记录默认) / deploying / success / failed。
+    // 提交即建记录，故即使部署中途失败也保留记录，面板可据此重跑 / 看日志。
+    ensure_column("site_apps", "deploy_status", "TEXT NOT NULL DEFAULT 'success'").await;
+    // 最近一次部署 / 更新对应的后台任务号，供前端打开实时日志抽屉。
+    ensure_column("site_apps", "task_id", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("packages", "app_max_total", "INTEGER NOT NULL DEFAULT 0").await;
     // 套餐 WAF 能力：允许为站点开启 WAF / 限速 / 限并发（仍需全局 ModSecurity 已启用）
     ensure_column("packages", "allow_waf", "INTEGER NOT NULL DEFAULT 0").await;
@@ -1285,11 +1300,17 @@ async fn init_site_apps_table() {
         port INTEGER NOT NULL DEFAULT 0,
         -- 环境变量，每行一条 KEY=VALUE
         env TEXT NOT NULL DEFAULT '',
+        -- 部署时是否执行依赖安装（npm install / pip install 等）
+        install_deps INTEGER NOT NULL DEFAULT 0,
         -- 开机自启
         autostart INTEGER NOT NULL DEFAULT 1,
         -- 期望状态：1 = 运行中（面板目标），0 = 已停止
         running INTEGER NOT NULL DEFAULT 0,
         remark TEXT NOT NULL DEFAULT '',
+        -- 部署状态：pending / deploying / success / failed（提交即建记录，失败也留痕）
+        deploy_status TEXT NOT NULL DEFAULT 'success',
+        -- 最近一次部署 / 更新对应的后台任务号（前端据此打开实时日志）
+        task_id TEXT NOT NULL DEFAULT '',
         created_at INTEGER,
         updated_at INTEGER,
         UNIQUE(site_id, name)

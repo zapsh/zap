@@ -36,6 +36,8 @@ pub const KIND_CRONTAB: &str = "crontab";
 pub const KIND_SITE: &str = "site";
 /// PHP 扩展安装 / 卸载（服务配置 → PHP → 扩展）
 pub const KIND_PHP: &str = "php";
+/// 站点应用部署任务（git clone / 装依赖 / 构建 / 拉起进程），可中途取消。
+pub const KIND_APPDEPLOY: &str = "appdeploy";
 /// 自定义脚本（`scripts/*.sh`，手动运行或被计划任务触发）：以前登记成 appstore，
 /// 任务队列里一律显示「应用商店」，说不清是谁跑的，所以单独成一类。
 pub const KIND_SCRIPT: &str = "script";
