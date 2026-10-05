@@ -9,10 +9,11 @@ use super::menu_seed;
 /// 建表与种子数据入口。
 ///
 /// **约定（开发阶段）**：表结构与初始数据都以 `CREATE TABLE` + 种子清单为准，新建库
-/// 一次建齐（列、菜单、授权都在里面），所以加列 / 加菜单后**不必** `--reset-db`；
-/// 对**已存在**的库，`migrate_add_columns()` 补列、`sync_added_menus()` 补菜单
-/// （按种子清单补齐库里缺失的项，含 Zap Pro 菜单：老库换 Pro 二进制后靠它补入口）。
-/// 删列、改类型、改约束、改菜单种子（已存在的库不会被覆盖）仍需重建数据库。
+/// 一次建齐（列、菜单、授权都在里面）。新增 / 修改列**直接改对应 `CREATE TABLE`**，
+/// 不写 ALTER 迁移（`ensure_column` 工具函数保留待用）；**每次改表结构都必须
+/// `--reset-db` 重建数据库**——开发阶段不做存量库兼容。
+/// 菜单种子由 `sync_added_menus()` 补齐（按种子清单补齐库里缺失的项，含 Zap Pro 菜单：
+/// 老库换 Pro 二进制后靠它补入口）。
 pub async fn init_schema() {
     init_system_user_table_schema().await;
     init_system_monitor_table_schema().await;
@@ -66,53 +67,16 @@ pub async fn init_schema() {
     init_ssl_acme_dns_provider_table().await;
     // 备份中心：任务表 + 历史记录表
     init_backup_tables().await;
+    // 额外备份目录（客户 / 用户追加的备份路径）
+    init_backup_paths_table().await;
     // 备份策略全局 KV（是否允许用户自助备份 / 全局保留份数 / 全量备份开关与调度）
     init_backup_policy_table().await;
-    // 老库补列：新增列自动 ALTER 到已有表，避免每次加列都必须重建数据库
-    migrate_add_columns().await;
-    // 依赖上面的补列结果，必须排在其后
-    sync_menu_features().await;
-    sync_removed_menus().await;
-}
-
-/// 已下线的菜单：入口改由首页快捷入口 / 页脚品牌位直达，菜单记录和授权一并清掉。
-///
-/// About ZAP 原先挂在「系统设置」下且对所有角色开放——为了让非管理员也能进，
-/// 父目录也得是 R_ALL，结果侧栏就多出一个只装着它的「系统设置」。现在路由
-/// 常驻在前端 constantRoutes（不再依赖菜单下发），这条菜单可以真正删掉。
-async fn sync_removed_menus() {
-    let pool = get_db_pool().await;
-    for name in ["about"] {
-        let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM menus WHERE name = ?")
-            .bind(name)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
-        let id = match row {
-            Some((id,)) => id,
-            None => continue,
-        };
-        // 先清授权行（role_menus / user_menus 都靠 menu_id 关联）
-        let _ = sqlx::query("DELETE FROM role_menus WHERE menu_id = ?")
-            .bind(id)
-            .execute(pool)
-            .await;
-        let _ = sqlx::query("DELETE FROM user_menus WHERE menu_id = ?")
-            .bind(id)
-            .execute(pool)
-            .await;
-        let _ = sqlx::query("DELETE FROM menus WHERE id = ?")
-            .bind(id)
-            .execute(pool)
-            .await;
-    }
 }
 
 /// 幂等补列：列已存在则跳过，否则 `ALTER TABLE ... ADD COLUMN`。
 ///
-/// 开发阶段没有存量库要补，暂无人调用（见 [`migrate_add_columns`]），
-/// 保留待将来系统升级时使用。
+/// 开发阶段列都直接写在对应的 `CREATE TABLE` 里、不靠它迁移；保留作为将来系统升级的
+/// 工具函数（老库升级时按需调用）。
 #[allow(dead_code)]
 async fn ensure_column(table: &str, column: &str, decl: &str) {
     if !table_exists(table).await {
@@ -138,16 +102,6 @@ async fn ensure_column(table: &str, column: &str, decl: &str) {
     }
 }
 
-/// 历史库新增列清单：**开发阶段为空**——所有列都已直接写进各自的 CREATE TABLE
-/// （见 `init_system_user_table_schema` / `init_site_table` / `init_menus_table` /
-/// `init_task_queue_table`），新库建表即完整，不必靠 ALTER 补。
-///
-/// 等有存量库要升级时再用：在 CREATE TABLE 里加列的同时，把同一行登记到这里，
-/// 老库启动时由 [`ensure_column`] 幂等补上。示例（取消注释即可用）：
-///
-/// ```ignore
-/// ensure_column("user", "new_col", "TEXT NOT NULL DEFAULT ''").await;
-/// ```
 /// 备份策略全局 KV 表：key 主键，value 字符串。
 /// 仅存开关类 / 数值类策略（是否允许用户自助备份、全局保留份数、全量备份开关与 cron）。
 async fn init_backup_policy_table() {
@@ -160,106 +114,7 @@ async fn init_backup_policy_table() {
     let _ = get_db_pool().await.execute(sql).await;
 }
 
-async fn migrate_add_columns() {
-    // 会话版本号：老库补列后，存量用户一律从 0 起算（不影响已有 token）
-    ensure_column("user", "token_version", "INTEGER NOT NULL DEFAULT 0").await;
-    // 静态 API Token 的会话版本号：同样从 0 起算，与用户当前版本号对齐
-    ensure_column("api_token", "token_version", "INTEGER NOT NULL DEFAULT 0").await;
-    // 套餐能力开关：PHP 站点（默认开放）/ 容器（默认关闭，且仅 Podman 运行时生效）
-    ensure_column("packages", "allow_php", "INTEGER NOT NULL DEFAULT 1").await;
-    ensure_column("packages", "allow_docker", "INTEGER NOT NULL DEFAULT 0").await;
-    // 套餐：应用管理能力（总开关 / 允许的类型 / 每站点应用数上限）
-    ensure_column("packages", "allow_apps", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("packages", "app_types", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("packages", "max_apps", "INTEGER NOT NULL DEFAULT 0").await;
-    // 套餐：每个用户分到的端口个数（端口段自动算）与该用户的应用总数上限（0 = 不限）
-    ensure_column("packages", "app_port_span", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("site_apps", "runtime_version", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_apps", "build_cmd", "TEXT NOT NULL DEFAULT ''").await;
-    // 应用：git 部署元数据（公开仓库拉取 + 手动更新用）
-    ensure_column("site_apps", "repo_url", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_apps", "branch", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_apps", "git_ref", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_apps", "git_subdir", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_apps", "git_depth", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("site_apps", "build_output", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_apps", "git_commit", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_apps", "output_dir", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_apps", "install_deps", "INTEGER NOT NULL DEFAULT 0").await;
-    // 挂载点：站点上发布应用的 location 前缀（默认 /）；静态型填子路径可部署到子目录
-    ensure_column("site_apps", "mount_path", "TEXT NOT NULL DEFAULT ''").await;
-    // 部署状态：pending(历史记录默认) / deploying / success / failed。
-    // 提交即建记录，故即使部署中途失败也保留记录，面板可据此重跑 / 看日志。
-    ensure_column("site_apps", "deploy_status", "TEXT NOT NULL DEFAULT 'success'").await;
-    // 最近一次部署 / 更新对应的后台任务号，供前端打开实时日志抽屉。
-    ensure_column("site_apps", "task_id", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("packages", "app_max_total", "INTEGER NOT NULL DEFAULT 0").await;
-    // 套餐 WAF 能力：允许为站点开启 WAF / 限速 / 限并发（仍需全局 ModSecurity 已启用）
-    ensure_column("packages", "allow_waf", "INTEGER NOT NULL DEFAULT 0").await;
-    // 站点安全：WAF 站点级引擎模式与自定义规则（存量库补列）
-    ensure_column("site_sec", "waf_mode", "INTEGER NOT NULL DEFAULT 1").await;
-    ensure_column("site_sec", "waf_rules", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_sec", "waf_audit", "INTEGER NOT NULL DEFAULT 1").await;
-    ensure_column("site_sec", "whitelist", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("site_sec", "limit_dry_run", "INTEGER NOT NULL DEFAULT 0").await;
-    // 四层转发高级模式：advanced 模式 + 结构化高级参数
-    ensure_column("nginx_stream", "mode", "TEXT NOT NULL DEFAULT 'basic'").await;
-    ensure_column("nginx_stream", "raw", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("nginx_stream", "targets", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("nginx_stream", "listen_opts", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column(
-        "nginx_stream",
-        "proxy_connect_timeout",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await;
-    ensure_column("nginx_stream", "proxy_timeout", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column(
-        "nginx_stream",
-        "proxy_responses",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await;
-    ensure_column("nginx_stream", "ssl_enable", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column(
-        "nginx_stream",
-        "ssl_certificate",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await;
-    ensure_column(
-        "nginx_stream",
-        "ssl_certificate_key",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await;
-    ensure_column("nginx_stream", "ssl_protocols", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("nginx_stream", "ssl_ciphers", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column(
-        "nginx_stream",
-        "backend_mode",
-        "TEXT NOT NULL DEFAULT 'group'",
-    )
-    .await;
-    ensure_column(
-        "nginx_stream",
-        "ssl_certificate_id",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await;
-    ensure_column("nginx_stream", "ssl_preread", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("nginx_stream", "proxy_pass", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("nginx_stream", "extra", "TEXT NOT NULL DEFAULT ''").await;
-    // 备份归属：普通用户自助备份 / 管理员全量备份都按资源主人打标（owner），
-    // dest_root 记录该归档所在的备份根（空 = 系统备份根；否则用户家目录 backups），
-    // 还原 / 删除时据此把对应目录作为安全根传入 zapexec 的 assert_in_root。
-    ensure_column("backup_records", "owner", "TEXT NOT NULL DEFAULT ''").await;
-    ensure_column("backup_records", "dest_root", "TEXT NOT NULL DEFAULT ''").await;
-    // 备份清单：记录本次归档实际包含的来源路径（站点 = web_root + 应用 workdir + 客户目录；
-    // 家目录 = home + 额外路径），还原「到原路径」时据此把 tar 解包回绝对位置。
-    ensure_column("backup_records", "manifest", "TEXT NOT NULL DEFAULT ''").await;
-    init_backup_paths_table().await;
-}
+
 
 /// 额外备份目录：客户在策略一下为站点追加的目录、或策略二下为用户追加的家目录外路径
 /// （如 Docker 卷挂载点）。`owner_type` 区分归属维度，读取入口统一。
@@ -280,25 +135,6 @@ async fn init_backup_paths_table() {
     CREATE INDEX idx_backup_paths_owner ON backup_paths(owner_type, owner_id);
     "#;
     let _ = get_db_pool().await.execute(sql).await;
-}
-
-/// 菜单能力门禁赋值（**老库升级**用）。
-///
-/// **开发阶段为空**：新库的 `feature` 直接写在种子里（如 docker / docker-index，
-/// 见 [`menu_seed::MENU_SEEDS`]）。存量库需要时在这里按 name 补，同样不要写 id：
-///
-/// ```ignore
-/// sqlx::query("UPDATE menus SET feature = 'docker', updated_at = strftime('%s','now') \
-///              WHERE name IN ('docker', 'docker-index') AND feature <> 'docker'")
-///     .execute(pool).await;
-/// ```
-async fn sync_menu_features() {
-    // 四层转发收进「服务配置 → Nginx」页内（原独立菜单已废弃）：老库升级时清掉这条
-    // 指向不存在组件（server/stream/index）的死记录，避免前端注册路由时报「组件不存在」。
-    let pool = get_db_pool().await;
-    let _ = sqlx::query("DELETE FROM menus WHERE name = 'server-stream'")
-        .execute(pool)
-        .await;
 }
 
 // ── user ───────────────────────────────────────────────────
@@ -1083,7 +919,7 @@ async fn init_hourly_stats_tables() {
 /// 家目录备份、系统升级、计划任务都在往里登记，因此表名与用途对齐为 `task_queue`。
 ///
 /// **旧库迁移**：`appstore_runs` 原地 `RENAME`（数据、主键、索引一并保留），
-/// 再靠 `migrate_add_columns()` 把新增列补上，所以存量面板升级后历史记录不会丢。
+/// 历史记录直接建在新表结构中（开发阶段不做存量库兼容，改表结构需 `--reset-db`）。
 async fn init_task_queue_table() {
     if table_exists("appstore_runs").await && !table_exists("task_queue").await {
         match get_db_pool()
@@ -1129,7 +965,7 @@ async fn init_task_queue_table() {
         log_path TEXT NOT NULL DEFAULT '',
         -- 归属键：同一次触发（如某个计划任务）的多次运行串在一起，
         --   "cron:<username>:<id>" | "crontab:<username>:<id>" | "docker-build:<username>"；
-        --   空串表示手动触发。改表结构直接改这里，新增列靠 ensure_column 补。
+        --   空串表示手动触发。改表结构直接改这里（列直接写进 CREATE TABLE）。
         job_key TEXT NOT NULL DEFAULT '',
         -- 并发互斥组 + 组内并行上限：group_key 相同且 group_limit>0 时，
         --   组内同时处于 pending/running 的任务不得超过 group_limit
@@ -1292,6 +1128,17 @@ async fn init_site_apps_table() {
         runtime_version VARCHAR(16) NOT NULL DEFAULT '',
         -- 构建 / 编译命令（部署时先执行，如 npm run build）；空 = 不构建
         build_cmd TEXT NOT NULL DEFAULT '',
+        -- git 部署元数据（公开仓库拉取 + 手动更新用）
+        repo_url TEXT NOT NULL DEFAULT '',
+        branch TEXT NOT NULL DEFAULT '',
+        git_ref TEXT NOT NULL DEFAULT '',
+        git_subdir TEXT NOT NULL DEFAULT '',
+        git_depth INTEGER NOT NULL DEFAULT 0,
+        build_output TEXT NOT NULL DEFAULT '',
+        git_commit TEXT NOT NULL DEFAULT '',
+        output_dir TEXT NOT NULL DEFAULT '',
+        -- 挂载点：站点上发布应用的 location 前缀（默认 /）；静态型填子路径可部署到子目录
+        mount_path TEXT NOT NULL DEFAULT '',
         -- 工作目录（站点目录内的绝对路径）
         workdir TEXT NOT NULL DEFAULT '',
         -- 入口文件 / 模块
@@ -1544,6 +1391,14 @@ async fn init_backup_tables() {
         kind TEXT NOT NULL DEFAULT '',
         name TEXT NOT NULL DEFAULT '',
         path TEXT NOT NULL DEFAULT '',
+        -- 备份归属：普通用户自助备份 / 管理员全量备份都按资源主人打标（owner），
+        -- dest_root 记录该归档所在的备份根（空 = 系统备份根；否则用户家目录 backups），
+        -- 还原 / 删除时据此把对应目录作为安全根传入 zapexec 的 assert_in_root。
+        owner TEXT NOT NULL DEFAULT '',
+        dest_root TEXT NOT NULL DEFAULT '',
+        -- 备份清单：记录本次归档实际包含的来源路径（站点 = web_root + 应用 workdir + 客户目录；
+        -- 家目录 = home + 额外路径），还原「到原路径」时据此把 tar 解包回绝对位置。
+        manifest TEXT NOT NULL DEFAULT '',
         size INTEGER NOT NULL DEFAULT 0,
         status INTEGER NOT NULL DEFAULT 0,
         message TEXT NOT NULL DEFAULT '',
