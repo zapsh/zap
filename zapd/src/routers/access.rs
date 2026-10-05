@@ -173,52 +173,55 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("site", "update")),
     ),
-    // ── 站点应用（Application Manager）：读取=view，部署/启停=update，删除=delete ──
+    // ── 站点应用（Application Manager）：view=查看，deploy=部署/更新，manage=启停/重启，delete=删除 ──
+    // 拆成独立 app:* 权限点（不再复用 site:update/delete），便于按角色细分
+    // 「可改站点但禁止部署应用」「可看应用但禁止删除」等。
+    // 全部 Required::User → 内置 user / reseller 角色默认即持有（随代码升级在启动时自动补齐）。
     (
         "/site/app/caps",
         Required::User,
-        Some(Perm::action("site", "view")),
+        Some(Perm::action("app", "view")),
     ),
     (
         "/site/app/list",
         Required::User,
-        Some(Perm::action("site", "view")),
+        Some(Perm::action("app", "view")),
     ),
     (
         "/site/app/list_all",
         Required::User,
-        Some(Perm::action("site", "view")),
+        Some(Perm::action("app", "view")),
     ),
     (
         "/site/app/runtimes",
         Required::User,
-        Some(Perm::action("site", "view")),
+        Some(Perm::action("app", "view")),
     ),
     (
         "/site/app/log",
         Required::User,
-        Some(Perm::action("site", "view")),
+        Some(Perm::action("app", "view")),
     ),
     (
         "/site/app/deploy",
         Required::User,
-        Some(Perm::action("site", "update")),
+        Some(Perm::action("app", "deploy")),
     ),
     // Git 拉取更新 = 重新部署自己的应用，语义与 deploy 相同（handler 内 site_in_scope 收敛）
     (
         "/site/app/git-update",
         Required::User,
-        Some(Perm::action("site", "update")),
+        Some(Perm::action("app", "deploy")),
     ),
     (
         "/site/app/action",
         Required::User,
-        Some(Perm::action("site", "update")),
+        Some(Perm::action("app", "manage")),
     ),
     (
         "/site/app/remove",
         Required::User,
-        Some(Perm::action("site", "delete")),
+        Some(Perm::action("app", "delete")),
     ),
     // ── 站点日志与流量分析 ────────────────────────────────
     (
@@ -1211,6 +1214,7 @@ const NS_LABELS: &[(&str, &str)] = &[
     ("ssl", "SSL 证书"),
     ("terminal", "终端与密钥"),
     ("crontab", "计划任务"),
+    ("app", "应用管理"),
     ("appstore", "应用商店"),
     ("appstore.repo", "应用源管理"),
     ("appstore.script", "自定义脚本"),
@@ -1229,6 +1233,7 @@ const ACTION_LABELS: &[(&str, &str)] = &[
     ("edit", "编辑"),
     ("create", "创建"),
     ("update", "修改"),
+    ("deploy", "部署"),
     ("delete", "删除"),
     ("write", "写入"),
     ("sync", "同步"),
