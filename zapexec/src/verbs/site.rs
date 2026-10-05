@@ -1005,7 +1005,14 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         //   - 静态站点的 raw `location /` 维持「在默认根上追加规则」，默认块照常生成，用户 raw 追加到末尾。
         if !root_replace {
             core.push_str("\n    location / {\n");
-            core.push_str("        try_files $uri $uri/ =404;\n");
+            // 静态站点根路径补 SPA 兜底：深链回退到 /index.html，使部署在根路径、
+            // 或把域名根当作 hub 的子路径应用（Vue/React history 模式）刷新不 404；
+            // 其余类型维持 =404（避免误吞伪静态 rewrite）。
+            if s_type == "static" {
+                core.push_str("        try_files $uri $uri/ /index.html;\n");
+            } else {
+                core.push_str("        try_files $uri $uri/ =404;\n");
+            }
             // raw 追加规则（php/static 在默认根上加 rewrite / 静态指令等）
             if let Some(l) = root_augment {
                 let raw = l.raw.trim();
@@ -3436,7 +3443,7 @@ mod tests {
             listen_ipv6: "",
         });
         assert!(s.contains("root /home/u/www/s-1;"));
-        assert!(s.contains("try_files $uri $uri/ =404;"));
+        assert!(s.contains("try_files $uri $uri/ /index.html;"));
         assert!(!s.contains("fastcgi"), "静态站点不应有 PHP location");
     }
 

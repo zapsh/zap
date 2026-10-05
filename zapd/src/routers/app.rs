@@ -368,6 +368,28 @@ async fn update_site_web_root(site_id: i64, web_root: &str) -> Result<(), ZapErr
     Ok(())
 }
 
+/// 从 Git 仓库地址取一个安全的目录名（用于子路径部署时把代码克隆到「项目名」子目录）：
+/// 取 URL 末段去掉 `.git`，再把非路径安全字符替换为 `-`。
+fn repo_name_of(url: &str) -> String {
+    let u = url.trim().trim_end_matches('/');
+    let last = u.rsplit('/').find(|s| !s.is_empty()).unwrap_or(u);
+    let last = last.strip_suffix(".git").unwrap_or(last);
+    sanitize_dir_seg(last)
+}
+
+/// 仅保留路径安全字符（字母数字 / `-` `_` `.`），其余替换为 `-`，避免空串与注入。
+fn sanitize_dir_seg(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+            out.push(c);
+        } else {
+            out.push('-');
+        }
+    }
+    out
+}
+
 /// 应用名合法性：会被拼进 systemd unit 名 `zap-app-{site_id}-{name}.service`，
 /// 所以只允许字母数字和 `-_.`；输入上限 48，留出前缀空间。
 fn valid_app_name(n: &str) -> bool {
@@ -729,6 +751,20 @@ pub async fn app_deploy(
     let name = final_app_name(&name, jwt::is_admin(&claims), &ctx.owner)
         .map_err(|e| ZapError::New(-1, e))?;
 
+    // 子路径挂载的静态站点：Git 克隆默认落到「项目名」子目录（取仓库 URL 末段），
+    // 避免同一站点下多个应用工作目录互相覆盖；根路径挂载仍用站点根目录。
+    let project_sub = if is_static && mount != "/" && !mount.is_empty() {
+        payload
+            .repo_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(repo_name_of)
+            .filter(|s| !s.is_empty())
+    } else {
+        None
+    };
+
     // 工作目录：不填用站点根目录；填了也必须在站点目录内（执行端还会再校验一次）
     let workdir = match payload
         .workdir
@@ -749,7 +785,10 @@ pub async fn app_deploy(
             }
             full
         }
-        None => ctx.web_root.clone(),
+        None => match &project_sub {
+            Some(sub) => format!("{}/{}", ctx.web_root.trim_end_matches('/'), sub),
+            None => ctx.web_root.clone(),
+        },
     };
 
     require_port_ok(&caps, site_id, &name, port).await?;
@@ -843,6 +882,9 @@ pub async fn app_deploy(
         git_subdir: git_subdir.clone(),
         git_depth,
         build_output: build_output.clone(),
+        mount_path: mount.clone(),
+        match_mode: match_mode.clone(),
+        strip_prefix: strip_prefix.unwrap_or(mount.trim() != "/"),
     };
     // 提交即建记录：即使部署中途失败也保留，面板据此重跑 / 看日志。
     if let Err(e) = persist_app(
@@ -864,6 +906,7 @@ pub async fn app_deploy(
         &git_subdir,
         git_depth,
         &build_output,
+        &mount,
         "",
         "",
         0,
@@ -950,6 +993,7 @@ struct AppGitRow {
     git_subdir: String,
     git_depth: i64,
     build_output: String,
+    mount_path: String,
     repo_url: String,
 }
 
@@ -989,7 +1033,7 @@ pub async fn app_git_update(
     let row: Option<AppGitRow> = sqlx::query_as(
         "SELECT site_id, name, app_type, runtime_version, build_cmd, workdir, port, env, \
                 autostart, entry, command, install_deps, branch, git_ref, git_subdir, \
-                git_depth, build_output, repo_url \
+                git_depth, build_output, mount_path, repo_url \
          FROM site_apps WHERE site_id = ? AND name = ?",
     )
     .bind(payload.site_id)
@@ -1046,6 +1090,9 @@ pub async fn app_git_update(
         git_subdir: row.git_subdir.clone(),
         git_depth: row.git_depth,
         build_output: row.build_output.clone(),
+        mount_path: row.mount_path.clone(),
+        match_mode: String::new(),
+        strip_prefix: false,
         log_path: log_path.clone(),
     };
     // 重新部署：状态置 deploying 并记录新任务号，便于面板实时看日志 / 状态。
@@ -1414,6 +1461,7 @@ async fn persist_app(
     git_subdir: &str,
     git_depth: i64,
     build_output: &str,
+    mount_path: &str,
     git_commit: &str,
     output_dir: &str,
     running: i64,
@@ -1425,7 +1473,8 @@ async fn persist_app(
     sqlx::query(
         "INSERT INTO site_apps (site_id, name, app_type, runtime_version, build_cmd, workdir, \
                 entry, command, port, env, autostart, install_deps, running, \
-                repo_url, branch, git_ref, git_subdir, git_depth, build_output, git_commit, output_dir, \
+                repo_url, branch, git_ref, git_subdir, git_depth, build_output, mount_path, \
+                git_commit, output_dir, \
                 deploy_status, task_id, created_at, updated_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(site_id, name) DO UPDATE SET \
@@ -1436,7 +1485,8 @@ async fn persist_app(
            running = excluded.running, updated_at = excluded.updated_at, \
            repo_url = excluded.repo_url, branch = excluded.branch, git_ref = excluded.git_ref, \
            git_subdir = excluded.git_subdir, git_depth = excluded.git_depth, \
-           build_output = excluded.build_output, git_commit = excluded.git_commit, \
+           build_output = excluded.build_output, mount_path = excluded.mount_path, \
+           git_commit = excluded.git_commit, \
            output_dir = excluded.output_dir, deploy_status = excluded.deploy_status, \
            task_id = excluded.task_id",
     )
@@ -1459,6 +1509,7 @@ async fn persist_app(
     .bind(git_subdir)
     .bind(git_depth)
     .bind(build_output)
+    .bind(mount_path)
     .bind(git_commit)
     .bind(output_dir)
     .bind(deploy_status)
@@ -1526,14 +1577,14 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
     let (site_id, name, app_type, runtime_version, build_cmd, create_venv, workdir, entry,
         command, port, env, autostart, install_deps, owner_user, log_dir, requester,
         skip_owner_check, repo_url, branch, git_ref, git_subdir, git_depth, build_output,
-        log_path) = match req {
+        mount_path, log_path) = match req {
         Request::AppDeploy { site_id, name, app_type, runtime_version, build_cmd, create_venv,
         workdir, entry, command, port, env, autostart, install_deps, owner_user, log_dir,
         requester, skip_owner_check, repo_url, branch, git_ref, git_subdir, git_depth,
-        build_output, log_path } => (site_id, name, app_type, runtime_version, build_cmd, create_venv,
+        build_output, mount_path, log_path, .. } => (site_id, name, app_type, runtime_version, build_cmd, create_venv,
         workdir, entry, command, port, env, autostart, install_deps, owner_user, log_dir,
         requester, skip_owner_check, repo_url, branch, git_ref, git_subdir, git_depth,
-        build_output, log_path),
+        build_output, mount_path, log_path),
         _ => {
             let _ = task::finish(&task_id, task::STATUS_FAILED, -1).await;
             return;
@@ -1547,6 +1598,8 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
         owner_user: owner_user.clone(), log_dir: log_dir.clone(), log_path: log_path.clone(), requester, skip_owner_check,
         repo_url: repo_url.clone(), branch: branch.clone(), git_ref: git_ref.clone(),
         git_subdir: git_subdir.clone(), git_depth, build_output: build_output.clone(),
+        mount_path: mount_path.clone(), match_mode: String::new(),
+        strip_prefix: false,
     })
     .await {
         Ok(r) => r,
@@ -1600,7 +1653,7 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
     // 落库（应用配置 + 最新 commit / 产物目录；主键冲突则更新）
     if let Err(e) = persist_app(site_id, &name, &app_type, &runtime_version, &build_cmd, &workdir,
         &entry, &command, port, &env, autostart, install_deps, &repo_url, &branch, &git_ref,
-        &git_subdir, git_depth, &build_output, &git_commit,
+        &git_subdir, git_depth, &build_output, &mount_path, &git_commit,
         output_dir.as_deref().unwrap_or(""), 1, "success", &task_id).await {
         let _ = append_task_log(&log_path, &format!("保存应用配置失败：{e}"));
         let _ = append_task_log(&log_path, &format!("{} -1", task::DONE_MARKER));
@@ -1614,7 +1667,17 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
     let mut sync_ok = true;
     if is_static {
         if let Some(ref od) = output_dir {
-            let _ = update_site_web_root(site_id, od).await;
+            let mount = mount_path.trim();
+            if !mount.is_empty() && mount != "/" {
+                // 子目录挂载：在站点下加一条 alias location 服务构建产物，
+                // 不覆盖站点原 web_root（域名根仍由原站点内容提供）。
+                let _ = site::ensure_app_static_location(
+                    site_id, &name, od, mount, "",
+                ).await;
+            } else {
+                // 站点根：沿用原逻辑，把 web_root 改写为构建产物目录
+                let _ = update_site_web_root(site_id, od).await;
+            }
         }
     }
     if let Err(e) = site::sync_one_site(site_id).await {

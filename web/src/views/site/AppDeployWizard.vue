@@ -38,7 +38,7 @@
           <div class="wz-tip">{{ t('site.appDomainHint') }}</div>
         </el-form-item>
       </template>
-      <el-form-item v-if="!isStatic" :label="t('site.appMount')">
+      <el-form-item :label="t('site.appMount')">
         <div class="mount-row">
           <el-select v-model="form.match_mode" class="mount-mode">
             <el-option value="" label="/path" />
@@ -47,14 +47,16 @@
           </el-select>
           <el-input v-model="form.mount_path" placeholder="/" class="mount-path" />
         </div>
-        <div v-if="mountHasPrefix" class="mount-switch">
+        <div v-if="mountHasPrefix && !isStatic" class="mount-switch">
           <el-switch v-model="form.strip_prefix" size="small" />
           <span>{{ t('site.appStripPrefix') }}</span>
           <el-tooltip :content="t('site.locStripPrefixTip')" placement="top">
             <span class="mount-switch-hint">?</span>
           </el-tooltip>
         </div>
-        <div class="wz-tip">{{ t('site.appMountTip') }}</div>
+        <div class="wz-tip">
+          {{ isStatic ? t('site.appMountStaticTip') : t('site.appMountTip') }}
+        </div>
       </el-form-item>
       <el-form-item :label="t('site.appName')" required>
         <el-input v-model="form.name" :placeholder="t('site.appNamePh')" style="width: 100%" />
@@ -190,6 +192,12 @@
           </span>
           <span v-else>
             {{ form.domain }} <span class="wz-dim">（{{ t('site.appDomainHintShort') }}）</span>
+          </span>
+        </el-descriptions-item>
+        <el-descriptions-item :label="t('site.appMount')">
+          {{ (form.mount_path.trim() || '/') || '/' }}
+          <span v-if="form.target === 'site' && (form.mount_path.trim() || '/') !== '/'">
+            {{ isStatic ? t('site.appMountStaticAt') : t('site.appMountAt') }}
           </span>
         </el-descriptions-item>
         <el-descriptions-item :label="t('site.appPort')">

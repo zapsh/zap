@@ -17,7 +17,7 @@ use crate::{
         server_env,
     },
 };
-use zap_proto::{LOC_DIRECTIVES, LocationSpec, Request, SiteSecuritySpec, UpstreamSpec};
+use zap_proto::{LOC_DIRECTIVES, LocDirective, LocationSpec, Request, SiteSecuritySpec, UpstreamSpec};
 
 use super::system_basic::{K_IPV4 as K_DEFAULT_IPV4, K_IPV6 as K_DEFAULT_IPV6};
 use super::user::USER_KIND_MEMBER;
@@ -1114,6 +1114,98 @@ pub(crate) async fn ensure_app_location(
     )
     .await?;
     Ok(Some(path))
+}
+
+/// 为静态型应用在某个子路径下建一条 alias location 服务构建产物，
+/// 用于把纯静态站点部署到站点的子目录（如 /docs）。不改动站点原 web_root，
+/// 域名根仍由原站点内容提供。与 `ensure_app_location` 类似：按 app_name 复用
+/// 既有 location；若目标路径被其它应用占用则报错。
+pub(crate) async fn ensure_app_static_location(
+    site_id: i64,
+    app_name: &str,
+    output_dir: &str,
+    mount: &str,
+    match_mode: &str,
+) -> Result<String, ZapError> {
+    let path = normalize_mount_path(mount).map_err(|e| ZapError::New(-1, e))?;
+    let mode = normalize_match_mode(match_mode);
+    let prof = load_profile(site_id).await;
+    let mut locs: Vec<LocationSpec> = parse_specs(&prof.3);
+
+    // 复用本应用已有的 location（按 app_name 认领）
+    if let Some(pos) = locs.iter().position(|l| l.app_name == app_name) {
+        // 先完成冲突检查（不可变借用），再取可变借用，避免借用冲突
+        if locs
+            .iter()
+            .any(|x| x.path == path && !x.app_name.is_empty() && x.app_name != app_name)
+        {
+            return Err(ZapError::New(
+                -1,
+                format!("挂载点 {path} 已被站点上的其它应用占用，请换一个路径"),
+            ));
+        }
+        let l = &mut locs[pos];
+        l.path = path.clone();
+        configure_static_alias(l, output_dir, &mode);
+        let ups: Vec<UpstreamSpec> = parse_specs(&prof.2);
+        save_profile(
+            site_id, &prof.0, prof.1, &ups, &locs, prof.4, prof.5, &prof.6, &prof.7, prof.8,
+            prof.9,
+        )
+        .await?;
+        return Ok(path);
+    }
+
+    // 新 location：路径冲突检查
+    if locs.iter().any(|l| l.path == path) {
+        return Err(ZapError::New(
+            -1,
+            format!("挂载点 {path} 已被站点上其它规则占用，请换一个（如 /{app_name}）"),
+        ));
+    }
+    if locs.len() >= 16 {
+        return Err(ZapError::New(
+            -1,
+            "站点反向代理规则已达上限（16 条）".to_string(),
+        ));
+    }
+    let mut l = LocationSpec::default();
+    l.path = path.clone();
+    configure_static_alias(&mut l, output_dir, &mode);
+    l.app_name = app_name.to_string();
+    locs.push(l);
+    let ups: Vec<UpstreamSpec> = parse_specs(&prof.2);
+    save_profile(
+        site_id, &prof.0, prof.1, &ups, &locs, prof.4, prof.5, &prof.6, &prof.7, prof.8, prof.9,
+    )
+    .await?;
+    Ok(path)
+}
+
+/// 把一条 location 配置成「静态别名」：以 alias 模式把 `path` 映射到 `output_dir`，
+/// 并补上 index / try_files，使 SPA 直接访问与刷新子路由都能命中首页。
+fn configure_static_alias(l: &mut LocationSpec, output_dir: &str, mode: &str) {
+    l.kind = "alias".to_string();
+    l.target = output_dir.to_string();
+    l.static_mode = "alias".to_string();
+    l.match_mode = mode.to_string();
+    l.strip_prefix = false;
+    // 回退页：根路径用 /index.html，子路径用 {path}/index.html（path 已无尾斜杠，避免 //index.html）
+    let fallback = if l.path == "/" {
+        "/index.html".to_string()
+    } else {
+        format!("{}/index.html", l.path.trim_end_matches('/'))
+    };
+    l.extra = vec![
+        LocDirective {
+            key: "index".to_string(),
+            value: "index.html index.htm".to_string(),
+        },
+        LocDirective {
+            key: "try_files".to_string(),
+            value: fallback,
+        },
+    ];
 }
 
 /// 站点上各应用的挂载点：`(应用名, 挂载路径, 匹配方式)`，供应用列表展示

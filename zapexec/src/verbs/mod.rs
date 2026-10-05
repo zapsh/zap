@@ -427,6 +427,7 @@ pub async fn dispatch(req: Request) -> Response {
             git_depth,
             build_output,
             log_path,
+            ..
         } => {
             app::deploy(
                 site_id,

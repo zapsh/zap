@@ -239,6 +239,13 @@ pub const LOC_DIRECTIVES: &[LocDirSpec] = &[
         sample: "$uri $uri/ /index.html",
     },
     LocDirSpec {
+        key: "index",
+        kind: LocDirValue::Token,
+        multi: false,
+        hint: "默认首页文件名（多个空格分隔，按顺序尝试）",
+        sample: "index.html index.htm",
+    },
+    LocDirSpec {
         key: "gzip",
         kind: LocDirValue::OnOff,
         multi: false,
@@ -1062,6 +1069,18 @@ pub enum Request {
         /// 为空时执行端自动探测 dist / build / public / _site / out / .output/public 之一
         #[serde(default, skip_serializing_if = "String::is_empty")]
         build_output: String,
+        /// 挂载点：站点上用哪个 location 前缀发布这个应用（默认 /）。
+        /// 静态型填子路径（如 /docs）可把静态站点部署到站点的子目录；
+        /// 非静态型即反代前缀。留空或 / 表示发布到站点根。
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        mount_path: String,
+        /// 挂载点匹配方式：空（默认）= 前缀匹配；`exact` = 精确匹配 `location = /path`；
+        /// `prefer` = 优先前缀 `location ^~ /path`
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        match_mode: String,
+        /// 反代时是否剥掉挂载前缀再转发（静态型忽略）。见 LocationSpec::strip_prefix
+        #[serde(default)]
+        strip_prefix: bool,
         /// 部署任务日志文件路径（zapd 生成）。执行端把实时进度追加到这里，
         /// 前端经 WebSocket 边读边显示（git clone / npm install 这类分钟级任务尤其需要）。
         #[serde(default, skip_serializing_if = "String::is_empty")]

@@ -186,6 +186,8 @@ async fn migrate_add_columns() {
     ensure_column("site_apps", "git_commit", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("site_apps", "output_dir", "TEXT NOT NULL DEFAULT ''").await;
     ensure_column("site_apps", "install_deps", "INTEGER NOT NULL DEFAULT 0").await;
+    // 挂载点：站点上发布应用的 location 前缀（默认 /）；静态型填子路径可部署到子目录
+    ensure_column("site_apps", "mount_path", "TEXT NOT NULL DEFAULT ''").await;
     // 部署状态：pending(历史记录默认) / deploying / success / failed。
     // 提交即建记录，故即使部署中途失败也保留记录，面板可据此重跑 / 看日志。
     ensure_column("site_apps", "deploy_status", "TEXT NOT NULL DEFAULT 'success'").await;
