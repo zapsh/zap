@@ -204,6 +204,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("site", "update")),
     ),
+    // Git 拉取更新 = 重新部署自己的应用，语义与 deploy 相同（handler 内 site_in_scope 收敛）
+    (
+        "/site/app/git-update",
+        Required::User,
+        Some(Perm::action("site", "update")),
+    ),
     (
         "/site/app/action",
         Required::User,
@@ -675,6 +681,58 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("system.user", "backup")),
     ),
+    // ── 备份中心：个人备份（我的备份 / 自己的库与站点 / 自己的定时任务）登录即可，
+    //    数据范围与「用户自助备份」开关由 handler 收敛；系统级备份仅管理员 ──
+    ("/system/backup/my", Required::User, None),
+    ("/system/backup/my-retention", Required::User, None),
+    // GET 读开关供前端隐藏入口；POST 保存策略在 handler 内 require_admin
+    ("/system/backup/policy", Required::User, None),
+    ("/system/backup/jobs", Required::User, None),
+    ("/system/backup/job/save", Required::User, None),
+    ("/system/backup/job/delete", Required::User, None),
+    ("/system/backup/job/run", Required::User, None),
+    ("/system/backup/db_quick", Required::User, None),
+    ("/system/backup/site_quick", Required::User, None),
+    ("/system/backup/delete", Required::User, None),
+    ("/system/backup/restore_dir", Required::User, None),
+    ("/system/backup/restore_db", Required::User, None),
+    // 以下系统级备份：任意目录 / 全量 / 归档列表 / 历史 / 路径与存储设置，仅管理员。
+    // 借 admin 条目登记 system.backup 权限点（角色页可展示、可收紧）。
+    (
+        "/system/backup/create_dir",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
+    (
+        "/system/backup/create_db",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
+    (
+        "/system/backup/all",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
+    (
+        "/system/backup/list",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
+    (
+        "/system/backup/records",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
+    (
+        "/system/backup/paths",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
+    (
+        "/system/backup/setting",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
     (
         "/system/role/list",
         Required::Admin,
@@ -1129,6 +1187,7 @@ const NS_LABELS: &[(&str, &str)] = &[
     ("task", "任务队列"),
     ("system.menu", "菜单管理"),
     ("system.file", "文件管理"),
+    ("system.backup", "备份管理"),
     ("system.cloud", "云存储"),
     ("system.monitor", "服务器状态"),
     ("system.user", "用户管理"),
