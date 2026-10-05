@@ -370,6 +370,8 @@ pub struct BackupDeletePayload {
 #[derive(Debug, Deserialize)]
 pub struct BackupRestoreDirPayload {
     pub path: String,
+    // 还原到原路径（to_original=true）时前端不传此字段，给默认值避免反序列化失败 422
+    #[serde(default)]
     pub target_dir: String,
     #[serde(default)]
     pub to_original: bool,
