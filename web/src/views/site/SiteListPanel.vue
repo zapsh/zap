@@ -480,8 +480,11 @@ function toggleExpand(row: SiteItem) {
 function rowClassName({ row }: { row: SiteItem }) {
   return expandedIds.value.has(row.id) ? 'row-expanded' : ''
 }
-function goFiles() {
-  router.push('/files/index')
+function goFiles(row: SiteItem) {
+  // 跳到文件管理并定位到该站点的文档根目录；显式带 tab=local 确保激活「本地存储」面板
+  const q: Record<string, string> = { tab: 'local' }
+  if (row.web_root) q.path = row.web_root
+  router.push({ path: '/files/index', query: q })
 }
 function goDatabase() {
   router.push('/database/index')
@@ -1794,7 +1797,7 @@ onMounted(() => {
             <div class="site-detail">
               <!-- 快捷入口：文件 / 数据库 / 日志 / 定时任务（类 Plesk 概览卡片） -->
               <div class="quick-links">
-                <button class="quick-item" type="button" @click="goFiles">
+                <button class="quick-item" type="button" @click="goFiles(row)">
                   <el-icon class="quick-icon"><Icon icon="material-symbols:folder" /></el-icon>
                   <span class="quick-text">{{ t('menu.files') }}</span>
                 </button>

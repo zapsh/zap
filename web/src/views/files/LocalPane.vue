@@ -846,6 +846,7 @@ import {
   shallowReactive,
   markRaw,
 } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   Refresh,
   Upload,
@@ -919,6 +920,8 @@ const loading = ref(false)
 const currentPath = ref('')
 /** 家目录（后端返回，如 /home/admin）：侧栏根节点 + 地址栏起点 */
 const homePath = ref('')
+/** 路由（用于读取站点列表带参进入时的 ?path= 目标目录） */
+const route = useRoute()
 const fileList = ref<FileEntry[]>([])
 const viewMode = ref<'list' | 'grid'>('list')
 /** 当前选中的条目路径集合（支持多选） */
@@ -1108,6 +1111,17 @@ async function revealPathInTree(target: string, isDir: boolean) {
 async function navigateAndReveal(path: string) {
   navigateTo(path)
   await revealPathInTree(path, true)
+}
+
+/**
+ * 从 URL `?path=` 跳转到指定目录：站点列表「文件」快捷入口带参进入时触发。
+ * 仅在 URL 带了 path 且与当前目录不同才生效，避免无谓刷新 / 重复跳转。
+ * 在 onMounted 与 onActivated 两处调用：前者覆盖首次进入，后者覆盖 keep-alive 缓存复用场景。
+ */
+async function openPathFromQuery() {
+  const target = (typeof route.query.path === 'string' ? route.query.path : '').trim()
+  if (!target || target === currentPath.value) return
+  await navigateAndReveal(target)
 }
 
 // Dialogs
@@ -2755,6 +2769,8 @@ onMounted(async () => {
   await loadFileList()
   treeData.value = buildTreeData()
   await revealInTree()
+  // 站点列表「文件」入口带 ?path= 进入时，定位到对应目录（树已建好，可正确展开）
+  await openPathFromQuery()
   window.addEventListener('keydown', onEditKeydown)
 })
 
@@ -2765,6 +2781,8 @@ onBeforeUnmount(() => {
 // 文件管理页被 keep-alive 缓存后切走时，编辑器浮窗跟着隐藏（组件本身不卸载）
 onActivated(() => {
   pageActive.value = true
+  // 从站点列表「文件」入口再次进入（组件已缓存，不会重新 onMounted）时跳转到对应目录
+  openPathFromQuery()
 })
 onDeactivated(() => {
   pageActive.value = false
@@ -2777,6 +2795,12 @@ watch(viewMode, async (mode) => {
     syncTableSelection()
   }
 })
+
+// 站点列表「文件」入口带 ?path= 进入后，再次点击其它站点（query.path 变化）时跳转到新目录
+watch(
+  () => route.query.path,
+  () => openPathFromQuery(),
+)
 </script>
 
 <style scoped lang="scss">
