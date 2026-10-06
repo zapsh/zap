@@ -269,7 +269,23 @@ pub async fn run_item(item: &ScheduleItem) -> Result<(), ZapError> {
         site_root,
         site_linux_user,
         action: item.action.clone(),
-        options: item.options.clone(),
+        // 把面板本地地址注入插件 options：让插件（如 redeploy action）能直接
+        // 回拨管理 API（/site/app/git-update 等），不必让用户手填面板地址。
+        // 同时把调度的 site_id 也塞进 options —— zapexec 不会把顶层 site_id 透传给
+        // Lua，而 redeploy 需要它来定位「重新部署哪个站点的应用」。
+        options: {
+            let mut o = item.options.clone();
+            o.entry("panel_url".to_string()).or_insert_with(|| {
+                format!(
+                    "http://127.0.0.1:{}",
+                    crate::config::get_config().read().unwrap().server.port
+                )
+            });
+            if let Some(sid) = item.site_id {
+                o.insert("site_id".to_string(), sid.to_string());
+            }
+            o
+        },
         // 带上归属用户的角色：dangerous 动作对 demo 只读账号依然会被后端拦住
         roles: Some(roles),
     })

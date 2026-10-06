@@ -194,26 +194,79 @@
             {{ schedForm.trigger === 'webhook' ? t('pluginSched.hookPath') : t('pluginSched.cronTip') }}
           </div>
         </el-form-item>
-        <el-form-item :label="t('pluginSched.colAction')">
-          <el-select v-model="schedForm.action" filterable allow-create clearable :placeholder="t('pluginSched.actionPlaceholder')">
-            <el-option v-for="a in actionNames" :key="a" :label="a" :value="a" />
-          </el-select>
-        </el-form-item>
         <el-form-item v-if="schedForm.trigger === 'cron'" :label="t('pluginSched.colCron')">
           <el-input v-model="schedForm.cron" :placeholder="t('pluginSched.cronPlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('pluginSched.siteIdLabel')">
-          <el-input-number v-model="schedForm.site_id" :min="0" controls-position="right" clearable />
-          <div class="form-tip">{{ t('pluginSched.siteIdTip') }}</div>
-        </el-form-item>
-        <el-form-item :label="t('pluginSched.optionsLabel')">
+        <el-form-item :label="t('pluginSched.apiTokenLabel')">
           <el-input
-            v-model="schedForm.optionsText"
-            type="textarea"
-            :rows="2"
-            :placeholder="t('pluginSched.optionsTip')"
+            v-model="schedForm.api_token"
+            type="password"
+            show-password
+            :placeholder="t('pluginSched.apiTokenTip')"
           />
+          <div class="form-tip">{{ t('pluginSched.apiTokenHint') }}</div>
         </el-form-item>
+        <el-form-item :label="t('pluginSched.apiUrlLabel')">
+          <el-input v-model="schedForm.api_url" :placeholder="t('pluginSched.apiUrlTip')" />
+          <div class="form-tip">{{ t('pluginSched.apiUrlHint') }}</div>
+        </el-form-item>
+        <el-form-item v-if="capGroups.length" :label="t('pluginSched.capabilityLabel')">
+          <el-select
+            v-model="schedForm.capability"
+            style="width: 100%"
+            @change="schedForm.app_name = ''"
+          >
+            <el-option-group v-for="g in capGroups" :key="g.groupKey" :label="t(g.groupKey)">
+              <el-option v-for="c in g.items" :key="c.value" :label="t(c.labelKey)" :value="c.value" />
+            </el-option-group>
+          </el-select>
+        </el-form-item>
+        <template v-if="selectedCap && selectedCap.value !== 'custom'">
+          <el-form-item
+            v-if="selectedCap.needs.includes('site')"
+            :label="t('pluginSched.siteIdLabel')"
+          >
+            <el-select
+              v-model="schedForm.site_id"
+              filterable
+              clearable
+              style="width: 100%"
+              :placeholder="t('pluginSched.siteIdTip')"
+            >
+              <el-option v-for="s in siteOptions" :key="s.value" :label="s.label" :value="s.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item
+            v-if="selectedCap.needs.includes('app')"
+            :label="t('pluginSched.appNameLabel')"
+          >
+            <el-select
+              v-model="schedForm.app_name"
+              filterable
+              clearable
+              style="width: 100%"
+              :placeholder="t('pluginSched.appNameTip')"
+            >
+              <el-option v-for="a in appOptions" :key="a.value" :label="a.label" :value="a.value" />
+            </el-select>
+            <div class="form-tip">{{ t('pluginSched.appNameHint') }}</div>
+          </el-form-item>
+        </template>
+        <template v-else>
+          <el-form-item :label="t('pluginSched.colAction')">
+            <el-select v-model="schedForm.action" filterable allow-create clearable style="width: 100%" :placeholder="t('pluginSched.actionPlaceholder')">
+              <el-option v-for="a in actionNames" :key="a" :label="a" :value="a" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="t('pluginSched.optionsLabel')">
+            <el-input
+              v-model="schedForm.optionsText"
+              type="textarea"
+              :rows="2"
+              :placeholder="t('pluginSched.optionsTip')"
+            />
+          </el-form-item>
+        </template>
       </el-form>
 
       <template #footer>
@@ -274,6 +327,7 @@ import {
   type PluginSchedule,
   type ScheduleTrigger,
 } from '@/api/plugin'
+import { listAllApps, type AllAppItem } from '@/api/site'
 import { API_BASE } from '@/utils/base'
 import { useUserStore } from '@/stores/user'
 
@@ -403,7 +457,22 @@ const schedForm = ref<{
   site_id: number | null
   optionsText: string
   rotate_token: boolean
-}>({ trigger: 'cron', action: 'run', cron: '', site_id: null, optionsText: '', rotate_token: false })
+  api_token: string
+  api_url: string
+  capability: string
+  app_name: string
+}>({
+  trigger: 'cron',
+  action: 'run',
+  cron: '',
+  site_id: null,
+  optionsText: '',
+  rotate_token: false,
+  api_token: '',
+  api_url: '',
+  capability: 'custom',
+  app_name: '',
+})
 
 const schedTitle = computed(() =>
   schedPlugin.value
@@ -413,7 +482,7 @@ const schedTitle = computed(() =>
 const schedFormTitle = computed(() =>
   editingId.value ? t('pluginSched.edit') : t('pluginSched.save'),
 )
-// 可选动作清单：优先用前端拿到的 i18n 文案，回落到 action 名
+// 可选动作清单：优先用前端拿到的 i18n 文案，回落到 action 名（自定义模式用）
 const actionNames = computed(() => {
   const p = schedPlugin.value
   if (!p) return ['run']
@@ -422,6 +491,54 @@ const actionNames = computed(() => {
   const all = Array.from(new Set([...fromActions, ...fromSpecs]))
   return all.length ? all : ['run']
 })
+
+// ── 能力注册表：按插件分组，选完自动拼出 action + options ──
+// 用户只需选「站点 / 应用」，不用手填参数；后续新增自动化能力只改这里。
+interface Capability {
+  value: string
+  labelKey: string
+  action: string
+  /** 该能力依赖的选择项 */
+  needs: ('site' | 'app')[]
+}
+const CAP_REGISTRY: Record<string, { groupKey: string; items: Capability[] }[]> = {
+  git: [
+    {
+      groupKey: 'pluginSched.capGroupDeploy',
+      items: [
+        { value: 'redeploy', labelKey: 'pluginSched.capRedeploy', action: 'redeploy', needs: ['site', 'app'] },
+        { value: 'pull', labelKey: 'pluginSched.capPull', action: 'pull', needs: ['site', 'app'] },
+        { value: 'custom', labelKey: 'pluginSched.capCustom', action: '', needs: [] },
+      ],
+    },
+  ],
+}
+const capGroups = computed(() => CAP_REGISTRY[schedPlugin.value?.name || ''] || [])
+const selectedCap = computed<Capability | null>(
+  () =>
+    capGroups.value.flatMap((g) => g.items).find((c) => c.value === schedForm.value.capability) ||
+    null,
+)
+
+// 站点 / 应用下拉数据源（来自 /site/app/list_all，含 site_id / site_name / name / workdir）
+const allApps = ref<AllAppItem[]>([])
+const siteOptions = computed(() => {
+  const seen = new Map<number, string>()
+  for (const a of allApps.value) if (!seen.has(a.site_id)) seen.set(a.site_id, a.site_name)
+  return Array.from(seen, ([value, label]) => ({ value, label }))
+})
+const appOptions = computed(() => {
+  const sid = schedForm.value.site_id
+  if (sid == null) return []
+  return allApps.value
+    .filter((a) => a.site_id === sid)
+    .map((a) => ({ value: a.name, label: `${a.name}（${a.app_type}）`, item: a }))
+})
+function selectedApp(): AllAppItem | null {
+  const sid = schedForm.value.site_id
+  const name = schedForm.value.app_name
+  return allApps.value.find((a) => a.site_id === sid && a.name === name) || null
+}
 
 function hookUrl(row: PluginSchedule) {
   // 带上 url_prefix（utils/base 的 API_BASE），否则部署在子路径下复制出来的地址是错的
@@ -444,9 +561,22 @@ async function loadSched() {
   }
 }
 
+// 加载站点 / 应用清单，供能力下拉选择（无需关心路径，直接选站点 + 应用）
+async function loadAllApps() {
+  try {
+    const r: any = await listAllApps()
+    allApps.value = r?.data?.data ?? r?.data?.apps ?? []
+  } catch {
+    allApps.value = []
+  }
+}
+
 function openSched(row: PluginInfo) {
   schedPlugin.value = row
   editingId.value = ''
+  // 默认选中第一个非自定义能力（若该插件登记了能力）
+  const groups = CAP_REGISTRY[row.name] || []
+  const first = groups.flatMap((g) => g.items).find((c) => c.value !== 'custom')
   schedForm.value = {
     trigger: 'cron',
     action: 'run',
@@ -454,21 +584,45 @@ function openSched(row: PluginInfo) {
     site_id: null,
     optionsText: '',
     rotate_token: false,
+    api_token: '',
+    api_url: '',
+    capability: first ? first.value : 'custom',
+    app_name: '',
   }
   schedVisible.value = true
   loadSched()
+  loadAllApps()
 }
 
 function onEditSched(row: PluginSchedule) {
   editingId.value = row.id
+  // 把结构化字段（api_token / name / panel_url / site_id）从原始 JSON 里抽出来
+  const o = row.options ? { ...row.options } : {}
+  const api_token = o.api_token || ''
+  const app_name = o.name || ''
+  const api_url = o.panel_url || ''
+  delete o.api_token
+  delete o.name
+  delete o.panel_url
+  delete o.site_id
+  const action = row.action || 'run'
+  // 由 action 反推能力（redploy / pull 走选择模式，其余走自定义）
+  let capability = 'custom'
+  if (action === 'redeploy') capability = 'redeploy'
+  else if (action === 'pull') capability = 'pull'
   schedForm.value = {
     trigger: row.trigger,
-    action: row.action || 'run',
+    action,
     cron: row.cron || '',
     site_id: row.site_id ?? null,
-    optionsText: row.options ? JSON.stringify(row.options) : '',
+    optionsText: JSON.stringify(o),
     rotate_token: false,
+    api_token,
+    api_url,
+    capability,
+    app_name,
   }
+  loadAllApps()
 }
 
 function parseOptions(): Record<string, string> | undefined {
@@ -492,17 +646,36 @@ async function submitSched() {
     ElMessage.warning(t('pluginSched.needCron'))
     return
   }
-  let options: Record<string, string> | undefined
-  try {
-    options = parseOptions()
-  } catch {
-    return
+  // 根据所选能力拼出 action + options；自定义模式则解析 optionsText
+  let action = schedForm.value.action
+  const options: Record<string, string> = {}
+  const cap = selectedCap.value
+  if (cap && cap.value !== 'custom') {
+    action = cap.action
+    if (cap.needs.includes('app') && !schedForm.value.app_name) {
+      ElMessage.warning(t('pluginSched.needApp'))
+      return
+    }
+    const app = selectedApp()
+    if (cap.value === 'redeploy' && app) options.name = app.name
+    if (cap.value === 'pull' && app) options.cwd = app.workdir
+  } else {
+    try {
+      Object.assign(options, parseOptions() || {})
+    } catch {
+      return
+    }
   }
+  // 结构化字段：API Token 必带（重新部署等需鉴权）；API URL 留空则由后端注入本机地址
+  if (schedForm.value.api_token.trim()) options.api_token = schedForm.value.api_token.trim()
+  else delete options.api_token
+  if (schedForm.value.api_url.trim()) options.panel_url = schedForm.value.api_url.trim()
+  else delete options.panel_url
   schedSaving.value = true
   try {
     const payload = {
       plugin: schedPlugin.value.name,
-      action: schedForm.value.action || 'run',
+      action,
       trigger: schedForm.value.trigger,
       cron: schedForm.value.cron,
       site_id: schedForm.value.site_id ?? null,
