@@ -4,7 +4,7 @@ title: API 总览
 
 # Zap 管理后台 API 文档
 
-> 共 116 个接口，基址 `/api`。左侧目录按功能分组。
+> 共 149 个接口，基址 `/api`。左侧目录按功能分组。
 
 ## 认证
 
@@ -37,9 +37,11 @@ title: API 总览
 | [SSH 服务与密钥](/api/ssh.html) | 12 |
 | [SSH 终端（连接管理）](/api/ssh-terminal.html) | 9 |
 | [系统状态与审计](/api/audit.html) | 6 |
-| [文件管理](/api/file.html) | 9 |
+| [文件管理](/api/file.html) | 10 |
 | [应用商店 AppStore](/api/appstore.html) | 16 |
-| [站点管理](/api/site.html) | 5 |
+| [插件 Plugin](/api/plugin.html) | 8 |
+| [站点管理](/api/site.html) | 20 |
+| [域名站点应用管理](/api/site-app.html) | 9 |
 | [开发（API Token）](/api/token.html) | 5 |
 | [SSL/TLS（证书管理）](/api/ssl.html) | 8 |
 | [Zap 设置（面板自身配置）](/api/zap-config.html) | 3 |

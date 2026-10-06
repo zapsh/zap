@@ -91,3 +91,16 @@ curl -X GET "https://<host>/api/system/files/info" \
   -H "Authorization: Bearer <token>"
 ```
 
+## GET `/system/files/dir_size`
+
+计算目录（递归）大小
+
+```bash
+curl -X GET "https://<host>/api/system/files/dir_size" \
+  -H "Authorization: Bearer <token>"
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | :-: | --- |
+| path | string | 是 | 目录绝对路径 |
+

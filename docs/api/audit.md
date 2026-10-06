@@ -17,12 +17,16 @@ curl -X GET "https://<host>/api/system/info" \
 
 ## GET `/system/status`
 
-实时运行状态快照
+运行状态快照与历史曲线数据
 
 ```bash
 curl -X GET "https://<host>/api/system/status" \
   -H "Authorization: Bearer <token>"
 ```
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | :-: | --- |
+| range | string | 否 | 时间范围：live（默认，近 5 分钟原始点）/ 1h / 6h / 24h / 7d / 30d（按时间桶 AVG 降采样，返回 ~120-180 点） |
 
 ## GET `/system/overview`
 

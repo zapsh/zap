@@ -254,21 +254,154 @@
     },
     {
       "name": "站点管理",
-      "description": "一个站点可绑定多个域名与多个 IP",
+      "description": "一个站点可绑定多个域名与多个 IP；含站点同步、启停、安全（WAF / 限速）、日志与流量分析",
       "endpoints": [
-        { "method": "GET", "path": "/site/list", "summary": "站点列表（可按关键词搜索域名 / IP）" },
-        { "method": "GET", "path": "/site/users", "summary": "可选归属用户列表（admin / reseller 用）" },
+        { "method": "GET", "path": "/site/list", "summary": "站点列表（可按关键词搜索域名 / IP）", "params": [
+          { "name": "search", "type": "string", "required": false, "desc": "关键词，匹配域名或 IP" },
+          { "name": "status", "type": "int", "required": false, "desc": "按启用状态过滤（0 / 1）" },
+          { "name": "user_id", "type": "int", "required": false, "desc": "按归属用户过滤（admin / reseller 用）" }
+        ] },
+        { "method": "GET", "path": "/site/users", "summary": "可选归属用户列表（admin / reseller 建站时选归属用户用）" },
+        { "method": "GET", "path": "/site/feature", "summary": "当前账号的站点能力：是否可用反代（proxy）、WAF、自定义目录" },
+        { "method": "GET", "path": "/site/loc-directives", "summary": "location 附加指令白名单（面板下拉项，与执行端校验同源）" },
         { "method": "POST", "path": "/site/add", "summary": "新增站点", "params": [
-          { "name": "user_id", "type": "int", "required": true, "desc": "归属用户 ID" },
+          { "name": "user_id", "type": "int", "required": false, "desc": "归属用户 ID；admin / reseller 必填，普通用户忽略（恒为自己）" },
           { "name": "name", "type": "string", "required": false, "desc": "站点名称，留空默认取第一个域名" },
           { "name": "domains", "type": "string[]", "required": true, "desc": "绑定的域名列表（可多个）" },
           { "name": "ips", "type": "string[]", "required": false, "desc": "绑定的 IP 列表（可多个）" },
+          { "name": "site_type", "type": "string", "required": false, "desc": "站点类型：php（默认）/ static（纯静态）/ proxy（反向代理）" },
+          { "name": "php_instance", "type": "string", "required": false, "desc": "PHP 实例标识（appstore 已安装 PHP 应用的 instance，如 php74）；空 = 不绑定" },
+          { "name": "web_root_custom", "type": "bool", "required": false, "desc": "true = 使用归属用户家目录下已有自定义目录（需同时给 web_root）" },
+          { "name": "web_root", "type": "string", "required": false, "desc": "自定义站点目录绝对路径（web_root_custom=true 时必填）" },
+          { "name": "web_root_sub", "type": "string", "required": false, "desc": "自动目录自定义子路径（相对归属用户家目录，如 www/blog；空 = 面板默认规划）" },
+          { "name": "ssl_cert_id", "type": "int", "required": false, "desc": "绑定证书库证书 id；0 = 不启用 HTTPS" },
+          { "name": "force_https", "type": "bool", "required": false, "desc": "允许 HTTP 跳转 HTTPS（仅绑定证书后生效）" },
           { "name": "remark", "type": "string", "required": false, "desc": "备注" }
         ] },
-        { "method": "POST", "path": "/site/update", "summary": "修改站点（domains / ips 不传则保持原样，传入则整体覆盖）" },
+        { "method": "POST", "path": "/site/update", "summary": "修改站点（字段不传则保持原样，传入则整体覆盖；domains / ips / ssl_cert_id 传空或 0 表示清空 / 解绑）", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "name", "type": "string", "required": false, "desc": "站点名称" },
+          { "name": "domains", "type": "string[]", "required": false, "desc": "整体覆盖域名；不传 = 不变；传空数组 = 清空" },
+          { "name": "ips", "type": "string[]", "required": false, "desc": "整体覆盖 IP" },
+          { "name": "run_state", "type": "string", "required": false, "desc": "运行状态：running / stopped / maintenance（与 status 同时传时以此为准）" },
+          { "name": "status", "type": "int", "required": false, "desc": "启用状态（0 / 1）" },
+          { "name": "php_instance", "type": "string", "required": false, "desc": "None = 不变；空串 = 清除 PHP 实例绑定" },
+          { "name": "site_type", "type": "string", "required": false, "desc": "站点类型（None = 不变）" },
+          { "name": "web_root_custom", "type": "bool", "required": false, "desc": "Some(true)=切到「选择已有目录」；Some(false)=切回面板自动目录" },
+          { "name": "web_root", "type": "string", "required": false, "desc": "自定义站点目录绝对路径（web_root_custom=true 且首次指定时必填）" },
+          { "name": "web_root_sub", "type": "string", "required": false, "desc": "自动目录自定义子路径（Some(非空) 时刷新为 {home}/{sub}）" },
+          { "name": "ssl_cert_id", "type": "int", "required": false, "desc": "None = 不变；Some(0) = 解绑证书；Some(id) = 绑定证书" },
+          { "name": "force_https", "type": "bool", "required": false, "desc": "允许 HTTP 跳转 HTTPS（None = 不变）" },
+          { "name": "sec", "type": "object", "required": false, "desc": "安全配置（WAF / 限速 / 限并发）；None = 不改动。结构见 /site/security/save" },
+          { "name": "remark", "type": "string", "required": false, "desc": "备注" }
+        ] },
         { "method": "POST", "path": "/site/delete", "summary": "删除站点（级联清理域名 / IP 绑定；可选删除网站数据）", "params": [
           { "name": "ids", "type": "int[]", "required": true, "desc": "站点 ID 列表（支持批量）" },
           { "name": "remove_data", "type": "bool", "required": false, "desc": "true = 同时删除站点文档根（网站文件）与日志目录；false / 不传 = 只删配置，保留数据" }
+        ] },
+        { "method": "POST", "path": "/site/sync", "summary": "同步单个站点 vhost 配置（改完配置后让执行端生效）", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" }
+        ] },
+        { "method": "POST", "path": "/site/sync_all", "summary": "同步全部站点 vhost 配置（部署 / 迁移后批量生效用）" },
+        { "method": "POST", "path": "/site/state", "summary": "切换站点运行三态（同步 vhost：停止撤软链、维护发维护页）", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "state", "type": "string", "required": true, "desc": "running（启动）/ stopped（停止）/ maintenance（维护页）" }
+        ] },
+        { "method": "POST", "path": "/site/dirs", "summary": "浏览归属用户家目录下的子目录（供「选择已有目录」用）", "params": [
+          { "name": "user_id", "type": "int", "required": false, "desc": "归属用户 id；admin / reseller 可指定他人，普通用户忽略（恒为自己）" },
+          { "name": "path", "type": "string", "required": false, "desc": "当前浏览目录（不传 = 家目录根），返回其下子目录" }
+        ] },
+        { "method": "GET", "path": "/site/security", "summary": "读取站点安全配置（WAF / 限速 / 限并发）+ 两项能力可用性", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" }
+        ] },
+        { "method": "POST", "path": "/site/security/save", "summary": "保存站点安全配置并立即同步 vhost（安全片段随配置生效）", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "sec", "type": "object", "required": true, "desc": "安全配置对象：waf_enable(bool), waf_mode(0跟随全局/1拦截/2仅检测), waf_rules(string), waf_audit(bool), whitelist(string,IP/CIDR), limit_dry_run(bool), limit_req_enable(bool), limit_req_rate(u32每秒请求上限), limit_req_burst(u32突发放行), limit_conn_enable(bool), limit_conn_num(u32单IP并发上限)" }
+        ] },
+        { "method": "GET", "path": "/site/security/caps", "summary": "站点级 WAF 能力：全局是否就绪（waf_ready）、套餐是否允许（waf_allowed）与阻塞原因" },
+        { "method": "GET", "path": "/site/logs", "summary": "站点日志尾部行（当前日志或归档，支持关键词 / 状态码过滤）", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "kind", "type": "string", "required": false, "desc": "日志类型：access / error；空 = 默认" },
+          { "name": "archive", "type": "string", "required": false, "desc": "归档文件名（来自 /site/logs/archives）；空 = 当前日志" },
+          { "name": "lines", "type": "int", "required": false, "desc": "返回行数，默认 200" },
+          { "name": "keyword", "type": "string", "required": false, "desc": "关键词过滤" },
+          { "name": "status", "type": "string", "required": false, "desc": "按 HTTP 状态码过滤（如 404 / 500）" }
+        ] },
+        { "method": "GET", "path": "/site/logs/archives", "summary": "当前日志与历史归档列表（供查看 / 下载历史）", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" }
+        ] },
+        { "method": "POST", "path": "/site/logs/clear", "summary": "清空站点当前日志", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "kind", "type": "string", "required": false, "desc": "access / error；空 = 两者都清空" }
+        ] },
+        { "method": "POST", "path": "/site/logs/rotate", "summary": "手动轮转该站点日志（按天切割 + 归档）", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" }
+        ] },
+        { "method": "GET", "path": "/site/logs/audit", "summary": "按 unique_id 反查该站点 WAF 审计明细", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "unique_id", "type": "string", "required": true, "desc": "WAF 审计日志里的 unique_id（高熵随机串）" }
+        ] },
+        { "method": "GET", "path": "/site/traffic", "summary": "站点流量分析（按天曲线 + Top URL + 汇总）", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "days", "type": "int", "required": false, "desc": "统计天数，默认 30（0 视为 30，最大 365）" }
+        ] }
+      ]
+    },
+    {
+      "name": "域名站点应用管理",
+      "description": "域名站点下的应用（Application Manager）：能力 / 运行时查询、部署、重新部署、启停、移除与日志。均需 Bearer 鉴权且调用者对 site_id 有访问权",
+      "endpoints": [
+        { "method": "GET", "path": "/site/app/caps", "summary": "站点可部署的应用能力（套餐允许的 app_type 列表与端口段等）", "params": [
+          { "name": "site_id", "type": "int", "required": true, "desc": "站点 ID" }
+        ] },
+        { "method": "GET", "path": "/site/app/runtimes", "summary": "可用的运行时版本列表（python / nodejs / go 等及其可选项）" },
+        { "method": "GET", "path": "/site/app/list_all", "summary": "全部站点 + 应用清单（含 site_id / site_name / name / app_type / workdir），用于两级下拉" },
+        { "method": "GET", "path": "/site/app/list", "summary": "某个站点的应用列表", "params": [
+          { "name": "site_id", "type": "int", "required": true, "desc": "站点 ID" }
+        ] },
+        { "method": "POST", "path": "/site/app/deploy", "summary": "部署应用（创建 / 更新并构建；参数较多，适合首次上线或复杂配置）", "params": [
+          { "name": "site_id", "type": "int", "required": true, "desc": "站点 ID（与 domain 二选一）" },
+          { "name": "name", "type": "string", "required": true, "desc": "应用名（站点内唯一），仅字母数字 -_. 且 ≤48" },
+          { "name": "app_type", "type": "string", "required": true, "desc": "python / nodejs / go / static / generic 等（受套餐 caps.types 限制）" },
+          { "name": "runtime_version", "type": "string", "required": false, "desc": "运行时版本（如 3.11 / 20），空 = 系统默认" },
+          { "name": "build_cmd", "type": "string", "required": false, "desc": "部署时先执行的构建命令，空 = 不构建" },
+          { "name": "create_venv", "type": "bool", "required": false, "desc": "python：是否生成 .venv（默认开启）" },
+          { "name": "workdir", "type": "string", "required": false, "desc": "工作目录，空 = 站点 web_root" },
+          { "name": "entry", "type": "string", "required": false, "desc": "入口" },
+          { "name": "command", "type": "string", "required": false, "desc": "自定义启动命令（非空则覆盖类型默认模板；generic 必填）" },
+          { "name": "port", "type": "int", "required": false, "desc": "端口；配合 auto_port 可自动分配" },
+          { "name": "env", "type": "string", "required": false, "desc": "环境变量，每行一条 KEY=VALUE" },
+          { "name": "autostart", "type": "bool", "required": false, "desc": "是否开机 / 部署后自启（默认 true）" },
+          { "name": "install_deps", "type": "bool", "required": false, "desc": "是否安装依赖（pip / npm）" },
+          { "name": "auto_port", "type": "bool", "required": false, "desc": "自动分配端口（true 时忽略 port）" },
+          { "name": "domain", "type": "string", "required": false, "desc": "公开仓库地址（空 = 使用现有 workdir）；也可填域名自动建反向代理站点" },
+          { "name": "mount_path", "type": "string", "required": false, "desc": "站点上反代挂载前缀，默认 /" },
+          { "name": "match_mode", "type": "string", "required": false, "desc": "匹配方式：空=前缀 / exact=精确 / prefer=优先前缀" },
+          { "name": "strip_prefix", "type": "bool", "required": false, "desc": "是否剥离挂载前缀再转发" },
+          { "name": "repo_url", "type": "string", "required": false, "desc": "源代码公开仓库（空 = 使用现有 workdir）" },
+          { "name": "branch", "type": "string", "required": false, "desc": "分支（空 = 探测默认分支）" },
+          { "name": "git_ref", "type": "string", "required": false, "desc": "指定提交 / 标签（可选）" },
+          { "name": "git_subdir", "type": "string", "required": false, "desc": "仓库内子目录（应用根不在仓库根时用）" },
+          { "name": "git_depth", "type": "int", "required": false, "desc": "浅克隆深度（0 = 不浅克隆）" },
+          { "name": "build_output", "type": "string", "required": false, "desc": "静态型构建产物目录（相对 workdir；空 = 执行端自动探测）" }
+        ] },
+        { "method": "POST", "path": "/site/app/git-update", "summary": "拉取最新代码 + 重建 + 重启（即「应用重新部署」），最适合自动化", "params": [
+          { "name": "site_id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "name", "type": "string", "required": true, "desc": "应用名（站点内唯一）" }
+        ] },
+        { "method": "POST", "path": "/site/app/action", "summary": "对应用执行启停动作", "params": [
+          { "name": "site_id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "name", "type": "string", "required": true, "desc": "应用名" },
+          { "name": "action", "type": "string", "required": true, "desc": "start / stop / restart / enable / disable" }
+        ] },
+        { "method": "POST", "path": "/site/app/remove", "summary": "移除应用（停止并删除进程配置；可选删数据）", "params": [
+          { "name": "site_id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "name", "type": "string", "required": true, "desc": "应用名" }
+        ] },
+        { "method": "GET", "path": "/site/app/log", "summary": "应用运行日志尾部（stdout / stderr）", "params": [
+          { "name": "site_id", "type": "int", "required": true, "desc": "站点 ID" },
+          { "name": "name", "type": "string", "required": true, "desc": "应用名" },
+          { "name": "lines", "type": "int", "required": false, "desc": "返回行数，默认 200" }
         ] }
       ]
     },
