@@ -217,7 +217,9 @@ pub async fn rotate_token(id: &str, username: &str, is_admin: bool) -> Result<St
 pub async fn remove(id: &str, username: &str, is_admin: bool) -> Result<(), ZapError> {
     let mut items = load().await?;
     let before = items.len();
-    items.retain(|i| i.id != id || i.owner == username || is_admin);
+    // 删除条件：id 匹配「且」调用者有权（owner 本人或管理员）。
+    // 因此保留下来的是：id 不匹配，或 id 匹配但调用者无权删除的项。
+    items.retain(|i| i.id != id || (i.owner != username && !is_admin));
     if items.len() == before {
         return Err(ZapError::Error("任务不存在或无权删除".into()));
     }
