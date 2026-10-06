@@ -121,6 +121,8 @@ pub async fn plugin_run(
         site_linux_user,
         action,
         options: payload.options,
+        // 带上调用方角色：zapexec 据此拦下 manifest 标了 dangerous 的破坏性动作（demo 只读账号）
+        roles: Some(claims.roles.clone()),
     })
     .await?;
     if resp.code != 0 {

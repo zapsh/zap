@@ -180,6 +180,95 @@ fn manifest_str<'a>(m: &'a serde_yaml::Value, key: &str) -> Option<&'a str> {
     m.get(key).and_then(|v| v.as_str())
 }
 
+/// 是否属于「只读」角色（面板的 demo 演示账号）。
+///
+/// 只在 zapd 把 roles 传过来时才拦：自检 / CLI 调用这些没有面板角色的场合返回 false。
+fn is_readonly_roles(roles: Option<&str>) -> bool {
+    roles
+        .unwrap_or("")
+        .split(',')
+        .any(|r| r.trim() == "demo")
+}
+
+/// manifest 里 `ui.placement` 挂哪些位置。
+///
+/// 允许单个字符串（旧写法）或字符串数组；一个插件可以同时出现在多个槽位
+/// （例如既挂文件编辑器工具栏、又挂仪表盘卡片）。未知槽位不拦，宿主只渲染
+/// 它认识的那些，这样新增槽位时老插件不至于因为版本号被拒。
+fn placements_of(m: &serde_yaml::Value) -> Vec<String> {
+    let ui = m.get("ui");
+    let Some(v) = ui.and_then(|u| u.get("placement")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match v {
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq {
+                if let Some(s) = item.as_str() {
+                    let s = s.trim();
+                    if !s.is_empty() && !out.iter().any(|x| x == s) {
+                        out.push(s.to_string());
+                    }
+                }
+            }
+        }
+        other => {
+            if let Some(s) = other.as_str() {
+                let s = s.trim();
+                if !s.is_empty() {
+                    out.push(s.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 某个 action 的规格插件网的布尔字段（async / dangerous）。
+///
+/// `actions` 允许两种写法：
+///   actions: { run: 运行 }                                  # 只有文案
+///   actions: { clone: { label: 克隆, async: true, dangerous: false } }
+fn action_flag(m: &serde_yaml::Value, action: &str, key: &str) -> bool {
+    m.get("actions")
+        .and_then(|a| a.get(action))
+        .and_then(|v| v.as_mapping())
+        .and_then(|mp| mp.get(&serde_yaml::Value::String(key.to_string())))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// action 的按钮文案：`actions.<name>.label`，或旧写法里直接给的字符串。
+fn action_label(m: &serde_yaml::Value, action: &str) -> Option<String> {
+    let v = m.get("actions").and_then(|a| a.get(action))?;
+    if let Some(s) = v.as_str() {
+        return Some(s.to_string());
+    }
+    v.as_mapping()
+        .and_then(|mp| mp.get(&serde_yaml::Value::String("label".to_string())))
+        .and_then(|l| l.as_str())
+        .map(|s| s.to_string())
+}
+
+/// 把 manifest 的 `actions` 摊平成前端好用的元信息数组：
+/// `[{ name, label, async, dangerous }]`。
+fn action_specs(m: &serde_yaml::Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    let Some(actions) = m.get("actions").and_then(|a| a.as_mapping()) else {
+        return out;
+    };
+    for (k, _) in actions {
+        let Some(name) = k.as_str() else { continue };
+        out.push(json!({
+            "name": name,
+            "label": action_label(m, name).unwrap_or_else(|| name.to_string()),
+            "async": action_flag(m, name, "async"),
+            "dangerous": action_flag(m, name, "dangerous"),
+        }));
+    }
+    out
+}
+
 /// 把一个插件目录整理成前端需要的描述对象。
 fn describe(dir: &Path, name: &str) -> Result<Value, String> {
     let m = read_manifest(dir)?;
@@ -190,7 +279,8 @@ fn describe(dir: &Path, name: &str) -> Result<Value, String> {
             .unwrap_or("")
             .to_string()
     };
-    let placement = ui_str("placement");
+    let placements = placements_of(&m);
+    let placement = placements.first().cloned().unwrap_or_default();
     // 安装信息优先读 manifest 里的 `zap_install`（安装时写回），兼容旧版仍带
     // `.zap-install.json` 的插件（read_install_meta 仅作兜底）。
     let install_yaml = m.get("zap_install");
@@ -225,12 +315,17 @@ fn describe(dir: &Path, name: &str) -> Result<Value, String> {
         "title": manifest_str(&m, "title").unwrap_or(name),
         "async": m.get("async").and_then(|v| v.as_bool()).unwrap_or(false),
         "scope": manifest_str(&m, "scope").unwrap_or("system"),
+        // placement 保留单值（旧前端只看这个），placements 才是完整的挂载位置列表
         "placement": placement,
+        "placements": placements,
         "label": label,
         "icon": ui_str("icon"),
         "tab": ui_str("tab"),
         "options": serde_json::to_value(m.get("options").cloned().unwrap_or(serde_yaml::Value::Null)).unwrap_or(Value::Null),
+        // actions 保持「名字 → 文案」的旧形状（前端按钮文案从这里取），
+        // action_specs 才带 async / dangerous 这类每个动作自己的开关
         "actions": serde_json::to_value(m.get("actions").cloned().unwrap_or(serde_yaml::Value::Null)).unwrap_or(Value::Null),
+        "action_specs": action_specs(&m),
         // 自带 HTML 界面：值为 manifest 里 ui.html 声明的相对文件名，空串表示没有
         "html": ui_html_file(&m).unwrap_or_default(),
         "version": manifest_str(&m, "version").unwrap_or("").to_string(),
@@ -277,12 +372,20 @@ fn ui_html_file(m: &serde_yaml::Value) -> Option<String> {
     Some(s.to_string())
 }
 
+/// 插件界面基础层（UIKit）的两个文件，随发行包部署到 `$ZAP_PATH/data/plugins/_lib/`。
+const UIKIT_CSS: &str = "ui.css";
+const UIKIT_JS: &str = "ui.js";
+
 /// 读取插件自带的 HTML 界面文件内容。
 ///
 /// 前端把它塞进 `sandbox="allow-scripts"` 的 iframe 里渲染 —— 不含
 /// `allow-same-origin`，所以这份 HTML 拿不到面板的 DOM / Cookie / localStorage，
 /// 也发不出带凭据的请求；它要调后端只能走 `postMessage` 让父页面代跑
 /// `plugin.run`，权限与 scope 仍旧由后端把关。
+///
+/// 返回前把 UIKit（主题 CSS + `zap.ui.*` 运行时，见 `data/plugins/_lib/`）
+/// 注入进去：样式插到 `</head>` 前、脚本插到 `</body>` 前，插件不用再自己
+/// 从零写一套按钮 / 表格样式。文件缺失时原样返回，不影响老插件。
 pub async fn plugin_ui(_actor: String, _home: String, name: String) -> Response {
     if !is_plugin_name(&name) {
         return Response::err(-1, "非法插件名".to_string());
@@ -305,9 +408,40 @@ pub async fn plugin_ui(_actor: String, _home: String, name: String) -> Response 
         return Response::err(-1, "界面文件路径越界，已拒绝".to_string());
     }
     match std::fs::read_to_string(&canon_file) {
-        Ok(html) => Response::ok("ok", Some(json!({ "html": html }))),
+        Ok(html) => Response::ok(
+            "ok",
+            Some(json!({ "html": inject_uikit(&html, &zap_path().join("data/plugins/_lib")) })),
+        ),
         Err(e) => Response::err(-1, format!("读取界面文件失败: {e}")),
     }
+}
+
+/// 把 UIKit 的样式 / 脚本插进插件的 HTML：
+/// `<style>…</style>` 塞进 `</head>` 前（没有 head 就塞最前面），
+/// `<script>…</script>` 塞进 `</body>` 前（没有 body 就塞最后），
+/// 无论缺哪个文件都原样返回，保证老插件与未部署 UIKit 的环境不受影响。
+fn inject_uikit(html: &str, lib_dir: &std::path::Path) -> String {
+    let css = std::fs::read_to_string(lib_dir.join(UIKIT_CSS)).unwrap_or_default();
+    let js = std::fs::read_to_string(lib_dir.join(UIKIT_JS)).unwrap_or_default();
+    if css.is_empty() && js.is_empty() {
+        return html.to_string();
+    }
+    let mut out = html.to_string();
+    if !css.is_empty() {
+        let block = format!("<style>\n{css}\n</style>\n");
+        match out.to_lowercase().rfind("</head>") {
+            Some(i) => out.insert_str(i, &block),
+            None => out.insert_str(0, &block),
+        }
+    }
+    if !js.is_empty() {
+        let block = format!("<script>\n{js}\n</script>\n");
+        match out.to_lowercase().rfind("</body>") {
+            Some(i) => out.insert_str(i, &block),
+            None => out.push_str(&block),
+        }
+    }
+    out
 }
 
 /// 列出插件（统一在系统级 `$ZAP_PATH/plugins`），按 placement 槽位 / scope 过滤。
@@ -350,19 +484,15 @@ pub async fn plugin_list(
                 continue;
             };
             let pl_scope = manifest_str(&m, "scope").unwrap_or("system");
-            let placement = m
-                .get("ui")
-                .and_then(|u| u.get("placement"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let placements = placements_of(&m);
             if let Some(sc) = &scope {
                 if pl_scope != sc.as_str() {
                     continue;
                 }
             }
             if let Some(sl) = &slot {
-                if &placement != sl {
+                // placement 可以是数组：挂在任一个槽位上就算命中
+                if !placements.iter().any(|p| p == sl) {
                     continue;
                 }
             }
@@ -671,6 +801,7 @@ pub async fn plugin_run(
     site_linux_user: Option<String>,
     action: String,
     options: HashMap<String, String>,
+    roles: Option<String>,
 ) -> Response {
     if !is_plugin_name(&name) {
         return Response::err(-1, "非法插件名");
@@ -714,17 +845,28 @@ pub async fn plugin_run(
             return Response::err(-1, format!("未知 scope: {other}（应为 site / user / system）"))
         }
     };
+    // manifest 把某个 action 标了 `dangerous: true` 时，只读演示账号到此为止。
+    // 放在后端而不是各插件 UI 里判断，插件作者漏判也拦得住。
+    if action_flag(&manifest, &action, "dangerous") && is_readonly_roles(roles.as_deref()) {
+        return Response::err(
+            -1,
+            format!("「{action}」是破坏性操作，只读演示账号不允许执行"),
+        );
+    }
     let lua_file = dir.join("main.lua");
     let code = match std::fs::read_to_string(&lua_file) {
         Ok(c) => c,
         Err(e) => return Response::err(-1, format!("读取插件脚本失败: {e}")),
     };
 
-    // 异步模式：后台执行，日志实时落盘，立即返回 task_id + log_path，由前端 SSE 订阅
+    // 异步模式：后台执行，日志实时落盘，立即返回 task_id + log_path，由前端 SSE 订阅。
+    // 既支持插件级 `async: true`，也支持 action 级 `actions.<name>.async: true` ——
+    // 读写混合的插件（像 Git）可以只把 push / clone 这类长操作异步化。
     let is_async = manifest
         .get("async")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || action_flag(&manifest, &action, "async");
     if is_async {
         let task_id = format!("{name}-{}", chrono::Utc::now().timestamp_millis());
         let log_dir = zap.join("data/plugins/logs");
@@ -1525,6 +1667,90 @@ mod tests {
             .set_name("zap.lua")
             .into_function()
             .expect("data/plugins/_lib/zap.lua 编译失败");
+    }
+
+    /// `ui.placement` 既可以是单个槽位（旧写法），也可以是槽位数组（一个插件挂多处）。
+    #[test]
+    fn placement_accepts_single_and_list() {
+        let single: serde_yaml::Value =
+            serde_yaml::from_str("ui:\n  placement: file.editor\n").unwrap();
+        assert_eq!(placements_of(&single), vec!["file.editor".to_string()]);
+
+        let list: serde_yaml::Value = serde_yaml::from_str(
+            "ui:\n  placement:\n    - file.editor\n    - file.context\n    - file.editor\n",
+        )
+        .unwrap();
+        // 重复项要去重，否则多槽位插件会在列表里出现两次
+        assert_eq!(
+            placements_of(&list),
+            vec!["file.editor".to_string(), "file.context".to_string()]
+        );
+
+        let missing: serde_yaml::Value = serde_yaml::from_str("name: x\n").unwrap();
+        assert!(placements_of(&missing).is_empty());
+    }
+
+    /// action 既可以是「名字: 文案」，也可以是「名字: {label, async, dangerous}」。
+    #[test]
+    fn action_spec_parses_both_shapes() {
+        let m: serde_yaml::Value = serde_yaml::from_str(
+            "actions:\n  push: 推送\n  reset:\n    label: 回退\n    dangerous: true\n  clone:\n    label: 克隆\n    async: true\n",
+        )
+        .unwrap();
+        assert_eq!(action_label(&m, "push").as_deref(), Some("推送"));
+        assert_eq!(action_label(&m, "reset").as_deref(), Some("回退"));
+
+        assert!(!action_flag(&m, "push", "dangerous"));
+        assert!(action_flag(&m, "reset", "dangerous"));
+        assert!(action_flag(&m, "clone", "async"));
+        assert!(!action_flag(&m, "reset", "async"));
+
+        let specs = action_specs(&m);
+        assert_eq!(specs.len(), 3);
+        assert_eq!(specs[0]["name"], serde_json::json!("push"));
+        assert_eq!(specs[1]["name"], serde_json::json!("reset"));
+        assert_eq!(specs[1]["dangerous"], serde_json::json!(true));
+        assert_eq!(specs[2]["async"], serde_json::json!(true));
+    }
+
+    /// demo（只读演示账号）不能跑标了 dangerous 的动作；没带 roles 的调用方不拦。
+    #[test]
+    fn readonly_roles_are_detected() {
+        assert!(is_readonly_roles(Some("demo")));
+        assert!(is_readonly_roles(Some("user,demo")));
+        assert!(!is_readonly_roles(Some("user")));
+        assert!(!is_readonly_roles(None));
+        assert!(!is_readonly_roles(Some("")));
+    }
+
+    /// UIKit 注入：样式进 head、脚本进 body，缺 einmal 文件时原样返回。
+    #[test]
+    fn uikit_is_injected_into_plugin_html() {
+        let dir = std::env::temp_dir().join(format!("zap-uikit-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("ui.css"), ":root{--x:1}\n").unwrap();
+        std::fs::write(dir.join("ui.js"), "window.zap={}\n").unwrap();
+
+        let html = "<html><head><title>t</title></head><body><p>hi</p></body></html>";
+        let out = inject_uikit(html, &dir);
+        assert!(out.contains("<style>") && out.contains("--x:1"), "样式没注入: {out}");
+        assert!(out.contains("<script>") && out.contains("window.zap"), "脚本没注入: {out}");
+        // 位置：style 在 </head> 前，script 在 </body> 前
+        assert!(out.find("</style>").unwrap() < out.to_lowercase().find("</head>").unwrap());
+        assert!(out.find("</script>").unwrap() < out.to_lowercase().find("</body>").unwrap());
+
+        // 缺 UIKit 时不要破坏原文件（未部署 _lib 的老环境）
+        let empty = std::env::temp_dir().join(format!("zap-uikit-empty-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&empty);
+        assert_eq!(inject_uikit(html, &empty), html);
+
+        // 没有 head / body 的片段也要能注入，不能静默丢掉脚本
+        let frag = "<div>x</div>";
+        let out2 = inject_uikit(frag, &dir);
+        assert!(out2.contains("--x:1") && out2.contains("window.zap"), "{out2}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[test]

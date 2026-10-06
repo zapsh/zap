@@ -2642,6 +2642,7 @@ export default {
 
   /** 仪表盘 - 管理员 */
   dashboardAdmin: {
+    plugins: '插件',
     serverInfo: '服务器信息',
     aboutZap: 'About Zap',
     os: '操作系统',

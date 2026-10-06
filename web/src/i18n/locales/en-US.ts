@@ -2655,6 +2655,7 @@ const enUS: Messages = {
 
   /** Dashboard - admin */
   dashboardAdmin: {
+    plugins: 'Plugins',
     serverInfo: 'Server Info',
     aboutZap: 'About Zap',
     os: 'Operating System',

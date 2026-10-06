@@ -298,9 +298,21 @@ pub async fn dispatch(req: Request) -> Response {
             site_linux_user,
             action,
             options,
+            roles,
         } => {
-            plugin::plugin_run(name, actor, home, user, site_id, site_root, site_linux_user, action, options)
-                .await
+            plugin::plugin_run(
+                name,
+                actor,
+                home,
+                user,
+                site_id,
+                site_root,
+                site_linux_user,
+                action,
+                options,
+                roles,
+            )
+            .await
         }
         Request::PluginInstall {
             name,

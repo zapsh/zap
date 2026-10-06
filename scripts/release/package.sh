@@ -110,6 +110,11 @@ package_full() {
   cp -Rf data/appstore/repos/appstore "$data_dir/appstore/repos/" 2>/dev/null || true
   cp -f data/appstore/repos.yaml "$data_dir/appstore/" 2>/dev/null || true
   cp -f data/apps/README.md "$data_dir/apps/" 2>/dev/null || true
+  # 插件公共库 + UIKit（*.lua 是公共函数库，*.css / *.js 注入插件界面）
+  mkdir -p "$data_dir/plugins/_lib"
+  cp -f data/plugins/_lib/*.lua "$data_dir/plugins/_lib/" 2>/dev/null || true
+  cp -f data/plugins/_lib/*.css "$data_dir/plugins/_lib/" 2>/dev/null || true
+  cp -f data/plugins/_lib/*.js  "$data_dir/plugins/_lib/" 2>/dev/null || true
   cp -Rf data/www "$data_dir/" 2>/dev/null || true
   for f in CHANGELOG.md USER_MANUAL.md FAQ.md UPGRADE.md CHANGELOG_zh-CN.md USER_MANUAL_zh-CN.md FAQ_zh-CN.md UPGRADE_zh-CN.md; do
     cp -f "$f" "$data_dir/www/html/" 2>/dev/null || true

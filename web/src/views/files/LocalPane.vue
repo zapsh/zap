@@ -709,6 +709,18 @@
     />
 
     <!--
+      file.context 槽位：插件清单由 PluginSlot 自己拉，入口渲染进右键菜单
+      （mode=context 时组件不显示任何东西，只暴露 plugins / openPlugin）。
+    -->
+    <PluginSlot
+      ref="pluginSlotRef"
+      placement-slot="file.context"
+      mode="context"
+      :cwd="currentPath"
+      :files="selectedItems.map((e) => e.path)"
+    />
+
+    <!--
       右键菜单：Teleport 到 body。文件管理容器是 overflow:hidden，
       放在里面会被容器裁掉；挪到 body 后只需自己处理视口边界。
     -->
@@ -790,6 +802,19 @@
           <el-icon><User /></el-icon>
           <span>{{ t('filesLocal.ownerGroup') }}</span>
         </div>
+        <!-- file.context 槽位：右键时把当前目录与选中文件交给插件处理 -->
+        <template v-if="ctxPlugins.length">
+          <div class="fm-context-divider" />
+          <div
+            v-for="p in ctxPlugins"
+            :key="p.name"
+            class="fm-context-item"
+            @click="runCtxPlugin(p)"
+          >
+            <el-icon><Setting /></el-icon>
+            <span>{{ p.label || p.title }}</span>
+          </div>
+        </template>
         <div class="fm-context-divider" />
         <div
           class="fm-context-item danger"
@@ -899,6 +924,8 @@ import {
 import CodeEditor from '@/components/CodeEditor.vue'
 import DirPicker from '@/components/DirPicker.vue'
 import ExtractDialog from './ExtractDialog.vue'
+import PluginSlot from '@/components/PluginSlot.vue'
+import type { PluginInfo } from '@/api/plugin'
 
 /** 编辑器浮窗按需加载：只有真正用过「使用编辑器打开」才会请求这个 chunk */
 const FileEditorWindow = defineAsyncComponent(() => import('./FileEditorWindow.vue'))
@@ -960,6 +987,18 @@ const extractVisible = ref(false)
 const extractTarget = ref('')
 const canRemove = computed(() => hasSelection.value)
 const canDownload = computed(() => hasSelection.value)
+
+// ── file.context 槽位：右键菜单里的插件入口 ──────────────────
+const pluginSlotRef = ref<InstanceType<typeof PluginSlot> | null>(null)
+/** 挂到 file.context 槽位的插件清单（由 PluginSlot 拉取） */
+const ctxPlugins = computed<PluginInfo[]>(() => {
+  const list = (pluginSlotRef.value as any)?.plugins
+  return Array.isArray(list) ? list : []
+})
+function runCtxPlugin(p: PluginInfo) {
+  closeMenus()
+  void (pluginSlotRef.value as any)?.openPlugin?.(p)
+}
 
 // Context menu
 const contextMenuVisible = ref(false)

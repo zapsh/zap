@@ -17,11 +17,24 @@ export interface PluginAction {
   [key: string]: string
 }
 
+/** 单个动作的元信息（`actions.<name>: { label, async, dangerous }` 写法时才有） */
+export interface PluginActionSpec {
+  name: string
+  label: string
+  /** 该动作单独异步执行（日志走 SSE 流），不必把整个插件设成 async */
+  async?: boolean
+  /** 破坏性动作：执行前宿主会二次确认，只读演示账号在后端被直接拒绝 */
+  dangerous?: boolean
+}
+
 export interface PluginInfo {
   name: string
   title: string
   scope: string
+  /** 主槽位（兼容旧字段）；多槽位插件请看 placements */
   placement: string
+  /** manifest 里声明的全部挂载位置，一个插件可以挂多处 */
+  placements?: string[]
   label: string
   icon: string
   tab: string
@@ -29,6 +42,8 @@ export interface PluginInfo {
   async?: boolean
   options: PluginOption[]
   actions: PluginAction
+  /** 每个动作的 async / dangerous 开关 */
+  action_specs?: PluginActionSpec[]
   /** 安装级别：统一 system（管理员安装到 $ZAP_PATH/plugins，全用户共享、仅可使用） */
   level?: 'system'
   version?: string

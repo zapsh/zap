@@ -30,6 +30,13 @@ __pycache__/
 plugins/
 *.pyc
 
+# 例外：随发行包走的插件公共函数库与 UIKit 要入库，
+# 否则新装面板里拿不到 zap.lua / ui.css / ui.js（部署就是拷这一份）。
+# git 不能跳过被排除的父目录，所以要把 data/plugins/ 本身一起放开。
+!data/plugins/
+!data/plugins/_lib/
+!data/plugins/_lib/*
+
 # Zap Pro
 /zappro/
 /web/src/views/pro/

@@ -147,6 +147,20 @@
       </el-col>
     </el-row>
 
+    <!-- dashboard.card 槽位：插件可以在这里放一张自己的卡片（没有插件时整块不显示） -->
+    <template v-if="dashPlugins.length">
+      <div class="section-title-row">
+        <span class="section-title">{{ t('dashboardAdmin.plugins') }}</span>
+      </div>
+      <el-row :gutter="16" class="section-row">
+        <el-col :span="24">
+          <el-card shadow="hover">
+            <PluginSlot ref="dashSlotRef" placement-slot="dashboard.card" hide-empty />
+          </el-card>
+        </el-col>
+      </el-row>
+    </template>
+
     <!-- 磁盘使用 / 网络接口：标题与「查看详情」跟着当前页签走 -->
     <div class="section-title-row">
       <span class="section-title">{{ resourceTitle }}</span>
@@ -200,6 +214,15 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@/icons'
+import PluginSlot from '@/components/PluginSlot.vue'
+import type { PluginInfo } from '@/api/plugin'
+
+// dashboard.card 槽位：拿插件清单决定要不要显示这一块
+const dashSlotRef = ref<InstanceType<typeof PluginSlot> | null>(null)
+const dashPlugins = computed<PluginInfo[]>(() => {
+  const list = (dashSlotRef.value as any)?.plugins
+  return Array.isArray(list) ? list : []
+})
 import { formatBytes } from '@/utils/fmt'
 import { isArray } from '@/utils/validate'
 import { getSystemAbout, getSystemInfo, getSystemOverview } from '@/api/dashboard.ts'

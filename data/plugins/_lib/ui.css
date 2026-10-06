@@ -1,0 +1,216 @@
+/*
+ * 插件界面基础层（UIKit）—— 由宿主在返回插件 ui.html 时自动注入。
+ *
+ * 插件被塞进 sandbox="allow-scripts" 的 iframe 渲染，拿不到 Element Plus、
+ * 也继承不到宿主样式，所以每个插件都得把按钮 / 表格 / 页签的 CSS 重写一遍，
+ * 观感还各不相同。这里统一提供一层：调色变量 + .zui-* 组件类。
+ *
+ * 用法：直接在 HTML 里写 class 即可，例如
+ *   <button class="zui-btn">保存</button>   <button class="zui-btn ghost">取消</button>
+ *   <input class="zui-input" />             <div class="zui-row">…</div>
+ *   <div class="zui-tabs"><button class="zui-tab is-active">状态</button>…</div>
+ *   <table class="zui-table">…</table>      <span class="zui-badge ok">干净</span>
+ *   <div class="zui-empty">无数据</div>     <pre class="zui-pre">输出</pre>
+ * 交互（通知 / 确认框 / 表格 / 页签渲染）由同目录 ui.js 提供的 zap.ui.* 负责。
+ */
+
+:root {
+  --zap-primary: #409eff;
+  --zap-success: #67c23a;
+  --zap-warning: #e6a23c;
+  --zap-danger: #f56c6c;
+  --zap-info: #909399;
+
+  --zap-text: #2c3e50;
+  --zap-text-regular: #606266;
+  --zap-text-secondary: #909399;
+
+  --zap-bg: #ffffff;
+  --zap-fill: #f5f7fa;
+  --zap-fill-light: #fafafa;
+  --zap-border: #dcdfe6;
+  --zap-border-light: #ebeef5;
+
+  --zap-radius: 4px;
+  --zap-radius-lg: 6px;
+  --zap-font: 13px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --zap-mono: ui-monospace, Menlo, Consolas, monospace;
+}
+
+:root[data-theme="dark"] {
+  --zap-text: #e5eaf3;
+  --zap-text-regular: #cfd3dc;
+  --zap-text-secondary: #a8abb2;
+  --zap-info: #a8abb2;
+
+  --zap-bg: #1a1a1a;
+  --zap-fill: #262727;
+  --zap-fill-light: #232324;
+  --zap-border: #4c4d4f;
+  --zap-border-light: #363637;
+}
+
+body {
+  margin: 0;
+  font: var(--zap-font);
+  color: var(--zap-text);
+  background: var(--zap-bg);
+}
+* { box-sizing: border-box; }
+
+/* ── 按钮 ─────────────────────────────────────────── */
+.zui-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--zap-primary);
+  border-radius: var(--zap-radius);
+  background: var(--zap-primary);
+  color: #fff;
+  font: inherit;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.zui-btn:hover { opacity: .85; }
+.zui-btn:disabled { opacity: .55; cursor: not-allowed; }
+.zui-btn.ghost { background: transparent; color: var(--zap-text-regular); border-color: var(--zap-border); }
+.zui-btn.ghost:hover { color: var(--zap-primary); border-color: var(--zap-primary); }
+.zui-btn.danger { background: transparent; color: var(--zap-danger); border-color: #fbc4c4; }
+.zui-btn.sm { padding: 2px 8px; font-size: 12px; }
+.zui-btn.link { padding: 0; border: none; background: none; color: var(--zap-primary); }
+
+/* ── 表单 ─────────────────────────────────────────── */
+.zui-input, .zui-select, .zui-textarea {
+  padding: 5px 8px;
+  border: 1px solid var(--zap-border);
+  border-radius: var(--zap-radius);
+  font: inherit;
+  color: inherit;
+  background: var(--zap-bg);
+}
+.zui-input:focus, .zui-select:focus, .zui-textarea:focus { outline: none; border-color: var(--zap-primary); }
+.zui-textarea { width: 100%; resize: vertical; }
+.zui-field { margin-bottom: 10px; }
+.zui-label { display: block; margin-bottom: 4px; color: var(--zap-text-secondary); font-size: 12px; }
+
+/* ── 布局 ─────────────────────────────────────────── */
+.zui-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.zui-row > label { color: var(--zap-text-secondary); flex-shrink: 0; }
+.zui-spacer { flex: 1; }
+.zui-grow { flex: 1; min-width: 160px; }
+.zui-section { margin-bottom: 14px; }
+.zui-title { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--zap-text-secondary); }
+.zui-hr { border: none; border-top: 1px solid var(--zap-border-light); margin: 14px 0; }
+
+/* ── 页签 ─────────────────────────────────────────── */
+.zui-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--zap-border-light); }
+.zui-tab {
+  padding: 7px 16px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--zap-radius) var(--zap-radius) 0 0;
+  background: transparent;
+  color: var(--zap-text-regular);
+  font: inherit;
+  cursor: pointer;
+}
+.zui-tab:hover { color: var(--zap-primary); }
+.zui-tabs .zui-tab.is-active {
+  background: var(--zap-bg);
+  border-color: var(--zap-border-light);
+  color: var(--zap-primary);
+  font-weight: 600;
+}
+.zui-panel { display: none; padding: 12px 0 0; }
+.zui-panel.is-active { display: block; }
+
+/* ── 表格 ─────────────────────────────────────────── */
+.zui-table-wrap { border: 1px solid var(--zap-border-light); border-radius: var(--zap-radius-lg); overflow: hidden; }
+.zui-table { width: 100%; border-collapse: collapse; }
+.zui-table th, .zui-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--zap-border-light);
+  font-weight: normal;
+}
+.zui-table th { color: var(--zap-text-secondary); font-size: 12px; background: var(--zap-fill-light); }
+.zui-table tbody tr:last-child td { border-bottom: none; }
+.zui-table tbody tr:hover { background: var(--zap-fill); }
+
+/* ── 徽标 / 提示 ──────────────────────────────────── */
+.zui-badge {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 18px;
+  background: #ecf5ff;
+  color: var(--zap-primary);
+}
+.zui-badge.ok { background: #f0f9eb; color: var(--zap-success); }
+.zui-badge.warn { background: #fdf6ec; color: var(--zap-warning); }
+.zui-badge.danger { background: #fef0f0; color: var(--zap-danger); }
+.zui-tip { color: var(--zap-text-secondary); font-size: 12px; }
+.zui-warn { color: var(--zap-warning); font-size: 12px; }
+.zui-empty { padding: 14px; text-align: center; color: #c0c4cc; font-size: 12px; }
+.zui-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  background: #fdf6ec;
+  border: 1px solid #faecd8;
+  border-radius: var(--zap-radius-lg);
+  color: var(--zap-warning);
+  font-size: 12px;
+}
+
+/* ── 输出区（含 diff 着色）────────────────────────── */
+.zui-pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--zap-fill);
+  border-radius: var(--zap-radius-lg);
+  max-height: 34vh;
+  min-height: 48px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--zap-mono);
+  font-size: 12px;
+}
+.zui-pre.err { color: var(--zap-danger); }
+.zui-pre .diff-add { display: block; color: var(--zap-success); }
+.zui-pre .diff-del { display: block; color: var(--zap-danger); }
+.zui-pre .diff-hunk { display: block; color: var(--zap-text-secondary); }
+
+/* ── 列表项（文件 / 储藏 / 标签这类一行一条的场景）── */
+.zui-list { border: 1px solid var(--zap-border-light); border-radius: var(--zap-radius-lg); overflow: hidden; }
+.zui-item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--zap-border-light); }
+.zui-item:last-child { border-bottom: none; }
+.zui-item:hover { background: var(--zap-fill); }
+.zui-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--zap-fill-light);
+  font-size: 12px;
+  color: var(--zap-text-regular);
+  border-bottom: 1px solid var(--zap-border-light);
+}
+.zui-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--zap-mono); font-size: 12px; }
+.zui-mono { font-family: var(--zap-mono); font-size: 12px; color: var(--zap-text-secondary); }
+
+/* ── 面板内置吐司（宿主没接管 zap.ui.notify 时的兜底）── */
+.zui-toasts { position: fixed; right: 12px; top: 12px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+.zui-toast {
+  padding: 8px 12px;
+  border-radius: var(--zap-radius);
+  background: #ecf5ff;
+  color: var(--zap-primary);
+  font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
+}
+.zui-toast.ok { background: #f0f9eb; color: var(--zap-success); }
+.zui-toast.warn { background: #fdf6ec; color: var(--zap-warning); }
+.zui-toast.danger { background: #fef0f0; color: var(--zap-danger); }

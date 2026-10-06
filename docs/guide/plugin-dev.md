@@ -97,23 +97,34 @@ end
 | `version` / `description` / `author` / `homepage` | | 元信息，管理页展示 |
 | `scope` | | `site`（以站点 Linux 账号运行，需站点上下文）/ `user`（以调用方面板用户账号运行，不绑定站点）/ `system`（以 root 运行，仅管理员安装的插件可用） |
 | `async` | | `true` 时后台执行，日志走 SSE 实时回传，前端可取消 |
-| `ui.placement` | ✓ | 入口挂载位置，见下表 |
+| `ui.placement` | ✓ | 入口挂载位置，**可以是单个槽位或槽位数组**，见下表（旧的单个字符串写法仍然生效） |
 | `ui.label` | | 入口按钮文案 |
 | `ui.icon` | | Iconify 图标名 |
 | `ui.tab` | | 补充说明（显示在卡片副标题） |
 | `ui.html` | | 自带 HTML 界面的文件名（插件目录内的单个 `.html`） |
 | `options` | | 结构化表单，见 §4 |
-| `actions` | | `action: 文案` 映射，缺省用第一个作按钮文案 |
+| `actions` | | `action: 文案` 映射，缺省用第一个作按钮文案；也可以写成带开关的对象，见 §7 |
 
 ### placement（挂载位置）
 
 | 值 | 位置 |
 | --- | --- |
 | `site.detail` | 站点详情抽屉 →「插件」标签页 |
-| `file.editor` | 文件编辑器浮窗顶部工具栏（`mode="toolbar"`，父页面会把当前目录作为 `options.cwd` 透传） |
+| `file.editor` | 文件编辑器浮窗 / 文件管理器顶部工具栏（`mode="toolbar"`，父页面把当前目录作为 `options.cwd` 透传） |
+| `file.context` | 文件管理器列表右键菜单（`mode="context"`，额外把选中的文件以 `options.files`（JSON 数组字符串）透传） |
+| `dashboard.card` | 仪表盘（管理员首页）底部的一张卡片；没挂插件时整块不显示 |
 
-过滤是**字符串相等**匹配：插件不区分站点上装了什么应用，只按槽位出现。
-一个插件只能挂一个槽位（`placement` 是单值字符串）。
+过滤是「任一个槽位命中」匹配：插件不区分站点上装了什么应用，只按槽位出现。
+一个插件可以挂多处：
+
+```yaml
+ui:
+  placement:
+    - file.editor
+    - file.context
+```
+
+宿主只渲染它认识的槽位，老插件写了未知槽位也不会报错（只是不显示）。
 
 ---
 
@@ -288,6 +299,52 @@ ui.html ──postMessage──▶ 父页面 ──/plugin/run（带真实 JWT�
 并会按 `action` 把请求转发给 `on_<action>`。权限点（`plugin:run`）与 `scope` 降权
 全在后端，绕过不了。
 
+### UIKit：宿主注入的样式与 `zap.ui.*`
+
+iframe 是隔离的：拿不到 Element Plus、也继承不到面板主题，于是每个插件都得把按钮 /
+表格 / 页签重写一遍，观感还各不相同。为此宿主在返回你的 HTML 时**自动注入**一套
+UIKit（`data/plugins/_lib/ui.css` + `ui.js`，部署于 `$ZAP_PATH/data/plugins/_lib/`）：
+
+1. **组件样式**：一套 CSS 变量（`--zap-primary` 等）与 `.zui-*` 类。直接写 class 即可，
+   不用自己排版：
+
+   ```html
+   <div class="zui-row">
+     <button class="zui-btn">保存</button>
+     <button class="zui-btn ghost">取消</button>
+     <span class="zui-badge ok">干净</span>
+   </div>
+   <div class="zui-tabs"><button class="zui-tab is-active">状态</button></div>
+   <div class="zui-panel is-active">…</div>
+   <table class="zui-table">…</table>
+   <pre class="zui-pre">输出</pre>
+   ```
+
+   常用类：按钮（`.zui-btn` + `.ghost / .danger / .sm / .link`）、表单（`.zui-input /
+   .zui-select / .zui-textarea`）、布局（`.zui-row / .zui-grow / .zui-spacer /
+   .zui-section / .zui-hr`）、页签（`.zui-tabs / .zui-tab / .zui-panel`）、表格
+   （`.zui-table-wrap / .zui-table`）、列表（`.zui-list / .zui-item / .zui-path`）、
+   反馈（`.zui-badge / .zui-tip / .zui-warn / .zui-empty / .zui-banner`）。
+
+2. **运行时 `zap.ui.*`**：
+
+   | 调用 | 说明 |
+   | --- | --- |
+   | `zap.ui.notify(msg, type)` | 弹面板通知条（`success / warning / error / info`），宿主不接管时退化为界面内吐司 |
+   | `zap.ui.confirm(msg, { danger, title })` | 面板确认框，`Promise<boolean>` |
+   | `zap.ui.prompt(msg, def, { title })` | 面板输入框，`Promise<string \| null>`（取消为 null） |
+   | `zap.ui.toast(msg, type)` | 只在界面内弹（不打扰宿主） |
+   | `zap.ui.table(el, spec)` | 按列渲染表格：`{ columns: [{key,label,width,render}], rows, onRowClick, empty }` |
+   | `zap.ui.tabs(el, list, onChange)` | 渲染页签并联动 `[data-panel]` 面板，返回 `{ select, active }` |
+   | `zap.ui.diff(el, text, isErr)` | 往 `pre` 里塞 diff，按 `+ / - / @@` 行着色 |
+   | `zap.ui.busy(root, on, text)` | 锁 / 放按钮，避免连点触发并发任务 |
+   | `zap.ui.el(tag, attrs, children)` / `zap.ui.escape(s)` | 建元素、转义 |
+
+   例子：用宿主的通知条替代 `alert`，用 `zap.ui.confirm` 替代 `window.confirm` ——
+   观感与面板一致，用户也不用再看到原生弹窗。
+
+UIKit 缺失（未部署 `_lib`）时 `plugin_ui` 原样返回你的 HTML，老插件不受影响。
+
 ### 返回结构化数据（JSON）
 
 所有调用的返回值只有**文本**一种形态（同步插件取 `zap.log()` 的内容）。想让页面
@@ -393,6 +450,27 @@ function on_run(ctx)
   end
 end
 ```
+
+### action 级 async / dangerous
+
+`async` 是**插件级**开关：开了之后连「读状态」这种毫秒级动作也要走 SSE。
+读写混合的插件（比如 Git）只想把少数几个长操作异步化，这时用 action 级开关：
+
+```yaml
+actions:
+  status: 状态                                     # 简写：只有文案
+  push: { label: 推送, async: true }               # 只有 push 走后台 + 可取消
+  fetch: { label: 获取, async: true }
+  reset: { label: 回退, dangerous: true }          # 破坏性动作
+```
+
+| 开关 | 作用 |
+| --- | --- |
+| `async: true` | 该动作后台执行，日志走 SSE；前端 observing 时会显示取消按钮 |
+| `dangerous: true` | 宿主执行前弹一次**危险操作确认**；只读演示账号（demo 角色）在后端被直接拒绝 |
+
+两种写法可以混用（Git 插件的 manifest 就是混用的）。`dangerous` 的拦截放在服务端，
+插件作者忘了在 UI 里加 `confirm` 也拦得住。
 
 ---
 

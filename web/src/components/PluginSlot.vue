@@ -1,5 +1,6 @@
 <template>
   <div class="plugin-slot">
+    <!-- context 模式：入口由宿主（右键菜单）自己渲染，这里只保留弹窗，见 defineExpose -->
     <!-- 工具栏模式：内联「图标 + 文字」按钮，作为编辑器顶部工具栏的一部分 -->
     <template v-if="mode === 'toolbar'">
       <el-button
@@ -14,9 +15,9 @@
     </template>
 
     <!-- 列表模式（默认）：卡片 + 打开按钮 -->
-    <template v-else>
+    <template v-else-if="mode !== 'context'">
       <div v-if="loading" class="form-tip">加载插件…</div>
-      <el-empty v-else-if="!plugins.length" :description="emptyText" :image-size="40" />
+      <el-empty v-else-if="!plugins.length && !hideEmpty" :description="emptyText" :image-size="40" />
       <div v-else class="plugin-list">
         <el-card v-for="p in plugins" :key="p.name" shadow="never" class="plugin-card">
           <div class="plugin-head">
@@ -148,7 +149,7 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import DirPicker from '@/components/DirPicker.vue'
 import FilePicker from '@/components/FilePicker.vue'
 import {
@@ -167,15 +168,26 @@ const props = defineProps<{
   placementSlot: string
   siteId?: number
   webRoot?: string
-  /** 显示模式：list=卡片列表（默认）；toolbar=内联「图标+文字」按钮，用于编辑器工具栏等紧凑场景 */
-  mode?: 'list' | 'toolbar'
+  /**
+   * 显示模式：
+   * - list=卡片列表（默认，站点详情「插件」页）
+   * - toolbar=内联「图标+文字」按钮，用于编辑器工具栏等紧凑场景
+   * - context=不渲染入口，由宿主（右键菜单等）通过 ref 调 openPlugin 拉起，见 defineExpose
+   */
+  mode?: 'list' | 'toolbar' | 'context'
   /** 当前工作目录（绝对路径）：随每次调用透传给插件（如 Git 插件在此目录下执行）。 */
   cwd?: string
+  /** 当前选中的文件路径（file.context 槽位右键所选），随调用透传给插件。 */
+  files?: string[]
+  /** 列表模式的空态文案 */
+  emptyText?: string
+  /** 列表模式下没有插件时连空态一起隐藏（宿主自己控制要不要显示这块区域） */
+  hideEmpty?: boolean
 }>()
 
 const loading = ref(false)
 const plugins = ref<PluginInfo[]>([])
-const emptyText = ref('该位置暂无可用插件')
+const emptyText = ref(props.emptyText || '该位置暂无可用插件')
 const dialog = ref(false)
 const running = ref(false)
 const result = ref('')
@@ -259,6 +271,34 @@ function openPicker(d: any) {
 /** 把选择结果回传给 iframe（与 RPC 桥的 pending 约定一致：{ ok, data }）。 */
 function replyPick(id: string, data: any) {
   frameRef.value?.contentWindow?.postMessage({ __zapRpc: 1, id, ok: true, data }, '*')
+}
+
+/** 取某个 action 的元信息（async / dangerous），manifest 用旧写法时为空。 */
+function actionSpec(action: string): Record<string, any> | undefined {
+  const list = (current.value?.action_specs || []) as Record<string, any>[]
+  return list.find((a) => a?.name === action)
+}
+/** 是否走异步（SSE 日志流）：插件级 async 或该 action 自己声明的 async。 */
+function isAsyncAction(p: PluginInfo | null, action: string) {
+  return !!p?.async || !!actionSpec(action)?.async
+}
+/**
+ * 破坏性动作的二次确认：manifest 标了 dangerous 的动作在宿主侧统一拦一道。
+ * 接口另有确认时插件自己不再重复；后端也会挡只读演示账号，这里只是让交互更清楚。
+ */
+async function confirmDangerous(action: string): Promise<boolean> {
+  const spec = actionSpec(action)
+  if (!spec?.dangerous) return true
+  try {
+    await ElMessageBox.confirm(
+      `「${spec.label || action}」是不可撤销的破坏性操作，确定继续？`,
+      '危险操作确认',
+      { type: 'warning', confirmButtonText: '继续', cancelButtonText: '取消' },
+    )
+    return true
+  } catch {
+    return false
+  }
 }
 
 type Choice = { label: string; value: string }
@@ -392,12 +432,14 @@ async function handleRpc(d: any) {
   const p = current.value
   if (!p) return reply(d.id, false, '插件上下文已关闭')
   const action = String(d.action || 'run')
+  if (!(await confirmDangerous(action))) return reply(d.id, false, '已取消')
   const options: Record<string, string> = {}
   if (d.options && typeof d.options === 'object') {
     for (const [k, v] of Object.entries(d.options)) options[k] = String(v)
   }
-  // 透传当前工作目录：插件 UI 未自带 cwd 时，用文件管理器传入的目录兜底
+  // 透传当前工作目录与右键选中的文件
   if (props.cwd && !options.cwd) options.cwd = props.cwd
+  if (props.files?.length && !options.files) options.files = JSON.stringify(props.files)
   try {
     const r: any = await pluginRun({ name: p.name, action, site_id: props.siteId, options })
     const body = r?.data ?? r
@@ -417,12 +459,57 @@ async function handleRpc(d: any) {
   }
 }
 
+/**
+ * 接管 UIKit 的 UI 请求（`zap.ui.notify / confirm / prompt`）。
+ *
+ * 插件界面在沙箱 iframe 里，拿不到 Element Plus；这些请求由宿主用面板同一套组件渲染，
+ * 插件界面因此不必自己写吐司 / 确认框，也不用再 `window.confirm` 那种原生弹窗。
+ * 协议见 data/plugins/_lib/ui.js：`{ __zapUi: 1, id, kind, ... }`，回 `{ __zapUi: 1, id, ok, data }`。
+ */
+async function handleUi(d: any, frame: HTMLIFrameElement) {
+  const send = (ok: boolean, data: any) =>
+    frame.contentWindow?.postMessage({ __zapUi: 1, id: d.id, ok, data }, '*')
+  try {
+    if (d.kind === 'ping') return send(true, true)
+    if (d.kind === 'notify') {
+      const types: Record<string, any> = { success: 'success', warning: 'warning', error: 'error', info: 'info' }
+      ElMessage({ message: String(d.message || ''), type: types[String(d.type || 'info')] || 'info' })
+      return send(true, true)
+    }
+    if (d.kind === 'confirm') {
+      await ElMessageBox.confirm(String(d.message || ''), d.title || '请确认', {
+        type: d.danger ? 'warning' : 'info',
+        confirmButtonText: d.confirmText || '确定',
+        cancelButtonText: d.cancelText || '取消',
+      })
+      return send(true, true)
+    }
+    if (d.kind === 'prompt') {
+      const r = await ElMessageBox.prompt(String(d.message || ''), d.title || '请输入', {
+        inputValue: String(d.value || ''),
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+      })
+      return send(true, String(r?.value ?? ''))
+    }
+    return send(false, '未知的 UI 请求')
+  } catch {
+    // 用户取消：confirm 回 false，prompt 回 null（不是错误，别让插件的 await 抛异常）
+    return send(true, d.kind === 'prompt' ? null : false)
+  }
+}
+
 function onWindowMessage(ev: MessageEvent) {
   // 只认自己这个 iframe 发来的消息：判 source，别把页面上其它 postMessage 当指令
   const frame = frameRef.value
   if (!frame || ev.source !== frame.contentWindow) return
   const d = ev.data
-  if (!d || d.__zapRpc !== 1 || !d.id) return
+  if (!d || typeof d !== 'object') return
+  if (d.__zapUi === 1 && d.id) {
+    void handleUi(d, frame)
+    return
+  }
+  if (d.__zapRpc !== 1 || !d.id) return
   // iframe 请求打开目录 / 文件选择器（zap.pickDir / zap.pickFile）
   if (d.pick) {
     openPicker(d)
@@ -457,9 +544,13 @@ async function openHtml(p: PluginInfo) {
 }
 
 function openPlugin(p: PluginInfo) {
+  current.value = p
   if (p.html) void openHtml(p)
   else openRun(p)
 }
+
+// file.context 这类槽位：入口由宿主（右键菜单）渲染，通过 ref 拿到插件列表并拉起界面。
+defineExpose({ openPlugin, plugins })
 
 function openRun(p: PluginInfo) {
   current.value = p
@@ -474,6 +565,8 @@ function openRun(p: PluginInfo) {
 }
 async function run() {
   if (!current.value) return
+  const act = Object.keys(current.value.actions || {})[0] || 'run'
+  if (!(await confirmDangerous(act))) return
   running.value = true
   result.value = ''
   const options: Record<string, string> = {}
@@ -483,13 +576,14 @@ async function run() {
       options[opt.name] = (multiVal[opt.name] || []).join(' ')
     else options[opt.name] = form[opt.name] || ''
   }
-  // 透传当前工作目录（同 handleRpc）
+  // 透传当前工作目录与选中文件（同 handleRpc）
   if (props.cwd && !options.cwd) options.cwd = props.cwd
+  if (props.files?.length && !options.files) options.files = JSON.stringify(props.files)
   let isAsync = false
   try {
     const r: any = await pluginRun({
       name: current.value.name,
-      action: Object.keys(current.value.actions || {})[0] || 'run',
+      action: act,
       site_id: props.siteId,
       options,
     })

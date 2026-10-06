@@ -1662,6 +1662,13 @@ pub enum Request {
         action: String,
         #[serde(default)]
         options: std::collections::HashMap<String, String>,
+        /// 调用方角色（逗号分隔，来自面板账号的 `roles`）。
+        ///
+        /// 用来在后端挡掉 manifest 标了 `dangerous: true` 的动作：
+        /// demo（只读演示）账号一律不允许执行写类 / 破坏性动作。缺省为 None 时
+        /// 不做这层判断（自检进程等没有面板角色的调用方）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        roles: Option<String>,
     },
     /// 安装插件。
     ///

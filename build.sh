@@ -258,9 +258,13 @@ mkdir -p "$DIST_DATA/appstore/repos"
 cp -Rf "$CUR_DIR/data/appstore/repos/appstore" "$DIST_DATA/appstore/repos/" 2>/dev/null || true
 cp -f "$CUR_DIR/data/appstore/repos.yaml" "$DIST_DATA/appstore/" 2>/dev/null || true
 cp -f "$CUR_DIR/data/apps/README.md" "$DIST_DATA/apps/" 2>/dev/null || true
-# plugins/_lib：插件公共函数库，不带上它所有插件都会因加载失败而跑不起来
+# plugins/_lib：插件公共函数库，不带上它所有插件都会因加载失败而跑不起来；
+# *.css / *.js 是宿主注入插件界面的 UIKit（主题样式 + zap.ui.*），一并带上，
+# 缺它就是「界面能用但没样式、也没zap.ui」。
 mkdir -p "$DIST_DATA/plugins/_lib"
 cp -f "$CUR_DIR/data/plugins/_lib/"*.lua "$DIST_DATA/plugins/_lib/" 2>/dev/null || true
+cp -f "$CUR_DIR/data/plugins/_lib/"*.css "$DIST_DATA/plugins/_lib/" 2>/dev/null || true
+cp -f "$CUR_DIR/data/plugins/_lib/"*.js  "$DIST_DATA/plugins/_lib/" 2>/dev/null || true
 # www/：站点骨架模板 skel/index.html 与 IP 默认页 / 维护页 _zap/*.html（运维可直接编辑）
 cp -Rf "$CUR_DIR/data/www" "$DIST_DATA/" 2>/dev/null || true
 mkdir -p "$DIST_DATA/www/html"
