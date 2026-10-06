@@ -88,6 +88,7 @@ pub struct PackageRow {
 const COLS: &str = "id, name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, \
                     max_mysql_dbs, max_pgsql_dbs, max_ftp_users, \
                     fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, \
+                    allow_apps, app_types, max_apps, app_port_span, app_max_total, \
                     owner_id, status, \
                     created_at, updated_at";
 
@@ -151,6 +152,11 @@ fn row_json(r: &PackageRow, users_count: i64) -> Value {
         "allow_php": r.allow_php == 1,
         "allow_docker": r.allow_docker == 1,
         "allow_waf": r.allow_waf == 1,
+        "allow_apps": r.allow_apps == 1,
+        "app_types": r.app_types,
+        "max_apps": r.max_apps,
+        "app_port_span": r.app_port_span,
+        "app_max_total": r.app_max_total,
         "owner_id": r.owner_id,
         "status": r.status,
         "users_count": users_count,
