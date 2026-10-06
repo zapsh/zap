@@ -161,48 +161,56 @@
       </el-row>
     </template>
 
-    <!-- 磁盘使用 / 网络接口：标题与「查看详情」跟着当前页签走 -->
-    <div class="section-title-row">
-      <span class="section-title">{{ resourceTitle }}</span>
-      <el-link type="primary" underline="never" @click="go(resourcePath)">
-        {{ t('dashboardAdmin.viewDetails') }}
-      </el-link>
-    </div>
-    <el-row :gutter="16" class="section-row">
-      <el-col :span="24">
-        <el-card shadow="hover" v-loading="loading">
-          <el-tabs v-model="resourceTab" class="resource-tabs">
-            <el-tab-pane :label="t('dashboardAdmin.diskUsage')" name="disk">
-              <el-table :data="diskUsage" size="small" :empty-text="t('dashboardAdmin.unknown')">
-                <el-table-column prop="mount_point" label="Mount" min-width="100" />
-                <el-table-column label="Usage" min-width="160">
-                  <template #default="{ row }">
-                    <el-progress :percentage="row.usage_pct" :color="diskColor(row.usage_pct)" />
-                  </template>
-                </el-table-column>
-                <el-table-column prop="used" :label="t('dashboardAdmin.used')" min-width="90">
-                  <template #default="{ row }">{{ formatBytes(row.used) }}</template>
-                </el-table-column>
-                <el-table-column prop="available" :label="t('dashboardAdmin.available')" min-width="90">
-                  <template #default="{ row }">{{ formatBytes(row.available) }}</template>
-                </el-table-column>
-              </el-table>
-            </el-tab-pane>
-            <el-tab-pane :label="t('dashboardAdmin.network')" name="network">
-              <el-table :data="networks" size="small" :empty-text="t('dashboardAdmin.unknown')">
-                <el-table-column prop="interface_name" label="Interface" min-width="110" />
-                <el-table-column prop="ipaddrs" label="IP" min-width="160">
-                  <template #default="{ row }">{{ row.ipaddrs.join(', ') || '-' }}</template>
-                </el-table-column>
-                <el-table-column prop="down" :label="`↓ ${t('dashboardAdmin.total')}`" min-width="110">
-                  <template #default="{ row }">{{ formatBytes(row.down) }}</template>
-                </el-table-column>
-                <el-table-column prop="up" :label="`↑ ${t('dashboardAdmin.total')}`" min-width="110">
-                  <template #default="{ row }">{{ formatBytes(row.up) }}</template>
-                </el-table-column>
-              </el-table>
-            </el-tab-pane>
-          </el-tabs>
+    <!-- 磁盘使用 / 网络接口：拆成两张独立卡片并排展示 -->
+    <el-row :gutter="16" class="section-row resource-row">
+      <el-col :xs="24" :md="12" :lg="12">
+        <el-card shadow="hover" class="info-card" v-loading="loading">
+          <template #header>
+            <div class="card-header">
+              <span>{{ t('dashboardAdmin.diskUsage') }}</span>
+              <el-link type="primary" underline="never" @click="go('/server-status/index?tab=disk')">
+                {{ t('dashboardAdmin.viewDetails') }}
+              </el-link>
+            </div>
+          </template>
+          <el-table :data="diskUsage" size="small" :empty-text="t('dashboardAdmin.unknown')">
+            <el-table-column prop="mount_point" label="Mount" min-width="100" />
+            <el-table-column label="Usage" min-width="160">
+              <template #default="{ row }">
+                <el-progress :percentage="row.usage_pct" :color="diskColor(row.usage_pct)" />
+              </template>
+            </el-table-column>
+            <el-table-column prop="used" :label="t('dashboardAdmin.used')" min-width="90">
+              <template #default="{ row }">{{ formatBytes(row.used) }}</template>
+            </el-table-column>
+            <el-table-column prop="available" :label="t('dashboardAdmin.available')" min-width="90">
+              <template #default="{ row }">{{ formatBytes(row.available) }}</template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :md="12" :lg="12">
+        <el-card shadow="hover" class="info-card" v-loading="loading">
+          <template #header>
+            <div class="card-header">
+              <span>{{ t('dashboardAdmin.network') }}</span>
+              <el-link type="primary" underline="never" @click="go('/server-status/index?tab=network')">
+                {{ t('dashboardAdmin.viewDetails') }}
+              </el-link>
+            </div>
+          </template>
+          <el-table :data="networks" size="small" :empty-text="t('dashboardAdmin.unknown')">
+            <el-table-column prop="interface_name" label="Interface" min-width="110" />
+            <el-table-column prop="ipaddrs" label="IP" min-width="160">
+              <template #default="{ row }">{{ row.ipaddrs.join(', ') || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="down" :label="`↓ ${t('dashboardAdmin.total')}`" min-width="110">
+              <template #default="{ row }">{{ formatBytes(row.down) }}</template>
+            </el-table-column>
+            <el-table-column prop="up" :label="`↑ ${t('dashboardAdmin.total')}`" min-width="110">
+              <template #default="{ row }">{{ formatBytes(row.up) }}</template>
+            </el-table-column>
+          </el-table>
         </el-card>
       </el-col>
     </el-row>
@@ -234,14 +242,6 @@ const loading = ref(true)
 const sysinfo: Record<string, any> = ref({})
 const overview: Record<string, any> = ref({})
 const about: Record<string, any> = ref({})
-const resourceTab = ref('disk')
-
-/** 磁盘 / 网络共用一张卡：标题与跳转目标跟着当前页签走（pill key 就是 ?tab=） */
-const resourceTitle = computed(() =>
-  resourceTab.value === 'disk' ? t('dashboardAdmin.diskUsage') : t('dashboardAdmin.network'),
-)
-const resourcePath = computed(() => `/server-status/index?tab=${resourceTab.value}`)
-
 const shortcuts = computed(() => [
   { title: t('dashboardAdmin.sites'), path: '/site/index', icon: 'material-symbols:public', color: '#409eff' },
   { title: t('dashboardAdmin.databases'), path: '/database/index', icon: 'material-symbols:database', color: '#67c23a' },
@@ -510,8 +510,18 @@ onMounted(async () => {
   border-top: 1px solid var(--el-border-color-lighter);
 }
 
-.resource-tabs :deep(.el-tabs__header) {
-  margin: 0 0 10px;
+.resource-row {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.resource-row > .el-col {
+  display: flex;
+}
+
+.resource-row .info-card {
+  flex: 1;
+  width: 100%;
 }
 
 .section-title-row {
