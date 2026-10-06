@@ -374,6 +374,174 @@ function M.opt_list(name)
   return str.split(zap.option(name) or '')
 end
 
+-- ── 持久化配置（KV）───────────────────────────────────────
+--
+-- 插件目录是 root 所有，Lua 里也没有 io，想记住「上次用的分支」「用户的偏好」
+-- 只能靠宿主代管的这套 KV：**按插件 + 面板用户**分桶，别人看不到你的配置。
+-- 底层是 zapexec 注册的 zap.config_get / zap.config_set。
+local cfg = {}
+M.config = cfg
+
+--- 读配置；没存过（或存了空串）返回 default。
+function cfg.get(key, default)
+  if zap.config_get == nil then return default end
+  local v = zap.config_get(key)
+  if v == nil or v == '' then return default end
+  return v
+end
+
+--- 写配置；传 nil 或空串等于删除该键。
+function cfg.set(key, value)
+  if zap.config_set == nil then
+    error('zap.config 不可用（宿主版本过旧）')
+  end
+  return zap.config_set(key, value)
+end
+
+function cfg.number(key, default)
+  return tonumber(cfg.get(key)) or default
+end
+
+function cfg.bool(key, default)
+  local v = str.trim(tostring(cfg.get(key, ''))):lower()
+  if v == '' then return default == true end
+  return v == 'true' or v == '1' or v == 'yes' or v == 'on'
+end
+
+-- ── 网络 ───────────────────────────────────────────────────
+--
+-- 沙箱里没有 socket，也不能 require 任何东西，联网只能借 curl —— 这是宿主机上
+-- 几乎一定存在的命令，且自动继承了 scope 的降权（站点插件就以站点账号出去），
+-- 不会像 `zap.exec` 那样拿到 root 身份发请求。
+local net = {}
+M.http = net
+
+local STATUS_MARK = '__ZAP_STATUS__'
+
+local function is_url(u)
+  return str.starts(u or '', 'http://') or str.starts(u or '', 'https://')
+end
+
+--- 发一次 HTTP 请求，返回 `(status, body)`；网络不通返回 `(nil, 错误信息)`。
+---
+--- opts: method / headers / body / form / json / timeout / follow / insecure
+--- 示例：
+---   local code, body = zap.http.get('https://api.example.com/v1/ping')
+---   local code, body = zap.http.request{ url = url, method = 'POST', json = { ok = true } }
+function net.request(opts)
+  opts = opts or {}
+  local url = tostring(opts.url or '')
+  if not is_url(url) then
+    error('zap.http: 只接受 http / https 地址，收到: ' .. url)
+  end
+  local body = opts.body
+  local method = opts.method or (body and 'POST') or (opts.json and 'POST') or (opts.form and 'POST') or 'GET'
+  local args = { '-sS', '-X', tostring(method):upper() }
+  if opts.follow ~= false then args[#args + 1] = '-L' end
+  args[#args + 1] = '--max-time'
+  args[#args + 1] = tostring(tonumber(opts.timeout) or 30)
+  if opts.insecure == true then args[#args + 1] = '-k' end
+
+  local headers = {}
+  for _, h in ipairs(opts.headers or {}) do
+    if type(h) == 'string' then
+      headers[#headers + 1] = h
+    else
+      for k, v in pairs(h) do headers[#headers + 1] = tostring(k) .. ': ' .. tostring(v) end
+    end
+  end
+  if opts.json ~= nil then
+    body = zap.json_encode(opts.json)
+    headers[#headers + 1] = 'Content-Type: application/json'
+  elseif opts.form ~= nil then
+    -- form 交给 curl 自己编码（-d），避免手写转义出错
+    if type(opts.form) == 'table' then
+      for k, v in pairs(opts.form) do
+        args[#args + 1] = '-d'
+        args[#args + 1] = string.format('%s=%s', tostring(k), tostring(v))
+      end
+    else
+      args[#args + 1] = '-d'
+      args[#args + 1] = tostring(opts.form)
+    end
+  end
+  for _, h in ipairs(headers) do
+    args[#args + 1] = '-H'
+    args[#args + 1] = h
+  end
+  if body ~= nil then
+    args[#args + 1] = '--data-binary'
+    args[#args + 1] = tostring(body)
+  end
+  -- 状态码混在正文里：用 -w 追加一个尾部标记，回头再切分
+  args[#args + 1] = '-w'
+  args[#args + 1] = '\n' .. STATUS_MARK .. '%{http_code}'
+  args[#args + 1] = '--'
+  args[#args + 1] = url
+
+  local ok, out = zap.try_run('curl', args)
+  if not ok then return nil, out end
+  local text = tostring(out or '')
+  local status = tonumber(text:match(STATUS_MARK .. '(%d+)%s*$'))
+  local payload = text:gsub('\n?' .. STATUS_MARK .. '%d+%s*$', '')
+  return status, payload
+end
+
+--- GET：返回 `(status, body)`。
+function net.get(url, opts)
+  opts = opts or {}
+  opts.url = url
+  opts.method = opts.method or 'GET'
+  return net.request(opts)
+end
+
+--- POST：返回 `(status, body)`，`body` 可为字符串，`json` 给 lua 表。
+function net.post(url, body, opts)
+  opts = opts or {}
+  opts.url = url
+  opts.method = opts.method or 'POST'
+  if opts.json == nil and body ~= nil then
+    if type(body) == 'table' then opts.json = body else opts.body = body end
+  end
+  return net.request(opts)
+end
+
+--- 请求 JSON 接口并解析：返回 `(table, status)`，失败返回 `nil, status, body`。
+function net.json(method, url, body, opts)
+  opts = opts or {}
+  opts.url = url
+  opts.method = method
+  if body ~= nil then
+    if type(body) == 'table' then opts.json = body else opts.body = body end
+  end
+  local status, payload = net.request(opts)
+  if status == nil then return nil, nil, payload end
+  local ok, decoded = pcall(function() return zap.json_decode(payload) end)
+  if not ok or type(decoded) ~= 'table' then return nil, status, payload end
+  return decoded, status, payload
+end
+
+--- 下载文件到 `dest`（自动建父目录）：成功返回 true，失败返回 nil + 错误。
+--- 同样按 scope 降权：站点插件下载下来的文件属站点账号，不会变成 root 的。
+function net.download(url, dest, opts)
+  opts = opts or {}
+  if not is_url(url) then
+    error('zap.http.download: 只接受 http / https 地址，收到: ' .. tostring(url))
+  end
+  fs.mkdir(path.dirname(dest))
+  local args = { '-f', '-sS', '-L', '--max-time', tostring(tonumber(opts.timeout) or 300) }
+  if opts.insecure == true then args[#args + 1] = '-k' end
+  args[#args + 1] = '-o'
+  args[#args + 1] = dest
+  args[#args + 1] = '--'
+  args[#args + 1] = url
+  local ok, err = zap.try_run('curl', args)
+  if not ok then return nil, err end
+  if not fs.exists(dest) then return nil, '下载失败（文件未生成）: ' .. dest end
+  return true
+end
+M.download = net.download
+
 -- ── 杂项 ───────────────────────────────────────────────────
 
 --- 当前作用域是否为 site（有站点上下文）。

@@ -1642,6 +1642,10 @@ pub enum Request {
         slot: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<String>,
+        /// 面板界面语言（`zh-CN` / `en-US`）：manifest 可以按语言提供文案
+        /// （标题 / 按钮 / 选项说明），这里挑击中语言的那一套回落。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lang: Option<String>,
     },
     /// 运行插件：scope=site 以站点 Linux 账号执行，scope=user 以调用方面板用户账号执行，
     /// scope=system 以 root 执行。
@@ -1700,6 +1704,37 @@ pub enum Request {
     /// 避免把插件 HTML 混进面板的同源文档里。
     #[serde(rename = "plugin.ui")]
     PluginUi {
+        name: String,
+        actor: String,
+        home: String,
+        /// 面板界面语言：注入进 iframe（`zap.ui.lang` / `zap.ui.t`），
+        /// 让插件自己的文案也能跟着面板语言走。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lang: Option<String>,
+    },
+    /// 读取插件级持久化配置（KV，按「插件 + 面板用户」维度）。
+    ///
+    /// 插件自己的目录是 root 所有，装面板的 Lua 没有地方写偏好 / 凭证，
+    /// 这套 KV 由 zapexec 统一代管。
+    #[serde(rename = "plugin.config.get")]
+    PluginConfigGet {
+        name: String,
+        actor: String,
+        home: String,
+    },
+    /// 写入插件级配置：整表合并（传进来的键覆盖旧值，未传的键保留）。
+    #[serde(rename = "plugin.config.set")]
+    PluginConfigSet {
+        name: String,
+        actor: String,
+        home: String,
+        config: std::collections::HashMap<String, String>,
+    },
+    /// 跑插件自带的冒烟测试（`<plugin>/tests.yaml`）：逐个 action 跑一遍并断言结果。
+    ///
+    /// 插件作者用它自查；CI / 打包前也可以跑这一条，避免「装上了才知道是坏的」。
+    #[serde(rename = "plugin.test")]
+    PluginTest {
         name: String,
         actor: String,
         home: String,

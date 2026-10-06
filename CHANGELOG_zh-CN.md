@@ -34,3 +34,14 @@
 - **#19 README 与代码不符（Low）** —— README 将 Docker 容器管理与应用商店插件生态列为 Roadmap，但二者均已落地（`routers/docker.rs` 实现容器/镜像/网络/Compose 编排并感知 Docker/Podman 运行时，配套完整 `web/src/views/docker/` 前端；应用商店已在 `docs/api/appstore.md` 文档化）。核心特性与 Roadmap 现已更正为已交付状态。
 
 - （同系列）JWT 默认密钥缺失时启动即失败（fail-closed）；高级反代 `raw` 体与自定义 `rewrite` 规则防止 `include` / 系统路径 / 云元数据注入。
+### 插件平台
+
+- **宿主 UIKit**：`data/plugins/_lib/ui.css` / `ui.js`（随发行包，已修掉 `.gitignore` 与打包脚本漏拷的问题）—— `plugin_ui` 返回插件 HTML 前自动注入，提供主题变量 + `.zui-*` 组件类与 `zap.ui.*` 运行时（`notify` / `confirm` / `prompt` / `toast` / `table` / `tabs` / `diff` / `busy` / `lang` / `t` / `localize`）。
+- **槽位多值 + 两个新槽位**：`ui.placement` 支持数组（`file.editor` 与 `file.context` 可同时挂），新增 `file.context`（文件管理器右键菜单，透传选中文件）与 `dashboard.card`（管理员仪表盘卡片）。
+- **action 级 `async` / `dangerous`**：破坏性动作在前端弹二次确认，**并在服务端拦截只读演示（demo）账号**；只有指定的长操作走 SSE 日志 + 可取消。
+- **插件多语言**：manifest 支持 `i18n` 表（`zh-CN` / `en-US`），覆盖标题 / 描述 / 入口文案 / 动作名 / 选项说明，缺失的键回落基准语言；语言与 Element Plus 同一套，切换后立即生效（列表重拉、已打开的界面重载）。UIKit 提供 `zap.ui.lang` / `t()` / `localize()` 让自带 HTML 界面也能跟着走。
+- **定时 / Webhook 触发**：插件管理页可为任意插件加 `cron` 或 `webhook` 触发器；任务归属创建者（同账号、同角色、同权限校验），公开路径 `/api/plugin/hook/<令牌>` 靠随机令牌鉴权，支持停用与令牌轮换。
+- **插件级持久化配置**：新增 `zap.config.get/set/number/bool`（按插件 + 面板用户分桶，落地 `$ZAP_PATH/data/plugins/config/<插件>.yaml`），Lua 侧终于有地方存偏好与小凭证。
+- **网络能力**：公共库新增 `zap.http.get/post/request/json/download`（底层走 `curl`，继承 scope 降权，只放行 http/https）。
+- **依赖声明与签名**：manifest 支持 `requires.commands`（缺命令拒装）与 `signature`（HMAC-SHA256 文件摘要，被改动拒装）。
+- **冒烟测试**：插件目录放 `tests.yaml` 即可逐个 action 跑并断言日志（管理页「测试」按钮查看通过 / 失败 / 跳过）。

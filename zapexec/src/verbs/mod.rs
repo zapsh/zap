@@ -287,7 +287,8 @@ pub async fn dispatch(req: Request) -> Response {
             home,
             slot,
             scope,
-        } => plugin::plugin_list(actor, home, slot, scope).await,
+            lang,
+        } => plugin::plugin_list(actor, home, slot, scope, lang).await,
         Request::PluginRun {
             name,
             actor,
@@ -333,7 +334,24 @@ pub async fn dispatch(req: Request) -> Response {
             name,
             actor,
             home,
-        } => plugin::plugin_ui(actor, home, name).await,
+            lang,
+        } => plugin::plugin_ui(actor, home, name, lang).await,
+        Request::PluginConfigGet {
+            name,
+            actor,
+            home,
+        } => plugin::plugin_config_get(actor, home, name).await,
+        Request::PluginConfigSet {
+            name,
+            actor,
+            home,
+            config,
+        } => plugin::plugin_config_set(actor, home, name, config).await,
+        Request::PluginTest {
+            name,
+            actor,
+            home,
+        } => plugin::plugin_test(actor, home, name).await,
         Request::AppstoreInstanceAction {
             pkg_path,
             instance,

@@ -29,3 +29,15 @@
 * 增加i18n
 * 增加zh-CN和en-US
 
+
+### Plugin platform
+
+- **Host UIKit**: `data/plugins/_lib/ui.css` / `ui.js` (shipped with the release — also fixed `.gitignore` and the packaging scripts dropping them) are auto-injected into a plugin's HTML by `plugin_ui`, providing theme variables + `.zui-*` component classes and the `zap.ui.*` runtime (`notify` / `confirm` / `prompt` / `toast` / `table` / `tabs` / `diff` / `busy` / `lang` / `t` / `localize`).
+- **Multi-value slots + two new slots**: `ui.placement` accepts a list (e.g. both `file.editor` and `file.context`), plus new `file.context` (file-manager right-click menu, passing the selected files) and `dashboard.card` (admin dashboard card).
+- **Per-action `async` / `dangerous`**: destructive actions get a second confirmation on the frontend **and are rejected server-side for read-only demo accounts**; only the selected long-running actions stream logs / stay cancelable.
+- **Plugin i18n**: manifests accept an `i18n` table (`zh-CN` / `en-US`) overriding title / description / entry label / action names / option labels, falling back per key so partial translations work. The language follows Element Plus (switching it reloads the list and any open plugin UI). UIKit exposes `zap.ui.lang` / `t()` / `localize()` for self-hosted HTML UIs.
+- **Scheduled / webhook triggers**: the plugin manager can attach `cron` or `webhook` triggers to any plugin. Triggers run **as their owner** (same account, roles and permission checks as pressing the button manually); the public `/api/plugin/hook/<token>` endpoint authenticates via a random token and supports disabling / rotating it.
+- **Per-plugin persistent config**: new `zap.config.get/set/number/bool`, bucketed per plugin + panel user (`$ZAP_PATH/data/plugins/config/<plugin>.yaml`) — Lua finally has somewhere to keep preferences and small credentials.
+- **Network access**: the shared library gained `zap.http.get/post/request/json/download` (backed by `curl`, inheriting scope de-escalation, http/https only).
+- **Requirements & signature**: manifests support `requires.commands` (install is refused when a command is missing) and `signature` (HMAC-SHA256 digest of the plugin files; tampered packages are refused).
+- **Smoke tests**: drop a `tests.yaml` in the plugin directory to run each action and assert on log output; results (pass / fail / skipped) are viewable from the plugin manager.

@@ -528,6 +528,25 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("plugin", "uninstall")),
     ),
+    // 插件级配置读写：读跟着 view，写按 run（等于「让插件替我做事」的权限）
+    (
+        "/plugin/config",
+        Required::User,
+        Some(Perm::action("plugin", "view")),
+    ),
+    (
+        "/plugin/test",
+        Required::User,
+        Some(Perm::action("plugin", "run")),
+    ),
+    // 定时任务：与 plugin.run 同级 —— 定时 / Webhook 本质就是替你自动按按钮
+    (
+        "/plugin/schedule",
+        Required::User,
+        Some(Perm::action("plugin", "run")),
+    ),
+    // Webhook：外部系统不带 JWT，靠 URL 里的随机令牌鉴权，因此必须是 Public
+    ("/plugin/hook", Required::Public, None),
     // ── 应用商店：view / install / uninstall / upgrade / manage / log / retry ──
     (
         "/appstore/install",

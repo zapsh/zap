@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Query};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::Router;
@@ -37,11 +37,18 @@ pub struct PluginListQuery {
     pub slot: Option<String>,
     #[serde(default)]
     pub scope: Option<String>,
+    /// 面板界面语言（`zh-CN` / `en-US`）：manifest 可以按语言给出文案，
+    /// 插件跟着 Element Plus 一起切。
+    #[serde(default)]
+    pub lang: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct PluginUiQuery {
     pub name: String,
+    /// 同 `list`：把语言透传给插件界面（iframe 里 `zap.ui.lang` / `zap.ui.t` 可读到）
+    #[serde(default)]
+    pub lang: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +67,208 @@ pub struct PluginUninstallPayload {
     pub name: String,
 }
 
+#[derive(Deserialize)]
+pub struct PluginConfigPayload {
+    pub name: String,
+    /// 只传要改的键：未提到的键保留（整条 `config` 会合并进当前用户那份）
+    #[serde(default)]
+    pub config: std::collections::HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+pub struct PluginTestPayload {
+    pub name: String,
+}
+
+// ── 插件级持久化配置（KV）─────────────────────────────────
+
+/// 读插件对当前用户的持久化配置。
+///
+/// 插件目录是 root 所有，Lua 侧无法写偏好 / 凭证，这套 KV 由 zapexec 代管，
+/// 面板账号（actor）与插件名共同决定落到哪一份。
+pub async fn plugin_config_get(
+    claims: ValidatedClaims,
+    Query(q): Query<PluginUiQuery>,
+) -> ZapJsonResult {
+    let (home, _linux_user) = load_user_home(claims.id as i64).await?;
+    let resp = crate::zapexec::call(Request::PluginConfigGet {
+        name: q.name,
+        actor: claims.sub.clone(),
+        home,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+/// 写插件对当前用户的持久化配置（合并语义）。
+pub async fn plugin_config_set(
+    claims: ValidatedClaims,
+    Json(payload): Json<PluginConfigPayload>,
+) -> ZapJsonResult {
+    let (home, _linux_user) = load_user_home(claims.id as i64).await?;
+    let resp = crate::zapexec::call(Request::PluginConfigSet {
+        name: payload.name,
+        actor: claims.sub.clone(),
+        home,
+        config: payload.config,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+/// 跑插件自带的冒烟测试（`tests.yaml`）。
+pub async fn plugin_test(
+    claims: ValidatedClaims,
+    Json(payload): Json<PluginTestPayload>,
+) -> ZapJsonResult {
+    let (home, _linux_user) = load_user_home(claims.id as i64).await?;
+    let resp = crate::zapexec::call(Request::PluginTest {
+        name: payload.name,
+        actor: claims.sub.clone(),
+        home,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+// ── 定时任务 / Webhook 触发 ───────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ScheduleCreatePayload {
+    pub plugin: String,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub site_id: Option<i64>,
+    #[serde(default)]
+    pub options: std::collections::HashMap<String, String>,
+    /// `cron`（默认）或 `webhook`
+    #[serde(default)]
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub cron: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// 更新时必填
+    #[serde(default)]
+    pub id: Option<String>,
+    /// 更新时是否重新生成 Webhook 令牌
+    #[serde(default)]
+    pub rotate_token: bool,
+}
+
+#[derive(Deserialize)]
+pub struct ScheduleDeletePayload {
+    pub id: String,
+}
+
+pub async fn plugin_schedule_list(claims: ValidatedClaims) -> ZapJsonResult {
+    let items = crate::zap::plugin_schedule::list_for(&claims.sub, is_admin(&claims)).await?;
+    Ok(Json(json!({ "code": 0, "message": "ok", "data": items })))
+}
+
+pub async fn plugin_schedule_create(
+    claims: ValidatedClaims,
+    Json(payload): Json<ScheduleCreatePayload>,
+) -> ZapJsonResult {
+    let trigger = payload.trigger.unwrap_or_else(|| "cron".to_string());
+    let item = crate::zap::plugin_schedule::ScheduleItem {
+        id: payload.id.clone().unwrap_or_default(),
+        plugin: payload.plugin,
+        action: payload.action.unwrap_or_else(|| "run".to_string()),
+        owner: claims.sub.clone(),
+        owner_uid: claims.id as i64,
+        site_id: payload.site_id,
+        options: payload.options,
+        trigger,
+        cron: payload.cron.unwrap_or_default(),
+        token: String::new(),
+        enabled: payload.enabled.unwrap_or(true),
+        last_run: 0,
+        last_ok: None,
+        created_at: 0,
+    };
+    let saved = crate::zap::plugin_schedule::upsert(
+        &claims.sub,
+        claims.id as i64,
+        is_admin(&claims),
+        item,
+    )
+    .await?;
+    Ok(Json(
+        json!({ "code": 0, "message": "任务已保存", "data": saved }),
+    ))
+}
+
+/// 更新任务：按 `id` 覆盖整条（owner / 创建时间保留，服务端按权限重填）。
+pub async fn plugin_schedule_update(
+    claims: ValidatedClaims,
+    Json(mut payload): Json<ScheduleCreatePayload>,
+) -> ZapJsonResult {
+    if payload.id.clone().unwrap_or_default().is_empty() {
+        return Err(ZapError::New(-1, "缺少任务 id".into()));
+    }
+    let patch = crate::zap::plugin_schedule::ScheduleItem {
+        id: payload.id.clone().unwrap_or_default(),
+        plugin: payload.plugin,
+        action: payload.action.unwrap_or_else(|| "run".to_string()),
+        owner: claims.sub.clone(),
+        owner_uid: claims.id as i64,
+        site_id: payload.site_id,
+        options: std::mem::take(&mut payload.options),
+        trigger: payload.trigger.unwrap_or_else(|| "cron".to_string()),
+        cron: payload.cron.unwrap_or_default(),
+        token: String::new(),
+        enabled: payload.enabled.unwrap_or(true),
+        last_run: 0,
+        last_ok: None,
+        created_at: 0,
+    };
+    if payload.rotate_token {
+        let id = payload.id.clone().unwrap_or_default();
+        crate::zap::plugin_schedule::rotate_token(&id, &claims.sub, is_admin(&claims)).await?;
+    }
+    let saved =
+        crate::zap::plugin_schedule::upsert(&claims.sub, claims.id as i64, is_admin(&claims), patch)
+            .await?;
+    Ok(Json(
+        json!({ "code": 0, "message": "任务已更新", "data": saved }),
+    ))
+}
+
+pub async fn plugin_schedule_delete(
+    claims: ValidatedClaims,
+    Json(payload): Json<ScheduleDeletePayload>,
+) -> ZapJsonResult {
+    crate::zap::plugin_schedule::remove(&payload.id, &claims.sub, is_admin(&claims)).await?;
+    Ok(Json(json!({ "code": 0, "message": "任务已删除" })))
+}
+
+/// Webhook 触发入口（公开：不带面板 JWT，靠 URL 里的随机令牌鉴权）。
+///
+/// GitHub / CI 推完代码 POST 这个地址即可让对应插件 action 跑起来，
+/// 执行身份是**任务归属者**，不是匿名用户 —— 所以插件能看到的东西与归属者手动触发完全一致。
+pub async fn plugin_hook(Path(token): Path<String>) -> ZapJsonResult {
+    let Some(item) = crate::zap::plugin_schedule::find_by_token(&token).await? else {
+        return Err(ZapError::New(-1, "Webhook 地址无效".into()));
+    };
+    if !item.enabled {
+        return Err(ZapError::New(-1, "该触发器已停用".into()));
+    }
+    crate::zap::plugin_schedule::run_item(&item).await?;
+    crate::zap::plugin_schedule::record(&item.id, true).await;
+    Ok(Json(json!({ "code": 0, "message": "已触发" })))
+}
+
 /// 读取插件自带的 HTML 界面文件内容（前端塞进沙箱 iframe 渲染）。
 pub async fn plugin_ui(
     claims: ValidatedClaims,
@@ -70,6 +279,7 @@ pub async fn plugin_ui(
         name: q.name.clone(),
         actor: claims.sub.clone(),
         home,
+        lang: q.lang.clone(),
     })
     .await?;
     if resp.code != 0 {
@@ -88,6 +298,7 @@ pub async fn plugin_list(
         home,
         slot: q.slot.clone(),
         scope: q.scope.clone(),
+        lang: q.lang.clone(),
     })
     .await?;
     if resp.code != 0 {
@@ -359,6 +570,20 @@ pub fn routers() -> Router {
             post(plugin_install_upload).layer(DefaultBodyLimit::max(PLUGIN_UPLOAD_LIMIT)),
         )
         .route("/uninstall", post(plugin_uninstall))
+        // 插件级持久化配置（KV，按插件 + 用户维度）
+        .route(
+            "/config",
+            get(plugin_config_get).post(plugin_config_set),
+        )
+        // 插件自带冒烟测试（tests.yaml）
+        .route("/test", post(plugin_test))
+        // 定时 / Webhook 触发
+        .route("/schedule/list", get(plugin_schedule_list))
+        .route("/schedule/create", post(plugin_schedule_create))
+        .route("/schedule/update", post(plugin_schedule_update))
+        .route("/schedule/delete", post(plugin_schedule_delete))
+        // Webhook 公开入口（权限矩阵里是 Public，靠 URL 令牌鉴权）
+        .route("/hook/{token}", post(plugin_hook))
 }
 
 /// 取消一个正在运行的异步插件。

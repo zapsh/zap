@@ -231,6 +231,8 @@ async fn main() {
     zap::backup_scheduler::start();
     // 自动更新（zapd/zapexec 系统升级）定时调度
     zap::auto_update::start();
+    // 插件定时任务（cron）调度：Webhook 触发不走这里，由请求直接命中
+    zap::plugin_schedule::start();
 
     // 全局请求超时：文件上传/下载、云存储与本地互传都属于「一口气传完」的长任务，
     // 10 秒会误杀（响应还没生成就被判超时）。这里放宽到 30 分钟只做兜底，

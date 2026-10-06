@@ -148,8 +148,9 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useI18n } from 'vue-i18n'
 import DirPicker from '@/components/DirPicker.vue'
 import FilePicker from '@/components/FilePicker.vue'
 import {
@@ -157,6 +158,8 @@ import {
   pluginRun,
   pluginCancel,
   pluginUi,
+  pluginGetConfig,
+  pluginSetConfig,
   type PluginInfo,
   type PluginOption,
 } from '@/api/plugin'
@@ -369,6 +372,22 @@ const RPC_BRIDGE = `<script>
           '*'
         );
       });
+    },
+    // 持久化配置（KV，按插件 + 当前面板用户）：与 Lua 侧的 zap.config 同一份数据，
+    // 界面可以记住用户上次的选择；settings 为 null / 空串即删除该键。
+    configGet: function (key) {
+      return new Promise(function (resolve, reject) {
+        var id = 'c' + (++seq);
+        pending[id] = { resolve: resolve, reject: reject };
+        parent.postMessage({ __zapRpc: 1, id: id, configGet: true, key: key }, '*');
+      });
+    },
+    configSet: function (key, value) {
+      return new Promise(function (resolve, reject) {
+        var id = 'c' + (++seq);
+        pending[id] = { resolve: resolve, reject: reject };
+        parent.postMessage({ __zapRpc: 1, id: id, configSet: true, key: key, value: value }, '*');
+      });
     }
   };
 })();
@@ -425,6 +444,29 @@ function watchFrameLog(
     }
   }
   es.onerror = () => finish()
+}
+
+/**
+ * 插件界面的持久化配置：转发 `/plugin/config`。
+ *
+ * 与 Lua 里的 `zap.config` 是同一份数据（都按「插件 + 面板用户」分桶），
+ * 于是界面也能记住用户上次的选择，不必每次都让用户重填。
+ */
+async function handleConfig(d: any) {
+  const p = current.value
+  if (!p) return reply(d.id, false, '插件上下文已关闭')
+  try {
+    if (d.configGet) {
+      const r: any = await pluginGetConfig(p.name)
+      const payload = r?.data?.data ?? r?.data ?? {}
+      const cfg = payload?.config ?? {}
+      return reply(d.id, true, cfg[String(d.key)] ?? null)
+    }
+    await pluginSetConfig(p.name, { [String(d.key)]: String(d.value ?? '') })
+    return reply(d.id, true, true)
+  } catch (e: any) {
+    return reply(d.id, false, e?.message || '配置读写失败')
+  }
 }
 
 /** 处理 iframe 发来的调用：转发成 `/plugin/run`，再把结果 post 回去。 */
@@ -513,6 +555,11 @@ function onWindowMessage(ev: MessageEvent) {
   // iframe 请求打开目录 / 文件选择器（zap.pickDir / zap.pickFile）
   if (d.pick) {
     openPicker(d)
+    return
+  }
+  // 插件界面的持久化配置读写（zap.configGet / zap.configSet）
+  if (d.configGet || d.configSet) {
+    void handleConfig(d)
     return
   }
   void handleRpc(d)
@@ -663,8 +710,15 @@ function cancelRun() {
 }
 onMounted(async () => {
   window.addEventListener('message', onWindowMessage)
+  await load()
+})
+
+onUnmounted(() => window.removeEventListener('message', onWindowMessage))
+
+async function load() {
   loading.value = true
   try {
+    // lang 由 api/plugin.ts 自动带上（跟随面板语言，含 Element Plus 切换）
     const r: any = await pluginList({ slot: props.placementSlot, site_id: props.siteId })
     const data = r?.data?.data ?? r?.data
     plugins.value = Array.isArray(data) ? data : []
@@ -673,9 +727,17 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
 
-onUnmounted(() => window.removeEventListener('message', onWindowMessage))
+// 面板语言切换后插件文案要跟着变：
+// 列表那部分（标题 / 动作名）重新拉一次即可；已经打开的 HTML 界面里那个
+// `__ZAP_LANG__` 是注入时写死的，必须整份重取才会更新。
+const { locale } = useI18n({ useScope: 'global' })
+watch(locale, async () => {
+  const reopened = htmlDialog.value && current.value?.html ? current.value : null
+  await load()
+  if (reopened) await openHtml(reopened)
+})
 </script>
 
 <style scoped>

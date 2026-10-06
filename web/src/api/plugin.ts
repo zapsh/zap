@@ -1,6 +1,7 @@
 import type { AxiosRequestConfig } from 'axios'
 import { http } from '@/utils/request'
 import { getToken } from '@/utils/auth'
+import { i18n } from '@/i18n'
 
 export interface PluginOption {
   name: string
@@ -63,13 +64,85 @@ export interface PluginInfo {
 /** 安装来源 */
 export type PluginInstallSource = 'archive' | 'appstore' | 'git'
 
-export function pluginList(params: { slot?: string; scope?: string; site_id?: number }) {
-  return http.get('/plugin/list', { params })
+/** 当前面板语言：插件文案（manifest i18n / iframe 里的 zap.ui.t）跟着它走，与 Element Plus 一致 */
+function currentLang(): string {
+  return (i18n?.global?.locale as any)?.value || 'zh-CN'
+}
+
+export function pluginList(params: { slot?: string; scope?: string; site_id?: number; lang?: string }) {
+  return http.get('/plugin/list', { params: { lang: currentLang(), ...params } })
 }
 
 /** 取插件自带的 HTML 界面内容（渲染进沙箱 iframe）。 */
-export function pluginUi(params: { name: string }) {
-  return http.get('/plugin/ui', { params })
+export function pluginUi(params: { name: string; lang?: string }) {
+  return http.get('/plugin/ui', { params: { lang: currentLang(), ...params } })
+}
+
+// ── 插件级持久化配置（KV，按插件 + 当前用户）────────────────
+
+export function pluginGetConfig(name: string) {
+  return http.get('/plugin/config', { params: { name } })
+}
+
+/** 写配置：只传要改的键，未提到的键保留。 */
+export function pluginSetConfig(name: string, config: Record<string, string>) {
+  return http.post('/plugin/config', { name, config })
+}
+
+/** 跑插件自带的冒烟测试（tests.yaml）。 */
+export function pluginTest(name: string) {
+  return http.post('/plugin/test', { name }, { timeout: 600000 })
+}
+
+// ── 定时 / Webhook 触发 ─────────────────────────────────────
+
+export type ScheduleTrigger = 'cron' | 'webhook'
+
+export interface PluginSchedule {
+  id: string
+  plugin: string
+  action: string
+  owner: string
+  owner_uid: number
+  site_id?: number | null
+  options?: Record<string, string>
+  trigger: ScheduleTrigger
+  cron?: string
+  /** Webhook 令牌；只有 trigger=webhook 才有意义 */
+  token?: string
+  enabled: boolean
+  last_run?: number
+  last_ok?: boolean | null
+  created_at?: number
+}
+
+export interface SchedulePayload {
+  id?: string
+  plugin: string
+  action?: string
+  site_id?: number | null
+  options?: Record<string, string>
+  trigger?: ScheduleTrigger
+  cron?: string
+  enabled?: boolean
+  /** 更新时是否重新生成 Webhook 令牌 */
+  rotate_token?: boolean
+}
+
+export function pluginScheduleList() {
+  return http.get('/plugin/schedule/list')
+}
+
+export function pluginScheduleCreate(payload: SchedulePayload) {
+  return http.post('/plugin/schedule/create', payload)
+}
+
+export function pluginScheduleUpdate(payload: SchedulePayload) {
+  return http.post('/plugin/schedule/update', payload)
+}
+
+export function pluginScheduleDelete(id: string) {
+  return http.post('/plugin/schedule/delete', { id })
 }
 
 export function pluginRun(

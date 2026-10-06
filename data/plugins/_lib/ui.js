@@ -308,8 +308,88 @@
     }
   }
 
+  /**
+   * 多语言：`zap.ui.t({ 'zh-CN': '状态', 'en-US': 'Status' })`
+   *
+   * 面板语言由宿主注入（iframe 顶部那段 `window.__ZAP_LANG__`），跟着
+   * Element Plus 的语言切换走 —— 插件不用自己做语言选择。
+   * 没给对应语言时按 `zh-CN` → `en-US` → 传入对象的第一个值回落。
+   */
+  var DEFAULT_LANG = 'zh-CN'
+  var FALLBACK_LANG = 'en-US'
+
+  function currentLang() {
+    return (
+      (typeof window.__ZAP_LANG__ === 'string' && window.__ZAP_LANG__) ||
+      (typeof zap.lang === 'string' && zap.lang) ||
+      DEFAULT_LANG
+    )
+  }
+
+  var langReady = false
+  function ensureLang(defaults) {
+    if (langReady) return
+    langReady = true
+    if (!document.documentElement.dataset.zapLang) {
+      document.documentElement.dataset.zapLang = currentLang()
+    }
+    var _ = defaults
+  }
+
+  function pick(map, lang) {
+    if (map == null || typeof map !== 'object') return map
+    var primary = String(lang || currentLang()).split('-')[0]
+    // 依次：完整语言（zh-CN）→ 面板两大语言包（en-US / zh-CN）→ 主语言（zh）→ 兜底
+    var candidates = [lang, String(lang || '').split('-')[0]]
+    if (primary === 'en') candidates.push(FALLBACK_LANG)
+    if (primary === 'zh') candidates.push(DEFAULT_LANG)
+    candidates.push(DEFAULT_LANG, FALLBACK_LANG)
+    for (var i = 0; i < candidates.length; i++) {
+      var k = candidates[i]
+      if (k && map[k] !== undefined) return map[k]
+    }
+    for (var key in map) {
+      if (Object.prototype.hasOwnProperty.call(map, key)) return map[key]
+    }
+    return map
+  }
+
+  function t(arg, lang) {
+    if (arg == null) return arg
+    if (typeof arg === 'string') return arg
+    return pick(arg, lang)
+  }
+
+  /**
+   * 把界面里写死的文案批量翻译：`data-i18n` 上的 key 传给回调，
+   * 或直接给一个字典 `{ ' status': {...} }`。
+   *
+   * 用法：`<button data-i18n="run">` + `zap.ui.localize({ run: { 'zh-CN': '运行', 'en-US': 'Run' } })`
+   */
+  function localize(dict) {
+    if (!dict) return
+    Array.prototype.forEach.call(document.querySelectorAll('[data-i18n]'), function (node) {
+      var key = node.getAttribute('data-i18n')
+      if (!dict[key]) return
+      node.textContent = pick(dict[key])
+    })
+    Array.prototype.forEach.call(
+      document.querySelectorAll('[data-i18n-placeholder]'),
+      function (node) {
+        var key = node.getAttribute('data-i18n-placeholder')
+        if (!dict[key]) return
+        node.setAttribute('placeholder', pick(dict[key]))
+      },
+    )
+  }
+
+  ensureLang()
+
   zap.ui = {
-    version: '1.0',
+    version: '1.1',
+    lang: currentLang(),
+    t: t,
+    localize: localize,
     el: el,
     escape: escapeHtml,
     notify: notify,

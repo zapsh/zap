@@ -104,6 +104,9 @@ end
 | `ui.html` | | 自带 HTML 界面的文件名（插件目录内的单个 `.html`） |
 | `options` | | 结构化表单，见 §4 |
 | `actions` | | `action: 文案` 映射，缺省用第一个作按钮文案；也可以写成带开关的对象，见 §7 |
+| `requires.commands` | | 依赖的外部命令，缺命令**直接拒装**，见 §8 |
+| `signature` | | 插件文件摘要（HMAC-SHA256），被改动过会拒装，见 §8 |
+| `i18n` | | 按面板语言（`zh-CN` / `en-US`）覆盖文案，见 §2 的「多语言」小节 |
 
 ### placement（挂载位置）
 
@@ -125,6 +128,49 @@ ui:
 ```
 
 宿主只渲染它认识的槽位，老插件写了未知槽位也不会报错（只是不显示）。
+
+### 多语言（i18n）
+
+上面的字段都是**基准语言**（一般就是中文）。要跟着面板语言走，再加一张 `i18n` 表：
+
+```yaml
+title: Git 管理
+description: 在文件管理器里管理 Git 仓库
+ui:
+  label: Git
+options:
+  - name: cwd
+    label: 目录
+actions:
+  status: 状态
+  pull: 拉取
+
+i18n:
+  en-US:
+    title: Git manager
+    description: Manage Git repositories from the file manager
+    label: Git
+    actions:
+      status: Status
+      pull: Pull
+    options:
+      - name: cwd
+        label: Directory
+```
+
+规则：
+
+- 语言键按 `zh-CN` → `en-US` 匹配，支持地区变体回退（`en-GB` 也会命中 `en-US`），
+  匹配不到就用基准字段，**所以可以先只翻一部分**。
+- 能覆盖的字段：`title` / `description` / `ui.label` / `ui.tab` / `actions.<名字>` /
+  `options[].label|desc|placeholder`。**结构**（`name`、`type`、`choices`、scope…）永远
+  来自基准字段，翻译表只管文案 —— 免得中英文两份结构写歪还不自知。
+- 翻译表里出现基准 `actions` 没有的动作名 = 写错了名字，面板上永远看不到它（CI 里会报错）。
+- 面板语言与 **Element Plus 同一套**（右上角切换），`/plugin/list` 会把当前语言带过来；
+  切换语言时宿主会重新拉列表并重载已打开的插件界面。
+
+自带 HTML 界面也可以跟着走：宿主注入界面时会在最前面写 `window.__ZAP_LANG__`，
+UIKit 提供 `zap.ui.lang` 与 `zap.ui.t()`（见 §6）。
 
 ---
 
@@ -234,6 +280,8 @@ options:
 | 文件系统 | `zap.fs.exists` `.is_dir` `.is_file` `.read` `.write` `.append` `.mkdir` `.remove` `.copy` `.move` `.chmod` `.list` `.read_lines` `.size` `.append_line` `.grep` |
 | Shell | `zap.shell_quote`（别名 `zap.q`） |
 | 选项 | `zap.opt` `.opt_required` `.opt_bool` `.opt_number` `.opt_list` |
+| 持久化配置 | `zap.config.get` `.set` `.number` `.bool`（见下） |
+| 网络 | `zap.http.request` `.get` `.post` `.json` `.download`（别名 `zap.download`，见下） |
 | 其它 | `zap.to_json` `.from_json` `.now` `.fmt_time` `.is_site_scope` |
 | 顶层别名 | `zap.split` `zap.trim` `zap.join` `zap.q` |
 
@@ -248,6 +296,52 @@ function on_run(ctx)
   zap.logf('写了 %d 字节到 %s', #('hello\n'), dir)
 end
 ```
+
+### 持久化配置（KV）
+
+插件目录是 root 所有，Lua 侧也没有 `io`，想「记住用户上次填的分支 / 保存一个 token」
+就得有个代管的抽屉：`zap.config.*`。它按 **插件 + 面板用户** 分桶（`$ZAP_PATH/data/plugins/config/<插件>.yaml`），
+别人看不到你的配置，同一个插件在不同用户手里各存一份。
+
+```lua
+function on_run(ctx)
+  local last = zap.config.get('branch', 'main')   -- 没存过返回默认值
+  zap.config.set('branch', ctx.options.BRANCH or 'main')
+  zap.config.set('token', nil)                    -- 传 nil = 删除
+  if zap.config.bool('auto_push', false) then … end
+end
+```
+
+单个键上限 8KB，整套配置适合放偏好与小凭证；别当数据库用。
+
+### 网络请求
+
+沙箱里没有 socket，联网一律走宿主的 `curl`（自动继承 scope 降权，
+`scope: site` 时不会以 root 身份发请求）：
+
+```lua
+-- GET / POST：返回 (status, body)
+local code, body = zap.http.get('https://api.example.com/v1/ping')
+local code, body = zap.http.post('https://api.example.com/v1/deploy', { env = 'prod' })  -- 表自动转 JSON
+
+-- 完整选项：method / headers / body / form / json / timeout / follow / insecure
+local code, body = zap.http.request{
+  url = 'https://api.example.com/v1/hook',
+  method = 'POST',
+  headers = { Authorization = 'Bearer ' .. token, 'X-Trace: ' .. id },
+  json = { ref = 'main' },
+  timeout = 15,
+}
+
+-- 直接拿解析好的表：返回 (table, status, raw)
+local data, code = zap.http.json('GET', 'https://api.example.com/v1/status')
+
+-- 下载文件（自动建父目录）
+local ok, err = zap.http.download('https://example.com/app.tar.gz', '/tmp/app.tar.gz')
+```
+
+网络不通返回 `(nil, 错误信息)`；**只接受 `http://` / `https://`**，其它 scheme 直接报错
+（避免有人用 `file://` 之类的协议绕一圈碰文件系统）。
 
 ---
 
@@ -286,6 +380,13 @@ await zap.run(options)
 await zap.call('du', { TARGET: 'public' }, (line) => {
   document.getElementById('out').textContent += line + '\n'
 })
+
+// 插件级持久化配置（与 Lua 侧的 zap.config 同一份数据）
+const branch = await zap.configGet('branch')   // 没存过返回 null
+await zap.configSet('branch', branch || 'main') // 传 null / '' 删除该键
+
+// 打开面板的目录 / 文件选择器
+await zap.pickDir({ startPath: '' })
 ```
 
 调用链路：
@@ -339,6 +440,9 @@ UIKit（`data/plugins/_lib/ui.css` + `ui.js`，部署于 `$ZAP_PATH/data/plugins
    | `zap.ui.diff(el, text, isErr)` | 往 `pre` 里塞 diff，按 `+ / - / @@` 行着色 |
    | `zap.ui.busy(root, on, text)` | 锁 / 放按钮，避免连点触发并发任务 |
    | `zap.ui.el(tag, attrs, children)` / `zap.ui.escape(s)` | 建元素、转义 |
+   | `zap.ui.lang` | 当前面板语言（`zh-CN` / `en-US`），与 Element Plus 一致 |
+   | `zap.ui.t({ ['zh-CN'] = '状态', ['en-US'] = 'Status' })` | 取当前语言的文案；给定语言时 `zap.ui.t(文案表, 'en-US')` 强制取某一套 |
+   | `zap.ui.localize(dict)` | 批量：给节点标 `data-i18n="run"`，再传 `{ run = { ['zh-CN']='运行', ['en-US']='Run' } }` 自动改写文本（`data-i18n-placeholder` 改占位符） |
 
    例子：用宿主的通知条替代 `alert`，用 `zap.ui.confirm` 替代 `window.confirm` ——
    观感与面板一致，用户也不用再看到原生弹窗。
@@ -488,6 +592,31 @@ actions:
 安装时把来源 / 分支 / 级别 / 安装时间写回插件自身的 `manifest.yaml`（顶层 `zap_install:` 块），
 管理页据此显示来源。手工放置的插件没有这段信息，来源显示为「手动放置」。
 
+### 依赖声明：requires
+
+插件要用的**外部命令**必须先声明，安装时 `command -v` 逐个校验，缺哪个就拒装并列出：
+
+```yaml
+requires:
+  commands: [git, curl]
+```
+
+比跑起来才报 `command not found` 好排查。命令名只允许字母数字与 `._-`。
+
+### 签名：signature
+
+manifest 里带 `signature` 时，安装会重算插件文件摘要并比对，对不上直接拒装：
+
+```yaml
+signature: 3f2a…（64 位十六进制）
+```
+
+摘要 = 所有文件（排除隐藏文件、`manifest.yaml` 本身）的 `<相对路径>:<sha256>` 逐行拼接，
+再算 HMAC-SHA256（密钥为面板主密钥）。**注意这是本机完整性校验**：能挡住「插件目录被人
+换了几行代码」，但密钥就在同一台机器上，跨机器分发请配合可信来源（应用商店仓库本身）。
+
+不带 `signature` 的插件照常安装 —— 这是个可选项，老插件不受影响。
+
 ---
 
 ## 9. 安全边界
@@ -574,3 +703,46 @@ echo "插件 $APP_NAME 已安装到 $DEST"
 
 > 完整可运行示例见 `data/appstore/repos/appstore/plugins/hello-plugin/`
 > （HTTP 界面演示插件，安装后会以 `site.detail` 槽位出现在站点详情）。
+
+---
+
+## 12. 定时 / Webhook 触发
+
+插件默认只在用户点按钮时跑。要周期性执行（每天半夜 `git fetch`）或让外部系统拉起来
+（CI 推完自动更新），在**插件管理页 → 该插件的「触发器」**里加一条，不用改插件代码。
+
+| 类型 | 怎么触发 | 适合 |
+| --- | --- | --- |
+| `cron` | 五段 cron（分 时 日 月 周），调度器每 30 秒轮询一轮，按服务器本地时区 | 备份、同步、清理 |
+| `webhook` | 外部 POST `<面板地址>/api/plugin/hook/<随机令牌>` | CI 通知、Git 平台回调 |
+
+几条约束：
+
+- **身份归创建者**：定时器不代表 root 或匿名用户，它就是你 —— 用你的 Linux 账号、
+  你的角色（也因此 你能手动点的按钮，定时才跑得动；dangerous 动作对只读演示账号依然被拒）。
+- `site` 作用域的插件需要在触发器里填**站点 ID**，否则拿不到站点根。
+- 别人看不到你的触发器；密钥轮换后立即失效。
+- 执行结果（上次时间 / 成功失败）列在同一张表里，不用翻日志。
+
+Webhook 那条路径在权限矩阵里是**公开**的（带 `zap_` 式的随机令牌鉴权，不走面板 JWT），
+令牌泄露就立刻轮换。
+
+---
+
+## 13. 冒烟测试与 CI
+
+在插件目录放一份 `tests.yaml`，就能把「每个 action 都没坏」变成一键可查：
+
+```yaml
+- action: status              # 缺省 run；会回落到 on_run 按 ctx.action 分发
+  options: { cwd: '.' }
+  user: www                   # scope: user / site 必须给出降权账号（不能是 root）
+  site_root: /var/www/site    # scope: site 还需要站点根（userid 缺失会跳过而不是误判失败）
+  expect:
+    contains: [branch]        # 日志里必须出现
+    not_contains: [fatal]     # 不许出现
+```
+
+触发方式：插件管理页里的测试（或直接在 `zapd` 侧调 `/plugin/test`）。
+返回每条用例的 `ok`（`null` = 跳过）与实际日志，断言用的是**日志文本**，
+所以「只输出 JSON 的 action」要挑一个一定会出现的字段来断言。

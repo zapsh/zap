@@ -20,6 +20,9 @@ zip = "2"
 tar = "0.4"
 flate2 = "1.0"
 zap-crypto = { path = "../zap-crypto" }
+# 插件签名校验：HMAC-SHA256(zap-crypto 主密钥, 文件摘要)
+hmac = "0.12"
+sha2 = "0.10"
 bollard = "0.21.1"
 futures-util = "0.3"
 base64 = "0.22"

@@ -36,7 +36,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use zap_proto::Response;
 
@@ -270,7 +272,131 @@ fn action_specs(m: &serde_yaml::Value) -> Vec<Value> {
 }
 
 /// 把一个插件目录整理成前端需要的描述对象。
+// ── 插件文案国际化 ─────────────────────────────────────────
+//
+// manifest 里可以带一张翻译表：
+//
+// ```yaml
+// i18n:
+//   en-US:
+//     title: Git
+//     description: Repository operations
+//     actions: { status: Status, push: Push }
+//     options:
+//       - { name: cwd, label: Directory, desc: Repository root }
+//   zh-CN: { title: Git 版本库 }
+// ```
+//
+// describe() 先按基准字段出一份结果，再按调用方语言把这张表盖上去（缺失的键保留基准值）。
+// 语言名匹配顺序：`zh-CN` → `zh` → 兜底不覆盖，因此只有部分翻译也能用。
+
+/// 取 manifest 里命中 `lang` 的那张翻译表。
+fn i18n_table<'a>(m: &'a serde_yaml::Value, lang: Option<&str>) -> Option<&'a serde_yaml::Mapping> {
+    let lang = lang.unwrap_or("").trim();
+    if lang.is_empty() {
+        return None;
+    }
+    let i18n = m.get("i18n").and_then(|v| v.as_mapping())?;
+    // 候选顺序：`zh-CN` 全名 → 面板支持的两个包 `en-US` / `zh-CN`（按主语言）→ 主语言 `zh`。
+    // 支持 `en-GB` 这类变体命中 `en-US`，不必作者在 manifest 里穷举所有地区写法。
+    let primary = lang.split('-').next().unwrap_or(lang);
+    let variant = match primary {
+        "en" => Some("en-US"),
+        "zh" => Some("zh-CN"),
+        _ => None,
+    };
+    for key in [Some(lang), variant, Some(primary)].into_iter().flatten() {
+        if let Some(v) = i18n
+            .get(&serde_yaml::Value::String(key.to_string()))
+            .and_then(|v| v.as_mapping())
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn i18n_str<'a>(t: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+    t.get(&serde_yaml::Value::String(key.to_string()))
+        .and_then(|v| v.as_str())
+}
+
+/// 把翻译表盖到 `describe()` 的结果上（只覆盖翻译表里真的给了的键）。
+fn apply_i18n(info: &mut Value, table: &serde_yaml::Mapping) {
+    let Some(obj) = info.as_object_mut() else { return };
+    for key in ["title", "description", "label", "tab"] {
+        if let Some(s) = i18n_str(table, key) {
+            obj.insert(key.to_string(), Value::String(s.to_string()));
+        }
+    }
+    // actions：`<name>: 文案` 或 `<name>: { label: 文案 }`
+    if let Some(actions) = table
+        .get(&serde_yaml::Value::String("actions".to_string()))
+        .and_then(|v| v.as_mapping())
+    {
+        let mut labels: Vec<(String, String)> = Vec::new();
+        for (k, v) in actions {
+            let Some(name) = k.as_str() else { continue };
+            let Some(label) = (if let Some(s) = v.as_str() {
+                Some(s.to_string())
+            } else {
+                v.get(&serde_yaml::Value::String("label".to_string()))
+                    .and_then(|l| l.as_str())
+                    .map(|s| s.to_string())
+            }) else {
+                continue;
+            };
+            labels.push((name.to_string(), label));
+        }
+        // 基准 actions 是「名字 → 文案」；action_specs 是同名的数组结构，两处都要覆盖
+        if let Some(base) = obj.get_mut("actions").and_then(|v| v.as_object_mut()) {
+            for (name, label) in &labels {
+                base.insert(name.clone(), Value::String(label.clone()));
+            }
+        }
+        if let Some(specs) = obj.get_mut("action_specs").and_then(|v| v.as_array_mut()) {
+            for spec in specs.iter_mut() {
+                let Some(sname) = spec.get("name").and_then(|n| n.as_str()) else {
+                    continue;
+                };
+                if let Some((_, label)) = labels.iter().find(|(n, _)| n == sname) {
+                    if let Some(o) = spec.as_object_mut() {
+                        o.insert("label".to_string(), Value::String(label.clone()));
+                    }
+                }
+            }
+        }
+    }
+    // options：按 name 匹配，覆盖 label / desc / placeholder（结构定义权仍归基准 manifest）
+    if let Some(opts) = table
+        .get(&serde_yaml::Value::String("options".to_string()))
+        .and_then(|v| v.as_sequence())
+    {
+        if let Some(base) = obj.get_mut("options").and_then(|v| v.as_array_mut()) {
+            for ov in opts {
+                let Some(om) = ov.as_mapping() else { continue };
+                let Some(name) = i18n_str(om, "name") else { continue };
+                for bo in base.iter_mut() {
+                    if bo.get("name").and_then(|n| n.as_str()) != Some(name) {
+                        continue;
+                    }
+                    let Some(bo) = bo.as_object_mut() else { continue };
+                    for key in ["label", "desc", "placeholder"] {
+                        if let Some(s) = i18n_str(om, key) {
+                            bo.insert(key.to_string(), Value::String(s.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn describe(dir: &Path, name: &str) -> Result<Value, String> {
+    describe_lang(dir, name, None)
+}
+
+fn describe_lang(dir: &Path, name: &str, lang: Option<&str>) -> Result<Value, String> {
     let m = read_manifest(dir)?;
     let ui = m.get("ui");
     let ui_str = |k: &str| {
@@ -310,7 +436,7 @@ fn describe(dir: &Path, name: &str) -> Result<Value, String> {
             s
         }
     };
-    Ok(json!({
+    let mut info = json!({
         "name": name,
         "title": manifest_str(&m, "title").unwrap_or(name),
         "async": m.get("async").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -344,7 +470,12 @@ fn describe(dir: &Path, name: &str) -> Result<Value, String> {
                     .and_then(|v| v.as_i64())
             })
             .unwrap_or(0),
-    }))
+    });
+    // 面板语言：命中 manifest 的 i18n 表就把文案盖上去（缺失的键保留基准语言）
+    if let Some(table) = i18n_table(&m, lang) {
+        apply_i18n(&mut info, table);
+    }
+    Ok(info)
 }
 
 /// manifest 里 `ui.html` 声明的界面文件名（相对插件目录）。
@@ -386,7 +517,12 @@ const UIKIT_JS: &str = "ui.js";
 /// 返回前把 UIKit（主题 CSS + `zap.ui.*` 运行时，见 `data/plugins/_lib/`）
 /// 注入进去：样式插到 `</head>` 前、脚本插到 `</body>` 前，插件不用再自己
 /// 从零写一套按钮 / 表格样式。文件缺失时原样返回，不影响老插件。
-pub async fn plugin_ui(_actor: String, _home: String, name: String) -> Response {
+pub async fn plugin_ui(
+    _actor: String,
+    _home: String,
+    name: String,
+    lang: Option<String>,
+) -> Response {
     if !is_plugin_name(&name) {
         return Response::err(-1, "非法插件名".to_string());
     }
@@ -410,7 +546,10 @@ pub async fn plugin_ui(_actor: String, _home: String, name: String) -> Response 
     match std::fs::read_to_string(&canon_file) {
         Ok(html) => Response::ok(
             "ok",
-            Some(json!({ "html": inject_uikit(&html, &zap_path().join("data/plugins/_lib")) })),
+            Some(json!({
+                "html": inject_uikit(&html, &zap_path().join("data/plugins/_lib"), lang.as_deref()),
+                "lang": lang.unwrap_or_default(),
+            })),
         ),
         Err(e) => Response::err(-1, format!("读取界面文件失败: {e}")),
     }
@@ -420,13 +559,26 @@ pub async fn plugin_ui(_actor: String, _home: String, name: String) -> Response 
 /// `<style>…</style>` 塞进 `</head>` 前（没有 head 就塞最前面），
 /// `<script>…</script>` 塞进 `</body>` 前（没有 body 就塞最后），
 /// 无论缺哪个文件都原样返回，保证老插件与未部署 UIKit 的环境不受影响。
-fn inject_uikit(html: &str, lib_dir: &std::path::Path) -> String {
+fn inject_uikit(html: &str, lib_dir: &std::path::Path, lang: Option<&str>) -> String {
     let css = std::fs::read_to_string(lib_dir.join(UIKIT_CSS)).unwrap_or_default();
     let js = std::fs::read_to_string(lib_dir.join(UIKIT_JS)).unwrap_or_default();
     if css.is_empty() && js.is_empty() {
         return html.to_string();
     }
     let mut out = html.to_string();
+    // 面板语言先落地：插在最前面，UIKit 与插件 HTML 都能读到 `zap.ui.lang`。
+    // UIKit 里提供的 `zap.ui.t({'zh-CN':…, 'en-US':…})` 就靠它选文案，
+    // 插件界面因此能跟随 Element Plus 的语言切换。
+    if let Some(l) = lang.filter(|s| !s.trim().is_empty()) {
+        out.insert_str(
+            0,
+            &format!(
+                "<script>window.__ZAP_LANG__=\"{}\";window.zap=window.zap||{{}};zap.lang=\"{}\";</script>\n",
+                l.replace('\\', "\\\\").replace('"', "\\\""),
+                l.replace('\\', "\\\\").replace('"', "\\\"")
+            ),
+        );
+    }
     if !css.is_empty() {
         let block = format!("<style>\n{css}\n</style>\n");
         match out.to_lowercase().rfind("</head>") {
@@ -444,12 +596,123 @@ fn inject_uikit(html: &str, lib_dir: &std::path::Path) -> String {
     out
 }
 
+// ── 插件级持久化配置（KV）─────────────────────────────────
+//
+// 插件目录是 root 所有，Lua 侧无法写偏好 / 凭证；这里由 zapexec 代管一份
+// 「插件 + 面板用户」维度的 KV：`$ZAP_PATH/data/plugins/config/<plugin>.yaml`，
+// 形状是 `<面板用户名>: { <键>: <值> }`。Lua 里通过
+// `zap.config.get(k)` / `zap.config.set(k, v)` 读写（见 `zap.lua`）。
+
+fn plugin_config_dir() -> PathBuf {
+    zap_path().join("data/plugins/config")
+}
+
+/// `<plugin>.yaml` 的路径；插件名已过 `is_plugin_name`，不会穿越目录。
+fn plugin_config_file(name: &str) -> Result<PathBuf, String> {
+    if !is_plugin_name(name) {
+        return Err("非法插件名".to_string());
+    }
+    Ok(plugin_config_dir().join(format!("{name}.yaml")))
+}
+
+/// 读出整个 KV 文件（`<用户>` → {`<键>`: `<值>`}），不存在 / 损坏都当空表。
+fn read_config_store(path: &Path) -> serde_yaml::Mapping {
+    let Ok(txt) = std::fs::read_to_string(path) else {
+        return serde_yaml::Mapping::new();
+    };
+    if txt.trim().is_empty() {
+        return serde_yaml::Mapping::new();
+    }
+    match serde_yaml::from_str::<serde_yaml::Value>(&txt) {
+        Ok(v) => v.as_mapping().cloned().unwrap_or_default(),
+        Err(e) => {
+            warn!("插件配置文件 {} 解析失败，按空处理: {e}", path.display());
+            serde_yaml::Mapping::new()
+        }
+    }
+}
+
+/// 原子写回（tmp + rename），顺手收紧权限：配置里可能放着 token / 偏好。
+fn write_config_store(path: &Path, store: &serde_yaml::Mapping) -> Result<(), String> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    let txt = serde_yaml::to_string(store).map_err(|e| format!("序列化配置失败: {e}"))?;
+    let tmp = path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, txt).map_err(|e| format!("写插件配置失败: {e}"))?;
+    #[cfg(unix)]
+    let _ = std::fs::set_permissions(
+        &tmp,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    );
+    std::fs::rename(&tmp, path).map_err(|e| format!("插件配置落盘失败: {e}"))
+}
+
+/// 读某个插件对当前用户的配置。
+pub async fn plugin_config_get(actor: String, _home: String, name: String) -> Response {
+    let path = match plugin_config_file(&name) {
+        Ok(p) => p,
+        Err(e) => return Response::err(-1, e),
+    };
+    let store = read_config_store(&path);
+    let mut out = serde_json::Map::new();
+    let user_key = serde_yaml::Value::String(actor);
+    if let Some(serde_yaml::Value::Mapping(m)) = store.get(&user_key) {
+        for (k, v) in m {
+            if let Some(k) = k.as_str() {
+                let s = match v {
+                    serde_yaml::Value::String(s) => s.clone(),
+                    other => other.as_str().unwrap_or("").to_string(),
+                };
+                out.insert(k.to_string(), Value::String(s));
+            }
+        }
+    }
+    Response::ok("ok", Some(json!({ "config": out })))
+}
+
+/// 写某个插件对当前用户的配置：传进来的键覆盖旧值，未提到的键保留。
+pub async fn plugin_config_set(
+    actor: String,
+    _home: String,
+    name: String,
+    config: HashMap<String, String>,
+) -> Response {
+    let path = match plugin_config_file(&name) {
+        Ok(p) => p,
+        Err(e) => return Response::err(-1, e),
+    };
+    let mut store = read_config_store(&path);
+    let user_key = serde_yaml::Value::String(actor);
+    let mut entry = match store.get(&user_key) {
+        Some(serde_yaml::Value::Mapping(m)) => m.clone(),
+        _ => serde_yaml::Mapping::new(),
+    };
+    for (k, v) in config {
+        if k.trim().is_empty() || k.len() > 128 {
+            return Response::err(-1, "配置键非法（不能为空且不超过 128 字符）".to_string());
+        }
+        if v.len() > 8192 {
+            return Response::err(-1, format!("配置项 {k} 超过 8KB 上限"));
+        }
+        entry.insert(
+            serde_yaml::Value::String(k),
+            serde_yaml::Value::String(v),
+        );
+    }
+    store.insert(user_key, serde_yaml::Value::Mapping(entry));
+    match write_config_store(&path, &store) {
+        Ok(()) => Response::ok("配置已保存", None),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
 /// 列出插件（统一在系统级 `$ZAP_PATH/plugins`），按 placement 槽位 / scope 过滤。
 pub async fn plugin_list(
     _actor: String,
     home: String,
     slot: Option<String>,
     scope: Option<String>,
+    lang: Option<String>,
 ) -> Response {
     let zap = zap_path();
     // 插件只装在系统级目录，所有用户共享；不再扫描任何用户家目录
@@ -496,7 +759,7 @@ pub async fn plugin_list(
                     continue;
                 }
             }
-            match describe(&p, &name) {
+            match describe_lang(&p, &name, lang.as_deref()) {
                 Ok(v) => items.push(v),
                 Err(e) => warn!("  插件 {name} 描述失败（跳过）: {e}"),
             }
@@ -507,6 +770,135 @@ pub async fn plugin_list(
 }
 
 // ── 安装 / 卸载 ────────────────────────────────────────────
+
+// ── 依赖声明与签名校验 ────────────────────────────────────
+
+/// `requires.commands` 声明的命令必须在 PATH 上找得到，缺哪个就拒装。
+///
+/// 插件作者这样声明：
+/// ```yaml
+/// requires:
+///   commands: [git, curl]
+/// ```
+/// 比跑起来才报 `command not found` 好排查得多。命令名卡死字符集，避免被拿来拼 shell。
+fn check_required_commands(m: &serde_yaml::Value) -> Result<(), String> {
+    let Some(req) = m.get("requires") else {
+        return Ok(());
+    };
+    let Some(cmds) = req.get("commands").and_then(|v| v.as_sequence()) else {
+        return Ok(());
+    };
+    let mut missing = Vec::new();
+    for c in cmds {
+        let Some(c) = c.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if !c
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        {
+            return Err(format!("requires.commands 含非法命令名: {c}"));
+        }
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!("command -v '{c}'")])
+            .output();
+        let found = out.map(|o| o.status.success()).unwrap_or(false);
+        if !found {
+            missing.push(c.to_string());
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "缺少插件依赖的命令: {}（请先在服务器上安装）",
+            missing.join("、")
+        ));
+    }
+    Ok(())
+}
+
+/// 参与签名校验的文件：`相对路径 → 绝对路径`，按路径排序（两边算出来才一致）。
+///
+/// 排除隐藏文件/目录（`.git`）、以及 manifest 自身（它带着 `signature` 字段，
+/// 把它算进去就成了「鸡生蛋」）。
+fn signed_files(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut out = Vec::new();
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<(), String> {
+        let rd = std::fs::read_dir(dir).map_err(|e| format!("读取目录失败: {e}"))?;
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name.starts_with('.') {
+                continue;
+            }
+            if p.is_dir() {
+                walk(&p, base, out)?;
+                continue;
+            }
+            if !p.is_file() {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(base)
+                .map_err(|_| "路径解析失败".to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel == "manifest.yaml" || rel == "manifest.yml" || rel == "SIGNATURE" {
+                continue;
+            }
+            out.push((rel, p));
+        }
+        Ok(())
+    }
+    walk(root, root, &mut out)?;
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+/// 插件文件的规范摘要：每行 `<相对路径>:<sha256hex>`。
+fn plugin_digest(root: &Path) -> Result<String, String> {
+    let mut lines = Vec::new();
+    for (rel, p) in signed_files(root)? {
+        let bytes = std::fs::read(&p).map_err(|e| format!("读取 {rel} 失败: {e}"))?;
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        lines.push(format!("{rel}:{:x}", h.finalize()));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// HMAC-SHA256（密钥用 zap-crypto 的主密钥，与凭据同把）。
+///
+/// 这是**本机完整性**校验：能挡住「插件目录被换了几行代码」，不是第三方公钥签名 ——
+/// 密钥就在同一台机器上，攻击者拿到 root 就能重签。跨机器分发请配合包本身的可信来源。
+fn hmac_hex(data: &str) -> Result<String, String> {
+    let key = zap_crypto::SECRET_KEY
+        .as_ref()
+        .map_err(|e| format!("读取主密钥失败: {e}"))?;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .map_err(|e| format!("初始化签名器失败: {e}"))?;
+    mac.update(data.as_bytes());
+    Ok(format!("{:x}", mac.finalize().into_bytes()))
+}
+
+/// 给插件目录算签名（写进 manifest 的 `signature`）。测试与 `zapctl` 复用同一套算法。
+fn sign_plugin_root(root: &Path) -> Result<String, String> {
+    hmac_hex(&plugin_digest(root)?)
+}
+
+/// manifest 带了 `signature` 就校验：对不上拒装。
+fn verify_signature(root: &Path) -> Result<(), String> {
+    let m = read_manifest(root)?;
+    let Some(want) = manifest_str(&m, "signature") else {
+        return Ok(()); // 没签名 = 作者没启用这项，保持向后兼容
+    };
+    let got = sign_plugin_root(root)?;
+    if got != want.trim() {
+        return Err(
+            "插件签名校验失败：文件被改动过或与签名不匹配（重新打包再安装）".to_string(),
+        );
+    }
+    Ok(())
+}
 
 /// 安装插件：`source` 目前仅支持 `archive`（已落盘的 zip / tar.gz 包，由面板上传而来）。
 ///
@@ -559,6 +951,9 @@ pub async fn plugin_install(
         if !root.join("main.lua").is_file() {
             return Err("插件目录缺少 main.lua".into());
         }
+        // 依赖声明 + 签名：都在「解包后、落地前」校验，坏插件不会进到 plugins/ 里
+        check_required_commands(&m)?;
+        verify_signature(&root)?;
 
         // 定名：优先用调用方给的名字，其次用 manifest 的 name
         let effective = if !name.is_empty() {
@@ -793,7 +1188,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
 /// 运行插件。
 pub async fn plugin_run(
     name: String,
-    _actor: String,
+    actor: String,
     home: String,
     user: Option<String>,
     _site_id: Option<i64>,
@@ -910,6 +1305,8 @@ pub async fn plugin_run(
             plugin_dir: dir.clone(),
             options: options.clone(),
             action: action.clone(),
+            plugin_name: name.clone(),
+            actor: actor.clone(),
         };
         tokio::task::spawn_blocking(move || {
             let res = run_lua(
@@ -953,6 +1350,8 @@ pub async fn plugin_run(
         plugin_dir: dir,
         options,
         action,
+        plugin_name: name,
+        actor,
     };
     // 同步运行套一层墙钟超时：超时则置取消标志，看门狗杀掉子进程（组），请求不再被永久占住。
     let cancel = Arc::new(AtomicBool::new(false));
@@ -1011,6 +1410,188 @@ struct RunCtx {
     plugin_dir: PathBuf,
     options: HashMap<String, String>,
     action: String,
+    /// 插件名（持久配置 KV 的文件名取自它）
+    plugin_name: String,
+    /// 调用方面板账号（持久配置按用户分桶）
+    actor: String,
+}
+
+// ── 冒烟测试 ──────────────────────────────────────────────
+//
+// 插件可以在自己目录里放一份 `tests.yaml`：
+//
+// ```yaml
+// - action: status
+//   options: { cwd: /tmp/demo }
+//   user: www                # 可选：scope=site/user 时降权到该 Linux 账号
+//   site_root: /tmp/demo     # 可选：scope=site 时当作站点根
+//   expect:
+//     contains: [branch]     # 日志里必须出现（可给多个，任一命中即算过？不，全部都要有）
+//     not_contains: [fatal]
+// ```
+//
+// 逐条跑 `on_<action>`（回落到 `on_run`），再把日志拿去比对断言。作者能在不装面板 UI
+// 的情况下验证「每个 action 都没坏」，CI 也能直接调这一个动词。
+
+#[derive(serde::Deserialize, Default)]
+struct TestCase {
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    options: HashMap<String, String>,
+    #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
+    site_root: Option<String>,
+    #[serde(default)]
+    expect: Option<TestExpect>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct TestExpect {
+    /// 日志里必须包含的片段（全部命中才算通过）
+    #[serde(default)]
+    contains: Vec<String>,
+    /// 日志里不允许出现的片段
+    #[serde(default)]
+    not_contains: Vec<String>,
+}
+
+/// 跑插件自带的 `tests.yaml`，返回每条用例的结果（供作者自查 / CI 冒烟）。
+pub async fn plugin_test(_actor: String, home: String, name: String) -> Response {
+    if !is_plugin_name(&name) {
+        return Response::err(-1, "非法插件名".to_string());
+    }
+    let dir = plugin_base().join(&name);
+    if !dir.is_dir() {
+        return Response::err(-1, format!("插件不存在: {name}"));
+    }
+    let manifest = match read_manifest(&dir) {
+        Ok(m) => m,
+        Err(e) => return Response::err(-1, e),
+    };
+    let file = dir.join("tests.yaml");
+    if !file.is_file() {
+        return Response::err(-1, "该插件没有 tests.yaml，无需测试".to_string());
+    }
+    let cases: Vec<TestCase> = match std::fs::read_to_string(&file)
+        .map_err(|e| e.to_string())
+        .and_then(|t| serde_yaml::from_str(&t).map_err(|e| e.to_string()))
+    {
+        Ok(v) => v,
+        Err(e) => return Response::err(-1, format!("tests.yaml 解析失败: {e}")),
+    };
+    let scope_str = manifest_str(&manifest, "scope").unwrap_or("system").to_string();
+    let code = match std::fs::read_to_string(dir.join("main.lua")) {
+        Ok(c) => c,
+        Err(e) => return Response::err(-1, format!("读取插件脚本失败: {e}")),
+    };
+
+    let mut results = Vec::new();
+    for (i, case) in cases.into_iter().enumerate() {
+        let action = if case.action.is_empty() {
+            "run".to_string()
+        } else {
+            case.action.clone()
+        };
+        let label = format!("#{} {}", i + 1, action);
+        // scope=site / user 必须有降权账号，跑不了就标 skipped 而不是误判失败
+        let (run_user, run_root) = match scope_str.as_str() {
+            // 与 plugin_run 一致：测试也不能拿 root 直接跑（root 会绕过所有降权）
+            "site" => match (&case.site_root, &case.user) {
+                (Some(r), Some(u)) if u == "root" || u.is_empty() => {
+                    results.push(json!({
+                        "name": label, "ok": null, "skipped": true,
+                        "detail": "site 作用域的降权账号不能是 root，已跳过",
+                    }));
+                    continue;
+                }
+                (Some(r), Some(u)) => (Some(u.clone()), Some(r.clone())),
+                _ => {
+                    results.push(json!({
+                        "name": label, "ok": null, "skipped": true,
+                        "detail": "scope=site 的用例需要同时给出 site_root 与 user，已跳过",
+                    }));
+                    continue;
+                }
+            },
+            "user" => match &case.user {
+                Some(u) if u == "root" || u.is_empty() => {
+                    results.push(json!({
+                        "name": label, "ok": null, "skipped": true,
+                        "detail": "user 作用域的降权账号不能是 root，已跳过",
+                    }));
+                    continue;
+                }
+                Some(u) => (Some(u.clone()), None),
+                None => {
+                    results.push(json!({
+                        "name": label, "ok": null, "skipped": true,
+                        "detail": "scope=user 的用例需要给出 user（降权账号），已跳过",
+                    }));
+                    continue;
+                }
+            },
+            _ => (None, None),
+        };
+        let ctx = RunCtx {
+            scope: scope_str.clone(),
+            run_user,
+            run_root,
+            home: home.clone(),
+            plugin_dir: dir.clone(),
+            options: case.options.clone(),
+            action: action.clone(),
+            plugin_name: name.clone(),
+            actor: String::new(),
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let child_pid = Arc::new(std::sync::Mutex::new(None::<(u32, bool)>));
+        let code_each = code.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            run_lua(&code_each, &ctx, None, cancel, child_pid)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("测试线程崩溃: {e}")));
+        let expect = case.expect.unwrap_or_default();
+        match res {
+            Err(e) => results.push(json!({
+                "name": label, "ok": false, "skipped": false, "detail": e, "log": "",
+            })),
+            Ok(log) => {
+                let mut failures: Vec<String> = Vec::new();
+                for needle in &expect.contains {
+                    if !log.contains(needle) {
+                        failures.push(format!("缺少输出片段「{needle}」"));
+                    }
+                }
+                for needle in &expect.not_contains {
+                    if log.contains(needle) {
+                        failures.push(format!("出现不该有的输出「{needle}」"));
+                    }
+                }
+                results.push(json!({
+                    "name": label,
+                    "ok": failures.is_empty(),
+                    "skipped": false,
+                    "detail": failures.join("；"),
+                    "log": log,
+                }));
+            }
+        }
+    }
+    let passed = results
+        .iter()
+        .filter(|r| r.get("ok").and_then(|v| v.as_bool()) == Some(true))
+        .count();
+    let failed = results
+        .iter()
+        .filter(|r| r.get("ok").and_then(|v| v.as_bool()) == Some(false))
+        .count();
+    Response::ok(
+        &format!("冒烟测试完成：通过 {passed}，失败 {failed}"),
+        Some(json!({ "results": results, "passed": passed, "failed": failed })),
+    )
 }
 
 /// 沙箱启用的 Lua 标准库子集（不含 io / os / package / debug）。
@@ -1296,6 +1877,65 @@ fn run_lua(
         let f = lua.create_function(move |_, ()| Ok(cancel.load(Ordering::SeqCst)));
         zap_tbl
             .set("canceled", f.map_err(|e| format!("{e}"))?)
+            .map_err(|e| format!("{e}"))?;
+    }
+    // zap.config_get / zap.config_set：插件级持久 KV（按插件 + 面板用户分桶）。
+    //
+    // 插件目录是 root 所有、且 Lua 侧没有 io/os，作者想存偏好 / token 只能靠这里。
+    // 每次读写直接落盘（配置都很小），返回 nil 表示「还没存过」。
+    {
+        let cfg_path = plugin_config_file(&ctx.plugin_name).ok();
+        let cfg_path_set = cfg_path.clone();
+        let actor_get = ctx.actor.clone();
+        let actor_set = ctx.actor.clone();
+        let f_get = lua.create_function(move |lua, key: String| {
+            let Some(path) = &cfg_path else {
+                return Ok(mlua::Value::Nil);
+            };
+            let store = read_config_store(path);
+            let v = store
+                .get(&serde_yaml::Value::String(actor_get.clone()))
+                .and_then(|m| m.as_mapping())
+                .and_then(|m| m.get(&serde_yaml::Value::String(key)))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            match v {
+                Some(s) => Ok(mlua::Value::String(lua.create_string(s)?)),
+                None => Ok(mlua::Value::Nil),
+            }
+        });
+        zap_tbl
+            .set("config_get", f_get.map_err(|e| format!("{e}"))?)
+            .map_err(|e| format!("{e}"))?;
+        let f_set = lua.create_function(move |_, (key, value): (String, Option<String>)| {
+            // value 为 nil / 空串 = 删除该键
+            let Some(path) = &cfg_path_set else {
+                return Err(mlua::Error::RuntimeError("插件名非法，无法写配置".into()));
+            };
+            if key.trim().is_empty() || key.len() > 128 {
+                return Err(mlua::Error::RuntimeError("配置键非法".into()));
+            }
+            let mut store = read_config_store(path);
+            let user_key = serde_yaml::Value::String(actor_set.clone());
+            let mut entry = match store.get(&user_key) {
+                Some(serde_yaml::Value::Mapping(m)) => m.clone(),
+                _ => serde_yaml::Mapping::new(),
+            };
+            let k = serde_yaml::Value::String(key);
+            match value.filter(|v| !v.is_empty()) {
+                Some(v) => {
+                    entry.insert(k, serde_yaml::Value::String(v));
+                }
+                None => {
+                    entry.remove(&k);
+                }
+            }
+            store.insert(user_key, serde_yaml::Value::Mapping(entry));
+            write_config_store(path, &store).map_err(mlua::Error::RuntimeError)?;
+            Ok(true)
+        });
+        zap_tbl
+            .set("config_set", f_set.map_err(|e| format!("{e}"))?)
             .map_err(|e| format!("{e}"))?;
     }
     // zap.time / zap.date
@@ -1732,7 +2372,7 @@ mod tests {
         std::fs::write(dir.join("ui.js"), "window.zap={}\n").unwrap();
 
         let html = "<html><head><title>t</title></head><body><p>hi</p></body></html>";
-        let out = inject_uikit(html, &dir);
+        let out = inject_uikit(html, &dir, None);
         assert!(out.contains("<style>") && out.contains("--x:1"), "样式没注入: {out}");
         assert!(out.contains("<script>") && out.contains("window.zap"), "脚本没注入: {out}");
         // 位置：style 在 </head> 前，script 在 </body> 前
@@ -1742,12 +2382,17 @@ mod tests {
         // 缺 UIKit 时不要破坏原文件（未部署 _lib 的老环境）
         let empty = std::env::temp_dir().join(format!("zap-uikit-empty-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&empty);
-        assert_eq!(inject_uikit(html, &empty), html);
+        assert_eq!(inject_uikit(html, &empty, None), html);
 
         // 没有 head / body 的片段也要能注入，不能静默丢掉脚本
         let frag = "<div>x</div>";
-        let out2 = inject_uikit(frag, &dir);
+        let out2 = inject_uikit(frag, &dir, None);
         assert!(out2.contains("--x:1") && out2.contains("window.zap"), "{out2}");
+
+        // 面板语言要先于 UIKit 注入：插件 UI 才能跟着 Element Plus 切中英
+        let out3 = inject_uikit(html, &dir, Some("en-US"));
+        assert!(out3.contains("__ZAP_LANG__=\"en-US\""), "{out3}");
+        assert!(out3.find("__ZAP_LANG__").unwrap() < out3.find("--x:1").unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&empty);
@@ -1832,6 +2477,8 @@ mod tests {
             plugin_dir: dir.clone(),
             options: HashMap::new(),
             action: "run".to_string(),
+            plugin_name: "zap-plugin-test".to_string(),
+            actor: "tester".to_string(),
         };
         let code = r#"
             function on_run(ctx)
@@ -1859,6 +2506,203 @@ mod tests {
         assert!(out.contains("quote='a b'"), "公共库 zap.q 不可用: {out}");
         assert!(out.contains("within=true"), "zap.path.within 行为不对: {out}");
         assert!(out.contains("site=/tmp/sub"), "zap.path.site 行为不对: {out}");
+    }
+
+    /// manifest 的 `i18n` 表按面板语言覆盖文案；只有部分翻译时其余键回落基准值。
+    #[test]
+    fn i18n_overlays_describe_fields() {
+        let dir = std::env::temp_dir().join(format!("zap-i18n-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = "\
+name: demo
+title: 演示插件
+description: 这是演示
+scope: system
+ui:
+  placement: site.detail
+  label: 打开演示
+options:
+  - name: path
+    label: 路径
+    desc: 目标路径
+actions:
+  run: 运行
+  reset:
+    label: 回退
+i18n:
+  en-US:
+    title: Demo plugin
+    description: Just a demo
+    label: Open demo
+    actions:
+      run: Run
+      reset: Revert
+    options:
+      - name: path
+        label: Path
+";
+        std::fs::write(dir.join("manifest.yaml"), manifest).unwrap();
+
+        let zh = describe_lang(&dir, "demo", Some("zh-CN")).unwrap();
+        assert_eq!(zh["title"], serde_json::json!("演示插件"));
+        assert_eq!(zh["label"], serde_json::json!("打开演示"));
+
+        let en = describe_lang(&dir, "demo", Some("en-US")).unwrap();
+        assert_eq!(en["title"], serde_json::json!("Demo plugin"));
+        assert_eq!(en["description"], serde_json::json!("Just a demo"));
+        assert_eq!(en["label"], serde_json::json!("Open demo"));
+        assert_eq!(en["actions"]["run"], serde_json::json!("Run"));
+        assert_eq!(en["options"][0]["label"], serde_json::json!("Path"));
+        // action 元信息里的 label 也要跟着换
+        let specs = en["action_specs"].as_array().unwrap();
+        let reset = specs
+            .iter()
+            .find(|s| s["name"] == serde_json::json!("reset"))
+            .unwrap();
+        assert_eq!(reset["label"], serde_json::json!("Revert"));
+
+        // 主语言兜底：`en-GB` 也能命中 en-US
+        assert_eq!(
+            describe_lang(&dir, "demo", Some("en-GB")).unwrap()["title"],
+            serde_json::json!("Demo plugin")
+        );
+        // 没给语言 = 基准文案
+        assert_eq!(
+            describe_lang(&dir, "demo", None).unwrap()["title"],
+            serde_json::json!("演示插件")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 插件级 KV：按「插件 + 用户」分桶，set 做合并、get 只看自己的。
+    #[test]
+    fn plugin_config_kv_roundtrip() {
+        let root = std::env::temp_dir().join(format!("zap-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("demo.yaml");
+
+        let mut store = read_config_store(&path);
+        assert!(store.is_empty(), "配置文件不存在时应该为空");
+
+        let mut alice = serde_yaml::Mapping::new();
+        alice.insert(
+            serde_yaml::Value::String("branch".into()),
+            serde_yaml::Value::String("main".into()),
+        );
+        store.insert(serde_yaml::Value::String("alice".into()), alice.into());
+        write_config_store(&path, &store).unwrap();
+
+        // 改 alice 的 branch、再加一个键：合并语义（旧键保留）
+        let mut store = read_config_store(&path);
+        let mut entry = match store.get(&serde_yaml::Value::String("alice".into())) {
+            Some(serde_yaml::Value::Mapping(m)) => m.clone(),
+            _ => serde_yaml::Mapping::new(),
+        };
+        entry.insert(
+            serde_yaml::Value::String("repo".into()),
+            serde_yaml::Value::String("https://x".into()),
+        );
+        store.insert(serde_yaml::Value::String("alice".into()), entry.into());
+        write_config_store(&path, &store).unwrap();
+
+        let store = read_config_store(&path);
+        let alice = store
+            .get(&serde_yaml::Value::String("alice".into()))
+            .and_then(|v| v.as_mapping())
+            .unwrap();
+        assert_eq!(alice.len(), 2, "合并后应保留两个键");
+        assert!(store
+            .get(&serde_yaml::Value::String("bob".into()))
+            .is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 依赖声明：manifest 声明的命令缺失时拒装。
+    #[test]
+    fn requires_commands_are_validated() {
+        let m: serde_yaml::Value =
+            serde_yaml::from_str("requires:\n  commands: [git]\n").unwrap();
+        // git 在 CI / 开发机上基本都有；没有就用 shell 的 builtin 兜一个必定存在的
+        let ok: serde_yaml::Value = serde_yaml::from_str("requires:\n  commands: [sh]\n").unwrap();
+        assert!(check_required_commands(&ok).is_ok());
+        let missing: serde_yaml::Value =
+            serde_yaml::from_str("requires:\n  commands: [definitely-not-a-command-zz]\n").unwrap();
+        let err = check_required_commands(&missing).unwrap_err();
+        assert!(err.contains("definitely-not-a-command-zz"), "{err}");
+        // 没声明 requires 不受影响
+        let none: serde_yaml::Value = serde_yaml::from_str("name: x\n").unwrap();
+        assert!(check_required_commands(&none).is_ok());
+        let _ = m;
+    }
+
+    /// 签名：同一目录算出稳定摘要；改了文件就对不上。
+    #[test]
+    fn plugin_signature_detects_tampering() {
+        let dir = std::env::temp_dir().join(format!("zap-sig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(dir.join("main.lua"), "-- demo\n").unwrap();
+        std::fs::write(dir.join("lib/a.lua"), "-- a\n").unwrap();
+        std::fs::write(
+            dir.join("manifest.yaml"),
+            "name: demo\nui:\n  placement: site.detail\n",
+        )
+        .unwrap();
+
+        let sig = sign_plugin_root(&dir).unwrap();
+        assert_eq!(sig, sign_plugin_root(&dir).unwrap(), "摘要必须稳定");
+        // 摘要不含 manifest 自身：作者可以先签名、再把 signature 写进 manifest
+        std::fs::write(
+            dir.join("manifest.yaml"),
+            format!("name: demo\nui:\n  placement: site.detail\nsignature: {sig}\n"),
+        )
+        .unwrap();
+        assert!(verify_signature(&dir).is_ok(), "签名一致应通过");
+
+        std::fs::write(dir.join("lib/a.lua"), "-- tampered\n").unwrap();
+        assert!(verify_signature(&dir).is_err(), "文件被改后必须拒装");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 随发行包走的示例 / 商店插件 manifest 必须是合法 YAML。
+    ///
+    /// 这类文件平时没人编译它，缩进错一个空格就要等到用户安装时才炸
+    /// （而且报错是「manifest 解析失败」，很难看出是 YAML 问题）。
+    #[test]
+    fn shipped_manifests_are_valid() {
+        let git = include_str!("../../../data/appstore/repos/appstore/plugins/git/manifest.yaml");
+        let m: serde_yaml::Value = serde_yaml::from_str(git).expect("git manifest 解析失败");
+        assert_eq!(m["name"].as_str(), Some("git"));
+        // 依赖声明：缺命令时安装会被拒，拼写错了也一样
+        let requires = m["requires"]["commands"].as_sequence().unwrap();
+        assert!(requires.iter().any(|c| c.as_str() == Some("git")));
+
+        // i18n：en-US 覆盖层必须存在，且翻译出来的动作名都得在基准 actions 里，
+        // 否则是写错名字的孤儿键（面板上永远看不到，纯浪费）
+        let base = m["actions"].as_mapping().unwrap();
+        let en = i18n_table(&m, Some("en-US")).expect("git manifest 缺少 en-US 翻译表");
+        assert!(i18n_str(en, "title").unwrap_or_default().contains("Git"));
+        let translations = en
+            .get(&serde_yaml::Value::String("actions".to_string()))
+            .and_then(|v| v.as_mapping())
+            .expect("缺少 en-US.actions");
+        assert!(
+            !translations.is_empty(),
+            "en-US.actions 不能为空（面板在英文下会一直显示中文动作名）"
+        );
+        for (k, _) in translations {
+            let name = k.as_str().expect("action 名必须是字符串");
+            assert!(
+                base.contains_key(k),
+                "i18n 里的 action『{name}』不在基准 actions 中"
+            );
+        }
+
+        let demo = include_str!("../../../data/plugins/examples/widgets-demo/manifest.yaml");
+        let d: serde_yaml::Value = serde_yaml::from_str(demo).expect("示例插件 manifest 解析失败");
+        assert_eq!(d["name"].as_str(), Some("widgets-demo"));
     }
 
     #[test]
