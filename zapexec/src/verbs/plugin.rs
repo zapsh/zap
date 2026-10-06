@@ -547,7 +547,12 @@ pub async fn plugin_ui(
         Ok(html) => Response::ok(
             "ok",
             Some(json!({
-                "html": inject_uikit(&html, &zap_path().join("data/plugins/_lib"), lang.as_deref()),
+                "html": inject_uikit(
+                    &html,
+                    &zap_path().join("data/plugins/_lib"),
+                    lang.as_deref(),
+                    m.get("i18n"),
+                ),
                 "lang": lang.unwrap_or_default(),
             })),
         ),
@@ -559,13 +564,29 @@ pub async fn plugin_ui(
 /// `<style>…</style>` 塞进 `</head>` 前（没有 head 就塞最前面），
 /// `<script>…</script>` 塞进 `</body>` 前（没有 body 就塞最后），
 /// 无论缺哪个文件都原样返回，保证老插件与未部署 UIKit 的环境不受影响。
-fn inject_uikit(html: &str, lib_dir: &std::path::Path, lang: Option<&str>) -> String {
+fn inject_uikit(
+    html: &str,
+    lib_dir: &std::path::Path,
+    lang: Option<&str>,
+    i18n: Option<&serde_yaml::Value>,
+) -> String {
     let css = std::fs::read_to_string(lib_dir.join(UIKIT_CSS)).unwrap_or_default();
     let js = std::fs::read_to_string(lib_dir.join(UIKIT_JS)).unwrap_or_default();
     if css.is_empty() && js.is_empty() {
         return html.to_string();
     }
     let mut out = html.to_string();
+    // manifest 的 `i18n` 表整份注入成 `window.__ZAP_I18N__`：插件 HTML 里的
+    // T() / applyI18n 全靠它查译文，没有它就只能显示基准（中文）文案。
+    if let Some(t) = i18n {
+        if let Ok(json) = serde_json::to_string(t) {
+            if !matches!(json.as_str(), "null" | "{}") {
+                // `</` 会提前闭合 script 标签；`<\/` 在 JSON 里等价于 `/`，安全
+                let safe = json.replace("</", "<\\/");
+                out.insert_str(0, &format!("<script>window.__ZAP_I18N__={safe};</script>\n"));
+            }
+        }
+    }
     // 面板语言先落地：插在最前面，UIKit 与插件 HTML 都能读到 `zap.ui.lang`。
     // UIKit 里提供的 `zap.ui.t({'zh-CN':…, 'en-US':…})` 就靠它选文案，
     // 插件界面因此能跟随 Element Plus 的语言切换。
@@ -2372,7 +2393,7 @@ mod tests {
         std::fs::write(dir.join("ui.js"), "window.zap={}\n").unwrap();
 
         let html = "<html><head><title>t</title></head><body><p>hi</p></body></html>";
-        let out = inject_uikit(html, &dir, None);
+        let out = inject_uikit(html, &dir, None, None);
         assert!(out.contains("<style>") && out.contains("--x:1"), "样式没注入: {out}");
         assert!(out.contains("<script>") && out.contains("window.zap"), "脚本没注入: {out}");
         // 位置：style 在 </head> 前，script 在 </body> 前
@@ -2382,20 +2403,49 @@ mod tests {
         // 缺 UIKit 时不要破坏原文件（未部署 _lib 的老环境）
         let empty = std::env::temp_dir().join(format!("zap-uikit-empty-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&empty);
-        assert_eq!(inject_uikit(html, &empty, None), html);
+        assert_eq!(inject_uikit(html, &empty, None, None), html);
 
         // 没有 head / body 的片段也要能注入，不能静默丢掉脚本
         let frag = "<div>x</div>";
-        let out2 = inject_uikit(frag, &dir, None);
+        let out2 = inject_uikit(frag, &dir, None, None);
         assert!(out2.contains("--x:1") && out2.contains("window.zap"), "{out2}");
 
         // 面板语言要先于 UIKit 注入：插件 UI 才能跟着 Element Plus 切中英
-        let out3 = inject_uikit(html, &dir, Some("en-US"));
+        let out3 = inject_uikit(html, &dir, Some("en-US"), None);
         assert!(out3.contains("__ZAP_LANG__=\"en-US\""), "{out3}");
         assert!(out3.find("__ZAP_LANG__").unwrap() < out3.find("--x:1").unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    /// manifest 的 `i18n` 表要整份注入成 `window.__ZAP_I18N__`——插件 HTML 里的
+    /// `T()` / `applyI18n` 全靠它查译文；没注入的话界面永远只显示基准中文。
+    #[test]
+    fn manifest_i18n_is_injected_into_plugin_html() {
+        let dir = std::env::temp_dir().join(format!("zap-uikit-i18n-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("ui.css"), ":root{--x:1}\n").unwrap();
+        std::fs::write(dir.join("ui.js"), "window.zap={}\n").unwrap();
+
+        let i18n: serde_yaml::Value =
+            serde_yaml::from_str("en-US:\n  title: Git manager\n  ui:\n    \"状态\": \"Status\"\n")
+                .unwrap();
+        let html = "<html><head></head><body><p>hi</p></body></html>";
+        let out = inject_uikit(html, &dir, Some("en-US"), Some(&i18n));
+        assert!(out.contains("window.__ZAP_I18N__="), "i18n 表没注入: {out}");
+        assert!(out.contains("Status"), "译文没进注入内容: {out}");
+        assert!(out.contains("__ZAP_LANG__=\"en-US\""), "语言没注入: {out}");
+        // 必须在插件自己的脚本之前，否则 T() 读到空表
+        assert!(out.find("__ZAP_I18N__").unwrap() < out.find("--x:1").unwrap());
+
+        // 译文里的 `</script>` 不能提前闭合脚本标签
+        let evil: serde_yaml::Value =
+            serde_yaml::from_str("en-US:\n  ui:\n    \"x\": \"</script><img>\"\n").unwrap();
+        let out2 = inject_uikit(html, &dir, None, Some(&evil));
+        assert!(!out2.contains("</script><img>"), "脚本被提前闭合: {out2}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
