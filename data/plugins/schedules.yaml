@@ -1,0 +1,15 @@
+items:
+- id: git-1791278379015
+  plugin: git
+  action: run
+  owner: admin
+  owner_uid: 1
+  site_id: 1
+  options: {}
+  trigger: webhook
+  cron: ''
+  token: 62mO51IuxZEss4FRJrnFQN6O
+  enabled: true
+  last_run: 0
+  last_ok: null
+  created_at: 1791278379
