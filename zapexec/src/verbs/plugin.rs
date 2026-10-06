@@ -2575,6 +2575,59 @@ i18n:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 翻译是**可选的**：没提供 `i18n`（或没提供某个语言）时，界面直接显示基准文案。
+    ///
+    /// 这是给插件作者省事的约定 —— 只写一种语言的插件不该因为「没翻」而在
+    /// 英文界面上变成空白或报错。
+    #[test]
+    fn missing_translation_falls_back_to_base() {
+        let dir = std::env::temp_dir().join(format!("zap-i18n-fb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 1) 完全没有 i18n 表
+        let plain = "\
+name: demo
+title: 演示插件
+description: 这是演示
+scope: system
+ui:
+  placement: site.detail
+  label: 打开演示
+options:
+  - name: path
+    label: 路径
+actions:
+  run: 运行
+";
+        std::fs::write(dir.join("manifest.yaml"), plain).unwrap();
+        for lang in [Some("zh-CN"), Some("en-US"), Some("ja-JP"), None] {
+            let info = describe_lang(&dir, "demo", lang).unwrap();
+            assert_eq!(
+                info["title"],
+                serde_json::json!("演示插件"),
+                "lang={lang:?} 应回落到基准文案"
+            );
+            assert_eq!(info["label"], serde_json::json!("打开演示"));
+            assert_eq!(info["options"][0]["label"], serde_json::json!("路径"));
+            assert_eq!(info["actions"]["run"], serde_json::json!("运行"));
+        }
+
+        // 2) 只有 zh-CN 一张表：请求英文同样回落到基准文案，而不是渲染失败
+        let half = format!(
+            "{plain}i18n:\n  zh-CN:\n    title: 演示插件（中文）\n    actions:\n      run: 执行\n"
+        );
+        std::fs::write(dir.join("manifest.yaml"), half).unwrap();
+        let en = describe_lang(&dir, "demo", Some("en-US")).unwrap();
+        assert_eq!(en["title"], serde_json::json!("演示插件"));
+        assert_eq!(en["actions"]["run"], serde_json::json!("运行"));
+        let zh = describe_lang(&dir, "demo", Some("zh-CN")).unwrap();
+        assert_eq!(zh["title"], serde_json::json!("演示插件（中文）"));
+        assert_eq!(zh["actions"]["run"], serde_json::json!("执行"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 插件级 KV：按「插件 + 用户」分桶，set 做合并、get 只看自己的。
     #[test]
     fn plugin_config_kv_roundtrip() {
@@ -2679,25 +2732,26 @@ i18n:
         let requires = m["requires"]["commands"].as_sequence().unwrap();
         assert!(requires.iter().any(|c| c.as_str() == Some("git")));
 
-        // i18n：en-US 覆盖层必须存在，且翻译出来的动作名都得在基准 actions 里，
-        // 否则是写错名字的孤儿键（面板上永远看不到，纯浪费）
+        // i18n 是**可选项**：插件可以完全不提供翻译（那就一直显示基准文案）。
+        // 但如果提供了某张表，里面翻译出来的动作名必须都在基准 actions 里 ——
+        // 写错名字的孤儿键在面板上永远看不到，纯浪费。
         let base = m["actions"].as_mapping().unwrap();
-        let en = i18n_table(&m, Some("en-US")).expect("git manifest 缺少 en-US 翻译表");
-        assert!(i18n_str(en, "title").unwrap_or_default().contains("Git"));
-        let translations = en
-            .get(&serde_yaml::Value::String("actions".to_string()))
-            .and_then(|v| v.as_mapping())
-            .expect("缺少 en-US.actions");
-        assert!(
-            !translations.is_empty(),
-            "en-US.actions 不能为空（面板在英文下会一直显示中文动作名）"
-        );
-        for (k, _) in translations {
-            let name = k.as_str().expect("action 名必须是字符串");
-            assert!(
-                base.contains_key(k),
-                "i18n 里的 action『{name}』不在基准 actions 中"
-            );
+        for lang in ["zh-CN", "en-US"] {
+            let Some(table) = i18n_table(&m, Some(lang)) else {
+                continue;
+            };
+            if let Some(actions) = table
+                .get(&serde_yaml::Value::String("actions".to_string()))
+                .and_then(|v| v.as_mapping())
+            {
+                for (k, _) in actions {
+                    let name = k.as_str().expect("action 名必须是字符串");
+                    assert!(
+                        base.contains_key(k),
+                        "i18n.{lang} 里的 action『{name}』不在基准 actions 中"
+                    );
+                }
+            }
         }
 
         let demo = include_str!("../../../data/plugins/examples/widgets-demo/manifest.yaml");

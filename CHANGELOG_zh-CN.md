@@ -39,7 +39,7 @@
 - **宿主 UIKit**：`data/plugins/_lib/ui.css` / `ui.js`（随发行包，已修掉 `.gitignore` 与打包脚本漏拷的问题）—— `plugin_ui` 返回插件 HTML 前自动注入，提供主题变量 + `.zui-*` 组件类与 `zap.ui.*` 运行时（`notify` / `confirm` / `prompt` / `toast` / `table` / `tabs` / `diff` / `busy` / `lang` / `t` / `localize`）。
 - **槽位多值 + 两个新槽位**：`ui.placement` 支持数组（`file.editor` 与 `file.context` 可同时挂），新增 `file.context`（文件管理器右键菜单，透传选中文件）与 `dashboard.card`（管理员仪表盘卡片）。
 - **action 级 `async` / `dangerous`**：破坏性动作在前端弹二次确认，**并在服务端拦截只读演示（demo）账号**；只有指定的长操作走 SSE 日志 + 可取消。
-- **插件多语言**：manifest 支持 `i18n` 表（`zh-CN` / `en-US`），覆盖标题 / 描述 / 入口文案 / 动作名 / 选项说明，缺失的键回落基准语言；语言与 Element Plus 同一套，切换后立即生效（列表重拉、已打开的界面重载）。UIKit 提供 `zap.ui.lang` / `t()` / `localize()` 让自带 HTML 界面也能跟着走。
+- **插件多语言（可选）**：manifest 支持 `i18n` 表（`zh-CN` / `en-US`）覆盖标题 / 描述 / 入口文案 / 动作名 / 选项说明。**这不是强制项**：不提供翻译的插件仍按基准语言显示，提供了但某个语言缺失的键也逐个回落，可以先只翻一部分；语言与 Element Plus 同一套，切换后立即生效（列表重拉、已打开的界面重载）。UIKit 提供 `zap.ui.lang` / `t()` / `localize()` 让自带 HTML 界面也能跟着走。
 - **定时 / Webhook 触发**：插件管理页可为任意插件加 `cron` 或 `webhook` 触发器；任务归属创建者（同账号、同角色、同权限校验），公开路径 `/api/plugin/hook/<令牌>` 靠随机令牌鉴权，支持停用与令牌轮换。
 - **插件级持久化配置**：新增 `zap.config.get/set/number/bool`（按插件 + 面板用户分桶，落地 `$ZAP_PATH/data/plugins/config/<插件>.yaml`），Lua 侧终于有地方存偏好与小凭证。
 - **网络能力**：公共库新增 `zap.http.get/post/request/json/download`（底层走 `curl`，继承 scope 降权，只放行 http/https）。
