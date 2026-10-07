@@ -17,7 +17,7 @@ static GLOBAL_SYSTEM_INFO: Lazy<RwLock<HashMap<String, String>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 async fn system_scheduled_task() {
-    debug!("Scheduled task executed at: {:?}", chrono::Utc::now());
+    // debug!("Scheduled task executed at: {:?}", chrono::Utc::now());
     let pool = get_db_pool().await;
     let per_10s = 10; // seconds
     // load avg
