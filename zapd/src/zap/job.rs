@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Networks, RefreshKind, System};
 use tokio::sync::RwLock;
 use tokio_cron_scheduler::{Job, JobScheduler, job::job_data::Uuid};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::db::get_db_pool;
 
