@@ -1216,6 +1216,96 @@ pub async fn user_delete(
     delete_user_inner(&claims, &client_addr.ip().to_string(), payload.id).await
 }
 
+/// 代登录（一键登录客户面板）入参。
+#[derive(Deserialize)]
+pub struct SudoPayload {
+    /// 目标账号 id
+    id: i64,
+}
+
+/// 代登录（一键登录客户面板）。
+///
+/// 权限：admin 可代登录任意账号（内置管理员除外）；reseller 仅可代登录自己名下的
+/// 客户（`owner_id = 自己`）。已处于代登录状态的 token（scope = "sudo"）不允许再次
+/// 代登录，防止链式提权。成功后返回目标账号的 JWT，前端据此切换会话。
+pub async fn sudo_login(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<SudoPayload>,
+) -> ZapJsonResult {
+    // 已代登录中：禁止再代登录，防止链式提权
+    if claims.scope == crate::zap::jwt::SUDO_SCOPE {
+        return Err(ZapError::New(
+            -1,
+            "已处于代登录状态，请先退出当前代登录再操作".to_string(),
+        ));
+    }
+    let target_id = payload.id;
+    if target_id <= 0 {
+        return Err(ZapError::New(-1, "参数错误：缺少目标账号".to_string()));
+    }
+    if target_id == ROOT_ADMIN_ID {
+        return Err(ZapError::New(-1, "内置管理员账号不可被代登录".to_string()));
+    }
+
+    let pool = db::get_db_pool().await;
+    let row: Option<(i64, String, String, i64, i32)> = sqlx::query_as(
+        "SELECT id, username, roles, owner_id, status FROM user WHERE id = ?",
+    )
+    .bind(target_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ZapError::New(-1, format!("查询目标账号失败：{e}")))?;
+    let (id, username, roles, owner_id, _status) = match row {
+        Some(r) => r,
+        None => return Err(ZapError::New(-1, "目标账号不存在".to_string())),
+    };
+
+    if jwt::is_admin(&claims) {
+        // admin：可代登录任意账号（内置管理员已在上面排除）
+    } else if jwt::is_reseller(&claims) {
+        // reseller：仅自己名下的客户
+        if owner_id != claims.id as i64 {
+            return Err(ZapError::New(
+                -1,
+                "权限不足：只能代登录自己名下的客户".to_string(),
+            ));
+        }
+    } else {
+        return Err(ZapError::New(
+            -1,
+            "权限不足：仅管理员或经销商可代登录".to_string(),
+        ));
+    }
+
+    let expire = crate::config::get_config().read().unwrap().jwt.jwt_expire;
+    let token = jwt::generate_scoped_jwt(
+        id as u64,
+        &username,
+        &roles,
+        expire,
+        crate::zap::jwt::SUDO_SCOPE,
+    )
+    .map_err(|e| ZapError::New(-1, format!("签发代登录令牌失败：{e}")))?;
+
+    let ip = client_addr.ip().to_string();
+    audit::log(
+        Some(&claims.0),
+        Some(&ip),
+        "sudo_login",
+        &username,
+        &format!("operator={} target_id={}", claims.sub, id),
+    )
+    .await;
+
+    Ok(Json(json!({
+        "code": 0,
+        "message": "ok",
+        "access_token": token,
+        "expire_in": expire,
+    })))
+}
+
 /// 删除用户的实际实现：`/system/user/delete` 与 `/user/team/delete` 共用。
 async fn delete_user_inner(claims: &jwt::Claims, ip: &str, id: i64) -> ZapJsonResult {
     if id == ROOT_ADMIN_ID {

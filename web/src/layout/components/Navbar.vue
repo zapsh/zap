@@ -125,6 +125,10 @@
               <el-icon><UserFilled /></el-icon>
               {{ t('layout.profile') }}
             </el-dropdown-item>
+            <el-dropdown-item v-if="userStore.sudoMode" @click="handleExitSudo">
+              <el-icon><SwitchButton /></el-icon>
+              {{ t('layout.exitSudo') }}
+            </el-dropdown-item>
             <el-dropdown-item divided @click="handleLogout">
               <el-icon><SwitchButton /></el-icon>
               {{ t('layout.logout') }}
@@ -301,6 +305,21 @@ async function handleLogout() {
   } catch (error) {
     console.error('Logout failed:', error)
   }
+}
+
+/** 退出代登录：确认后恢复操作员会话并重载 */
+async function handleExitSudo() {
+  try {
+    await ElMessageBox.confirm(t('layout.sudoExitConfirm'), t('layout.sudoExit'), {
+      confirmButtonText: t('layout.sudoExit'),
+      cancelButtonText: t('common.cancel'),
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+  userStore.stopSudo()
+  window.location.reload()
 }
 </script>
 

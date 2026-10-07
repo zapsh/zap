@@ -101,6 +101,9 @@ const enUS: Messages = {
     aboutZapTip: 'About ZAP: version, updates, docs',
     goUpdateTip: 'System Settings → System Update',
     demoTip: 'Demo accounts are read-only. No actions can be performed.',
+    sudoBanner: 'You are managing as "{name}" (sudo login). All actions are audited.',
+    sudoExit: 'Exit sudo',
+    sudoExitConfirm: 'Exit sudo login and return to your own account?',
     // Persistent footer entry: docs now live under System Settings → About ZAP
     docs: 'Docs',
   },
@@ -401,6 +404,11 @@ const enUS: Messages = {
     detailUsage: 'Usage',
     detailAccount: 'Account',
     lastLogin: 'Last Login',
+    // One-click login (sudo into a customer panel)
+    sudoLogin: 'Login as',
+    sudoLoginTitle: 'Log into customer panel',
+    sudoConfirm: 'Log in as "{name}"? You will have the same permissions as this customer, and all actions will be audited.',
+    sudoConfirmBtn: 'Log in',
     sectionBasic: 'Basic',
     sectionAccess: 'Role & Permissions',
     sectionQuota: 'Resources',

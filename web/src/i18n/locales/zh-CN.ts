@@ -106,6 +106,10 @@ export default {
     aboutZapTip: '关于 ZAP：版本、系统更新、文档',
     goUpdateTip: '系统设置 → 系统更新',
     demoTip: '演示账号仅支持浏览，不能执行任何操作',
+    // 代登录（一键登录客户面板）顶部横幅
+    sudoBanner: '你正在以「{name}」的身份代为管理（代登录），所有操作均会被审计记录',
+    sudoExit: '退出代登录',
+    sudoExitConfirm: '确定要退出代登录并返回你自己的账号吗？',
     // 页脚常驻入口：文档已整合进「系统设置 → About ZAP」
     docs: '文档',
   },
@@ -430,6 +434,11 @@ export default {
     detailUsage: '资源用量',
     detailAccount: '账号信息',
     lastLogin: '最近登录',
+    // 代登录（一键登录客户面板）
+    sudoLogin: '一键登录',
+    sudoLoginTitle: '一键登录客户面板',
+    sudoConfirm: '确定要以「{name}」的身份登录其面板吗？登录后你将拥有该客户的同等权限，所有操作都会被审计记录。',
+    sudoConfirmBtn: '确定登录',
 
     // 编辑抽屉：分区与列表筛选
     sectionBasic: '基本信息',

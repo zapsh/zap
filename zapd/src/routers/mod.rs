@@ -295,6 +295,7 @@ fn api_routers() -> Router {
         .route("/system/user/add", post(user::user_add))
         .route("/system/user/update", post(user::user_update))
         .route("/system/user/delete", post(user::user_delete))
+        .route("/system/user/sudo", post(user::sudo_login))
         .route("/system/user/resellers", get(user::reseller_list))
         .route("/system/user/home_sync", post(user::user_home_sync))
         // 家目录备份：把用户家目录打包进 {home}/backups/（自己 / admin 可触发）

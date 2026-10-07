@@ -324,6 +324,14 @@
                 </el-button>
               </span>
             </el-tooltip>
+            <el-button
+              type="primary"
+              link
+              :disabled="row.id === ROOT_USER_ID"
+              @click="handleSudo(row)"
+            >
+              {{ t('users.sudoLogin') }}
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -612,6 +620,7 @@ import {
   createUser,
   updateUser,
   deleteUser,
+  sudoLogin,
   getResellerList,
   getUserMenus,
   setUserMenus,
@@ -634,6 +643,7 @@ import {
 import { getMenuList } from '@/api/menu'
 import { permGroupLabel, permKeyLabel } from '@/utils/perm'
 import { getLocale, translateTitle } from '@/i18n'
+import { withBase } from '@/utils/base'
 import { disableUnavailable, type MenuNode } from '@/utils/menu-tree'
 
 const { t } = useI18n()
@@ -1308,6 +1318,34 @@ async function handleDelete(row: UserListItem) {
     await deleteUser(row.id)
     ElMessage.success(t('common.deleteSuccess'))
     loadList()
+  } catch (e: unknown) {
+    ElMessage.error((e as Error)?.message || t('error.system'))
+  }
+}
+
+/** 一键登录客户面板（代登录）：确认后切换会话并以目标客户身份进入 */
+async function handleSudo(row: UserListItem) {
+  if (row.id === ROOT_USER_ID) return
+  try {
+    await ElMessageBox.confirm(
+      t('users.sudoConfirm', { name: row.nickname || row.username }),
+      t('users.sudoLoginTitle'),
+      {
+        type: 'warning',
+        confirmButtonText: t('users.sudoConfirmBtn'),
+        cancelButtonText: t('common.cancel'),
+      },
+    )
+  } catch {
+    return
+  }
+  try {
+    const res = await sudoLogin(row.id)
+    if (res?.access_token) {
+      userStore.startSudo(res.access_token, res.expire_in, row.nickname || row.username)
+      // 以目标客户身份跳转到首页（整页刷新，按客户权限重建路由 / 菜单）
+      window.location.href = withBase('/')
+    }
   } catch (e: unknown) {
     ElMessage.error((e as Error)?.message || t('error.system'))
   }

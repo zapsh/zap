@@ -114,6 +114,13 @@ pub fn generate_jwt_token_with_expire(
 /// 带这个 scope 的 token 只能访问终端 WebSocket，见 `access::guard`。
 pub const SSH_SCOPE: &str = "ssh";
 
+/// 代登录（一键登录客户面板）作用域：由 admin / reseller 向目标客户签发，
+/// 把会话绑定到目标客户身份。
+///
+/// 带该 scope 的 token 与普通用户 token 行为完全一致（能访问目标客户的所有接口），
+/// 但 [`sudo_login`] 会拒绝「代登录中再代登录」，防止链式提权。
+pub const SUDO_SCOPE: &str = "sudo";
+
 /// 签发一枚**限定作用域**的短时效 JWT。
 ///
 /// 与 [`generate_jwt_token_with_expire`] 的唯一区别是可以指定 `scope` 与 `sub`：

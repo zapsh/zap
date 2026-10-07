@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { login, getUserInfo, logout as logoutApi } from '@/api/user'
 import { useTagsStore } from '@/stores/tags'
-import { setToken, removeToken, setTokenExpire } from '@/utils/auth'
+import { setToken, removeToken, setTokenExpire, getToken, getTokenExpire } from '@/utils/auth'
 import { ElMessage } from 'element-plus'
 import { t } from '@/i18n'
 
@@ -37,6 +37,61 @@ export const useUserStore = defineStore(
     const email = ref('')
     const phone = ref('')
     const nickname = ref('')
+
+    /** 代登录（一键登录客户面板）状态 */
+    const SUDO_PREV_KEY = 'Zap-Sudo-Prev'
+    const prevSudo = (() => {
+      try {
+        return JSON.parse(sessionStorage.getItem(SUDO_PREV_KEY) || 'null')
+      } catch {
+        return null
+      }
+    })()
+    // 仅依据 sessionStorage 推导：关闭标签页时 token 一并清除，代登录状态自然失效
+    const sudoMode = ref<boolean>(!!prevSudo)
+    // 重载后从 sessionStorage 还原「正在代为管理的客户」名称
+    const sudoUsername = ref<string>(prevSudo?.target || prevSudo?.username || '')
+
+    /**
+     * 进入代登录：把当前（操作员）会话原样存到 sessionStorage，再切换到目标客户令牌。
+     * 同时更新 pinia 持久化与 auth 工具两层 token，保证刷新后仍是目标客户视角。
+     */
+    function startSudo(newToken: string, newExpire: number, targetUsername: string) {
+      const prev = {
+        token: getToken(),
+        expire: getTokenExpire(),
+        username: name.value,
+        target: targetUsername,
+      }
+      sessionStorage.setItem(SUDO_PREV_KEY, JSON.stringify(prev))
+      setToken(newToken)
+      setTokenExpire(newExpire)
+      token.value = newToken
+      sudoMode.value = true
+      sudoUsername.value = targetUsername
+    }
+
+    /** 退出代登录：恢复操作员会话 */
+    function stopSudo() {
+      const raw = sessionStorage.getItem(SUDO_PREV_KEY)
+      if (raw) {
+        try {
+          const p = JSON.parse(raw)
+          if (p.token) {
+            setToken(p.token)
+            if (p.expire) {
+              setTokenExpire(Math.max(0, (p.expire - Date.now()) / 1000))
+            }
+            token.value = p.token
+          }
+        } catch {
+          /* 解析失败不阻断退出 */
+        }
+        sessionStorage.removeItem(SUDO_PREV_KEY)
+      }
+      sudoMode.value = false
+      sudoUsername.value = ''
+    }
 
     const userInfo = computed(() => ({
       id: userId.value,
@@ -163,11 +218,16 @@ export const useUserStore = defineStore(
       permissions,
       readOnly,
       userInfo, // 导出计算属性
+      sudoMode,
+      sudoUsername,
       login: loginAction,
       getInfoAction,
       logout,
       resetToken,
+      startSudo,
+      stopSudo,
     }
   },
-  { persist: true },
+  // 代登录状态仅存于 sessionStorage（见 startSudo/stopSudo），不进持久化，避免跨标签页残留
+  { persist: { omit: ['sudoMode', 'sudoUsername'] } },
 ) // 使用 Pinia 的持久化插件

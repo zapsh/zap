@@ -8,6 +8,22 @@
       :title="t('layout.demoTip')"
       class="demo-banner"
     />
+    <el-alert
+      v-if="userStore.sudoMode"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="sudo-banner"
+    >
+      <template #title>
+        <span class="sudo-banner__text">{{
+          t('layout.sudoBanner', { name: userStore.sudoUsername })
+        }}</span>
+        <el-button type="primary" size="small" @click="exitSudo">{{
+          t('layout.sudoExit')
+        }}</el-button>
+      </template>
+    </el-alert>
     <router-view v-slot="{ Component }">
       <transition name="fade-transform" mode="out-in">
         <component :is="Component" />
@@ -19,6 +35,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { ElMessageBox } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 
 const { t } = useI18n()
@@ -26,6 +43,21 @@ const { t } = useI18n()
 // AppMain component is a container for the router-view
 const userStore = useUserStore()
 const isDemo = computed(() => userStore.roles.includes('demo'))
+
+/** 退出代登录：确认后恢复原操作员会话并重载 */
+async function exitSudo() {
+  try {
+    await ElMessageBox.confirm(t('layout.sudoExitConfirm'), t('layout.sudoExit'), {
+      type: 'warning',
+      confirmButtonText: t('layout.sudoExit'),
+      cancelButtonText: t('common.cancel'),
+    })
+  } catch {
+    return
+  }
+  userStore.stopSudo()
+  window.location.reload()
+}
 </script>
 
 <style scoped>
@@ -38,6 +70,17 @@ const isDemo = computed(() => userStore.roles.includes('demo'))
 }
 .demo-banner {
   margin-bottom: 16px;
+}
+.sudo-banner {
+  margin-bottom: 16px;
+}
+.sudo-banner :deep(.el-alert__title) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.sudo-banner__text {
+  font-weight: 500;
 }
 
 /* 页面切换动画 */

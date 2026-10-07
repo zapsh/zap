@@ -183,6 +183,20 @@ export function deleteUser(id: number) {
   return http.post<ApiResponse>('/system/user/delete', { id })
 }
 
+// ── 代登录（一键登录客户面板） ─────────────────────────────
+/** 代登录返回：直接携带目标账号的 JWT（与登录接口同构，access_token 在顶层） */
+export interface SudoLoginResult {
+  code: number
+  message?: string
+  access_token: string
+  expire_in: number
+}
+
+/** 以管理员 / 经销商身份代登录目标客户面板 */
+export function sudoLogin(id: number) {
+  return http.post<SudoLoginResult>('/system/user/sudo', { id })
+}
+
 // ── 用户级菜单例外 ─────────────────────────────────────────
 //
 // 在「角色 → 菜单」之外，单独给某个人加减侧边栏入口（表 user_menus）。
