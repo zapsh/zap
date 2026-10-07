@@ -198,7 +198,9 @@ fn enforce_reseller_subpackage(parent: &PackageRow, v: &ResellerSubVals) -> Resu
 
 /// 套餐对操作者是否可见：admin 全量；reseller 仅全局套餐（owner_id=0）与自己名下
 fn visible(r: &PackageRow, is_admin: bool, actor_id: i64) -> bool {
-    is_admin || r.owner_id == 0 || r.owner_id == actor_id
+    // 管理员可见全部；reseller 仅可见自己创建的套餐（owner_id=自己），
+    // 看不到 admin 创建的全局/私有套餐。
+    is_admin || r.owner_id == actor_id
 }
 
 /// 统计各套餐被引用的客户数（key = package_id）

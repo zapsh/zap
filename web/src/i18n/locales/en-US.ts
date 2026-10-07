@@ -567,9 +567,9 @@ const enUS: Messages = {
     scopePrivate: 'Private',
 
     scope: 'Scope',
-    scopeGlobalOpt: 'Global (visible to everyone)',
+    scopeGlobalOpt: 'Global (admins only)',
     scopeSelfOpt: 'Private (only visible to you)',
-    scopeHint: 'Global packages are visible to all admins and resellers; private packages are only visible to you. Resellers always create private packages (and cannot exceed their own package limits).',
+    scopeHint: 'Global packages are visible to admins only; private packages are only visible to you. Resellers can only create and manage their own private packages and cannot see packages created by admins.',
 
     diskQuota: 'Disk Quota',
     maxSites: 'Sites',

@@ -602,9 +602,9 @@ export default {
     scopePrivate: '私有',
 
     scope: '归属',
-    scopeGlobalOpt: '全局（所有人可用）',
+    scopeGlobalOpt: '全局（仅管理员可见）',
     scopeSelfOpt: '私有（仅自己可见）',
-    scopeHint: '全局套餐对所有管理员与 reseller 可见；私有套餐仅你自己可见。reseller 创建的套餐始终为私有（且不得超过你自身套餐的上限）',
+    scopeHint: '全局套餐仅管理员可见；私有套餐仅你自己可见。reseller 仅能创建并管理自己名下的私有套餐，无法看到管理员创建的套餐',
 
     diskQuota: '磁盘配额',
     maxSites: '站点数',
