@@ -3,8 +3,11 @@
     <template v-if="roles.includes('admin')">
       <component :is="AdminDashboardAsync"></component>
     </template>
-    <template v-else-if="roles.includes('reseller') || roles.includes('user')">
-      <component :is="CpanelDashboardAsync"></component>
+    <template v-else-if="roles.includes('reseller')">
+      <component :is="ResellerDashboardAsync"></component>
+    </template>
+    <template v-else>
+      <component :is="UserDashboardAsync"></component>
     </template>
   </div>
 </template>
@@ -16,7 +19,8 @@ import { useUserStore } from '@/stores/user'
 const userStore = useUserStore()
 const roles = userStore.roles
 const AdminDashboardAsync = defineAsyncComponent(() => import('@/views/dashboard/admin.vue'))
-const CpanelDashboardAsync = defineAsyncComponent(() => import('@/views/dashboard/cpanel.vue'))
+const ResellerDashboardAsync = defineAsyncComponent(() => import('@/views/dashboard/reseller.vue'))
+const UserDashboardAsync = defineAsyncComponent(() => import('@/views/dashboard/user.vue'))
 </script>
 
 <style scoped>

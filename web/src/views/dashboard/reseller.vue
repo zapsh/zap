@@ -11,12 +11,13 @@
             {{ greeting }}，{{ account.nickname || account.username || t('dashboardCpanel.guest') }}
           </div>
           <div class="welcome-sub">
+            <el-tag size="small" type="warning" effect="light">{{ t('dashboardReseller.roleTag') }}</el-tag>
             <el-tag v-if="pkg.name" size="small" type="primary" effect="light">{{ pkg.name }}</el-tag>
             <span class="muted">{{ todayText }}</span>
           </div>
         </div>
-        <el-button type="primary" :icon="Plus" @click="goCreateSite">
-          {{ t('dashboardCpanel.createSite') }}
+        <el-button type="primary" :icon="Plus" @click="goCustomers">
+          {{ t('dashboardReseller.manageCustomers') }}
         </el-button>
       </div>
     </el-card>
@@ -153,13 +154,12 @@
               {{ pkg.name || t('dashboardCpanel.packageUnbound') }}
             </el-descriptions-item>
             <el-descriptions-item :label="t('dashboardCpanel.siteCount')">
-              {{ t('dashboardCpanel.countUnit', { n: stats.total }) }}
+              {{ t('dashboardCpanel.countUnit', { n: counts.sites }) }}
               <span class="muted">{{
                 t('dashboardCpanel.siteLimit', { n: fmtLimit(pkg.max_sites) })
               }}</span>
             </el-descriptions-item>
             <el-descriptions-item :label="t('dashboardCpanel.domainCount')">
-              {{ t('dashboardCpanel.countUnit', { n: stats.domains }) }}
               <span class="muted">{{
                 t('dashboardCpanel.domainLimit', { n: fmtLimit(pkg.max_domains) })
               }}</span>
@@ -187,29 +187,51 @@
       </el-col>
     </el-row>
 
-    <!-- 最近动态 -->
-    <el-card shadow="hover" class="activity-card">
+    <!-- 客户概览 -->
+    <el-card shadow="hover" class="customer-card">
       <template #header>
         <div class="card-header">
-          <span>{{ t('dashboardCpanel.recentActivity') }}</span>
+          <span>{{ t('dashboardReseller.customerOverview') }}</span>
+          <el-button link type="primary" :icon="ArrowRight" @click="goCustomers">
+            {{ t('dashboardCpanel.viewAll') }}
+          </el-button>
         </div>
       </template>
-      <el-timeline v-if="activities.length">
-        <el-timeline-item
-          v-for="(a, i) in activities"
-          :key="i"
-          :timestamp="fmtTs(a.time)"
-          :color="a.color"
-          placement="top"
-        >
-          <div class="act-title">
-            <el-icon class="act-icon"><Icon :icon="a.icon" /></el-icon>
-            <span>{{ a.title }}</span>
-          </div>
-          <div v-if="a.sub" class="act-sub muted">{{ a.sub }}</div>
-        </el-timeline-item>
-      </el-timeline>
-      <el-empty v-else :description="t('dashboardCpanel.recentEmpty')" :image-size="60" />
+      <el-table :data="customers" size="default" :empty-text="t('dashboardReseller.customerEmpty')">
+        <el-table-column :label="t('dashboardReseller.colUser')" min-width="160">
+          <template #default="{ row }">
+            <div class="cell-user">
+              <span class="cell-name">{{ row.nickname || row.username }}</span>
+              <span class="muted">@{{ row.username }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('dashboardReseller.colPackage')" min-width="120">
+          <template #default="{ row }">
+            <el-tag v-if="row.package_name" size="small" effect="plain">{{
+              row.package_name
+            }}</el-tag>
+            <span v-else class="muted">{{ t('dashboardReseller.noPackage') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('dashboardReseller.colStatus')" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 0 ? 'danger' : 'success'" size="small" effect="light">
+              {{ row.status === 0 ? t('dashboardReseller.statusDisabled') : t('dashboardReseller.statusEnabled') }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('dashboardReseller.colDisk')" min-width="140">
+          <template #default="{ row }">
+            {{ row.disk_used_bytes ? formatBytes(row.disk_used_bytes) : '0 B' }}
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('dashboardReseller.colLastLogin')" min-width="160">
+          <template #default="{ row }">
+            <span class="muted">{{ fmtTime(row.last_login_time) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-card>
 
     <!-- 功能分组 -->
@@ -232,16 +254,13 @@ import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Icon, Plus } from '@/icons'
+import { Icon, Plus, ArrowRight } from '@/icons'
 import { formatBytes } from '@/utils/fmt'
 import { useUserStore } from '@/stores/user'
-import { getSystemInfo } from '@/api/dashboard'
-import { getUserInfo, getMyLoginHistory } from '@/api/user'
-import type { LoginRecordItem } from '@/api/user'
-import { getNotices } from '@/api/notice'
-import type { NoticeMessage } from '@/api/notice'
-import { getCertList } from '@/api/ssl'
-import { http } from '@/utils/request'
+import { getSystemInfo, getDashboardCounts } from '@/api/dashboard'
+import type { DashboardCounts } from '@/api/dashboard'
+import { getUserInfo, getUserList } from '@/api/user'
+import type { UserListItem } from '@/api/user'
 
 interface AppEntry {
   title: string
@@ -256,14 +275,6 @@ interface AppGroup {
   items: AppEntry[]
 }
 
-interface ActivityItem {
-  time: number
-  icon: string
-  color: string
-  title: string
-  sub?: string
-}
-
 const { t } = useI18n()
 const router = useRouter()
 const userStore = useUserStore()
@@ -271,7 +282,7 @@ const roles = userStore.roles
 
 const keyword = ref('')
 
-// 功能入口（普通用户可见）
+// 功能入口
 const groups = computed<AppGroup[]>(() => [
   {
     title: t('dashboardCpanel.groupCommon'),
@@ -280,26 +291,48 @@ const groups = computed<AppGroup[]>(() => [
         title: t('dashboardCpanel.itemFiles'),
         icon: 'material-symbols:folder',
         path: '/files',
-        roles: ['user'],
+        roles: ['reseller'],
       },
       {
         title: t('dashboardCpanel.itemSite'),
         icon: 'material-symbols:public',
         path: '/site',
-        roles: ['user'],
+        roles: ['reseller'],
       },
-      { title: 'SSL/TLS', icon: 'material-symbols:lock', path: '/ssl-tls', roles: ['user'] },
       {
         title: t('dashboardCpanel.itemTerminal'),
         icon: 'material-symbols:monitor',
         path: '/terminal',
-        roles: ['user'],
+        roles: ['reseller'],
       },
       {
         title: t('dashboardCpanel.itemProfile'),
         icon: 'material-symbols:person',
         path: '/profile',
-        roles: ['user'],
+        roles: ['reseller'],
+      },
+    ],
+  },
+  {
+    title: t('dashboardReseller.groupReseller'),
+    items: [
+      {
+        title: t('dashboardReseller.itemCustomers'),
+        icon: 'material-symbols:account-circle',
+        path: '/system/access',
+        roles: ['reseller'],
+      },
+      {
+        title: t('dashboardReseller.itemQuota'),
+        icon: 'material-symbols:speed',
+        roles: ['reseller'],
+        coming: true,
+      },
+      {
+        title: t('dashboardReseller.itemAllocation'),
+        icon: 'material-symbols:tune',
+        roles: ['reseller'],
+        coming: true,
       },
     ],
   },
@@ -329,38 +362,58 @@ function handleClick(item: AppEntry) {
   }
 }
 
-// ── 统计卡片（普通用户：站点 / 域名 / SSL） ──────────────
-const stats = ref({ total: 0, running: 0, domains: 0, ssl: 0 })
+// ── 统计卡片（经销商：名下客户 / 站点总数 / 数据库总数） ──
+const counts = ref<DashboardCounts>({ users: 0, sites: 0, databases: 0 })
 
 const statCards = computed(() => [
   {
+    key: 'customers',
+    title: t('dashboardReseller.statCustomers'),
+    value: counts.value.users,
+    icon: 'material-symbols:group',
+    color: '#9254de',
+    bg: '#f9f0ff',
+    span: 8,
+  },
+  {
     key: 'sites',
     title: t('dashboardCpanel.statSites'),
-    value: stats.value.total,
+    value: counts.value.sites,
     icon: 'material-symbols:public',
     color: '#409eff',
     bg: '#ecf5ff',
     span: 8,
   },
   {
-    key: 'domains',
-    title: t('dashboardCpanel.statDomains'),
-    value: stats.value.domains,
-    icon: 'material-symbols:language',
-    color: '#e6a23c',
-    bg: '#fdf6ec',
-    span: 8,
-  },
-  {
-    key: 'ssl',
-    title: t('dashboardCpanel.statSsl'),
-    value: stats.value.ssl,
-    icon: 'material-symbols:lock',
-    color: '#f56c6c',
-    bg: '#fef0f0',
+    key: 'databases',
+    title: t('dashboardCpanel.statDatabases'),
+    value: counts.value.databases,
+    icon: 'material-symbols:database',
+    color: '#67c23a',
+    bg: '#f0f9eb',
     span: 8,
   },
 ])
+
+// ── 客户概览 ─────────────────────────────────────────────
+const customers = ref<UserListItem[]>([])
+
+function goCustomers() {
+  router.push('/system/access')
+}
+
+async function loadCustomers() {
+  try {
+    const res = await getUserList({})
+    const list = (res?.data as UserListItem[]) || []
+    // 取最近创建的 6 个客户展示
+    customers.value = [...list]
+      .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+      .slice(0, 6)
+  } catch {
+    /* ignore */
+  }
+}
 
 // ── 欢迎横幅 ─────────────────────────────────────────────
 const greeting = computed(() => {
@@ -381,10 +434,6 @@ const todayText = computed(() =>
   }),
 )
 
-function goCreateSite() {
-  router.push('/site')
-}
-
 // ── 常规信息 + 使用情况 ─────────────────────────────────────
 const account = ref<Record<string, any>>({})
 const server = ref<Record<string, any>>({})
@@ -392,7 +441,6 @@ const packageBound = ref(false)
 const pkg = ref<Record<string, any>>({})
 
 const fmtTime = (ts: number) => (ts ? new Date(ts * 1000).toLocaleString() : '—')
-const fmtTs = (ts: number) => (ts ? new Date(ts * 1000).toLocaleString() : '—')
 /** 数值上限展示：<=0 表示不限 */
 const fmtLimit = (v?: number) =>
   !Number(v) ? t('dashboardCpanel.noLimit') : t('dashboardCpanel.countUnit', { n: v })
@@ -452,76 +500,17 @@ async function loadServer() {
   }
 }
 
-async function loadStats() {
-  // 站点数与运行数、域名总数（接口按角色返回可见范围）
+async function loadCounts() {
   try {
-    const res = await http.get<{ code: number; data: any }>('/site/list')
-    const d = res.data as any
-    let domains = 0
-    if (Array.isArray(d?.rows)) {
-      d.rows.forEach((s: any) => {
-        domains += (s.domains || []).length
-      })
-    }
-    stats.value.total = d?.total || 0
-    stats.value.running = d?.running || 0
-    stats.value.domains = domains
+    const res = await getDashboardCounts()
+    if (res?.data) counts.value = { ...counts.value, ...res.data }
   } catch {
     /* ignore */
   }
-  // SSL 证书数
-  try {
-    const res = await getCertList()
-    const arr = Array.isArray(res?.data) ? (res.data as any[]) : []
-    stats.value.ssl = arr.length
-  } catch {
-    /* ignore */
-  }
-}
-
-// ── 最近动态（登录记录 + 站内信，合并时间线） ──────────────
-const activities = ref<ActivityItem[]>([])
-
-async function loadActivity() {
-  const [lh, nt] = await Promise.allSettled([
-    getMyLoginHistory({ page: 1, page_size: 5 }),
-    getNotices({ page: 1, page_size: 5 }),
-  ])
-  const items: ActivityItem[] = []
-  if (lh.status === 'fulfilled' && lh.value?.data) {
-    ;(lh.value.data as LoginRecordItem[]).forEach((r) => {
-      const ok = r.status === 'success'
-      items.push({
-        time: r.created_at,
-        icon: ok ? 'material-symbols:login' : 'material-symbols:gpp-maybe',
-        color: ok ? '#67c23a' : '#f56c6c',
-        title:
-          r.status === 'success'
-            ? t('dashboardCpanel.recentLoginSuccess')
-            : r.status === '2fa_failed'
-              ? t('dashboardCpanel.recentLogin2faFailed')
-              : t('dashboardCpanel.recentLoginFailed'),
-        sub: `IP: ${r.ip || '-'}${r.user_agent ? ' · ' + r.user_agent : ''}`,
-      })
-    })
-  }
-  if (nt.status === 'fulfilled' && nt.value?.data?.list) {
-    ;(nt.value.data.list as NoticeMessage[]).forEach((n) => {
-      items.push({
-        time: n.created_at,
-        icon: 'material-symbols:notifications',
-        color: n.is_read ? '#909399' : '#409eff',
-        title: n.title,
-        sub: n.body,
-      })
-    })
-  }
-  items.sort((a, b) => b.time - a.time)
-  activities.value = items.slice(0, 8)
 }
 
 onMounted(async () => {
-  await Promise.all([loadAccount(), loadServer(), loadStats(), loadActivity()])
+  await Promise.all([loadAccount(), loadServer(), loadCounts(), loadCustomers()])
 })
 </script>
 
@@ -534,7 +523,7 @@ onMounted(async () => {
 .welcome-card {
   margin-bottom: 16px;
   border: none;
-  background: linear-gradient(120deg, var(--el-color-primary-light-9), var(--el-bg-color));
+  background: linear-gradient(120deg, var(--el-color-warning-light-9), var(--el-bg-color));
 }
 .welcome {
   display: flex;
@@ -543,7 +532,7 @@ onMounted(async () => {
 }
 .welcome-avatar {
   flex: none;
-  background: var(--el-color-primary);
+  background: var(--el-color-warning);
   color: #fff;
   font-weight: 600;
 }
@@ -561,6 +550,7 @@ onMounted(async () => {
   align-items: center;
   gap: 10px;
   margin-top: 6px;
+  flex-wrap: wrap;
 }
 .muted {
   color: var(--el-text-color-secondary);
@@ -666,24 +656,18 @@ onMounted(async () => {
   padding-top: 8px;
 }
 
-/* 最近动态 */
-.activity-card {
+/* 客户概览 */
+.customer-card {
   margin-bottom: 16px;
 }
-.act-title {
+.cell-user {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  line-height: 1.3;
+}
+.cell-name {
   font-weight: 500;
   color: var(--el-text-color-primary);
-}
-.act-icon {
-  font-size: 18px;
-}
-.act-sub {
-  margin-top: 2px;
-  font-size: 12px;
-  word-break: break-all;
 }
 
 .group {
@@ -695,7 +679,7 @@ onMounted(async () => {
   font-weight: 600;
   color: var(--el-text-color-primary);
   margin-bottom: 12px;
-  border-left: 3px solid #409eff;
+  border-left: 3px solid #e6a23c;
   padding-left: 10px;
 }
 
@@ -711,14 +695,14 @@ onMounted(async () => {
 }
 
 .app-tile:hover {
-  border-color: #409eff;
-  box-shadow: 0 2px 12px rgba(64, 158, 255, 0.2);
+  border-color: #e6a23c;
+  box-shadow: 0 2px 12px rgba(230, 162, 60, 0.2);
   transform: translateY(-2px);
 }
 
 .app-icon {
   font-size: 32px;
-  color: var(--el-color-primary);
+  color: var(--el-color-warning);
   margin-bottom: 8px;
 }
 
