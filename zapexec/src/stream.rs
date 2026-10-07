@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 流式会话（容器 exec 终端）的服务端写侧封装。
 //!
 //! 一问一答的 `Request` / `Response` 承载不了交互式终端：stdout 需要增量回传。

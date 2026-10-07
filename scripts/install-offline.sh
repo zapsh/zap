@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # ZAP 离线安装入口 —— 给内网 / 无外网访问的机器。
 #
 # 它本身不装任何东西，只做三件事：

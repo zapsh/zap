@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="docker-page">
     <!-- 顶部：环境状态 + 全局操作 -->

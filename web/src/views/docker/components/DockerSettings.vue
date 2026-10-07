@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div v-loading="bootLoading" class="docker-settings">
     <!-- 顶部状态与操作 -->

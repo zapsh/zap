@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 插件 HTTP 接口（/api/plugin/*）。
 //!
 //! 复用应用商店的鉴权与站点归属校验：列表/运行前确认操作者身份与站点归属，

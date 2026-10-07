@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 脚本/自动化 → 计划任务（admin only）：任务 CRUD / 启停 / 立即运行。
 //!
 //! 任务按管理员隔离存储：`data/users/<username>/cron-jobs.yaml`，

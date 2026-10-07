@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { http } from '@/utils/request'
 
 /** 数据库（schema）列表项 */

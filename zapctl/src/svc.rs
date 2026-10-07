@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! CLI 侧的服务管理后端（systemctl）。
 //!
 //! 与服务端 `zapexec::verbs::svc` 语义一致，这里是精简版：只需要「查状态、执行动作」，

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import type { AxiosRequestConfig } from 'axios'
 import { http } from '@/utils/request'
 import { getToken } from '@/utils/auth'

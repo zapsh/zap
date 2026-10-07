@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="nav-tabs">
     <div ref="scrollerRef" class="nav-tabs__scroll" @wheel="onWheel">

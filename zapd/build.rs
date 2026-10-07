@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 构建期版本元信息注入。
 //!
 //! 通过 vergen 把构建日期、git 提交信息、rustc 版本等写入编译期环境变量

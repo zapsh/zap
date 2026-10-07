@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="scripts-page">
     <!-- 左侧脚本树 -->

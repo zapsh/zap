@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="system-monitor">
     <!-- 时间范围工具条：实时高频刷新；历史范围一次加载降采样数据，手动刷新 -->

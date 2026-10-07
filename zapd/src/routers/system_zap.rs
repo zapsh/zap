@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 「系统设置 → Zap 设置」后端：面板自身运行参数（zap.yaml 的 `server.*`）。
 //!
 //! 四个 Tab 一一对应配置字段：

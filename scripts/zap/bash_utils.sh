@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
 #=============================================================================
 # bash_utils.sh — ZAP 应用商店脚本公共函数库
 #

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * Nginx 主配置（nginx.conf）的可视化读写工具。
  *

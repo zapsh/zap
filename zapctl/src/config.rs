@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! `zapctl config` 子命令：查看 / 新增 / 修改 / 删除 zap.yaml 的键值内容。
 //!
 //! 配置文件查找顺序与 `zapd/src/config/mod.rs` 保持一致：

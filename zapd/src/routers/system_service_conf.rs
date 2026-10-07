@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 通用服务配置端点（「服务配置」大类：php / mysql(MySQL/MariaDB 合一) / docker …）。
 //!
 //! 端点（均需管理员，均透传 zapexec 返回）：

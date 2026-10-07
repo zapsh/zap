@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Nginx 服务配置与运行状态管理（root 执行）。
 //!
 //! 提供「服务器配置 → Nginx 配置」（可视化 + 文件编辑）与

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // Docker 服务配置专用 API（daemon.json：状态 / 关键项 / 文件编辑 / 服务控制）。
 //
 // Docker 的配置是 JSON（存在嵌套对象与数组），与 php.ini / my.cnf 的 INI 关键项形态差异较大，

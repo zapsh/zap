@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="job-tasks">
     <!-- 开关关闭时的提示（仅普通用户会命中） -->

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 服务器运行环境状态：`{data}/server_env.yaml`。
 //!
 //! 这里取代了原来的 `server_env` 表，YAML 为唯一事实来源：

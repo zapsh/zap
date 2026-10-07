@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 安全检测：检查 Zap 运行环境的权限与配置安全。
 //!
 //! 设计目标：

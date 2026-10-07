@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! `zapexec` 特权守护进程的客户端。
 //!
 //! `zapd` 以 `zapadm` 身份运行，需要 root 权限的操作通过本模块

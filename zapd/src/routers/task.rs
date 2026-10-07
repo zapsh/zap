@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 通用任务队列路由：任务列表 / 详情 / 日志（轮询 + WebSocket）/ 控制（取消 / 暂停 / 继续）。
 //!
 //! 面板里所有"跑一会儿"的动作都登记在 `task_queue`（应用商店安装与编译、Docker

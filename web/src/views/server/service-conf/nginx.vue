@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="nginx-page">
     <!-- 四层转发（stream{}）是 nginx 的能力，入口收在这里，不再单独占一个菜单 -->

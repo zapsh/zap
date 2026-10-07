@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! `zapd`（非特权）与 `zapexec`（root）之间的共享 wire 协议。
 //!
 //! - 传输：Unix domain socket，长度前缀 + JSON 帧

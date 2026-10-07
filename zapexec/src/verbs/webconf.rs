@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 站点配置（Nginx / Apache）的目录布局与发布（root 执行）。
 //!
 //! 三层职责（与面板确认的规划一致）：

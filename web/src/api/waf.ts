@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // ModSecurity（WAF）API —— 可选能力：未安装时除 status 外一律返回错误
 //
 // WAF 能不能用取决于 nginx 当初的编译参数（动态模块要求 --with-compat），

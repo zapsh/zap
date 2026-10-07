@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! ZAP 系统升级器（一次性进程，以 root 运行）。
 //!
 //! 两种用法：

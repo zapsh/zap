@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 会话版本号（tokenVersion）与「下线所有设备」。
 //!
 //! JWT 是无状态的：签发后服务端不保存任何会话，因此无法按 token 逐个作废

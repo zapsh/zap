@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="app-wrapper" :class="{ mobile: device === 'mobile' }">
     <!-- 侧边栏 -->

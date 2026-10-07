@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 服务配置 → 总览（管理员）：应用商店已安装应用中「登记了 systemd 服务」的实例。
 //!
 //! 端点（均需管理员，均透传 zapexec 返回）：

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 服务器配置 → 防火墙设置（仅 admin）。
 //!
 //! 面板侧只做「入参校验 + 转发 zapexec 白名单动词」，具体命令由 zapexec 按后端

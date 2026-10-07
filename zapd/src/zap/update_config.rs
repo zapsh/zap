@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 自动更新配置：`{data}/update_config.yaml`。
 //!
 //! 这里取代了原来的 `update_config` 单行表，YAML 为唯一事实来源：

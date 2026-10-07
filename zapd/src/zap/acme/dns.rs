@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! DNS-01 验证支持：DNS 服务商 API + TXT 记录传播检测。
 //!
 //! 分层目的很单纯：订单编排（`super`）只关心「给某个 `_acme-challenge` 记录加/删一条 TXT」，

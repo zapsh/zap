@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 站内信（通知中心）用户端接口：列表 / 未读数 / 已读 / 全部已读 / 删除。
 //! 数据来源：`notice_message` 表，事件侧按用户偏好（user.prefs）决定是否写入。
 

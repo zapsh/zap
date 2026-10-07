@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /// <reference types="vite/client" />
 // Element Plus 语言包走 .mjs 入口（见 composables/useLocale.ts），官方未提供该路径的类型
 declare module 'element-plus/dist/locale/*.mjs'

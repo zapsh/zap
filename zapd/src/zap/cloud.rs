@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 云存储（对象存储）管理：多存储配置 + 凭据加密落盘 + opendal 统一读写。
 //!
 //! ## 目录布局（按用户隔离，与 `crontab.yaml` 同级）

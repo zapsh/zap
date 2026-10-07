@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 仪表盘统计卡片数据源。
 //!
 //! GET /api/dashboard/counts → 按当前角色可见范围统计：

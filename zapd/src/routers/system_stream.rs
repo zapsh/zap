@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 四层转发（Nginx stream）——**仅管理员**。
 //!
 //! TCP / UDP 端口转发：把宿主机某个端口接到任意后端（数据库、游戏服、内网服务…）。

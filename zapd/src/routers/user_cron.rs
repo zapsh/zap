@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 计划任务（crontab）：面板用户管理自己的定时任务。
 //!
 //! - **所有角色可用**：路由挂 `/terminal/crontab/*`（`Required::User`）

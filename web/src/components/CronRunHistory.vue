@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <el-drawer v-model="visible" :title="title" size="62%">
     <div class="hist-wrap">

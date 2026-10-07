@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 路由 → 角色 权限矩阵中间件（fail-closed）。
 //!
 //!

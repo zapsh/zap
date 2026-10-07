@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 面板基础配置（仅 admin）。
 //!
 //! 「系统设置 → 基础设置」这个页面已下线：Mail 迁到「Zap 设置 → 通知设置」，

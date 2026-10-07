@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 站点应用（Application Manager）：把 python / nodejs 之类的用户进程托管起来。
 //!
 //! 设计要点：

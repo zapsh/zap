@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 操作审计日志。
 //!
 //! 记录管理操作的关键信息（操作者、动作、目标、详情、来源 IP），

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * 角色名称映射（与后端 roles 表 role_key 对应）。
  *

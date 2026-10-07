@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="appstore-page">
     <!-- 页内导航：应用商店是单一菜单，已安装 / 我的站点应用都在本页切换 -->

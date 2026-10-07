@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! `zapctl backup` 子命令：备份 / 还原 / 管理 zap 数据。
 //!
 //! 备份产物为 tar.gz 归档（仅 root 可读，0600），默认目录 `/usr/local/zap/backup`（`--path` 覆盖）：

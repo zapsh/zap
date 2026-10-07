@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 用户级菜单例外（`user_menus`）：在「角色 → role_menus」之外，
 //! 给**单个用户**单独放行的侧边栏入口。
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 初始管理员的运行实体自愈 + `--init-admin` 子命令。
 //!
 //! 全新数据库只在 `user` 表里写了一条记录，真正的 Linux 账号与家目录要等

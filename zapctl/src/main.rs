@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! `zapctl` —— ZAP 服务器/VPS 管理系统控制工具。
 //!
 //! 职责：管理 `zapd`（业务主进程）与 `zapexec`（root 特权守护进程）的

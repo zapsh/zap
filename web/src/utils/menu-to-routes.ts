@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import type { RouteRecordRaw } from 'vue-router'
 import type { MenuItem } from '@/types/menu'
 

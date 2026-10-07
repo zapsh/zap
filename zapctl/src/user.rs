@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! `zapctl user` 子命令与改密。
 
 use clap::{Subcommand, ValueEnum};

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="cloud-manager">
     <!-- 左侧：云存储列表（一个用户可配多套） -->

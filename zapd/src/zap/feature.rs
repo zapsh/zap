@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 环境能力门禁（feature gate）。
 //!
 //! 问题背景：菜单存在 `menus` 表里，但**能不能用某个菜单取决于宿主机当前装了什么**。

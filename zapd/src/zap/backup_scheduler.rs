@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 备份任务调度器：周期性扫描启用的备份任务，命中 cron 即触发一次备份。
 //!
 //! 复用脚本/自动化同款的 5 段 cron 解析（`script_cron::Cron`），避免重复实现。

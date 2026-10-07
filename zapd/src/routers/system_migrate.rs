@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 数据迁移（服务器配置 → 数据迁移，仅 admin）。
 //!
 //! /home 磁盘不足时，把用户家目录数据整体迁移到新挂载点（如 /home2）：

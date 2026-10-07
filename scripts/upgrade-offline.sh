@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # ZAP 离线升级入口 —— 给内网 / 无外网访问的机器。
 #
 # 与 install-offline.sh 同一套思路：它自己不替换任何二进制，只做

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! AppStore 路由：仓库管理 / 包安装卸载升级 / 脚本管理 / 运行记录与实时日志。
 
 use std::{collections::BTreeMap, net::SocketAddr};

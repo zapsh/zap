@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="pill-panels">
     <!-- 一级 nav pill：只有一个面板时不渲染，避免多余的空导航 -->

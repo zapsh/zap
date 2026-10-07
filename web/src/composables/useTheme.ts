@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /// 主题模式：浅色 / 深色 / 跟随系统。
 ///
 /// 深色基于 Element Plus 官方方案：`<html>` 上加 `.dark` class，并引入

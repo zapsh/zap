@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
  * 我的 SSH 密钥管理（复用 /terminal/keys 接口，密钥以家目录文件形式存在 ~/.ssh）。

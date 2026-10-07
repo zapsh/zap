@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { http } from '@/utils/request'
 
 /** 自动更新配置（对应后端 update_config 单行表） */

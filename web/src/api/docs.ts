@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // 「文档」菜单 API。
 //
 // 后端返回 HTML 片段（不是业务 JSON 包），所以 `getDocHtml` 走

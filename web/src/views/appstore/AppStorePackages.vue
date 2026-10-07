@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="appstore-packages">
     <!-- 分类 + 搜索（任务队列入口统一在父页，避免重复按钮） -->

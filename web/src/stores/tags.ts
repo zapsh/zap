@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * 顶部导航标签（Nav Bar 的标签页）。
  *

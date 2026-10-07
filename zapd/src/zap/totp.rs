@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! TOTP（RFC 6238）两步验证实现。
 //!
 //! 为避免引入较重的外部依赖（二维码/OTP 库），此处为纯 Rust 手写实现：

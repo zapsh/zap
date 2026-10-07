@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Docker 容器管理动词（面板「容器」页面的执行后端）。
 //!
 //! 走 **Docker Engine API**（[`bollard`]）而不是 `docker` CLI：

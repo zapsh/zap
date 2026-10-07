@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 套餐（Packages）管理 —— 对齐 cPanel/WHM 的 Packages：
 //! 由管理员 / 经销商预先定义一组资源限制，创建客户（用户）时选择，
 //! 客户即继承该套餐的配额与能力开关。

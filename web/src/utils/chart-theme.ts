@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /// Chart.js 图表配色跟随面板主题。
 ///
 /// Chart.js 默认的坐标轴文字（#666）与网格线（黑色半透明）在深色模式下几乎不可见，

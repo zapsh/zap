@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! ModSecurity（WAF）—— 可选能力，没装就不能设置
 //!
 //! 与面板里其它服务不同，WAF **不是一个装上就能用的开关**：ModSecurity v3 由

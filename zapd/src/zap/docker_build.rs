@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 面板「镜像构建」的落盘约定、命名空间规则与路径边界。
 //!
 //! 构建是**长任务**（分钟级起步），所以和 appstore / crontab 用同一套约定：

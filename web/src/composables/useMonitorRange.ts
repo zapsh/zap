@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { computed, ref } from 'vue'
 
 /** 可选的时间范围（`live` = 实时，5 分钟窗口 + 高频轮询；其余走后端降采样） */

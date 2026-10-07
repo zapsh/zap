@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <el-drawer v-model="visible" :title="t('docker.image.detailTitle')" size="60%">
     <div v-loading="loading" class="detail">

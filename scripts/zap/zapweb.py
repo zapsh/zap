@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """ZAP 应用商店脚本辅助库（Python 版）。
 
 与 `bash_utils.sh` 等价，供 `run_as: user` 的建站类包（WordPress 等）用

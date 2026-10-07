@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { http } from '@/utils/request'
 import { getToken } from '@/utils/auth'
 import { wsUrl } from '@/utils/base'

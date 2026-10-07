@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! ACME HTTP-01 验证文件托管（Let's Encrypt 申请时由 zapd 调用）。
 //!
 //! 背景：生产环境 80 端口通常被 nginx 常驻占用，zapd 无法像以往那样临时独占该端口，

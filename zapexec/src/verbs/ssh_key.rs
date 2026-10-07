@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 本机系统用户的 SSH 公钥授权 verb。
 //!
 //! 面板用户的 SSH 密钥**只存在于本人家目录** `~/.ssh/zap_<name>`（私钥/公钥），

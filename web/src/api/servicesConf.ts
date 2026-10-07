@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // 通用服务配置 API（服务配置大类：php / mysql / mariadb / docker，均需管理员）
 import { http } from '@/utils/request'
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 站点应用管理（Application Manager）：部署 / 启停 / 删除 / 日志。
 //!
 //! 权限与配额都由套餐（packages）控制：

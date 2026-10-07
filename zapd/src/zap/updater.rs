@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 系统更新（zapd / zapexec 自升级）服务层：
 //! 自动更新配置读写、远端版本检查、发行包下载/校验/解包规整、
 //! 升级触发（RPC → zapexec → 独立 zapupgrade）、运行记录收尾。

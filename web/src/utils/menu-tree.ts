@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /** 后端菜单树节点（GET /system/menus/list 的返回结构） */
 export interface MenuNode {
   id: number

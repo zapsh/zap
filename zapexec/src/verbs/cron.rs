@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 面板用户的计划任务（crontab）：以指定 Linux 账号后台运行一条命令 / 脚本。
 //!
 //! 由 zapd 的 `zap::user_cron` 调度器 / 手动触发调用，输出追加写入调用方指定的

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 服务器运行环境探测（root 执行，只读）。
 //!
 //! 探测 OS / 主机名 / Web 服务器（nginx|openresty）/ PHP（含 FPM socket）/

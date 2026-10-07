@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! PHP-FPM pool 规格模板库（admin 维护，全局一张表）。
 //!
 //! 模板名约定：

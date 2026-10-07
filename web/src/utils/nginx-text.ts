@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * 给管理员看的「nginx 配置示例 / 语法提示」文案。
  *

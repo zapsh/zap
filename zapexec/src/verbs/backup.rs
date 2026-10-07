@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 备份动词（root 特权）：目录打包 / 数据库导出 / 列表 / 删除 / 还原 / 磁盘查询。
 //!
 //! 归档统一落在「备份根目录」之内（默认 `{ZAP_PATH}/data/backup`，可由面板设置改到

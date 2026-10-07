@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 站点 Nginx vhost 同步（root 执行）。
 //!
 //! Deps： AppStore - Nginx

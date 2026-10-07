@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div v-if="!isHiddenSelf && !allChildrenHidden">
     <!-- 没有子菜单的情况 -->

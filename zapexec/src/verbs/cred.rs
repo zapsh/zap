@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 服务凭据读取（root）。
 //!
 //! 凭据由 `zapctl cred gen <服务> <用户>` 生成，加密存放在

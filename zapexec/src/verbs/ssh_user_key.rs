@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 面板用户自己的 SSH 密钥管理 verb。
 //!
 //! 与系统级密钥（`/etc/zap/ssh`）不同，面板用户的密钥**只放在用户自己的家目录**

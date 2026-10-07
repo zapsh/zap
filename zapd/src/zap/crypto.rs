@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 敏感数据加密（AES-256-GCM）。
 //!
 //! 底层实现统一由 `zap-crypto` crate 提供：密钥文件 `/etc/zap/secret.key`

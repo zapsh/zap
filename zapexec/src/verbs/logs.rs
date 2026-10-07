@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 站点 nginx 日志：轮转 / 读取 / 归档列表 / 清空（root 执行）。
 //!
 //! 面板自管日志轮转，替代外部 logrotate：

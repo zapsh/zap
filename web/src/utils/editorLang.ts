@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * CodeMirror 6 语言支持（按需加载）。
  *

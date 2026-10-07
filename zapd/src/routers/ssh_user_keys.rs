@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 「我的 SSH 密钥」：面板用户自建 SSH 密钥（普通用户到 admin 均可）。
 //!
 //! 密钥**只以家目录文件的形式存在**：`~/.ssh/zap_<name>`（私钥）与

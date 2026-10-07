@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 文件管理器 verb。
 //!
 //! zapd 已完成授权（admin 全量 / 普通用户路径白名单），这里只做路径 sanitize

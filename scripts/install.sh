@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # ZAP 服务器/VPS 管理系统 一键安装脚本
 set -euo pipefail
 

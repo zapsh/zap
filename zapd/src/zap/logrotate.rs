@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 站点 nginx 日志轮转（按天）：切割 → gzip → 清理超期归档 → nginx reopen。
 //!
 //! 替代外部 logrotate，与流量统计配合：

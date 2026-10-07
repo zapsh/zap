@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // 站点管理（admin 管理全部 / reseller 管理所属客户的站点 / 普通用户管理自己的站点）
 // 一个站点可绑定多个域名与多个 IP（site_domain / site_ip 子表）
 use axum::{Json, extract::Extension, extract::Query};

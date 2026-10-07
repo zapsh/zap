@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 包下载源配置：`{data}/mirror.yaml`。
 //!
 //! ## 为什么要有它

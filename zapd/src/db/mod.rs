@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 pub mod init_db;
 /// 菜单种子数据（结构化清单，见模块注释）
 pub mod menu_seed;

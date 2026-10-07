@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
  * 「系统设置 → About ZAP」的「About」标签。

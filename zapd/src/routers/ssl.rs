@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 「SSL/TLS」菜单后端：SSL 证书管理。
 //!
 //! 支持三种来源并统一按 PEM 保存到 `ssl_cert` 表（四段材料）：

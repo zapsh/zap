@@ -1,0 +1,14 @@
+ZAP
+Copyright (C) 2026 zap
+
+本软件采用双重许可（Dual Licensing）：
+
+1. 在 GNU Affero 通用公共许可证 v3.0（AGPL-3.0）下授权，
+   完整文本见 LICENSE 文件。
+2. 在商业许可（Zap Pro / 闭源集成）下授权，
+   说明见 COMMERCIAL-LICENSE.md。
+
+你只能在上述两种许可之一（由你选择）的条款下使用本软件。
+
+如需在闭源产品中集成、修改或再分发本软件，或希望免除 AGPL 的
+源代码披露义务、使用 Zap Pro 企业版功能，你必须购买商业许可。

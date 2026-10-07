@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Docker 容器管理端点（面板「容器」：容器 / 镜像 / 卷 / 网络 / Compose）。
 //!
 //! 端点（全部透传 zapexec 返回，角色门禁见 `access.rs` 的 `/docker` 条目）：

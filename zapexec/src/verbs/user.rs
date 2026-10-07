@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 面板用户家目录骨架 / Linux 系统账号管理（root 执行）。
 //!
 //! 契约：每个面板用户在 `user.home_dir`（通常为 `/home/{linux_user}`）下拥有

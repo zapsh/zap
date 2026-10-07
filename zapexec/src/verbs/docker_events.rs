@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 守护进程实时事件流（`docker events` 的等价物）。
 //!
 //! 走 Engine API 的 `/events` 长连接而不是起一个 `docker events` 子进程：

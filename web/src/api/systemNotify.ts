@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { http } from '@/utils/request'
 
 /** Mail 渠道配置（系统设置 → Zap 设置 → 通知设置，仅 admin） */

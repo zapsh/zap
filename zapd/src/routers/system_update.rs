@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 系统更新路由（系统设置 → 系统更新，admin only）：
 //! 状态（版本 / 自动更新配置 / 历史）/ 保存配置 / 检查更新 / 触发升级 / 升级日志。
 

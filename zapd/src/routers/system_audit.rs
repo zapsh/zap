@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 审计日志查询接口（仅管理员）。
 
 use axum::{Json, extract::Query};

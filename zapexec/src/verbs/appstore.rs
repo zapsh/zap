@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! AppStore 特权动词（全部以 root 执行）。
 //!
 //! 职责：

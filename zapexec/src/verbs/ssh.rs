@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 use serde_json::json;
 use std::io::Write;
 use std::path::PathBuf;

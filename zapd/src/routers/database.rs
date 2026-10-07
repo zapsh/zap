@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 数据库管理（MySQL / MariaDB）。
 //!
 //! 通过 **sqlx 的 MySQL 驱动**（纯 Rust 实现，不依赖 `mysql` 客户端、

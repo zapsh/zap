@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div style="padding: 0 15px" @click="toggleClick">
     <el-icon :class="{ 'is-active': isActive }" class="hamburger-icon">

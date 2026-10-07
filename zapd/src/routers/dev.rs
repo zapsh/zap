@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 「开发」菜单后端：静态 API Token 的生成 / 列表 / 修改 / 吊销，以及 API 文档。
 //!
 //! API Token 形如 `zap_<48 位 hex>`，数据库仅保存其 SHA-256 哈希与展示前缀；

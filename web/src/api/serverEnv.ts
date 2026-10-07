@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { http } from '@/utils/request'
 
 /** 自动探测层：os / hostname / webserver / php / databases / tools */

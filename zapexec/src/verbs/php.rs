@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! PHP-FPM 按用户 pool 管理。
 //!
 //! 每个面板用户对应一个 Linux 系统账号，站点同步时自动为

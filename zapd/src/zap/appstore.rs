@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! AppStore：本地目录扫描（包 / 已安装实例）+ 安装任务在通用任务队列上的登记。
 //!
 //! 任务本身（登记、状态机、日志、可见性）已抽到 [`crate::zap::task`]，全站共用；

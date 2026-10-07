@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! `zapctl cred` —— 密码生成与服务凭据（加密存储）。
 //!
 //! 用法：

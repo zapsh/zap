@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 export const formatBytes = function (bytes : number, decimals = 2) {
   if (bytes === 0) return '0 Bytes'
   var k = 1024,

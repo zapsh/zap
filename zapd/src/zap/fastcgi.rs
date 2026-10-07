@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 最小 FastCGI 客户端：把 HTTP 请求转交给 PHP-FPM 执行。
 //!
 //! 仅实现 RESPONDER 角色需要的记录类型，采用「一次请求一条连接」

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div v-loading="loading" class="nginx-server">
     <!-- 未安装引导 -->

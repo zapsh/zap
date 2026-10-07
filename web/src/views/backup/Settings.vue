@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="backup-settings">
     <!-- 备份存储目录（可改到其他磁盘 / 挂载点，缓解系统盘空间不足） -->

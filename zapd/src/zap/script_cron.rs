@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 脚本/自动化：计划任务（admin 专属，系统级 root 权限执行）。
 //!
 //! - cron 表达式为 5 段：`分 时 日 月 周`（标准 crontab 语法）

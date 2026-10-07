@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Web 应用挂载：`/webapps/*`。
 //!
 //! 当前提供 phpMyAdmin：程序本体由应用商店安装到 `/usr/local/apps/phpmyadmin`，

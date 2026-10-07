@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 

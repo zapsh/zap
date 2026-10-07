@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 站内信通知中心。
 //!
 //! 事件发生时向 `notice_message` 写入一条站内信；是否真正送达取决于

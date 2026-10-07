@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { http } from '@/utils/request'
 
 /** 套餐（Packages）：创建客户时可选择的资源套餐 */

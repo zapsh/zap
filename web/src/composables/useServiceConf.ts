@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // 服务配置（/system/service-conf/*）的取数与写入逻辑。
 //
 // 只管数据不管界面：MySQL 页、PHP 实例面板各自画自己的 UI，避免出现

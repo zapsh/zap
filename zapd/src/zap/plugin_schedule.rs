@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 插件定时任务与 Webhook 触发。
 //!
 //! 插件只有在用户点按钮时才会跑，这在很多场景不够用：每天半夜 `git fetch`、仓库备份、

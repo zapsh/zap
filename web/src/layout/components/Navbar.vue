@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="navbar">
     <!-- 折叠 / 展开侧栏（品牌区在侧栏顶部，这里不再重复放 logo） -->

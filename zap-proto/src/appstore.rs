@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 应用商店的「槽位」路径规则 —— `zapd`（非特权）与 `zapexec`（root）共用同一份。
 //!
 //! 背景：早期一个包只有一个登记目录 `apps/<category>/<name>/`，于是

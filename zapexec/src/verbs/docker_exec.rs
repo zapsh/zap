@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 容器内交互式终端（`docker exec -it` 的等价物）。
 //!
 //! 走 Engine API 的 exec 端点而不是 `docker exec` 子进程：

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /// 应用基础路径（URL 前缀）。
 ///
 /// 由后端在 `index.html` 里注入：读取 `zap.yaml` 的 `server.url_prefix`，

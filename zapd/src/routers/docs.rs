@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 「文档」菜单后端。
 //!
 //! 把 `{data}/www/html/<file>.md` 渲染成 HTML 返回给前端：

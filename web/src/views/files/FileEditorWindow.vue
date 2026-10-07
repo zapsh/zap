@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <!--
     非模态浮窗：Teleport 到 body（文件管理自身 overflow:hidden，且浮窗要能盖住整个视口）。

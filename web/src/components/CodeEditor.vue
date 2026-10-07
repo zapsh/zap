@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div ref="host" class="code-editor" :class="{ 'is-readonly': readonly }"></div>
 </template>

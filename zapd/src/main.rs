@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+// SPDX-License-Identifier: AGPL-3.0-only
 
 use std::{env, sync::Arc, time::Duration};
 

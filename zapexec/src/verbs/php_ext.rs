@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! PHP 扩展管理（服务配置 → PHP → 各实例）
 //!
 //! 一个 PHP 实例（php74 / php81 …）装了哪些扩展、能不能装新的，取决于它的

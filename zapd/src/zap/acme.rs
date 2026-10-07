@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Let's Encrypt（ACME v2）证书申请：异步订单编排。
 //!
 //! 因此这里把流程拆成**可跨请求存活的订单**：订单句柄（ACME order URL）、待签私钥、

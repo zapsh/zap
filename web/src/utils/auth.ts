@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 const TOKEN_KEY = 'Zap-Admin-Token'
 
 /**

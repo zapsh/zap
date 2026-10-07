@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import axios from 'axios'
 import type { AxiosInstance, AxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="svc-conf-page">
     <!-- 服务配置：总览 + 各服务独立配置页，用 nav pill 切换 -->

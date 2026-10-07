@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # ZAP 离线包制作脚本 —— 在有外网的机器上跑，产出一个可以直接搬到内网的包。
 #
 # 产物 zap-offline-v<版本>[-pro]-linux-<arch>.tar.gz 解开后是：

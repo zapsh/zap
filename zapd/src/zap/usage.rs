@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 用户资源用量采集（磁盘 / 带宽）与站点流量分析。
 //!
 //! - **磁盘**：定时对 `user.home_dir` 统计占用，写回

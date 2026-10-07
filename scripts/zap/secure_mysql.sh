@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # remove anonymous users
 DELETE FROM mysql.global_priv WHERE User='';
 

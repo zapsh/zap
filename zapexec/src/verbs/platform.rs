@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 平台差异层：把 OS 之间不一致的系统管理命令收敛到一处。
 //!
 //! 目标平台是 Debian/RHEL/Alpine 系 Linux：即便在同一个内核上，命令名、参数语义、

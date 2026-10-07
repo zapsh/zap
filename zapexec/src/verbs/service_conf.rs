@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 通用服务配置（root 执行）：「服务配置」大类下 Nginx 之外的各服务
 //! （php / mysql(MySQL/MariaDB 合一，按实例自动识别) / docker …）的配置页后端能力。
 //!

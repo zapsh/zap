@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="terminal-page">
     <!-- 左侧连接管理器 -->

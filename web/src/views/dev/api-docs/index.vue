@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="api-docs-container" v-loading="loading">
     <div class="docs-layout" v-if="docs">

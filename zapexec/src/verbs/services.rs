@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 服务总览（root 执行）：「服务配置 → 总览」页的数据源。
 //!
 //! 只认「应用商店安装、且安装脚本在 `info.yaml` 里登记了 `svc_name`」的应用实例 ——

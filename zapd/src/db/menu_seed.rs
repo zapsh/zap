@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 菜单种子数据（结构化）：侧栏入口的唯一真源。
 //!
 //! 以前是一整段 `INSERT INTO menus (...) VALUES (...)` 的 SQL，三个痛点：

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! `zapctl env` 子命令：管理 `{data}/server_env.yaml`（运行环境状态）。
 //!
 //! 数据分两层：

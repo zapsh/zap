@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 服务器运行环境管理。
 //!
 //! 状态存放于 `{data}/server_env.yaml`（见 [`crate::zap::server_env`]），分两层：

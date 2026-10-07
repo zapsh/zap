@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 系统二进制升级（zapd / zapexec / zapctl / zapupgrade）。
 //!
 //! 本模块只负责**安全地拉起独立升级器 zapupgrade**：真正的下载、校验、

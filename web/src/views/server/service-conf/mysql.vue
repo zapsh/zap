@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div v-loading="busy" class="mysql-conf">
     <el-card shadow="never" class="top-card">

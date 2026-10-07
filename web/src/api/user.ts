@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { http } from '@/utils/request'
 import type { LoginForm, UserInfo } from '@/types/user'
 import type { ApiResponse } from '@/types/api_response'

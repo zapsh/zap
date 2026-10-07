@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! ModSecurity（WAF）端点（管理员）——**可选能力**
 //!
 //! 端点：

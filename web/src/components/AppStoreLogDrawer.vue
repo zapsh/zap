@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <el-drawer v-model="visible" :title="drawerTitle" size="62%" :destroy-on-close="false">
     <div class="log-wrap">

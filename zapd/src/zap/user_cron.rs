@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 面板用户的计划任务（crontab）。
 //!
 //! 与 `script_cron`（admin 专属、存 DB、以 root 运行）不同，这里的任务：

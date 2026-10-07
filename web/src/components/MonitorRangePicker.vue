@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <el-radio-group :model-value="modelValue" size="small" @update:model-value="onChange">
     <el-radio-button v-for="r in MONITOR_RANGES" :key="r.value" :value="r.value">

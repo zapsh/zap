@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 服务管理后端：只面向 systemd（zap 仅支持 Linux）。
 //!
 //! 动作动词与 systemd 一一对应（`start` / `stop` / `restart` / `reload` /

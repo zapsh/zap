@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div>
     <!-- 第一行：系统 + 处理器 -->

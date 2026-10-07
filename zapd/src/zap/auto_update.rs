@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 自动更新调度：分钟粒度轮询 `{data}/update_config.yaml`，命中 cron 表达式时触发升级。
 //!
 //! 用轻量轮询（而非 tokio-cron-scheduler）的原因：自动更新开关与 cron

@@ -10,7 +10,7 @@
 [![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen?logo=vue.js)](https://vuejs.org)
 [![Version](https://img.shields.io/badge/version-1.0.3-blue)](https://github.com/zapsh/zap)
 [![Platform](https://img.shields.io/badge/platform-Linux%20amd64%20%7C%20arm64-lightgrey?logo=linux)](https://www.kernel.org)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
 
 </div>
 
@@ -96,4 +96,15 @@ git clone https://github.com/zapsh/zap.git && cd zap
 
 ## 参与贡献
 
-欢迎提交 Issue 与 PR。提交前请跑 `cargo fmt --all && cargo clippy --all-targets` 与 `cd web && npm run type-check`；系统级变更请通过 `zapexec` 白名单动词实现。提交 PR 即视为同意以 [Apache-2.0](./LICENSE) 授权。
+欢迎提交 Issue 与 PR。提交前请跑 `cargo fmt --all && cargo clippy --all-targets` 与 `cd web && npm run type-check`；系统级变更请通过 `zapexec` 白名单动词实现。提交 PR 即视为同意以 [AGPL-3.0](./LICENSE) 授权，或（如适用）以 [商业许可](./COMMERCIAL-LICENSE.md) 授权。
+
+## 许可证
+
+ZAP 采用**双重许可（Dual Licensing）**：
+
+- **AGPL-3.0（开源版）**：任何人可依据 [GNU Affero 通用公共许可证 v3.0](./LICENSE) 免费使用、修改与分发。由于 AGPL 的「网络使用条款」（第 13 条），若你以 SaaS / 网络服务方式向他人提供 ZAP 功能，必须向用户提供对应的完整源代码。
+- **商业许可（Zap Pro）**：若你希望在**闭源**产品中集成、修改或再分发 ZAP，或希望免除 AGPL 的源代码披露义务、使用 Zap Pro 的企业版功能（如集群管理），必须购买 [商业许可](./COMMERCIAL-LICENSE.md)。未获商业许可而闭源集成即构成对 AGPL-3.0 的违约。
+
+简而言之：**开源且依规披露源码 → 免费使用 AGPL-3.0；闭源集成 / 企业商用 → 购买商业许可。**
+
+如需商业授权，请联系 <sales@zap.cn>（请替换为实际联系方式）。

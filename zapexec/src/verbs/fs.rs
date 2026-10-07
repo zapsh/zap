@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 受限的文件系统只读操作（root 执行）。
 //!
 //! - `browse_dirs`：列出某个目录下的直接子目录（供站点「选择已有站点目录」）；

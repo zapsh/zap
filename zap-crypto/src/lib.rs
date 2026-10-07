@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! ZAP 统一加密库（AES-256-GCM）与「服务凭据」文件存储。
 //!
 //! 被 `zapd`（业务进程）、`zapexec`（root 特权进程）、`zapctl`（运维 CLI）共用，

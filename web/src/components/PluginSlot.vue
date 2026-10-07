@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="plugin-slot">
     <!-- context 模式：入口由宿主（右键菜单）自己渲染，这里只保留弹窗，见 defineExpose -->

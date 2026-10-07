@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 #[derive(Debug, Clone, PartialEq)]
 pub enum ZapValue {
     I32(i32),

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <!-- Element Plus 组件库文案（分页器 / 日期选择器 / 表格空态…）跟随应用语言 -->
   <el-config-provider :locale="elementLocale">

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 缓存 / 产物清理：安装日志、运行现场（编译产物）、下载缓存，以及 `data/tmp` 下的临时上传暂存。
 //!
 //! 设计目标：

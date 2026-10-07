@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! 插件运行时（mlua 嵌入 zapexec）。
 //!
 //! 插件只装在 `$ZAP_PATH/plugins/<name>/`（系统级，仅管理员可安装）。普通用户只能「使用」插件
