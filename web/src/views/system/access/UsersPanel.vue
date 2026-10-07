@@ -959,6 +959,9 @@ function resetSearch() {
 const roleList = ref<RoleItem[]>([])
 
 async function loadRoles() {
+  // 角色列表仅管理员需要（角色下拉框仅 admin 可见），reseller 无此权限，避免命中
+  // 后端 /system/role/list 的 Required::Admin 角色门禁而报「权限不足」。
+  if (!isAdmin.value) return
   try {
     const res = await getRoleList()
     // 停用的角色不参与选择
