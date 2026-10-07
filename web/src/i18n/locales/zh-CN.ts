@@ -367,6 +367,8 @@ export default {
 
     // 套餐
     ownerSystem: '系统直属',
+    maxUsers: '最大用户数',
+    maxUsersTip: '该账户名下可创建的客户 / 成员上限，0 表示不限。仅对可建子账号的账户（经销商）有意义，普通客户保持 0 即可。',
     packageNone: '不绑定套餐',
     packageNoneOption: '不绑定套餐（不受套餐限制）',
     packageTipNone: '不绑定套餐：该客户不受套餐限制（磁盘、站点数、SSH 均不拦截）。',
@@ -2773,6 +2775,7 @@ export default {
     itemQuota: '配额管理',
     itemAllocation: '资源分配',
     manageCustomers: '客户管理',
+    customerCap: '名下客户 {used} / 上限 {max}（达上限后将无法继续创建）',
   },
 
   /** 开发者 - API Token */

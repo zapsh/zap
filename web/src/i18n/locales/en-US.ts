@@ -336,6 +336,9 @@ const enUS: Messages = {
       'Sidebar entries granted beyond the role. Visibility only — actions still require the matching permission points (403 otherwise).',
 
     ownerSystem: 'System-owned',
+    maxUsers: 'Max users',
+    maxUsersTip:
+      'Maximum number of customers/members this account may create. 0 means unlimited. Only meaningful for accounts that can create sub-accounts (resellers); keep 0 for ordinary customers.',
     packageNone: 'No package',
     packageNoneOption: 'No package (not limited by any package)',
     packageTipNone:
@@ -2786,6 +2789,7 @@ const enUS: Messages = {
     itemQuota: 'Quota',
     itemAllocation: 'Allocation',
     manageCustomers: 'Manage Customers',
+    customerCap: 'Customers {used} / limit {max} (creation blocked at limit)',
   },
 
   /** Developer - API tokens */

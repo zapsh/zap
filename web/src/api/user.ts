@@ -64,6 +64,8 @@ export interface UserListItem {
   read_only: boolean
   /** 绑定的套餐 id；0 = 未绑定套餐 */
   package_id: number
+  /** 名下账号数上限（0 = 不限）；仅具备建子账号能力的账户（reseller）有意义 */
+  max_users: number
   /** 套餐名（未绑定时为空串） */
   package_name: string
   /** 家目录磁盘占用（字节）；0 = 未采集或家目录不存在 */
@@ -129,6 +131,8 @@ export interface CreateUserPayload {
   perm_deny?: string[]
   /** 只读账号：开启后只能查看，不能做任何修改 */
   read_only?: boolean
+  /** 名下账号数上限（0 = 不限）；仅 admin 建 reseller 时生效 */
+  max_users?: number
 }
 
 /** 新增用户（返回 id / 家目录 / Linux 账号） */
@@ -162,6 +166,8 @@ export interface UpdateUserPayload {
   perm_deny?: string[]
   /** 只读开关：开启后只能查看，不能做任何修改 */
   read_only?: boolean
+  /** 名下账号数上限（0 = 不限）；仅 admin 可设置 */
+  max_users?: number
 }
 
 /** 更新用户结果 */

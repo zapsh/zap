@@ -53,6 +53,12 @@
       </el-col>
     </el-row>
 
+    <!-- 客户数上限提示 -->
+    <div v-if="account.max_users > 0" class="cap-hint">
+      <el-icon><Icon icon="material-symbols:group" /></el-icon>
+      <span>{{ t('dashboardReseller.customerCap', { used: counts.users, max: account.max_users }) }}</span>
+    </div>
+
     <!-- 常规信息 + 使用情况 -->
     <el-row :gutter="16" class="info-row">
       <!-- 常规信息 -->
@@ -566,6 +572,23 @@ onMounted(async () => {
 
 .stat-row {
   margin-bottom: 16px;
+}
+
+.cap-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 16px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-color-warning-light-9);
+  border: 1px solid var(--el-color-warning-light-5);
+  border-radius: 8px;
+}
+.cap-hint .el-icon {
+  font-size: 16px;
+  color: var(--el-color-warning);
 }
 
 .stat-card :deep(.el-card__body) {

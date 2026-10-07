@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::{env, sync::Arc, time::Duration};
 
 use axum::{Router, extract::Request, http::StatusCode};

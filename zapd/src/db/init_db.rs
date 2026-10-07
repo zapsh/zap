@@ -16,6 +16,8 @@ use super::menu_seed;
 /// 老库换 Pro 二进制后靠它补入口）。
 pub async fn init_schema() {
     init_system_user_table_schema().await;
+    // 老库补列：新增的 user.max_users（经销商名下账号数上限）
+    ensure_column("user", "max_users", "INTEGER NOT NULL DEFAULT 0").await;
     init_system_monitor_table_schema().await;
     init_system_monitor_networks_table_schema().await;
     init_monitor_indexes().await;
@@ -175,6 +177,9 @@ async fn init_system_user_table_schema() {
         --   用于「共享可见但不能改」的成员 / 客户（新建用户时勾选即可）
         read_only INTEGER NOT NULL DEFAULT 0,
         package_id INTEGER NOT NULL DEFAULT 0,
+        -- max_users：该账户名下（owner_id=自己）可创建的账号上限（0 = 不限）。
+        --   仅对具备建客户/成员能力的账户（reseller）有意义，admin 不受限。
+        max_users INTEGER NOT NULL DEFAULT 0,
         totp_secret TEXT NOT NULL DEFAULT '',
         totp_enabled INTEGER NOT NULL DEFAULT 0,
         -- token_version：会话版本号。「下线所有设备」时 +1，JWT Claims 里带 tv，

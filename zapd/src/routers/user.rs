@@ -39,6 +39,8 @@ struct UserInfo {
     /// 只读账号：1=共享可见但不可改（生效权限只保留 `{ns}:view`）
     read_only: i32,
     package_id: i64,
+    /// 名下账号数上限（0 = 不限）：仅对可建子账号的账户（reseller）有意义
+    max_users: i64,
     /// 家目录磁盘用量（字节，定时任务 du 采集；0 = 未采集）
     disk_used_bytes: i64,
     disk_stat_at: i64,
@@ -80,6 +82,10 @@ pub struct CreateUserPayload {
     /// 用于「共享可见但不能改」的成员 / 客户
     #[serde(default)]
     pub read_only: Option<bool>,
+    /// 名下账号数上限（0 = 不限）：仅 admin 建「可建子账号的账户（reseller）」时有效，
+    /// 非 admin 提交一律按 0 处理（不允许自提上限）
+    #[serde(default)]
+    pub max_users: Option<i64>,
 }
 
 /// 附加权限入参：兼容数组与逗号分隔字符串两种写法。
@@ -134,6 +140,9 @@ pub struct UpdateUserPayload {
     /// 只读账号开关（不传 = 不改动）
     #[serde(default)]
     pub read_only: Option<bool>,
+    /// 名下账号数上限（0 = 不限）：仅 admin 可设置（非 admin 提交将被忽略）
+    #[serde(default)]
+    pub max_users: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,13 +182,14 @@ struct UserAccountRow {
     package_id: i64,
     owner_id: i64,
     user_kind: i32,
+    max_users: i64,
 }
 
 /// 读取用户的归属与运行实体信息；不存在返回 None。
 async fn load_account(id: i64) -> Result<Option<UserAccountRow>, ZapError> {
     let pool = db::get_db_pool().await;
     let row: Option<UserAccountRow> =
-        sqlx::query_as("SELECT home_dir, linux_user, roles, package_id, owner_id, user_kind FROM user WHERE id = ?")
+        sqlx::query_as("SELECT home_dir, linux_user, roles, package_id, owner_id, user_kind, max_users FROM user WHERE id = ?")
             .bind(id)
             .fetch_optional(pool)
             .await?;
@@ -388,6 +398,8 @@ pub async fn user_info(claims: Claims) -> Json<Value> {
                 // 用户类型与归属：0=普通用户/客户 / 1=成员（子账号）
                 "user_kind": user.user_kind,
                 "owner_id": user.owner_id,
+                // 名下账号数上限（0 = 不限）
+                "max_users": user.max_users,
                 // 父账号对该成员收紧的权限点（仅成员有值）
                 "perm_deny": user.perm_deny.split(',').filter(|s| !s.is_empty()).collect::<Vec<&str>>(),
                 // 只读账号：共享可见但不可改
@@ -605,6 +617,7 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
                 "roles": user.roles.split(',').collect::<Vec<&str>>(),
                 "permissions": user.permissions.split(',').collect::<Vec<&str>>(),
                 "owner_id": user.owner_id,
+                "max_users": user.max_users,
                 "owner_username": name_of.get(&user.owner_id).cloned().unwrap_or_default(),
                 // 成员（子账号）标记与父账号收紧清单
                 "user_kind": user.user_kind,
@@ -690,6 +703,13 @@ async fn create_user_inner(
     let home_dir: String;
     let lu: String;
     let mut owner_id: i64 = claims.id as i64;
+    // 名下账号数上限：仅 admin 能在建「可建子账号的账户（reseller）」时设置；
+    // 非 admin（reseller 自建客户）一律 0，不允许自提上限
+    let max_users: i64 = if is_admin {
+        payload.max_users.unwrap_or(0).max(0)
+    } else {
+        0
+    };
 
     if is_member_create {
         // ── 成员分支：共享父账号的家目录 / 系统账号 / 套餐，不建自己的运行实体 ──
@@ -803,8 +823,28 @@ async fn create_user_inner(
         .unwrap_or_default();
 
     let pool = db::get_db_pool().await;
+    // 数量上限：若归属账户（owner）自身设了 max_users>0，则其名下账号数不得超过上限。
+    // 这样无论是 reseller 自建客户，还是 admin 把账号挂到某个 reseller 名下，都会受同一上限约束；
+    // owner_id=0（直属系统）或 admin 直接建则不限制。
+    if owner_id > 0 {
+        if let Some(owner) = load_account(owner_id).await? {
+            if owner.max_users > 0 {
+                let owned: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user WHERE owner_id = ?")
+                    .bind(owner_id)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or((0,));
+                if owned.0 >= owner.max_users {
+                    return Err(ZapError::New(
+                        -1,
+                        format!("已达该账户最大用户数上限（{}）", owner.max_users),
+                    ));
+                }
+            }
+        }
+    }
     let result = sqlx::query(
-        "INSERT INTO user (username, home_dir, linux_user, fpm_pool, fpm_spec_ref, password, email, phone, nickname, roles, permissions, owner_id, user_kind, perm_deny, read_only, package_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        "INSERT INTO user (username, home_dir, linux_user, fpm_pool, fpm_spec_ref, password, email, phone, nickname, roles, permissions, owner_id, user_kind, perm_deny, read_only, package_id, max_users, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
     )
     .bind(&payload.username)
     .bind(&home_dir)
@@ -823,6 +863,7 @@ async fn create_user_inner(
     // 只读：共享可见但不可改（生效权限只保留 {ns}:view）
     .bind(if payload.read_only.unwrap_or(false) { 1 } else { 0 })
     .bind(package_id)
+    .bind(max_users)
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -1087,6 +1128,13 @@ async fn update_user_inner(
         separated
             .push("package_id = ")
             .push_bind_unseparated(pid.max(0));
+    }
+    // 名下账号数上限：仅 admin 可设置（reseller 不能自提上限）
+    if let Some(mu) = payload.max_users {
+        require_admin(claims)?;
+        separated
+            .push("max_users = ")
+            .push_bind_unseparated(mu.max(0));
     }
     separated.push("updated_at = ").push_bind_unseparated(now);
 
@@ -1435,6 +1483,7 @@ pub async fn team_add(
         user_kind: Some(USER_KIND_MEMBER),
         perm_deny: payload.perm_deny,
         read_only: payload.read_only,
+        max_users: None,
     };
     create_user_inner(&claims, &client_addr.ip().to_string(), inner).await
 }
@@ -1459,6 +1508,7 @@ pub async fn team_update(
         permissions: None,
         perm_deny: payload.perm_deny,
         read_only: payload.read_only,
+        max_users: None,
     };
     update_user_inner(&claims, &client_addr.ip().to_string(), inner).await
 }

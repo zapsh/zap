@@ -515,6 +515,16 @@
                 </el-select>
                 <div class="form-tip">{{ packageTip() }}</div>
               </el-form-item>
+              <el-form-item v-if="isAdmin" :label="t('users.maxUsers')">
+                <el-input-number
+                  v-model="form.max_users"
+                  :min="0"
+                  :step="1"
+                  controls-position="right"
+                  style="width: 160px"
+                />
+                <div class="form-tip">{{ t('users.maxUsersTip') }}</div>
+              </el-form-item>
               <el-form-item v-if="isAdmin || isReseller" :label="t('users.fpmSpec')">
                 <el-select
                   v-model="fpmMode"
@@ -1040,6 +1050,8 @@ interface FormData {
   fpm_pool: string
   /** 套餐 id；0 = 不绑定套餐 */
   package_id: number
+  /** 名下账号数上限（0 = 不限） */
+  max_users: number
   /** 个人附加权限点：在角色权限之外单独授予（只做加法） */
   permissions: string[]
   /** 用户类型：0=客户（独立家目录与系统账号）/ 1=成员（共享归属用户的家目录与系统账号） */
@@ -1060,6 +1072,7 @@ const defaultForm = (): FormData => ({
   status: 1,
   fpm_pool: '',
   package_id: 0,
+  max_users: 0,
   permissions: [],
   user_kind: 0,
   perm_deny: [],
@@ -1122,6 +1135,7 @@ function handleEdit(row: UserListItem) {
     status: row.status,
     fpm_pool: row.fpm_pool ?? '',
     package_id: row.package_id ?? 0,
+    max_users: row.max_users ?? 0,
     permissions: (row.permissions ?? []).filter(Boolean),
     user_kind: row.user_kind ?? 0,
     perm_deny: (row.perm_deny ?? []).filter(Boolean),
@@ -1187,6 +1201,7 @@ async function submitForm() {
         payload.roles = form.roles
         payload.owner_id = form.owner_id || 0
         payload.permissions = form.permissions
+        payload.max_users = form.max_users || 0
       }
       // 成员（子账号）：共享归属用户的家目录与系统账号，套餐 / FPM 一律跟随父账号
       if (form.user_kind === 1) {
@@ -1218,6 +1233,7 @@ async function submitForm() {
       if (isAdmin.value && editingId.value !== ROOT_USER_ID) {
         payload.roles = form.roles
         payload.permissions = form.permissions
+        payload.max_users = form.max_users || 0
       }
       // 成员只下发收紧清单（套餐 / FPM 由父账号决定）
       if (form.user_kind === 1) {
