@@ -155,17 +155,21 @@
         </el-table-column>
         <el-table-column :label="t('common.operation')" width="180" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">{{ t('common.edit') }}</el-button>
-            <el-button
-              link
-              :type="row.status === 1 ? 'warning' : 'success'"
-              @click="toggleStatus(row)"
-            >
-              {{ row.status === 1 ? t('packages.stop') : t('common.enable') }}
-            </el-button>
-            <el-button link type="danger" @click="handleDelete(row)">
-              {{ t('common.delete') }}
-            </el-button>
+            <!-- 全局套餐（owner_id=0）仅管理员可管理；reseller 只能管理自己名下的私有套餐 -->
+            <template v-if="userStore.isAdmin || row.owner_id !== 0">
+              <el-button link type="primary" @click="openEdit(row)">{{ t('common.edit') }}</el-button>
+              <el-button
+                link
+                :type="row.status === 1 ? 'warning' : 'success'"
+                @click="toggleStatus(row)"
+              >
+                {{ row.status === 1 ? t('packages.stop') : t('common.enable') }}
+              </el-button>
+              <el-button link type="danger" @click="handleDelete(row)">
+                {{ t('common.delete') }}
+              </el-button>
+            </template>
+            <span v-else class="muted">—</span>
           </template>
         </el-table-column>
         <template #empty>
@@ -402,8 +406,10 @@ import {
   type PackageItem,
 } from '@/api/package'
 import { getFpmSpecs, type FpmSpecItem } from '@/api/serverEnv'
+import { useUserStore } from '@/stores/user'
 
 const { t } = useI18n()
+const userStore = useUserStore()
 
 const list = ref<PackageItem[]>([])
 const loading = ref(false)

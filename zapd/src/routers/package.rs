@@ -502,6 +502,14 @@ pub async fn package_update(
     let actor_id = claims.id as i64;
     let current = load_for_actor(payload.id, is_admin, actor_id).await?;
 
+    // 全局套餐（owner_id=0）仅管理员可编辑/删除；reseller 只能管理自己名下的套餐
+    if !is_admin && current.owner_id == 0 {
+        return Err(ZapError::New(
+            -1,
+            "权限不足：全局套餐仅管理员可管理".to_string(),
+        ));
+    }
+
     let pool = db::get_db_pool().await;
     let now = chrono::Local::now().timestamp();
 
@@ -726,6 +734,14 @@ pub async fn package_delete(
     }
     let actor_id = claims.id as i64;
     let current = load_for_actor(payload.id, is_admin, actor_id).await?;
+
+    // 全局套餐（owner_id=0）仅管理员可编辑/删除；reseller 只能管理自己名下的套餐
+    if !is_admin && current.owner_id == 0 {
+        return Err(ZapError::New(
+            -1,
+            "权限不足：全局套餐仅管理员可管理".to_string(),
+        ));
+    }
 
     let pool = db::get_db_pool().await;
     let used: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user WHERE package_id = ?")
