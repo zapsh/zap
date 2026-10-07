@@ -38,19 +38,27 @@ export const useUserStore = defineStore(
     const phone = ref('')
     const nickname = ref('')
 
-    /** 代登录（一键登录客户面板）状态 */
+    /** 代登录（一键登录客户面板）状态。
+     *  直接实时读取 sessionStorage 推导，不进 pinia 持久化、也不依赖初始化时序，
+     *  避免被 persist 插件覆盖；关闭标签页时 token 一并清除，代登录状态自然失效 */
     const SUDO_PREV_KEY = 'Zap-Sudo-Prev'
-    const prevSudo = (() => {
+    const readSudoPrev = (): {
+      token?: string
+      expire?: number
+      username?: string
+      target?: string
+    } | null => {
       try {
         return JSON.parse(sessionStorage.getItem(SUDO_PREV_KEY) || 'null')
       } catch {
         return null
       }
-    })()
-    // 仅依据 sessionStorage 推导：关闭标签页时 token 一并清除，代登录状态自然失效
-    const sudoMode = ref<boolean>(!!prevSudo)
-    // 重载后从 sessionStorage 还原「正在代为管理的客户」名称
-    const sudoUsername = ref<string>(prevSudo?.target || prevSudo?.username || '')
+    }
+    const sudoMode = computed(() => !!readSudoPrev())
+    const sudoUsername = computed(() => {
+      const p = readSudoPrev()
+      return p?.target || p?.username || ''
+    })
 
     /**
      * 进入代登录：把当前（操作员）会话原样存到 sessionStorage，再切换到目标客户令牌。
@@ -63,12 +71,11 @@ export const useUserStore = defineStore(
         username: name.value,
         target: targetUsername,
       }
+      // 先把操作员原会话存入 sessionStorage，再切换令牌（computed 会自动反映）
       sessionStorage.setItem(SUDO_PREV_KEY, JSON.stringify(prev))
       setToken(newToken)
       setTokenExpire(newExpire)
       token.value = newToken
-      sudoMode.value = true
-      sudoUsername.value = targetUsername
     }
 
     /** 退出代登录：恢复操作员会话 */
@@ -89,8 +96,6 @@ export const useUserStore = defineStore(
         }
         sessionStorage.removeItem(SUDO_PREV_KEY)
       }
-      sudoMode.value = false
-      sudoUsername.value = ''
     }
 
     const userInfo = computed(() => ({
@@ -228,6 +233,7 @@ export const useUserStore = defineStore(
       stopSudo,
     }
   },
-  // 代登录状态仅存于 sessionStorage（见 startSudo/stopSudo），不进持久化，避免跨标签页残留
-  { persist: { omit: ['sudoMode', 'sudoUsername'] } },
+  // token 等登录态需要持久化；代登录状态仅存于 sessionStorage（见 startSudo/stopSudo），
+  // 用 computed 实时推导，不进 $state，避免跨标签页残留且不被 persist 覆盖
+  { persist: true },
 ) // 使用 Pinia 的持久化插件

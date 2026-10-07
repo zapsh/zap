@@ -102,6 +102,7 @@ const enUS: Messages = {
     goUpdateTip: 'System Settings → System Update',
     demoTip: 'Demo accounts are read-only. No actions can be performed.',
     sudoBanner: 'You are managing as "{name}" (sudo login). All actions are audited.',
+    sudoShort: 'Sudo: {name}',
     sudoExit: 'Exit sudo',
     sudoExitConfirm: 'Exit sudo login and return to your own account?',
     // Persistent footer entry: docs now live under System Settings → About ZAP

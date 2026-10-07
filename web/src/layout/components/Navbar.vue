@@ -110,6 +110,14 @@
         </div>
       </el-popover>
 
+      <div v-if="userStore.sudoMode" class="sudo-indicator">
+        <el-icon><Warning /></el-icon>
+        <span class="sudo-indicator__text">{{ t('layout.sudoShort', { name: userStore.sudoUsername }) }}</span>
+        <el-button type="primary" size="small" @click="handleExitSudo">{{
+          t('layout.sudoExit')
+        }}</el-button>
+      </div>
+
       <el-dropdown class="avatar-container" trigger="click">
         <!-- 窄屏会隐藏 .user-name，用 title 兜住「这是谁」 -->
         <div class="avatar-wrapper" :title="userStore.userInfo.name">
@@ -164,6 +172,7 @@ import {
   SwitchButton,
   Translate,
   UserFilled,
+  Warning,
 } from '@/icons'
 import type { Locale } from '@/i18n'
 
@@ -417,6 +426,45 @@ async function handleExitSudo() {
     .el-icon-caret-bottom {
       font-size: 12px;
       color: rgba(255, 255, 255, 0.55);
+    }
+  }
+
+  /* 代登录常驻标识：顶部导航栏内，醒目且不依赖下拉 */
+  .sudo-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 12px;
+    margin-right: 4px;
+    border-radius: 4px;
+    background: #faad14;
+    color: #1f1f1f;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+
+    .el-icon {
+      font-size: 16px;
+    }
+
+    .sudo-indicator__text {
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .el-button {
+      margin-left: 2px;
+      padding: 4px 8px;
+      background: #1f1f1f;
+      border-color: #1f1f1f;
+      color: #faad14;
+
+      &:hover {
+        background: #000;
+        border-color: #000;
+      }
     }
   }
 }

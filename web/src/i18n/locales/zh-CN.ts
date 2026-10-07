@@ -108,6 +108,7 @@ export default {
     demoTip: '演示账号仅支持浏览，不能执行任何操作',
     // 代登录（一键登录客户面板）顶部横幅
     sudoBanner: '你正在以「{name}」的身份代为管理（代登录），所有操作均会被审计记录',
+    sudoShort: '代登录：{name}',
     sudoExit: '退出代登录',
     sudoExitConfirm: '确定要退出代登录并返回你自己的账号吗？',
     // 页脚常驻入口：文档已整合进「系统设置 → About ZAP」

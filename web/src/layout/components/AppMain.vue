@@ -73,6 +73,9 @@ async function exitSudo() {
 }
 .sudo-banner {
   margin-bottom: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
 .sudo-banner :deep(.el-alert__title) {
   display: flex;
