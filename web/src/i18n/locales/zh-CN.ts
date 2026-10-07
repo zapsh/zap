@@ -153,12 +153,15 @@ export default {
     docs: '文档',
     // About ZAP（后端 menus id=30，位于「系统设置」下，整合了原「文档」菜单）
     about: 'About ZAP',
+    // 通知设置（后端 menus name=notify / notify-index，见 db/menu_seed.rs）
+    notify: '通知设置',
     // 二级
     // 备注：这些标题同时被 translateTitle 用作「中文原文 → key」的反查源，
     // 静态路由（router/index.ts）里的中文标题也靠它翻译，改动文案前先确认路由里的写法。
     profile: '个人中心',
     messages: '消息中心',
     'zap-config': 'Zap 设置',
+    'notify-index': '通知设置',
     user: '用户管理',
     roles: '角色管理',
     menus: '菜单管理',
@@ -700,6 +703,42 @@ export default {
     pillHint: 'Mail 等通知渠道的发送参数',
     tabMail: 'Mail',
 
+    provider: '发信渠道',
+    providerSmtp: 'SMTP（自建/通用）',
+    providerSendgrid: 'SendGrid',
+    providerAliyun: '阿里云邮件推送',
+    providerTencent: '腾讯云 SES',
+    region: '区域',
+    regionPlaceholder: '如 cn-hangzhou / ap-guangzhou',
+    sgApiKey: 'API Key',
+    sgApiKeyPlaceholder: 'SendGrid API Key',
+    aliyunAccessKey: 'AccessKeyId',
+    aliyunAccessSecret: 'AccessKeySecret',
+    tencentSecretId: 'SecretId',
+    tencentSecretKey: 'SecretKey',
+    secretKeepHint: '留空=沿用已保存的密钥（{hint}）',
+
+    templatesTitle: '通知模板',
+    templatesHint: '自定义各通知事件的邮件主题与正文，支持变量占位符。管理员编辑「全局」模板（影响所有用户），经销商编辑「私有」模板（仅影响其名下用户）。',
+    templateScopeGlobal: '作用域：全局（所有用户）',
+    templateScopeSelf: '作用域：私有（仅我的名下用户）',
+    templateSubject: '主题',
+    templateBody: '正文（支持 HTML）',
+    saveTemplates: '保存模板',
+    templatesSaved: '模板已保存',
+    varHint: '可用变量：{vars}',
+    evLogin: '登录成功',
+    evPassword: '密码变更',
+    evSiteCreated: '站点创建成功',
+    evDiskLow: '磁盘空间不足',
+    testMail: '发送测试邮件',
+    testMailHint: '向指定邮箱发送一封测试邮件，用于验证当前发信渠道是否可用（仅管理员）。',
+    testMailTo: '接收邮箱',
+    testMailPlaceholder: "test{'@'}example.com",
+    sendTest: '发送测试',
+    testSent: '测试邮件已发送，请检查收件箱',
+    mailNotConfigured: '尚未配置发信渠道，请先在上方完成发信配置',
+
     mailHint: '配置发送邮件所需的 SMTP 参数（供系统通知等场景使用）。密码留空表示不修改原密码。',
     smtpHost: 'SMTP 服务器',
     smtpHostPlaceholder: '如 smtp.example.com',
@@ -718,6 +757,10 @@ export default {
 
     invalidPort: '端口必须是 1 - 65535 之间的数字',
     mailSaved: 'Mail 设置已保存',
+
+    pillTemplates: '通知模板',
+    pillChannel: '发信渠道',
+    pillTest: '测试邮件',
   },
 
   /** 系统管理 · Zap 设置 */

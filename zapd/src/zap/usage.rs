@@ -240,23 +240,24 @@ async fn du_batch_root_all(dirs: &[String]) -> RootUsage {
 pub async fn collect_disk_usage() {
     let pool = get_db_pool().await;
     // 成员（子账号）共享父账号的家目录：跳过，否则父账号的用量会被重复计数
-    let rows: Vec<(i64, String)> =
-        sqlx::query_as("SELECT id, home_dir FROM user WHERE home_dir <> '' AND user_kind <> 1")
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
+    let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
+        "SELECT id, home_dir, disk_quota_mb, owner_id FROM user WHERE home_dir <> '' AND user_kind <> 1",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
     let now = Local::now().timestamp();
     // 家目录多为 0700（属主为各自 Linux 账号）：zapadm 连 stat 都做不到，
     // 因此不自行过滤，全部交给 root 统计，由 root 判定目录是否存在
     let homes: Vec<String> = rows
         .iter()
-        .map(|(_, h)| h.clone())
+        .map(|(_, h, _, _)| h.clone())
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
     let root = du_batch_root_all(&homes).await;
 
-    for (id, home_dir) in rows {
+    for (id, home_dir, quota_mb, owner_id) in rows {
         // 家目录不存在（Linux 账号还没建 / 已删除）：用量记 0
         if root.missing.contains(&home_dir) {
             let _ =
@@ -282,6 +283,14 @@ pub async fn collect_disk_usage() {
                 .bind(id)
                 .execute(pool)
                 .await;
+                // 磁盘空间不足预警：配额 > 0 且用量达 90% 时触发（带冷却）
+                if quota_mb > 0 {
+                    let used_pct =
+                        (bytes as i64 * 100) / (quota_mb * 1024 * 1024);
+                    if used_pct >= 90 {
+                        crate::zap::notify::disk_low(id, owner_id, used_pct as i32).await;
+                    }
+                }
             }
             None => warn!("磁盘用量采集失败: user={} home={}", id, home_dir),
         }

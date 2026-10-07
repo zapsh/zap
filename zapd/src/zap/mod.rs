@@ -25,6 +25,7 @@ pub mod job;
 pub mod jwt;
 pub mod login_history;
 pub mod logrotate;
+pub mod mail;
 pub mod mirror;
 pub mod notify;
 pub mod plugin_schedule;

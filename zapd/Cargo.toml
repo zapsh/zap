@@ -97,6 +97,13 @@ idna = "1.1"
 # markdown
 pulldown-cmark = "0.12"
 
+# 邮件发送：SMTP 用 lettre（rustls，避免 OpenSSL）；云厂商走 HTTP API
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "tokio1-rustls-tls",
+    "builder",
+] }
+
 ed25519-dalek = { version = "3", optional = true }
 
 

@@ -6,10 +6,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bell, Download, Setting } from '@/icons'
+import { Download, Setting } from '@/icons'
 import NavPillPanels from '@/components/NavPillPanels.vue'
 import ZapPanel from './ZapPanel.vue'
-import NotifyPanel from './NotifyPanel.vue'
 import MirrorPanel from './MirrorPanel.vue'
 import CachePanel from './CachePanel.vue'
 import SecurityPanel from './SecurityPanel.vue'
@@ -30,13 +29,6 @@ const tabs = computed(() => [
     icon: Setting,
     panel: ZapPanel,
     hint: t('zapCfg.pillHint'),
-  },
-  {
-    key: 'notify',
-    label: t('notifyCfg.title'),
-    icon: Bell,
-    panel: NotifyPanel,
-    hint: t('notifyCfg.pillHint'),
   },
   {
     key: 'mirror',

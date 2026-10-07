@@ -609,6 +609,32 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
         .icon("material-symbols:settings")
         .redirect("/system/access")
         .affix(),
+    // ── 通知设置（目录）：admin / user / reseller 都看得到入口；页内「通知模板」页签
+    // 所有人可自定义（reseller 仅影响自己名下用户），「发信渠道 / 测试邮件」两个页签仅管理员可见。
+    MenuSeed::new(
+        "notify",
+        "通知设置",
+        "dir",
+        "/notify",
+        "Layout",
+        R_ADMIN_USER_RESELLER,
+        13,
+    )
+    .icon("material-symbols:notifications")
+    .redirect("/notify/index")
+    .affix(),
+    MenuSeed::new(
+        "notify-index",
+        "通知设置",
+        "menu",
+        "index",
+        "notify/index",
+        R_ADMIN_USER_RESELLER,
+        1,
+    )
+    .parent("notify")
+    .icon("material-symbols:notifications")
+    .affix(),
     // 「基础设置」已整体下线：Mail 并入 Zap 设置的「通知设置」页签，建站默认网络
     // 与联系信息不再提供界面入口（键值仍留在 server_env.yaml）。
     MenuSeed::new(

@@ -2306,6 +2306,9 @@ pub async fn site_add(
     }
     tx.commit().await?;
 
+    // 通知：站点创建成功（站内信 + 邮件，受用户偏好与发信配置控制）
+    crate::zap::notify::site_created(owner, &name).await;
+
     // 站点扩展档案（类型 / upstream / location / 自定义目录标记 / SSL）
     if let Err(e) = save_profile(
         id,

@@ -137,9 +137,12 @@ const enUS: Messages = {
     docs: 'Docs',
     // About ZAP (backend menus id=30, under System Settings; absorbed the old Docs menu)
     about: 'About ZAP',
+    // Notification Settings (backend menus name=notify / notify-index, see db/menu_seed.rs)
+    notify: 'Notification Settings',
     profile: 'Profile',
     messages: 'Messages',
     'zap-config': 'Zap Settings',
+    'notify-index': 'Notification Settings',
     user: 'Users',
     roles: 'Roles',
     menus: 'Menus',
@@ -667,6 +670,42 @@ const enUS: Messages = {
     pillHint: 'Delivery parameters for Mail and future channels',
     tabMail: 'Mail',
 
+    provider: 'Provider',
+    providerSmtp: 'SMTP (self-hosted / generic)',
+    providerSendgrid: 'SendGrid',
+    providerAliyun: 'Aliyun DirectMail',
+    providerTencent: 'Tencent Cloud SES',
+    region: 'Region',
+    regionPlaceholder: 'e.g. cn-hangzhou / ap-guangzhou',
+    sgApiKey: 'API Key',
+    sgApiKeyPlaceholder: 'SendGrid API Key',
+    aliyunAccessKey: 'AccessKeyId',
+    aliyunAccessSecret: 'AccessKeySecret',
+    tencentSecretId: 'SecretId',
+    tencentSecretKey: 'SecretKey',
+    secretKeepHint: 'Leave empty to keep the saved secret ({hint})',
+
+    templatesTitle: 'Notification Templates',
+    templatesHint: 'Customize the subject and body of each notification event with variable placeholders. Admins edit the "global" template (all users); resellers edit their "private" template (only their own users).',
+    templateScopeGlobal: 'Scope: global (all users)',
+    templateScopeSelf: 'Scope: private (only my users)',
+    templateSubject: 'Subject',
+    templateBody: 'Body (HTML supported)',
+    saveTemplates: 'Save Templates',
+    templatesSaved: 'Templates saved',
+    varHint: 'Available variables: {vars}',
+    evLogin: 'Login success',
+    evPassword: 'Password change',
+    evSiteCreated: 'Site created',
+    evDiskLow: 'Disk space low',
+    testMail: 'Send test email',
+    testMailHint: 'Send a test email to a given address to verify the current mail channel works (admins only).',
+    testMailTo: 'Recipient',
+    testMailPlaceholder: "test{'@'}example.com",
+    sendTest: 'Send test',
+    testSent: 'Test email sent, please check your inbox',
+    mailNotConfigured: 'No mail channel configured yet; please complete the mail config above first',
+
     mailHint:
       'SMTP parameters used to send mail (system notifications, etc.). Leave the password empty to keep the current one.',
     smtpHost: 'SMTP Server',
@@ -686,6 +725,10 @@ const enUS: Messages = {
 
     invalidPort: 'Port must be a number between 1 and 65535',
     mailSaved: 'Mail settings saved',
+
+    pillTemplates: 'Notification Templates',
+    pillChannel: 'Mail Channel',
+    pillTest: 'Send Test',
   },
 
   zapCfg: {

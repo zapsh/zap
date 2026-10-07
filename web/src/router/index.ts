@@ -354,10 +354,29 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         name: 'Terminal',
         component: () => import('@/views/terminal/index.vue'),
         meta: { title: '终端', icon: 'material-symbols:monitor', affix: true },
-      },
-    ],
-  },
-  // 404 页面必须放在末尾
+          },
+        ],
+        },
+        // 通知设置（Layout 包裹 + 一级直链：admin / user / reseller；菜单接口失败时回退）
+        {
+        path: '/notify',
+        component: Layout,
+        redirect: '/notify/index',
+        meta: {
+          title: '通知设置',
+          icon: 'material-symbols:notifications',
+          roles: ['admin', 'user', 'reseller'],
+        },
+        children: [
+          {
+            path: 'index',
+            name: 'NotifyIndex',
+            component: () => import('@/views/notify/index.vue'),
+            meta: { title: '通知设置', icon: 'material-symbols:notifications', affix: true },
+          },
+        ],
+        },
+        // 404 页面必须放在末尾
   {
     path: '/:pathMatch(.*)*',
     component: () => import('@/views/error-page/404.vue'),
