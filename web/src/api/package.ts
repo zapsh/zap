@@ -82,6 +82,8 @@ export interface PackagePayload {
   /** 每个站点可部署的应用数上限（0 = 不限） */
   max_apps?: number
   status?: number
+  /** 归属作用域（仅 admin 新建时生效）：'global' 全局套餐 / 'self' 仅自己可见的私有套餐 */
+  scope?: 'global' | 'self'
 }
 
 /** 更新：仅提交需要变更的字段 */

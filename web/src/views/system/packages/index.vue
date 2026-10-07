@@ -156,7 +156,7 @@
         <el-table-column :label="t('common.operation')" width="180" fixed="right">
           <template #default="{ row }">
             <!-- 全局套餐（owner_id=0）仅管理员可管理；reseller 只能管理自己名下的私有套餐 -->
-            <template v-if="userStore.isAdmin || row.owner_id !== 0">
+            <template v-if="isAdmin || row.owner_id !== 0">
               <el-button link type="primary" @click="openEdit(row)">{{ t('common.edit') }}</el-button>
               <el-button
                 link
@@ -192,6 +192,13 @@
             :placeholder="t('packages.namePlaceholder')"
             maxlength="64"
           />
+        </el-form-item>
+        <el-form-item v-if="isAdmin" :label="t('packages.scope')">
+          <el-radio-group v-model="form.scope">
+            <el-radio value="global">{{ t('packages.scopeGlobalOpt') }}</el-radio>
+            <el-radio value="self">{{ t('packages.scopeSelfOpt') }}</el-radio>
+          </el-radio-group>
+          <div class="form-hint">{{ t('packages.scopeHint') }}</div>
         </el-form-item>
         <el-form-item :label="t('packages.remark')">
           <el-input
@@ -410,6 +417,8 @@ import { useUserStore } from '@/stores/user'
 
 const { t } = useI18n()
 const userStore = useUserStore()
+// store 只有 roles，无 isAdmin 字段；与 UsersPanel.vue 保持同一判定
+const isAdmin = computed(() => userStore.roles.includes('admin'))
 
 const list = ref<PackageItem[]>([])
 const loading = ref(false)
@@ -443,6 +452,8 @@ const form = reactive({
   allow_waf: false,
   allow_docker: false,
   status: 1,
+  // 归属作用域：仅 admin 新建时生效；reseller 始终为自己私有套餐
+  scope: 'global' as 'global' | 'self',
 })
 // 「不限」开关：true 时该限制项提交为 0
 const unlimitedDisk = ref(true)
@@ -525,6 +536,7 @@ function resetForm() {
   form.app_port_span = 0
   form.app_max_total = 0
   form.status = 1
+  form.scope = 'global'
   unlimitedDisk.value = true
   unlimitedSites.value = true
   unlimitedDomains.value = true
@@ -571,6 +583,8 @@ function openEdit(row: PackageItem) {
   form.app_port_span = row.app_port_span || 0
   form.app_max_total = row.app_max_total || 0
   form.status = row.status
+  // 归属：owner_id=0 为全局；非 0 为某管理员私有
+  form.scope = row.owner_id === 0 ? 'global' : 'self'
   dialogVisible.value = true
 }
 
@@ -603,6 +617,7 @@ async function submitForm() {
     app_port_span: form.app_port_span || 0,
     app_max_total: form.app_max_total || 0,
     status: form.status,
+    scope: form.scope,
   }
   saving.value = true
   try {

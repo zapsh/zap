@@ -21,7 +21,8 @@
 //!   「自定义目录」不再作为套餐能力：home 目录内任意目录已全量开放。
 //!
 //! 归属：`owner_id = 0` 为全局套餐（admin 维护，所有人可用）；
-//! reseller 自建套餐 `owner_id` 为自己，仅本人可用。
+//! `owner_id` 为某 admin / reseller 自身 id 时，为仅该账号可见的私有套餐
+//! （reseller 自建的私有套餐，其资源 / 能力不得超过 reseller 自身套餐的上限）。
 //!
 //! 端点：
 //! - GET  /system/package/list    套餐列表（admin 全量；reseller 全局 + 自己名下）
@@ -115,6 +116,84 @@ fn validate_limit(v: i64, label: &str) -> Result<i64, ZapError> {
         ));
     }
     Ok(v)
+}
+
+/// reseller 自建（子）套餐的待校验数值 / 能力集合。
+struct ResellerSubVals {
+    disk_quota_mb: i64,
+    max_sites: i64,
+    max_domains: i64,
+    max_bandwidth_mb: i64,
+    max_mysql_dbs: i64,
+    max_pgsql_dbs: i64,
+    max_ftp_users: i64,
+    app_max_total: i64,
+    max_apps: i64,
+    app_port_span: i64,
+    allow_ssh: i32,
+    allow_proxy: i32,
+    allow_php: i32,
+    allow_docker: i32,
+    allow_waf: i32,
+    allow_apps: i32,
+    app_types: String,
+}
+
+/// reseller 创建的子套餐，其各项资源 / 能力不得超过 reseller 自身套餐（父套餐）的允许范围：
+/// - 数值上限：父套餐为 0（不限）时子套餐可任意；否则子套餐不得超过父套餐对应值。
+/// - 能力开关：父套餐未开启的能力，子套餐不得开启。
+/// - 应用类型：子套餐类型必须是父套餐类型的子集。
+fn enforce_reseller_subpackage(parent: &PackageRow, v: &ResellerSubVals) -> Result<(), ZapError> {
+    let cap = |label: &str, child: i64, pmax: i64| -> Result<(), ZapError> {
+        if pmax > 0 && child > pmax {
+            return Err(ZapError::New(
+                -1,
+                format!("{label}不能超过你自身套餐的 {pmax}（父套餐上限）"),
+            ));
+        }
+        Ok(())
+    };
+    cap("磁盘配额(MB)", v.disk_quota_mb, parent.disk_quota_mb)?;
+    cap("最大站点数", v.max_sites, parent.max_sites)?;
+    cap("单站点最大域名数", v.max_domains, parent.max_domains)?;
+    cap("月流量上限(MB)", v.max_bandwidth_mb, parent.max_bandwidth_mb)?;
+    cap("MySQL 数据库数量", v.max_mysql_dbs, parent.max_mysql_dbs)?;
+    cap("PostgreSQL 数据库数量", v.max_pgsql_dbs, parent.max_pgsql_dbs)?;
+    cap("FTP 账号数量", v.max_ftp_users, parent.max_ftp_users)?;
+    cap("每用户应用总数", v.app_max_total, parent.app_max_total)?;
+    cap("每站点应用数", v.max_apps, parent.max_apps)?;
+    cap("每用户端口数", v.app_port_span, parent.app_port_span)?;
+
+    let flag = |label: &str, child: i32, p: i32| -> Result<(), ZapError> {
+        if p == 0 && child == 1 {
+            return Err(ZapError::New(
+                -1,
+                format!("{label}未在你自身套餐中开启，不能授予客户"),
+            ));
+        }
+        Ok(())
+    };
+    flag("SSH 终端", v.allow_ssh, parent.allow_ssh)?;
+    flag("反向代理", v.allow_proxy, parent.allow_proxy)?;
+    flag("PHP 站点", v.allow_php, parent.allow_php)?;
+    flag("Docker 容器", v.allow_docker, parent.allow_docker)?;
+    flag("WAF", v.allow_waf, parent.allow_waf)?;
+    flag("应用托管", v.allow_apps, parent.allow_apps)?;
+
+    if !parent.app_types.is_empty() {
+        let pset: std::collections::HashSet<&str> =
+            parent.app_types.split(',').map(|s| s.trim()).collect();
+        for t in v.app_types.split(',') {
+            let t = t.trim();
+            if !t.is_empty() && !pset.contains(t) {
+                return Err(ZapError::New(
+                    -1,
+                    format!("应用类型「{t}」未在你自身套餐中开启，不能授予客户"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 套餐对操作者是否可见：admin 全量；reseller 仅全局套餐（owner_id=0）与自己名下
@@ -297,6 +376,10 @@ pub struct PackageAddPayload {
     /// 该用户全部站点合计的应用数上限（0 = 不限）
     pub app_max_total: Option<i64>,
     pub status: Option<i32>,
+    /// 归属作用域（仅 admin 新建时生效）：`global` = 全局套餐（owner_id=0，默认）；
+    /// `self` = 仅自己可见的私有套餐（owner_id = 当前 admin 自身）。
+    /// reseller 忽略此字段，一律建自己名下的私有套餐。
+    pub scope: Option<String>,
 }
 
 /// POST /system/package/add —— admin 建全局套餐；reseller 建自己名下套餐
@@ -387,9 +470,50 @@ pub async fn package_add(
     // WAF 默认关闭：全局未装 ModSecurity 时站点不该渲染 modsecurity 指令
     let allow_waf = i32::from(payload.allow_waf.unwrap_or(false));
     let status = payload.status.unwrap_or(1).clamp(0, 1);
-    // admin 建全局套餐；reseller 建自己名下套餐
-    let owner_id: i64 = if is_admin { 0 } else { claims.id as i64 };
+    // 归属：reseller 只能建自己名下的私有套餐；admin 可选全局（默认）或仅自己可见的私有套餐
+    let owner_id: i64 = if is_admin {
+        match payload.scope.as_deref() {
+            Some("self") => claims.id as i64,
+            _ => 0,
+        }
+    } else {
+        claims.id as i64
+    };
     let now = chrono::Local::now().timestamp();
+
+    // reseller 创建的子套餐不得超过其自身套餐（父套餐）的允许范围
+    if is_reseller && !is_admin {
+        match package_of_user(claims.id as i64).await {
+            Some(parent) => {
+                let sub = ResellerSubVals {
+                    disk_quota_mb,
+                    max_sites,
+                    max_domains,
+                    max_bandwidth_mb,
+                    max_mysql_dbs,
+                    max_pgsql_dbs,
+                    max_ftp_users,
+                    app_max_total,
+                    max_apps,
+                    app_port_span,
+                    allow_ssh,
+                    allow_proxy,
+                    allow_php,
+                    allow_docker,
+                    allow_waf,
+                    allow_apps,
+                    app_types: app_types.clone(),
+                };
+                enforce_reseller_subpackage(&parent, &sub)?;
+            }
+            None => {
+                return Err(ZapError::New(
+                    -1,
+                    "你自身未绑定套餐，无法创建子套餐（请先由管理员为你分配套餐）".to_string(),
+                ));
+            }
+        }
+    }
 
     let pool = db::get_db_pool().await;
     let result = sqlx::query(
@@ -486,6 +610,9 @@ pub struct PackageUpdatePayload {
     /// 该用户全部站点合计的应用数上限；未传则保持不变
     pub app_max_total: Option<i64>,
     pub status: Option<i32>,
+    /// 归属作用域（仅 admin 编辑时生效）：`global` = 改为全局（owner_id=0）；
+    /// `self` = 改为仅当前管理员可见（owner_id = 当前管理员）。reseller 忽略此字段。
+    pub scope: Option<String>,
 }
 
 /// POST /system/package/update —— 仅能修改自己可见的套餐
@@ -510,8 +637,55 @@ pub async fn package_update(
         ));
     }
 
+    // reseller 修改自有子套餐时，结果各项不得超过其父套餐（reseller 自身套餐）的允许范围
+    if is_reseller && !is_admin {
+        if let Some(parent) = package_of_user(claims.id as i64).await {
+            let eff = ResellerSubVals {
+                disk_quota_mb: payload.disk_quota_mb.unwrap_or(current.disk_quota_mb),
+                max_sites: payload.max_sites.unwrap_or(current.max_sites),
+                max_domains: payload.max_domains.unwrap_or(current.max_domains),
+                max_bandwidth_mb: payload.max_bandwidth_mb.unwrap_or(current.max_bandwidth_mb),
+                max_mysql_dbs: payload.max_mysql_dbs.unwrap_or(current.max_mysql_dbs),
+                max_pgsql_dbs: payload.max_pgsql_dbs.unwrap_or(current.max_pgsql_dbs),
+                max_ftp_users: payload.max_ftp_users.unwrap_or(current.max_ftp_users),
+                app_max_total: payload.app_max_total.unwrap_or(current.app_max_total),
+                max_apps: payload.max_apps.unwrap_or(current.max_apps),
+                app_port_span: payload.app_port_span.unwrap_or(current.app_port_span),
+                allow_ssh: i32::from(payload.allow_ssh.unwrap_or(current.allow_ssh == 1)),
+                allow_proxy: i32::from(payload.allow_proxy.unwrap_or(current.allow_proxy == 1)),
+                allow_php: i32::from(payload.allow_php.unwrap_or(current.allow_php == 1)),
+                allow_docker: i32::from(payload.allow_docker.unwrap_or(current.allow_docker == 1)),
+                allow_waf: i32::from(payload.allow_waf.unwrap_or(current.allow_waf == 1)),
+                allow_apps: i32::from(payload.allow_apps.unwrap_or(current.allow_apps == 1)),
+                app_types: payload.app_types.clone()
+                    .map(|s| package_app_types_normalized(&s))
+                    .unwrap_or_else(|| current.app_types.clone()),
+            };
+            enforce_reseller_subpackage(&parent, &eff)?;
+        }
+    }
+
     let pool = db::get_db_pool().await;
     let now = chrono::Local::now().timestamp();
+
+    // 归属变更（仅管理员可改）：global -> owner_id=0（全局）；self -> 当前管理员名下私有。
+    // reseller 忽略 scope；全局套餐的归属变更也只允许管理员操作（上面已拦截非管理员）。
+    if is_admin {
+        if let Some(scope) = payload.scope.as_deref() {
+            let new_owner: i64 = match scope {
+                "self" => claims.id as i64,
+                _ => 0,
+            };
+            if new_owner != current.owner_id {
+                sqlx::query("UPDATE packages SET owner_id = ?, updated_at = ? WHERE id = ?")
+                    .bind(new_owner)
+                    .bind(now)
+                    .bind(payload.id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+    }
 
     // 逐字段更新，便于精确审计与错误提示
     if let Some(n) = payload.name {

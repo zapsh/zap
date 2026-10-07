@@ -566,6 +566,11 @@ const enUS: Messages = {
     scopeGlobal: 'Global',
     scopePrivate: 'Private',
 
+    scope: 'Scope',
+    scopeGlobalOpt: 'Global (visible to everyone)',
+    scopeSelfOpt: 'Private (only visible to you)',
+    scopeHint: 'Global packages are visible to all admins and resellers; private packages are only visible to you. Resellers always create private packages (and cannot exceed their own package limits).',
+
     diskQuota: 'Disk Quota',
     maxSites: 'Sites',
     maxDomains: 'Domains / Site',
