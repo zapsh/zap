@@ -407,8 +407,8 @@ async function send() {
     } else {
       ElMessage.success(msg)
     }
-  } catch {
-    /* 错误已由拦截器提示 */
+  } catch (err) {
+    ElMessage.error((err as Error)?.message || t('error.system'))
   } finally {
     sending.value = false
   }

@@ -428,21 +428,29 @@ async fn tencent_send(
     let service = "ses";
     let host = "ses.tencentcloudapi.com";
     let action = "SendEmail";
-    let version = "2021-01-11";
+    let version = "2020-10-02";
 
-    let mut body_map = serde_json::Map::new();
+    // 2020-10-02 版 SendEmail：Destination 为收件人数组；正文置于 Simple，
+    // 其中 Html/Text 须为 Base64 字符串；Subject 是顶层字段（顶层 Body 已废弃）。
+    let mut simple = serde_json::Map::new();
     if let Some(h) = html.filter(|h| !h.is_empty()) {
-        body_map.insert("Html".into(), serde_json::json!({ "Data": h }));
+        simple.insert(
+            "Html".into(),
+            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(h.as_bytes())),
+        );
     }
     if let Some(t) = text.filter(|t| !t.is_empty()) {
-        body_map.insert("Text".into(), serde_json::json!({ "Data": t }));
+        simple.insert(
+            "Text".into(),
+            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(t.as_bytes())),
+        );
     }
 
     let payload = serde_json::json!({
         "FromEmailAddress": cfg.from,
-        "Destination": { "To": [to] },
-        "Subject": { "Data": subject },
-        "Body": serde_json::Value::Object(body_map),
+        "Destination": [to],
+        "Subject": subject,
+        "Simple": serde_json::Value::Object(simple),
     });
     let payload_str = payload.to_string();
 
@@ -451,8 +459,11 @@ async fn tencent_send(
     let date = now.format("%Y-%m-%d").to_string();
 
     let hashed_payload = hex_sha256(payload_str.as_bytes());
-    let canonical_headers = format!("content-type:application/json; charset=utf-8\nhost:{host}\n");
-    let signed_headers = "content-type;host";
+    let canonical_headers = format!(
+        "content-type:application/json; charset=utf-8\nhost:{host}\nx-tc-action:{}\n",
+        action.to_lowercase()
+    );
+    let signed_headers = "content-type;host;x-tc-action";
     let canonical_request = format!(
         "POST\n/\n\n{canonical_headers}\n{signed_headers}\n{hashed_payload}"
     );

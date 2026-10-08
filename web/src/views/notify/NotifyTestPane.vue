@@ -18,8 +18,8 @@ async function send() {
   try {
     await sendTestMail(to.value.trim())
     ElMessage.success(t('notifyCfg.testSent'))
-  } catch {
-    /* 拦截器已弹窗 */
+  } catch (err) {
+    ElMessage.error((err as Error)?.message || t('error.system'))
   } finally {
     sending.value = false
   }
