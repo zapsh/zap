@@ -6222,6 +6222,7 @@ dependencies = [
  "ip-discovery",
  "jsonwebtoken",
  "lettre",
+ "libc",
  "local-ip-address",
  "mime_guess",
  "once_cell",

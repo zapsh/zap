@@ -15,6 +15,7 @@ use serde_json::json;
 use zap_proto::Response;
 
 use super::{bash_bin, root_cmd};
+use zap_proto::cron_sandbox;
 
 fn zap_path() -> PathBuf {
     std::env::var("ZAP_PATH")
@@ -45,6 +46,28 @@ fn user_exists(name: &str) -> bool {
         // 禁止以 root 运行普通用户任务
         (*pw).pw_uid != 0
     }
+}
+
+/// 解析有效家目录：优先用调用方传入的 `home_dir`，否则从系统账号（`getpwnam`）取，
+/// 再不行回退 `/tmp`。沙箱把文件访问收敛到这里，绝不能回落到 zapexec 自身的工作目录。
+fn resolve_home(linux_user: &str, home_dir: &str) -> String {
+    if !home_dir.is_empty() && Path::new(home_dir).is_absolute() {
+        return home_dir.to_string();
+    }
+    if let Ok(cname) = std::ffi::CString::new(linux_user) {
+        unsafe {
+            let pw = libc::getpwnam(cname.as_ptr());
+            if !pw.is_null() {
+                let h = std::ffi::CStr::from_ptr((*pw).pw_dir)
+                    .to_string_lossy()
+                    .into_owned();
+                if !h.is_empty() {
+                    return h;
+                }
+            }
+        }
+    }
+    "/tmp".to_string()
 }
 
 /// 日志路径校验：绝对路径、无 `..`、位于 `{ZAP_PATH}/data/users/` 之下且以 `.log` 结尾。
@@ -105,6 +128,12 @@ pub async fn run(
         if cmd.len() > 4096 {
             return Err("执行内容过长（上限 4096 字节）".into());
         }
+        // 沙箱校验（权威执行处）：提权指令 / 家目录外的路径 / 越权重定向一律拒绝。
+        // home 取系统账号真实家目录，确保规则与「以该用户身份运行」对齐。
+        let home = resolve_home(&linux_user, &home_dir);
+        if let Err(e) = cron_sandbox::check(cmd, &home) {
+            return Err(e);
+        }
         let log_path = safe_log_path(&log_path)?;
         if let Some(parent) = log_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -133,25 +162,18 @@ pub async fn run(
             .map_err(|e| format!("打开日志失败: {e}"))?;
         let _ = writeln!(log, "=== [{}] crontab run {run_id} ===", now_ts());
         let _ = writeln!(log, "user: {linux_user}");
-        let _ = writeln!(
-            log,
-            "cwd : {}",
-            if home_dir.is_empty() {
-                "-"
-            } else {
-                home_dir.as_str()
-            }
-        );
+        let _ = writeln!(log, "cwd : {home}");
         let _ = writeln!(log, "cmd : {cmd}");
         let _ = writeln!(log, "---");
         let _ = log.flush();
         let log_stderr = log.try_clone().map_err(|e| e.to_string())?;
 
-        let cwd = if home_dir.is_empty() {
-            None
+        // 强制工作目录为家目录：沙箱把相对路径访问收敛到这里，绝不允许回落到
+        // zapexec 自身的工作目录（那是 root 上下文）。
+        let cwd = if Path::new(&home).is_dir() {
+            Some(PathBuf::from(&home))
         } else {
-            let dir = Path::new(&home_dir);
-            dir.is_dir().then(|| dir.to_path_buf())
+            Some(PathBuf::from("/tmp"))
         };
 
         let bash = bash_bin();
@@ -173,14 +195,9 @@ pub async fn run(
             .env("ZAP_USER", &linux_user)
             .env("LOGNAME", &linux_user)
             .env("USER", &linux_user)
-            .env(
-                "HOME",
-                if home_dir.is_empty() {
-                    "/tmp"
-                } else {
-                    home_dir.as_str()
-                },
-            )
+            // 收紧 PATH：去掉 sbin，避免命令经 PATH 拿到 sudo / su 等提权程序。
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("HOME", &home)
             .stdout(std::process::Stdio::from(log))
             .stderr(std::process::Stdio::from(log_stderr));
         if let Some(dir) = cwd {

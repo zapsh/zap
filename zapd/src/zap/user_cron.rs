@@ -22,7 +22,7 @@ use crate::zap::appstore as ast;
 use crate::zap::jwt::{ValidatedClaims, is_admin};
 use crate::zap::script_cron::Cron;
 use crate::zapexec;
-use zap_proto::Request;
+use zap_proto::{Request, cron_sandbox};
 
 /// 单用户任务数量上限。
 pub const MAX_JOBS: usize = 100;
@@ -274,7 +274,7 @@ pub async fn list_exec_users() -> Result<Vec<String>, ZapError> {
 
 async fn home_dir_of(linux_user: &str) -> String {
     let pool = crate::db::get_db_pool().await;
-    sqlx::query_scalar::<_, String>(
+    if let Some(h) = sqlx::query_scalar::<_, String>(
         "SELECT home_dir FROM user WHERE linux_user = ? AND home_dir <> '' LIMIT 1",
     )
     .bind(linux_user)
@@ -282,11 +282,41 @@ async fn home_dir_of(linux_user: &str) -> String {
     .await
     .ok()
     .flatten()
+    .filter(|h| !h.is_empty())
+    {
+        return h;
+    }
+    // DB 未登记家目录时，回退到系统账号的真实家目录，保证沙箱路径判定一致。
+    // `getpwnam` 会阻塞且复用静态缓冲，放到 blocking 线程池里执行。
+    let user = linux_user.to_string();
+    tokio::task::spawn_blocking(move || -> String {
+        if let Ok(cname) = std::ffi::CString::new(user) {
+            unsafe {
+                let pw = libc::getpwnam(cname.as_ptr());
+                if !pw.is_null() {
+                    let h = std::ffi::CStr::from_ptr((*pw).pw_dir)
+                        .to_string_lossy()
+                        .into_owned();
+                    if !h.is_empty() {
+                        return h;
+                    }
+                }
+            }
+        }
+        String::new()
+    })
+    .await
     .unwrap_or_default()
 }
 
-/// 校验任务字段（不含身份）。
-pub fn validate_job(name: &str, schedule: &str, kind: &str, command: &str) -> Result<(), ZapError> {
+/// 校验任务字段（不含身份）。`home` 为执行用户的家目录，用于沙箱路径收敛。
+pub fn validate_job(
+    name: &str,
+    schedule: &str,
+    kind: &str,
+    command: &str,
+    home: &str,
+) -> Result<(), ZapError> {
     if name.trim().is_empty() {
         return Err(ZapError::New(-1, "任务名称不能为空".to_string()));
     }
@@ -307,6 +337,8 @@ pub fn validate_job(name: &str, schedule: &str, kind: &str, command: &str) -> Re
             "执行内容过长（上限 4096 字节）".to_string(),
         ));
     }
+    // 沙箱预校验：执行处（zapexec）会再校验一次；这里提前给创建者明确的报错。
+    cron_sandbox::check(cmd, home).map_err(|e| ZapError::New(-1, e))?;
     match kind {
         "script" => {
             if !cmd.starts_with('/') {
@@ -366,7 +398,8 @@ pub async fn add(
     exec_user: &str,
     remark: &str,
 ) -> Result<String, ZapError> {
-    validate_job(name, schedule, kind, command)?;
+    let home = home_dir_of(exec_user).await;
+    validate_job(name, schedule, kind, command, &home)?;
     let mut ct = load(username).await?;
     if ct.jobs.len() >= MAX_JOBS {
         return Err(ZapError::New(
@@ -411,7 +444,8 @@ pub async fn update(
     remark: &str,
     enabled: bool,
 ) -> Result<(), ZapError> {
-    validate_job(name, schedule, kind, command)?;
+    let home = home_dir_of(exec_user).await;
+    validate_job(name, schedule, kind, command, &home)?;
     let mut ct = load(username).await?;
     let job = ct
         .jobs
