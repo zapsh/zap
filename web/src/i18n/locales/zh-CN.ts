@@ -155,6 +155,9 @@ export default {
     about: 'About ZAP',
     // 通知设置（后端 menus name=notify / notify-index，见 db/menu_seed.rs）
     notify: '通知设置',
+    // 客户管理下的平铺子菜单（后端 menus name=notify-templates / notify-broadcast，见 db/menu_seed.rs）
+    'notify-templates': '通知模板',
+    'notify-broadcast': '群发通知',
     // 二级
     // 备注：这些标题同时被 translateTitle 用作「中文原文 → key」的反查源，
     // 静态路由（router/index.ts）里的中文标题也靠它翻译，改动文案前先确认路由里的写法。

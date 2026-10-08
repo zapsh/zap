@@ -139,6 +139,9 @@ const enUS: Messages = {
     about: 'About ZAP',
     // Notification Settings (backend menus name=notify / notify-index, see db/menu_seed.rs)
     notify: 'Notification Settings',
+    // Flat sub-menus under Customers (backend menus name=notify-templates / notify-broadcast, see db/menu_seed.rs)
+    'notify-templates': 'Notification Templates',
+    'notify-broadcast': 'Broadcast',
     profile: 'Profile',
     messages: 'Messages',
     'zap-config': 'Zap Settings',
