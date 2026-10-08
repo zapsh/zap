@@ -372,10 +372,12 @@ export interface NoticePrefs {
   notify_ssl_expiry: boolean
   /** 账户密码变化 */
   notify_password_change: boolean
-  password_change_disable: boolean
+  /** 是否由管理员/系统强制关闭「密码变更」通知（个人设置不暴露，可选） */
+  password_change_disable?: boolean
   /** 有人登录我的账户（成功登录通知） */
   notify_login: boolean
-  login_disable: boolean
+  /** 是否由管理员/系统强制关闭「登录」通知（个人设置不暴露，可选） */
+  login_disable?: boolean
   /** AutoSSL 通知模式：deferrals=失败及延后 / failures=仅失败 / disabled=禁用 */
   autossl_notify_mode: 'deferrals' | 'failures' | 'disabled'
 }

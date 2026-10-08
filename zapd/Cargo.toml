@@ -69,7 +69,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
 ] }
 rustls-pemfile = "2"
-# 集群 v1.1 命令通道：受控端用它连主控的 agent/ws（服务端一侧由 axum 自带）
+#  cluster
 tokio-tungstenite = { version = "0.26", features = ["__rustls-tls"] }
 webpki-roots = "0.26"
 time = "0.3"
@@ -97,7 +97,7 @@ idna = "1.1"
 # markdown
 pulldown-cmark = "0.12"
 
-# 邮件发送：SMTP 用 lettre（rustls，避免 OpenSSL）；云厂商走 HTTP API
+# smtp without openssl
 lettre = { version = "0.11", default-features = false, features = [
     "smtp-transport",
     "tokio1-rustls-tls",

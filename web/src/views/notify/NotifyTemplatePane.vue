@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
-import { reactive, ref, computed, onMounted } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { getMailTemplates, saveMailTemplates } from '@/api/systemNotify'
@@ -43,21 +43,16 @@ const templates = reactive<Record<string, MailTemplate>>(
 )
 
 // 正文双向绑定：根据当前格式在 body_text / body_html 之间切换
-const bodyModels = reactive(
-  Object.fromEntries(
-    eventDefs.map((ev) => [
-      ev.key,
-      computed<string>({
-        get: () =>
-          templates[ev.key].is_html ? templates[ev.key].body_html : templates[ev.key].body_text,
-        set: (v) => {
-          if (templates[ev.key].is_html) templates[ev.key].body_html = v
-          else templates[ev.key].body_text = v
-        },
-      }),
-    ]),
-  ),
-)
+function bodyValue(key: string): string {
+  const tpl = templates[key]
+  return tpl.is_html ? tpl.body_html : tpl.body_text
+}
+
+function onBodyInput(key: string, v: string) {
+  const tpl = templates[key]
+  if (tpl.is_html) tpl.body_html = v
+  else tpl.body_text = v
+}
 
 async function load() {
   loading.value = true
@@ -170,7 +165,8 @@ onMounted(load)
           <label class="tpl-label">{{ t('notifyCfg.templateBodyLabel') }}</label>
           <div class="tpl-editor-wrap">
             <CodeEditor
-              v-model="bodyModels[ev.key]"
+              :model-value="bodyValue(ev.key)"
+              @update:model-value="(v: string) => onBodyInput(ev.key, v)"
               :lang="templates[ev.key].is_html ? 'html' : 'text'"
               :placeholder="
                 templates[ev.key].is_html
