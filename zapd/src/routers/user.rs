@@ -973,7 +973,9 @@ async fn update_user_inner(
 ) -> ZapJsonResult {
     // 内置管理员保护：不可禁用、角色不可变更；其余信息（含密码）仅本人可改
     if payload.id == ROOT_ADMIN_ID {
-        if payload.status == Some(0) {
+        if let Some(s) = payload.status
+            && s != 1
+        {
             return Err(ZapError::New(-1, "内置管理员账号不可禁用".to_string()));
         }
         if payload.roles.is_some() {
@@ -1168,6 +1170,13 @@ async fn update_user_inner(
         "",
     )
     .await;
+
+    // 账号被置为非「正常」状态（禁用 / 封禁 / 欠费停用）：强制下线其所有已登录会话
+    if let Some(s) = payload.status
+        && s != 1
+    {
+        let _ = crate::zap::session::bump(payload.id).await;
+    }
 
     // 附加权限 / 收紧清单 / 只读标记变更：单独审计；这几项与角色都会改变生效权限，
     // 必须立刻失效缓存（收紧清单会改变成员的生效权限，不能等缓存过期）

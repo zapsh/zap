@@ -96,6 +96,7 @@ struct UserRecord {
     roles: String,
     totp_secret: String,
     totp_enabled: i32,
+    status: i32,
 }
 
 /// Check rate limit for the given IP. Returns Ok(()) if allowed, Err if rate limited.
@@ -185,6 +186,16 @@ async fn clear_login_attempts(ip: &str, username: &str) {
         .await;
 }
 
+/// 账号因状态不可登录时的提示文案（按状态区分语义，便于用户理解）。
+fn user_status_block_msg(status: i32) -> String {
+    match status {
+        0 => "账号已被禁用，无法登录".to_string(),
+        -1 => "账号已被封禁，无法登录".to_string(),
+        -2 => "账号已欠费停用，无法登录".to_string(),
+        _ => "账号状态异常，无法登录".to_string(),
+    }
+}
+
 #[axum::debug_handler]
 pub async fn login(
     Extension(client_addr): Extension<SocketAddr>,
@@ -211,7 +222,7 @@ pub async fn login(
 
     let pool = db::get_db_pool().await;
     let record: Result<UserRecord, sqlx::Error> = query_as(
-        "SELECT id, username, password, roles, totp_secret, totp_enabled
+        "SELECT id, username, password, roles, totp_secret, totp_enabled, status
          FROM user WHERE username = ?",
     )
     .bind(&username)
@@ -221,6 +232,18 @@ pub async fn login(
     if let Ok(row) = record
         && let Ok(true) = bcrypt::verify(&payload.password, &row.password)
     {
+        // 账号状态校验：仅「正常(1)」可登录；禁用 / 封禁 / 欠费停用等一律拒绝
+        if row.status != 1 {
+            audit::log(
+                None,
+                Some(&ip),
+                "login_blocked",
+                &row.username,
+                &format!("status={}", row.status),
+            )
+            .await;
+            return Err(ZapError::New(-1, user_status_block_msg(row.status)));
+        }
         // TOTP 两步验证（已启用时校验）
         if row.totp_enabled == 1 {
             let code = payload.totp_code.unwrap_or_default();

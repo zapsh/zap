@@ -426,6 +426,19 @@ const enUS: Messages = {
     pillMember: 'Members',
     memberQuotaTip:
       'Members share the parent account home directory, package and FPM spec — nothing to set here',
+    // Account status: 1=active 0=disabled -1=banned -2=suspended (translated by code)
+    statusMap: {
+      '1': 'Active',
+      '0': 'Disabled',
+      '-1': 'Banned',
+      '-2': 'Suspended',
+    },
+    setStatus: 'Set status',
+    statusSetTitle: 'Set account status',
+    statusSetConfirm: 'Change "{name}" status to "{label}"?',
+    statusHint:
+      'Once disabled / banned / suspended, the account cannot log in and active sessions are forcibly terminated',
+    statusUpdated: 'Status updated',
   },
 
   /** Team members (sub-accounts) */

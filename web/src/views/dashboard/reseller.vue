@@ -223,8 +223,8 @@
         </el-table-column>
         <el-table-column :label="t('dashboardReseller.colStatus')" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.status === 0 ? 'danger' : 'success'" size="small" effect="light">
-              {{ row.status === 0 ? t('dashboardReseller.statusDisabled') : t('dashboardReseller.statusEnabled') }}
+            <el-tag :type="statusMeta(row.status).type" size="small" effect="light">
+              {{ statusMeta(row.status).label }}
             </el-tag>
           </template>
         </el-table-column>
@@ -264,6 +264,7 @@ import { ElMessage } from 'element-plus'
 import { Icon, Plus, ArrowRight } from '@/icons'
 import { formatBytes } from '@/utils/fmt'
 import { useUserStore } from '@/stores/user'
+import { useUserStatus } from '@/utils/userStatus'
 import { getSystemInfo, getDashboardCounts } from '@/api/dashboard'
 import type { DashboardCounts } from '@/api/dashboard'
 import { getUserInfo, getUserList } from '@/api/user'
@@ -283,6 +284,7 @@ interface AppGroup {
 }
 
 const { t } = useI18n()
+const { meta: statusMeta } = useUserStatus()
 const router = useRouter()
 const userStore = useUserStore()
 const roles = userStore.roles

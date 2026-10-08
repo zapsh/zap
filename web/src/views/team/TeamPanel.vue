@@ -65,8 +65,8 @@
         </el-table-column>
         <el-table-column :label="t('common.status')" width="80">
           <template #default="{ row }">
-            <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
-              {{ row.status === 1 ? t('common.enable') : t('common.disable') }}
+            <el-tag :type="statusMeta(row.status).type" size="small">
+              {{ statusMeta(row.status).label }}
             </el-tag>
           </template>
         </el-table-column>
@@ -205,9 +205,11 @@ import { getMenuList } from '@/api/menu'
 import { permGroupLabel, permKeyLabel } from '@/utils/perm'
 import { getLocale, translateTitle } from '@/i18n'
 import { useUserStore } from '@/stores/user'
+import { useUserStatus } from '@/utils/userStatus'
 import { disableUnavailable, type MenuNode } from '@/utils/menu-tree'
 
 const { t } = useI18n()
+const { meta: statusMeta } = useUserStatus()
 const userStore = useUserStore()
 
 /** 当前账号本身是成员时不能建成员（后端也会拦，这里只做体验层收敛） */

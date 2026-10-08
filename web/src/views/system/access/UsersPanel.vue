@@ -289,10 +289,10 @@
             <span v-else class="muted">{{ t('users.emptyValue') }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('common.status')" width="80">
+        <el-table-column :label="t('common.status')" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
-              {{ row.status === 1 ? t('common.enable') : t('common.disable') }}
+            <el-tag :type="statusMeta(row.status).type" size="small" effect="light">
+              {{ statusMeta(row.status).label }}
             </el-tag>
           </template>
         </el-table-column>
@@ -302,12 +302,12 @@
               t('common.edit')
             }}</el-button>
             <el-button
-              :type="row.status === 1 ? 'warning' : 'success'"
+              type="primary"
               link
               :disabled="row.id === ROOT_USER_ID"
-              @click="handleToggleStatus(row)"
+              @click="openStatusDialog(row)"
             >
-              {{ row.status === 1 ? t('common.disable') : t('common.enable') }}
+              {{ t('users.setStatus') }}
             </el-button>
             <el-tooltip
               :disabled="row.id !== ROOT_USER_ID"
@@ -358,15 +358,14 @@
             </div>
           </div>
           <!-- 启停直接放在头部：最常用的开关不必翻 tab -->
-          <el-switch
-            v-model="form.status"
-            :active-value="1"
-            :inactive-value="0"
-            :active-text="t('common.enable')"
-            :inactive-text="t('common.disable')"
-            inline-prompt
-            style="margin-left: auto"
-          />
+          <el-select v-model="form.status" style="margin-left: auto" placeholder="">
+            <el-option
+              v-for="opt in statusOptions"
+              :key="opt"
+              :value="opt"
+              :label="statusMeta(opt).label"
+            />
+          </el-select>
         </div>
       </template>
 
@@ -606,6 +605,22 @@
         </div>
       </template>
     </el-drawer>
+
+    <!-- 设置账号状态：弹出选择 正常 / 已禁用 / 已封禁 / 欠费停用 -->
+    <el-dialog v-model="statusDialogVisible" :title="t('users.statusSetTitle')" width="440px">
+      <p class="status-hint">{{ t('users.statusHint') }}</p>
+      <el-radio-group v-model="statusForm.status">
+        <el-radio v-for="opt in statusOptions" :key="opt" :value="opt" border>
+          {{ statusMeta(opt).label }}
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="statusDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="statusSaving" @click="submitStatus">
+          {{ t('common.confirm') }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -646,8 +661,12 @@ import { permGroupLabel, permKeyLabel } from '@/utils/perm'
 import { getLocale, translateTitle } from '@/i18n'
 import { withBase } from '@/utils/base'
 import { disableUnavailable, type MenuNode } from '@/utils/menu-tree'
+import { useUserStatus } from '@/utils/userStatus'
 
 const { t } = useI18n()
+const { meta: statusMeta } = useUserStatus()
+/** 账号状态可选值：1=正常 0=已禁用 -1=已封禁 -2=欠费停用 */
+const statusOptions = [1, 0, -1, -2]
 
 /** 权限点目录：附加权限 / 成员收紧权限下拉用（admin 与 reseller 加载） */
 const permCatalog = ref<PermGroupItem[]>([])
@@ -1277,29 +1296,45 @@ async function submitForm() {
   }
 }
 
-// ── 状态切换 ───────────────────────────────────────────────
-async function handleToggleStatus(row: UserListItem) {
+// ── 设置账号状态（支持 正常 / 已禁用 / 已封禁 / 欠费停用）───────────────
+const statusDialogVisible = ref(false)
+const statusSaving = ref(false)
+const statusTarget = ref<UserListItem | null>(null)
+const statusForm = reactive({ status: 1 })
+
+function openStatusDialog(row: UserListItem) {
   if (row.id === ROOT_USER_ID) {
     ElMessage.warning(t('users.rootProtected'))
     return
   }
-  const newStatus = row.status === 1 ? 0 : 1
-  const action = newStatus === 1 ? t('common.enable') : t('common.disable')
+  statusTarget.value = row
+  statusForm.status = row.status
+  statusDialogVisible.value = true
+}
+
+async function submitStatus() {
+  const target = statusTarget.value
+  if (!target) return
+  const label = statusMeta(statusForm.status).label
   try {
     await ElMessageBox.confirm(
-      t('users.toggleConfirm', { action, name: row.username }),
-      t('common.tip'),
+      t('users.statusSetConfirm', { name: target.username, label }),
+      t('users.statusSetTitle'),
       { type: 'warning' },
     )
   } catch {
     return
   }
+  statusSaving.value = true
   try {
-    await updateUser({ id: row.id, status: newStatus })
-    row.status = newStatus
-    ElMessage.success(t('users.toggleSuccess', { action }))
+    await updateUser({ id: target.id, status: statusForm.status })
+    target.status = statusForm.status
+    ElMessage.success(t('users.statusUpdated'))
+    statusDialogVisible.value = false
   } catch (e: unknown) {
     ElMessage.error((e as Error)?.message || t('error.system'))
+  } finally {
+    statusSaving.value = false
   }
 }
 
