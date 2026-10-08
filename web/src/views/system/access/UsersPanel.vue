@@ -357,15 +357,6 @@
               </el-tag>
             </div>
           </div>
-          <!-- 启停直接放在头部：最常用的开关不必翻 tab -->
-          <el-select v-model="form.status" style="margin-left: auto" placeholder="">
-            <el-option
-              v-for="opt in statusOptions"
-              :key="opt"
-              :value="opt"
-              :label="statusMeta(opt).label"
-            />
-          </el-select>
         </div>
       </template>
 
@@ -407,6 +398,17 @@
                   })
                 }}
               </div>
+            </el-form-item>
+            <!-- 账号状态：新建默认正常，编辑时也可在此调整（移出抽屉头部，避免遮挡关闭按钮） -->
+            <el-form-item :label="t('common.status')">
+              <el-select v-model="form.status" style="width: 100%">
+                <el-option
+                  v-for="opt in statusOptions"
+                  :key="opt"
+                  :value="opt"
+                  :label="statusMeta(opt).label"
+                />
+              </el-select>
             </el-form-item>
           </el-tab-pane>
 
@@ -523,7 +525,7 @@
                 </el-select>
                 <div class="form-tip">{{ packageTip() }}</div>
               </el-form-item>
-              <el-form-item v-if="isAdmin" :label="t('users.maxUsers')">
+              <el-form-item v-if="form.roles === 'reseller'" :label="t('users.maxUsers')">
                 <el-input-number
                   v-model="form.max_users"
                   :min="0"
