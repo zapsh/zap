@@ -2501,6 +2501,7 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         ssl_http2,
         listen_ipv4,
         listen_ipv6,
+        site_ips,
         ref security,
     } = cfg;
     let name = &name;
