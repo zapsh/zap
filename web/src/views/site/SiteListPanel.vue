@@ -1253,6 +1253,9 @@ function openAdd() {
   if (canManageAll.value) {
     const me = ownerOptions.value.find((o) => o.id === userStore.userInfo.id)
     form.user_id = me ? me.id : (ownerOptions.value[0]?.id ?? null)
+  } else {
+    // 普通用户始终归属自己（归属字段不展示，这里显式落到当前登录用户）
+    form.user_id = userStore.userInfo.id
   }
   editCertName.value = ''
   loadPhpOptions()
@@ -2175,6 +2178,7 @@ onMounted(() => {
         <el-tabs v-model="activeTab" type="border-card" class="site-tabs">
           <!-- 基础设置 -->
           <el-tab-pane :label="t('site.tabBase')" name="base">
+            <!-- 仅 admin / reseller 需要选择归属用户；普通用户始终归属自己，无需展示 -->
             <el-form-item v-if="canManageAll" :label="t('site.colOwner')" required>
               <el-select
                 v-model="form.user_id"
@@ -2190,10 +2194,6 @@ onMounted(() => {
                   :value="o.id"
                 />
               </el-select>
-            </el-form-item>
-            <el-form-item v-else :label="t('site.colOwner')">
-              <el-input :model-value="currentUserName" disabled />
-              <div class="form-tip">{{ t('site.ownerSelfTip') }}</div>
             </el-form-item>
 
             <el-form-item :label="t('site.formSiteType')" required>
