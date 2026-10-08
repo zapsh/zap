@@ -1528,11 +1528,17 @@ async fn init_mail_templates_table() {
         body_text TEXT NOT NULL DEFAULT '',
         body_html TEXT NOT NULL DEFAULT '',
         is_html INTEGER NOT NULL DEFAULT 0,
+        template_id TEXT NOT NULL DEFAULT '',
         updated_at INTEGER NOT NULL DEFAULT 0,
         UNIQUE(owner_id, event)
     );
     "#;
     let _ = get_db_pool().await.execute(sql).await;
+    // 兼容存量库：新增 template_id 列（已存在则忽略错误）
+    let _ = get_db_pool()
+        .await
+        .execute("ALTER TABLE mail_templates ADD COLUMN template_id TEXT NOT NULL DEFAULT ''")
+        .await;
 }
 
 // ── helper ─────────────────────────────────────────────────

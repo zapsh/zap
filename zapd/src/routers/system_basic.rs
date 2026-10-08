@@ -65,6 +65,10 @@ const K_MAIL_ALI_REGION: &str = "basic_mail_aliyun_region";
 const K_MAIL_TC_ID: &str = "basic_mail_tencent_id";
 const K_MAIL_TC_KEY: &str = "basic_mail_tencent_key";
 const K_MAIL_TC_REGION: &str = "basic_mail_tencent_region";
+/// Mailgun API Key（敏感，密文）。
+const K_MG_KEY: &str = "basic_mail_mailgun_key";
+const K_MG_DOMAIN: &str = "basic_mail_mailgun_domain";
+const K_MG_REGION: &str = "basic_mail_mailgun_region";
 
 /// 联系信息（面板对外展示的客服 / 联系方式）。
 const K_CONTACT_NAME: &str = "basic_contact_name";
@@ -160,6 +164,7 @@ pub async fn basic_get(claims: ValidatedClaims) -> ZapJsonResult {
     let (sg_key_set, sg_key_hint) = secret_view(&conf, K_MAIL_SG_KEY);
     let (ali_secret_set, ali_secret_hint) = secret_view(&conf, K_MAIL_ALI_SECRET);
     let (tc_key_set, tc_key_hint) = secret_view(&conf, K_MAIL_TC_KEY);
+    let (mg_key_set, mg_key_hint) = secret_view(&conf, K_MG_KEY);
     let (net_ifaces, net_ipv4, net_ipv6, net_def_v4, net_def_v6) = network_options();
     // provider 默认值（向后兼容：未配置视为 smtp）
     let mail_provider = {
@@ -214,6 +219,12 @@ pub async fn basic_get(claims: ValidatedClaims) -> ZapJsonResult {
                 "tencent_secret_key_set": tc_key_set,
                 "tencent_secret_key_hint": tc_key_hint,
                 "tencent_region": get(&conf, K_MAIL_TC_REGION),
+                // ── Mailgun ──
+                "mailgun_api_key": "",
+                "mailgun_api_key_set": mg_key_set,
+                "mailgun_api_key_hint": mg_key_hint,
+                "mailgun_domain": get(&conf, K_MG_DOMAIN),
+                "mailgun_region": get(&conf, K_MG_REGION),
             },
             "contact": {
                 "name": get(&conf, K_CONTACT_NAME),
@@ -259,6 +270,12 @@ pub struct MailPane {
     /// 留空 = 不修改
     pub tencent_secret_key: Option<String>,
     pub tencent_region: Option<String>,
+    // ── Mailgun ──
+    pub mailgun_api_key: Option<String>,
+    /// 留空 = 不修改
+    pub mailgun_domain: Option<String>,
+    /// us（默认）/ eu
+    pub mailgun_region: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -343,7 +360,7 @@ pub async fn basic_save(
         // 渠道（默认 smtp，向后兼容旧客户端）
         if let Some(p) = &m.provider {
             let p = p.trim().to_string();
-            if !["smtp", "sendgrid", "aliyun", "tencent"].contains(&p.as_str()) {
+            if !["smtp", "sendgrid", "aliyun", "tencent", "mailgun"].contains(&p.as_str()) {
                 return Err(ZapError::New(
                     -1,
                     "发信渠道仅支持 smtp / sendgrid / aliyun / tencent".to_string(),
@@ -377,6 +394,10 @@ pub async fn basic_save(
         push_opt(&mut upserts, &m.tencent_secret_id, K_MAIL_TC_ID, 128)?;
         push_secret(&mut upserts, &m.tencent_secret_key, K_MAIL_TC_KEY, 256)?;
         push_opt(&mut upserts, &m.tencent_region, K_MAIL_TC_REGION, 32)?;
+        // ── Mailgun ──
+        push_secret(&mut upserts, &m.mailgun_api_key, K_MG_KEY, 256)?;
+        push_opt(&mut upserts, &m.mailgun_domain, K_MG_DOMAIN, 128)?;
+        push_opt(&mut upserts, &m.mailgun_region, K_MG_REGION, 8)?;
     }
     if let Some(c) = &payload.contact {
         push_opt(&mut upserts, &c.name, K_CONTACT_NAME, 64)?;
@@ -445,6 +466,7 @@ pub async fn mail_templates_get(claims: ValidatedClaims) -> ZapJsonResult {
                 "body_text": rt.body_text,
                 "body_html": rt.body_html,
                 "is_html": rt.is_html,
+                "template_id": rt.template_id,
             }),
         );
     }
@@ -465,6 +487,7 @@ pub struct MailTemplateEvent {
     body_text: Option<String>,
     body_html: Option<String>,
     is_html: Option<bool>,
+    template_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -497,15 +520,19 @@ pub async fn mail_templates_save(
         let body_text = t.body_text.clone().unwrap_or_default();
         let body_html = t.body_html.clone().unwrap_or_default();
         let is_html = t.is_html.unwrap_or(false);
+        let template_id = t.template_id.clone().unwrap_or_default();
         if subject.len() > 256 || body_text.len() > 16384 || body_html.len() > 16384 {
             return Err(ZapError::New(-1, "模板内容过长（主题≤256，正文≤16384）".to_string()));
         }
+        if template_id.len() > 128 {
+            return Err(ZapError::New(-1, "模板 ID 过长（最大 128 字符）".to_string()));
+        }
         sqlx::query(
-            "INSERT INTO mail_templates (owner_id, event, subject, body_text, body_html, is_html, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO mail_templates (owner_id, event, subject, body_text, body_html, is_html, template_id, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(owner_id, event) DO UPDATE SET \
                subject=excluded.subject, body_text=excluded.body_text, body_html=excluded.body_html, \
-               is_html=excluded.is_html, updated_at=excluded.updated_at",
+               is_html=excluded.is_html, template_id=excluded.template_id, updated_at=excluded.updated_at",
         )
         .bind(owner_id)
         .bind(ev)
@@ -513,6 +540,7 @@ pub async fn mail_templates_save(
         .bind(&body_text)
         .bind(&body_html)
         .bind(if is_html { 1i64 } else { 0i64 })
+        .bind(&template_id)
         .bind(now)
         .execute(pool)
         .await
@@ -545,6 +573,8 @@ pub async fn mail_test_send(
         "【ZAP】邮件发送测试",
         "<p>这是一封来自 ZAP 的测试邮件，说明您的邮件发信渠道配置正确。</p>",
         true,
+        None,
+        None,
         None,
     )
     .await
@@ -690,7 +720,7 @@ pub async fn mail_broadcast_send(
             } else {
                 (body_text, None)
             };
-            match crate::zap::mail::send(&email, subject, body, payload.is_html, alt).await {
+            match crate::zap::mail::send(&email, subject, body, payload.is_html, alt, None, None).await {
                 Ok(()) => sent_email += 1,
                 Err(e) => failed.push(json!({ "email": email, "username": username, "error": e })),
             }

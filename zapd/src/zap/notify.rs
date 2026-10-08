@@ -183,6 +183,8 @@ pub struct ResolvedTemplate {
     pub body_text: String,
     pub body_html: String,
     pub is_html: bool,
+    /// 模板 ID（按事件在邮件模板配置里填写）；非空且渠道支持模板时走模板发送。
+    pub template_id: String,
 }
 
 /// 模板解析：内置默认 → 全局覆盖（mail_templates 表 owner_id=0）→ reseller 覆盖
@@ -197,13 +199,14 @@ pub async fn resolve_template(event: &str, owner_id: i64) -> ResolvedTemplate {
         body_text: text,
         body_html: String::new(),
         is_html: false,
+        template_id: String::new(),
     };
     let pool = db::get_db_pool().await;
     // 先查 reseller 自身覆盖，再回退全局；owner_id=0 时只查全局
     let owners: Vec<i64> = if owner_id == 0 { vec![0] } else { vec![owner_id, 0] };
     for oid in owners {
-        let row: Option<(String, String, String, i64)> = sqlx::query_as(
-            "SELECT subject, body_text, body_html, is_html \
+        let row: Option<(String, String, String, i64, String)> = sqlx::query_as(
+            "SELECT subject, body_text, body_html, is_html, COALESCE(template_id, '') \
              FROM mail_templates WHERE owner_id = ? AND event = ?",
         )
         .bind(oid)
@@ -212,13 +215,14 @@ pub async fn resolve_template(event: &str, owner_id: i64) -> ResolvedTemplate {
         .await
         .ok()
         .flatten();
-        if let Some((s, bt, bh, ih)) = row {
+        if let Some((s, bt, bh, ih, tid)) = row {
             if !s.is_empty() {
                 rt.subject = s;
             }
             rt.body_text = bt;
             rt.body_html = bh;
             rt.is_html = ih != 0;
+            rt.template_id = tid;
             break;
         }
     }
@@ -252,8 +256,24 @@ async fn email_user(user_id: i64, event: &str, params: &HashMap<&str, String>) {
     };
     let rendered = render(&body, params);
     let alt_rendered = alt.as_deref().map(|a| render(a, params));
-    if let Err(e) =
-        mail::send(&email, &subject, &rendered, is_html, alt_rendered.as_deref()).await
+    // 模板 ID（按事件填写）：非空时若渠道支持模板则走模板通道并透传变量，否则忽略、按自由正文发送
+    let template_id = if rt.template_id.trim().is_empty() {
+        None
+    } else {
+        Some(rt.template_id.trim())
+    };
+    let template_data: HashMap<String, String> =
+        params.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect();
+    if let Err(e) = mail::send(
+        &email,
+        &subject,
+        &rendered,
+        is_html,
+        alt_rendered.as_deref(),
+        template_id,
+        Some(&template_data),
+    )
+    .await
     {
         mail::log_send_error(event, &e);
     }

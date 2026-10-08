@@ -30,6 +30,13 @@ export interface MailSettings {
   tencent_secret_key_set?: boolean
   tencent_secret_key_hint?: string
   tencent_region: string
+  // ── Mailgun ──
+  mailgun_api_key: string
+  mailgun_api_key_set?: boolean
+  mailgun_api_key_hint?: string
+  mailgun_domain: string
+  /** 数据中心：us（默认）/ eu */
+  mailgun_region: string
 }
 
 /**
@@ -50,7 +57,7 @@ export function saveMailSettings(mail: Partial<MailSettings>) {
   return http.post<{ code: number; message: string }>('/system/config/basic', { mail })
 }
 
-/** 单个事件的邮件模板（主题 + 纯文本正文 + HTML 正文 + 是否 HTML） */
+/** 单个事件的邮件模板（主题 + 纯文本正文 + HTML 正文 + 是否 HTML + 模板 ID） */
 export interface MailTemplate {
   subject: string
   /** 纯文本正文（非 HTML 模式使用，亦作为 HTML 模式的纯文本兜底） */
@@ -59,6 +66,8 @@ export interface MailTemplate {
   body_html: string
   /** 是否为 HTML 格式 */
   is_html: boolean
+  /** 模板 ID：填写后且渠道支持模板（腾讯云 / Mailgun）时走模板发送，并透传自定义变量 */
+  template_id?: string
 }
 
 /** 邮件模板读取结果 */

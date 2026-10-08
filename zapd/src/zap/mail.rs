@@ -11,7 +11,7 @@
 //! [`crate::zap::crypto`] 加密）。[`send`] 在「未配置对应渠道」时直接 Ok(()) 静默跳过，
 //! 调用方（notify）无需关心是否配置。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use base64::Engine;
 use chrono::Utc;
@@ -30,6 +30,7 @@ pub enum MailProvider {
     SendGrid,
     Aliyun,
     Tencent,
+    Mailgun,
 }
 
 impl MailProvider {
@@ -39,6 +40,7 @@ impl MailProvider {
             MailProvider::SendGrid => "sendgrid",
             MailProvider::Aliyun => "aliyun",
             MailProvider::Tencent => "tencent",
+            MailProvider::Mailgun => "mailgun",
         }
     }
 
@@ -47,6 +49,7 @@ impl MailProvider {
             "sendgrid" => MailProvider::SendGrid,
             "aliyun" => MailProvider::Aliyun,
             "tencent" => MailProvider::Tencent,
+            "mailgun" => MailProvider::Mailgun,
             _ => MailProvider::Smtp,
         }
     }
@@ -90,6 +93,11 @@ pub struct MailConfig {
     pub tencent_secret_id: String,
     pub tencent_secret_key: String,
     pub tencent_region: String,
+    // Mailgun
+    pub mailgun_api_key: String,
+    pub mailgun_domain: String,
+    /// 数据中心：us（默认）/ eu
+    pub mailgun_region: String,
 }
 
 // ── 键名（与 system_basic.rs 保持一致）──────────────────────────
@@ -107,6 +115,9 @@ const K_ALI_REGION: &str = "basic_mail_aliyun_region";
 const K_TC_ID: &str = "basic_mail_tencent_id";
 const K_TC_KEY: &str = "basic_mail_tencent_key";
 const K_TC_REGION: &str = "basic_mail_tencent_region";
+const K_MG_KEY: &str = "basic_mail_mailgun_key";
+const K_MG_DOMAIN: &str = "basic_mail_mailgun_domain";
+const K_MG_REGION: &str = "basic_mail_mailgun_region";
 
 /// 从 server_env 读取并还原发信配置。
 ///
@@ -143,6 +154,9 @@ pub fn load_config() -> Option<MailConfig> {
         tencent_secret_id: get(K_TC_ID),
         tencent_secret_key: decrypt(K_TC_KEY),
         tencent_region: get(K_TC_REGION),
+        mailgun_api_key: decrypt(K_MG_KEY),
+        mailgun_domain: get(K_MG_DOMAIN),
+        mailgun_region: get(K_MG_REGION),
     };
 
     // 各渠道必备字段校验；不齐则视为未配置
@@ -158,6 +172,9 @@ pub fn load_config() -> Option<MailConfig> {
         MailProvider::Tencent => {
             !cfg.tencent_secret_id.is_empty() && !cfg.tencent_secret_key.is_empty()
         }
+        MailProvider::Mailgun => {
+            !cfg.mailgun_api_key.is_empty() && !cfg.mailgun_domain.is_empty()
+        }
     };
     if !ready {
         return None;
@@ -171,6 +188,8 @@ pub fn load_config() -> Option<MailConfig> {
 /// （HTML 模式下用于构造 `multipart/alternative`，提升客户端兼容性与垃圾邮件评分）。
 /// 仅纯文本模式下则只发 `text/plain`。
 ///
+/// `template_id` / `template_data` 用于模板发送：当 `template_id` 非空且当前渠道支持模板
+/// （腾讯云 SES、Mailgun）时，走模板通道并透传自定义变量；否则忽略，按自由正文发送。
 /// 未配置对应渠道时静默跳过（返回 Ok）；发送失败返回 Err(原因) 供调用方记录。
 pub async fn send(
     to: &str,
@@ -178,6 +197,8 @@ pub async fn send(
     body: &str,
     is_html: bool,
     alt_text: Option<&str>,
+    template_id: Option<&str>,
+    template_data: Option<&HashMap<String, String>>,
 ) -> Result<(), String> {
     let cfg = match load_config() {
         Some(c) => c,
@@ -192,11 +213,27 @@ pub async fn send(
     } else {
         (None, Some(body))
     };
+    let use_template = template_id.map(|t| !t.trim().is_empty()).unwrap_or(false);
     match cfg.provider {
         MailProvider::Smtp => smtp_send(&cfg, to, subject, html, text).await,
         MailProvider::SendGrid => sendgrid_send(&cfg, to, subject, html, text).await,
+        // 阿里云 DirectMail 的模板接口（BatchSendMail）依赖控制台预建的收件人列表，
+        // 无法动态指定单个收件人，故阿里云始终走自由正文（SingleSendMail）。
         MailProvider::Aliyun => aliyun_send(&cfg, to, subject, html, text).await,
-        MailProvider::Tencent => tencent_send(&cfg, to, subject, html, text).await,
+        MailProvider::Tencent => {
+            if use_template {
+                tencent_send_template(&cfg, to, template_id.unwrap(), template_data).await
+            } else {
+                tencent_send(&cfg, to, subject, html, text).await
+            }
+        }
+        MailProvider::Mailgun => {
+            if use_template {
+                mailgun_send_template(&cfg, to, template_id.unwrap(), template_data).await
+            } else {
+                mailgun_send(&cfg, to, subject, html, text).await
+            }
+        }
     }
 }
 
@@ -411,13 +448,8 @@ async fn aliyun_send(
 }
 
 // ── 腾讯云 SES（SendEmail，TC3-HMAC-SHA256）─────────────────────
-async fn tencent_send(
-    cfg: &MailConfig,
-    to: &str,
-    subject: &str,
-    html: Option<&str>,
-    text: Option<&str>,
-) -> Result<(), String> {
+/// 通用 TC3 签名 + 发送（payload 已包含 Simple 或 Template 结构）。
+async fn tencent_request(cfg: &MailConfig, payload: serde_json::Value) -> Result<(), String> {
     let secret_id = &cfg.tencent_secret_id;
     let secret_key = &cfg.tencent_secret_key;
     let region = if cfg.tencent_region.is_empty() {
@@ -430,30 +462,7 @@ async fn tencent_send(
     let action = "SendEmail";
     let version = "2020-10-02";
 
-    // 2020-10-02 版 SendEmail：Destination 为收件人数组；正文置于 Simple，
-    // 其中 Html/Text 须为 Base64 字符串；Subject 是顶层字段（顶层 Body 已废弃）。
-    let mut simple = serde_json::Map::new();
-    if let Some(h) = html.filter(|h| !h.is_empty()) {
-        simple.insert(
-            "Html".into(),
-            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(h.as_bytes())),
-        );
-    }
-    if let Some(t) = text.filter(|t| !t.is_empty()) {
-        simple.insert(
-            "Text".into(),
-            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(t.as_bytes())),
-        );
-    }
-
-    let payload = serde_json::json!({
-        "FromEmailAddress": cfg.from,
-        "Destination": [to],
-        "Subject": subject,
-        "Simple": serde_json::Value::Object(simple),
-    });
     let payload_str = payload.to_string();
-
     let now = Utc::now();
     let timestamp = now.timestamp();
     let date = now.format("%Y-%m-%d").to_string();
@@ -507,6 +516,135 @@ async fn tencent_send(
             let msg = err.get("Message").and_then(|m| m.as_str()).unwrap_or("");
             return Err(format!("腾讯云发送失败 [{code}]: {msg}"));
         }
+    }
+    Ok(())
+}
+
+/// 自由正文发送（Simple）：Destination 为收件人数组；Html/Text 须为 Base64 字符串；
+/// Subject 为顶层字段（顶层 Body 已废弃）。未开通 Simple 的账号请改用模板发送。
+async fn tencent_send(
+    cfg: &MailConfig,
+    to: &str,
+    subject: &str,
+    html: Option<&str>,
+    text: Option<&str>,
+) -> Result<(), String> {
+    let mut simple = serde_json::Map::new();
+    if let Some(h) = html.filter(|h| !h.is_empty()) {
+        simple.insert(
+            "Html".into(),
+            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(h.as_bytes())),
+        );
+    }
+    if let Some(t) = text.filter(|t| !t.is_empty()) {
+        simple.insert(
+            "Text".into(),
+            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(t.as_bytes())),
+        );
+    }
+    let payload = serde_json::json!({
+        "FromEmailAddress": cfg.from,
+        "Destination": [to],
+        "Subject": subject,
+        "Simple": serde_json::Value::Object(simple),
+    });
+    tencent_request(cfg, payload).await
+}
+
+/// 模板发送：TemplateID 必须为整数；TemplateData 为变量 JSON 字符串。
+async fn tencent_send_template(
+    cfg: &MailConfig,
+    to: &str,
+    template_id: &str,
+    data: Option<&HashMap<String, String>>,
+) -> Result<(), String> {
+    let template_id_num: i64 = template_id
+        .trim()
+        .parse()
+        .map_err(|_| format!("腾讯云模板 ID 无效（应为整数）: {template_id}"))?;
+    let template_data = data
+        .map(|d| serde_json::to_string(d).unwrap_or_else(|_| "{}".to_string()))
+        .unwrap_or_else(|| "{}".to_string());
+    let payload = serde_json::json!({
+        "FromEmailAddress": cfg.from,
+        "Destination": [to],
+        "Template": { "TemplateID": template_id_num, "TemplateData": template_data },
+    });
+    tencent_request(cfg, payload).await
+}
+
+// ── Mailgun（messages.send，Basic Auth）────────────────────────
+fn mailgun_base(region: &str) -> String {
+    if region.trim().eq_ignore_ascii_case("eu") {
+        "https://api.eu.mailgun.net".to_string()
+    } else {
+        "https://api.mailgun.net".to_string()
+    }
+}
+
+async fn mailgun_send(
+    cfg: &MailConfig,
+    to: &str,
+    subject: &str,
+    html: Option<&str>,
+    text: Option<&str>,
+) -> Result<(), String> {
+    let url = format!("{}/v3/{}/messages", mailgun_base(&cfg.mailgun_region), cfg.mailgun_domain);
+    let client = reqwest::Client::new();
+    let mut params: Vec<(String, String)> = vec![
+        ("from".into(), cfg.from.clone()),
+        ("to".into(), to.to_string()),
+        ("subject".into(), subject.to_string()),
+    ];
+    if let Some(t) = text.filter(|t| !t.is_empty()) {
+        params.push(("text".into(), t.to_string()));
+    }
+    if let Some(h) = html.filter(|h| !h.is_empty()) {
+        params.push(("html".into(), h.to_string()));
+    }
+    let resp = client
+        .post(&url)
+        .basic_auth("api", Some(&cfg.mailgun_api_key))
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Mailgun 请求失败: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(format!("Mailgun 返回 {status}: {txt}"));
+    }
+    Ok(())
+}
+
+/// 模板发送：form 字段 `template` 为模板名，`h:X-Mailgun-Variables` 为变量 JSON。
+async fn mailgun_send_template(
+    cfg: &MailConfig,
+    to: &str,
+    template_id: &str,
+    data: Option<&HashMap<String, String>>,
+) -> Result<(), String> {
+    let url = format!("{}/v3/{}/messages", mailgun_base(&cfg.mailgun_region), cfg.mailgun_domain);
+    let vars = data
+        .map(|d| serde_json::to_string(d).unwrap_or_else(|_| "{}".to_string()))
+        .unwrap_or_else(|| "{}".to_string());
+    let params: Vec<(String, String)> = vec![
+        ("from".into(), cfg.from.clone()),
+        ("to".into(), to.to_string()),
+        ("template".into(), template_id.to_string()),
+        ("h:X-Mailgun-Variables".into(), vars),
+    ];
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .basic_auth("api", Some(&cfg.mailgun_api_key))
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Mailgun 请求失败: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(format!("Mailgun 返回 {status}: {txt}"));
     }
     Ok(())
 }

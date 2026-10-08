@@ -14,6 +14,7 @@ const providerOptions = computed(() => [
   { value: 'sendgrid', label: t('notifyCfg.providerSendgrid') },
   { value: 'aliyun', label: t('notifyCfg.providerAliyun') },
   { value: 'tencent', label: t('notifyCfg.providerTencent') },
+  { value: 'mailgun', label: t('notifyCfg.providerMailgun') },
 ])
 
 // 协议名保持英文，只有「无加密」需要本地化
@@ -46,6 +47,11 @@ const mail = reactive({
   tencent_secret_key_set: false,
   tencent_secret_key_hint: '',
   tencent_region: 'ap-guangzhou',
+  mailgun_api_key: '',
+  mailgun_api_key_set: false,
+  mailgun_api_key_hint: '',
+  mailgun_domain: '',
+  mailgun_region: 'us',
 })
 
 const passwordPlaceholder = computed(() =>
@@ -67,6 +73,11 @@ const tcSecretPlaceholder = computed(() =>
   mail.tencent_secret_key_set
     ? t('notifyCfg.secretKeepHint', { hint: mail.tencent_secret_key_hint || t('notifyCfg.saved') })
     : t('notifyCfg.tencentSecretKey'),
+)
+const mgKeyPlaceholder = computed(() =>
+  mail.mailgun_api_key_set
+    ? t('notifyCfg.secretKeepHint', { hint: mail.mailgun_api_key_hint || t('notifyCfg.saved') })
+    : t('notifyCfg.mailgunApiKey'),
 )
 
 async function load() {
@@ -96,6 +107,11 @@ async function load() {
     mail.tencent_secret_key_set = m.tencent_secret_key_set === true
     mail.tencent_secret_key_hint = m.tencent_secret_key_hint ?? ''
     mail.tencent_region = m.tencent_region ?? 'ap-guangzhou'
+    mail.mailgun_api_key = ''
+    mail.mailgun_api_key_set = m.mailgun_api_key_set === true
+    mail.mailgun_api_key_hint = m.mailgun_api_key_hint ?? ''
+    mail.mailgun_domain = m.mailgun_domain ?? ''
+    mail.mailgun_region = m.mailgun_region ?? 'us'
   } catch {
     /* 拦截器已弹窗 */
   } finally {
@@ -131,6 +147,9 @@ async function save() {
       tencent_secret_id: mail.tencent_secret_id.trim(),
       tencent_secret_key: mail.tencent_secret_key.trim(),
       tencent_region: mail.tencent_region.trim(),
+      mailgun_api_key: mail.mailgun_api_key.trim(),
+      mailgun_domain: mail.mailgun_domain.trim(),
+      mailgun_region: mail.mailgun_region.trim(),
     })
     ElMessage.success(t('notifyCfg.mailSaved'))
     await load() // 重新拉取，刷新已保存密钥的掩码提示
@@ -258,6 +277,31 @@ onMounted(load)
             :placeholder="t('notifyCfg.regionPlaceholder')"
             style="width: 240px"
           />
+        </el-form-item>
+      </template>
+
+      <!-- Mailgun -->
+      <template v-else-if="mail.provider === 'mailgun'">
+        <el-form-item :label="t('notifyCfg.mailgunApiKey')">
+          <el-input
+            v-model="mail.mailgun_api_key"
+            type="password"
+            show-password
+            :placeholder="mgKeyPlaceholder"
+          />
+        </el-form-item>
+        <el-form-item :label="t('notifyCfg.mailgunDomain')">
+          <el-input
+            v-model="mail.mailgun_domain"
+            :placeholder="t('notifyCfg.mailgunDomainPlaceholder')"
+            clearable
+          />
+        </el-form-item>
+        <el-form-item :label="t('notifyCfg.mailgunRegion')">
+          <el-select v-model="mail.mailgun_region" style="width: 240px">
+            <el-option value="us" :label="t('notifyCfg.regionUs')" />
+            <el-option value="eu" :label="t('notifyCfg.regionEu')" />
+          </el-select>
         </el-form-item>
       </template>
 

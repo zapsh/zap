@@ -38,7 +38,10 @@ const eventDefs = [
 // 预先用各事件键初始化，避免首次渲染时 templates[ev.key] 为 undefined
 const templates = reactive<Record<string, MailTemplate>>(
   Object.fromEntries(
-    eventDefs.map((e) => [e.key, { subject: '', body_text: '', body_html: '', is_html: false }]),
+    eventDefs.map((e) => [
+      e.key,
+      { subject: '', body_text: '', body_html: '', is_html: false, template_id: '' },
+    ]),
   ),
 )
 
@@ -98,12 +101,14 @@ async function save() {
         body_text: '',
         body_html: '',
         is_html: false,
+        template_id: '',
       }
       payload[ev.key] = {
         subject: (tpl.subject ?? '').trim(),
         body_text: (tpl.body_text ?? '').trim(),
         body_html: (tpl.body_html ?? '').trim(),
         is_html: !!tpl.is_html,
+        template_id: (tpl.template_id ?? '').trim(),
       }
     }
     await saveMailTemplates(payload)
@@ -151,6 +156,14 @@ onMounted(load)
             :placeholder="t('notifyCfg.templateSubject')"
             style="margin-bottom: 12px"
           />
+
+          <label class="tpl-label">{{ t('notifyCfg.templateIdLabel') }}</label>
+          <el-input
+            v-model="templates[ev.key].template_id"
+            :placeholder="t('notifyCfg.templateIdPlaceholder')"
+            style="margin-bottom: 4px"
+          />
+          <div class="tpl-vars">{{ t('notifyCfg.templateIdHint') }}</div>
 
           <div class="tpl-format">
             <span class="tpl-format-label">{{ t('notifyCfg.templateFormat') }}</span>
