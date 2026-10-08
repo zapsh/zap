@@ -410,7 +410,8 @@ const statCards = computed(() => [
 const customers = ref<UserListItem[]>([])
 
 function goCustomers() {
-  router.push('/system/access')
+  // reseller 的客户管理路由（父路由重定向到 /reseller/users/index）
+  router.push('/reseller/users')
 }
 
 async function loadCustomers() {
