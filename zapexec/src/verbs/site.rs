@@ -633,13 +633,37 @@ struct VhostRenderSpec<'a> {
     listen_ipv4: &'a str,
     /// 共享主机 IPv6（面板基础设置「默认 IPv6」）；空 = 通配 `listen [::]:80`
     listen_ipv6: &'a str,
+    /// 站点独立绑定的 IP 列表（来自 IP 池）；非空时仅监听这些 IP（忽略共享主机 IP）
+    site_ips: &'a [String],
     security: Option<&'a SiteSecuritySpec>,
 }
 
-/// 生成 listen 指令：指定了共享 IP 就绑定 `IP:端口`，否则通配。
+/// 把 IP 规整为 `listen` 地址：`1.2.3.4` → `1.2.3.4`，`2001:db8::1` → `[2001:db8::1]`。
+fn listen_addr(ip: &str) -> String {
+    let ip = ip.trim();
+    if ip.contains(':') && !ip.starts_with('[') {
+        format!("[{ip}]")
+    } else {
+        ip.to_string()
+    }
+}
+
+/// 生成 listen 指令：
+/// - 指定了站点独立 IP（`site_ips` 非空）→ 每个 IP 渲染为 `listen <ip>:<端口>`（IPv6 自动加方括号）；
+/// - 否则沿用共享主机 IPv4/IPv6 行为（指定则 `IP:端口`，否则通配）。
 ///
 /// `suffix` 为附加参数（如 ` ssl` / ` ssl http2`）。
-fn listen_directive(ipv4: &str, ipv6: &str, port: u16, suffix: &str) -> String {
+fn render_listen(site_ips: &[String], ipv4: &str, ipv6: &str, port: u16, suffix: &str) -> String {
+    if !site_ips.is_empty() {
+        let mut out = String::new();
+        for ip in site_ips {
+            if ip.trim().is_empty() {
+                continue;
+            }
+            out.push_str(&format!("    listen {}:{port}{suffix};\n", listen_addr(ip)));
+        }
+        return out;
+    }
     let v4 = if ipv4.trim().is_empty() {
         format!("    listen {port}{suffix};\n")
     } else {
@@ -894,11 +918,12 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         ssl_tls,
         listen_ipv4,
         listen_ipv6,
+        site_ips,
         security,
     } = a;
-    // 监听地址：指定共享 IP 时绑定 `IP:端口`，否则沿用通配监听
-    let listen_80 = listen_directive(listen_ipv4, listen_ipv6, 80, "");
-    let listen_443 = listen_directive(listen_ipv4, listen_ipv6, 443, " ssl");
+    // 监听地址：指定了站点独立 IP 则只监听这些 IP；否则沿用共享主机 IP / 通配
+    let listen_80 = render_listen(site_ips, listen_ipv4, listen_ipv6, 80, "");
+    let listen_443 = render_listen(site_ips, listen_ipv4, listen_ipv6, 443, " ssl");
     let s_type = norm_site_type(site_type);
     let comment = name.chars().filter(|c| !c.is_control()).collect::<String>();
     let server_name = {
@@ -1085,7 +1110,7 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
     let http2_enabled = ssl_files.is_some() && ssl_tls.map(|c| c.http2).unwrap_or(false);
     // nginx < 1.25.1 只能把 http2 内嵌到 listen 参数；新版本用独立 `http2 on;` 指令
     let listen_443 = if http2_enabled && ssl_tls.is_some_and(|c| !c.http2_on_syntax) {
-        listen_directive(listen_ipv4, listen_ipv6, 443, " ssl http2")
+        render_listen(site_ips, listen_ipv4, listen_ipv6, 443, " ssl http2")
     } else {
         listen_443
     };
@@ -2392,6 +2417,8 @@ pub(super) struct SiteConfig {
     pub(super) ssl_http2: bool,
     pub(super) listen_ipv4: String,
     pub(super) listen_ipv6: String,
+    /// 站点独立绑定的 IP 列表（来自 IP 池）；非空时仅监听这些 IP
+    pub(super) site_ips: Vec<String>,
     /// 站点安全配置（WAF / 限速 / 限并发）
     pub(super) security: Option<SiteSecuritySpec>,
 }
@@ -2676,6 +2703,7 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         ssl_tls: ssl_tls_cfg.as_ref(),
         listen_ipv4: &listen_ipv4,
         listen_ipv6: &listen_ipv6,
+        site_ips: &site_ips,
     });
 
     // 面板侧快照（渲染源 / 入参 / 历史版本）：失败不影响发布，仅作排障与回滚副本

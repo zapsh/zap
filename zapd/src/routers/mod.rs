@@ -832,6 +832,7 @@ fn api_routers() -> Router {
         // 站点管理（admin 全部 / reseller 所属客户 / user 自己的站点）
         .route("/site/list", get(site::site_list))
         .route("/site/users", get(site::site_users))
+        .route("/site/ip-options", get(site::site_ip_options))
         .route("/site/add", post(site::site_add))
         .route("/site/update", post(site::site_update))
         .route("/site/delete", post(site::site_delete))

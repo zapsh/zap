@@ -332,6 +332,32 @@ async function loadOwners() {
   }
 }
 
+// 建站「绑定 IP」下拉：拉取当前归属用户可见的 IP 池条目（自己的静态 IP + 系统共享）
+// owner=0 的哨兵选项表示「默认虚拟 IP（主机默认，不显式绑定）」
+const SITE_IP_DEFAULT = '__host_default__'
+interface SiteIpOption {
+  id: number
+  address: string
+  version: number
+  ip_type: string
+  owner_id: number
+}
+const siteIpOptions = ref<SiteIpOption[]>([])
+const siteIpLoading = ref(false)
+async function loadSiteIpOptions(ownerId?: number | null) {
+  siteIpLoading.value = true
+  try {
+    const res = await http.get<{ code: number; data: SiteIpOption[] }>('/site/ip-options', {
+      params: canManageAll.value && ownerId ? { owner: ownerId } : {},
+    })
+    siteIpOptions.value = res.data || []
+  } catch {
+    siteIpOptions.value = []
+  } finally {
+    siteIpLoading.value = false
+  }
+}
+
 // 筛选
 const keyword = ref('')
 /** 顶部统计胶囊筛选：running / stopped / failed；再次点击取消（回到全部） */
@@ -1263,6 +1289,8 @@ function openAdd() {
   loadFeature()
   // 新建态也要拉安全能力位（WAF 能不能开），否则安全 tab 一直显示"接口不可用"
   loadSecurity()
+  // 拉取当前归属用户可见的 IP（自己的静态 IP + 系统共享），供「绑定 IP」下拉选择
+  loadSiteIpOptions(canManageAll.value ? form.user_id : undefined)
   ensureRootLocation()
   resetExpanded()
   formVisible.value = true
@@ -1282,6 +1310,8 @@ function openEdit(row: SiteItem) {
   form.site_type = (row.site_type as SiteType) || 'php'
   form.web_root = row.web_root || ''
   form.web_root_custom = !!row.web_root_custom
+  // 拉取该站点归属用户可见的 IP（自己的静态 IP + 系统共享），供「绑定 IP」下拉选择
+  loadSiteIpOptions(form.user_id)
   // 把已有文档根还原为「家目录前缀下的相对子路径」供编辑（已有目录 / 自动目录统一展示）
   form.web_root_sub = ''
   legacyDocRoot.value = ''
@@ -1478,7 +1508,10 @@ async function submitForm() {
   const payload: Record<string, unknown> = {
     name: form.name.trim(),
     domains,
-    ips: form.ips.map((s) => s.trim()).filter((s) => s),
+    // 绑定 IP：过滤掉「默认虚拟 IP」哨兵值；选中它等于不显式绑定（沿用主机默认监听）
+    ips: form.ips
+      .map((s) => s.trim())
+      .filter((s) => s && s !== SITE_IP_DEFAULT),
     status: form.status,
     remark: form.remark.trim(),
     php_instance: form.site_type === 'php' ? form.php_instance : '',
@@ -2244,10 +2277,19 @@ onMounted(() => {
                 default-first-option
                 :reserve-keyword="false"
                 :placeholder="t('site.ipsPlaceholder')"
+                :loading="siteIpLoading"
                 style="width: 100%"
               >
-                <el-option v-for="ip in form.ips" :key="ip" :value="ip" :label="ip" />
+                <!-- 默认虚拟 IP：不显式绑定，使用主机默认监听（listen 80 / [::]:80） -->
+                <el-option :value="SITE_IP_DEFAULT" :label="t('site.ipDefaultVirtual')" />
+                <el-option
+                  v-for="o in siteIpOptions"
+                  :key="o.id"
+                  :value="o.address"
+                  :label="`${o.address}（${o.ip_type === 'dedicated' ? t('serverIp.dedicatedIp') : t('serverIp.sharedIp')}）`"
+                />
               </el-select>
+              <div class="form-tip">{{ t('site.ipBindTip') }}</div>
             </el-form-item>
 
             <el-form-item

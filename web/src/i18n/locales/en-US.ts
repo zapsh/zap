@@ -4762,6 +4762,9 @@ const enUS: Messages = {
     domainDirTip: 'The first domain is used to auto-generate the site directory name below',
     formIps: 'Bound IPs',
     ipsPlaceholder: 'Type an IP and press Enter to add; multiple IPv4 / IPv6 supported',
+    ipDefaultVirtual: 'Default virtual IP (host default, no explicit bind)',
+    ipBindTip:
+      'Pick your assigned static IP from the dropdown; leaving unselected uses the host default listen. For multi-user multi-IP, assign the IP to that user first in "IP Settings"',
     rootBrowsePlaceholder: 'Browse to select an existing directory under the home directory',
     rootNamePlaceholder: 'Directory name (auto-generated from the domain; editable)',
     rootBrowseTip: 'Browse and select an existing directory under the home directory',

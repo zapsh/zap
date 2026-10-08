@@ -2048,6 +2048,81 @@ pub async fn site_users(claims: ValidatedClaims) -> ZapJsonResult {
     })))
 }
 
+/// 建站表单「绑定 IP」下拉的数据源：返回当前操作者（或其管理范围内指定归属用户）
+/// 可见的 IP 池条目。普通用户只能看到系统共享 IP（owner_id=0）与自己被分配的静态 IP；
+/// admin / reseller 可看全部，或按 `?owner=<id>` 过滤为该归属用户可见的 IP。
+#[derive(Debug, Deserialize)]
+pub struct SiteIpOptionsQuery {
+    #[serde(default)]
+    pub owner: Option<i64>,
+}
+
+pub async fn site_ip_options(
+    claims: ValidatedClaims,
+    Query(q): Query<SiteIpOptionsQuery>,
+) -> ZapJsonResult {
+    require_manageable(&claims)?;
+    let pool = db::get_db_pool().await;
+
+    // 归属范围：传了 owner 且当前操作者有权管理 → 用该 owner；否则回退到自己
+    let effective_owner: i64 = if let Some(o) = q.owner {
+        if o == claims.id as i64 {
+            o
+        } else if resolve_target_user(&claims, o).await.is_ok() {
+            o
+        } else {
+            return Err(ZapError::New(-1, "无权限查看该用户的 IP".to_string()));
+        }
+    } else {
+        claims.id as i64
+    };
+
+    let rows: Vec<(i64, String, i32, String, i32)> = if jwt::is_admin(&claims) {
+        if q.owner.is_some() {
+            sqlx::query_as(
+                "SELECT id, address, version, ip_type, owner_id FROM ip_pool \
+                 WHERE owner_id = 0 OR owner_id = ? ORDER BY version ASC, address ASC",
+            )
+            .bind(effective_owner)
+            .fetch_all(pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                "SELECT id, address, version, ip_type, owner_id FROM ip_pool \
+                 ORDER BY version ASC, address ASC",
+            )
+            .fetch_all(pool)
+            .await?
+        }
+    } else {
+        sqlx::query_as(
+            "SELECT id, address, version, ip_type, owner_id FROM ip_pool \
+             WHERE owner_id = 0 OR owner_id = ? ORDER BY version ASC, address ASC",
+        )
+        .bind(effective_owner)
+        .fetch_all(pool)
+        .await?
+    };
+
+    let list: Vec<Value> = rows
+        .iter()
+        .map(|(id, address, version, ip_type, owner_id)| {
+            json!({
+                "id": id,
+                "address": address,
+                "version": version,
+                "ip_type": ip_type,
+                "owner_id": owner_id,
+            })
+        })
+        .collect();
+    Ok(Json(json!({
+        "code": 0,
+        "message": "OK",
+        "data": list,
+    })))
+}
+
 /// 站点能力读取：返回当前操作者的实际能力（gates）与是否管理员。
 /// admin / reseller 恒为全能力；普通用户反向代理取决于其套餐的 allow_proxy
 /// （未绑定套餐时回退全局「默认套餐」）；自定义目录已全量开放。
@@ -3308,6 +3383,18 @@ async fn sync_one_site_inner(
     let listen_ipv4 = server_env::conf_get(K_DEFAULT_IPV4).unwrap_or_default();
     let listen_ipv6 = server_env::conf_get(K_DEFAULT_IPV6).unwrap_or_default();
 
+    // 站点独立绑定 IP（来自 IP 池、按归属分配）：非空时 vhost 仅监听这些 IP，
+    // 不再使用上面的共享主机 IPv4/IPv6（多用户多 IP 隔离的关键）
+    let site_ips: Vec<String> = sqlx::query_as::<_, (String,)>(
+        "SELECT ip FROM site_ip WHERE site_id = ? ORDER BY id",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| r.0)
+    .collect();
+
     // 站点安全配置（WAF / 限速 / 限并发）：渲染进 vhost 的 server 上下文
     let security = Some(sec_to_proto(load_site_sec(id).await));
 
@@ -3334,6 +3421,7 @@ async fn sync_one_site_inner(
         ssl_http2: prof.9,
         listen_ipv4,
         listen_ipv6,
+        site_ips,
         security,
     })
     .await?;

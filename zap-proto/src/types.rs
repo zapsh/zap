@@ -933,6 +933,11 @@ pub enum Request {
         /// 空 = 沿用 `listen [::]:80`。
         #[serde(default, skip_serializing_if = "String::is_empty")]
         listen_ipv6: String,
+        /// 站点独立绑定的 IP 列表（来自 IP 池，按归属分配；多用户多 IP 隔离的关键）。
+        /// 非空时 vhost 仅监听这些 IP（不再使用上面的共享主机 IPv4/IPv6 通配），
+        /// 每个 IP 渲染为 `listen <ip>:<port>`（IPv6 自动加方括号）；空 = 沿用共享主机 IP 行为。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        site_ips: Vec<String>,
         /// 站点安全配置（WAF / 限速 / 限并发）；None = 不渲染安全片段（兼容老版本 zapd）
         #[serde(default, skip_serializing_if = "Option::is_none")]
         security: Option<SiteSecuritySpec>,
@@ -2178,6 +2183,7 @@ mod tests {
                 ssl_http2: false,
                 listen_ipv4: String::new(),
                 listen_ipv6: String::new(),
+                site_ips: vec![],
                 security: None,
             })
             .unwrap(),
@@ -2229,6 +2235,7 @@ mod tests {
             ssl_http2: false,
             listen_ipv4: String::new(),
             listen_ipv6: String::new(),
+            site_ips: vec![],
             security: None,
         };
         let json = serde_json::to_string(&req).unwrap();

@@ -4692,6 +4692,8 @@ export default {
     domainDirTip: '第一个域名用于自动生成下方的站点目录名',
     formIps: '绑定 IP',
     ipsPlaceholder: '输入 IP 后回车添加，支持多个 IPv4 / IPv6',
+    ipDefaultVirtual: '默认虚拟 IP（主机默认，不显式绑定）',
+    ipBindTip: '从下拉选择自己被分配的静态 IP；不选则使用主机默认监听。多用户多 IP 时，请先在「IP 设置」把 IP 分配给该用户',
     rootBrowsePlaceholder: '浏览选择家目录下已存在的目录',
     rootNamePlaceholder: '目录名（输入域名后自动生成，可修改）',
     rootBrowseTip: '浏览并选择家目录下已存在的目录',
