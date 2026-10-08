@@ -62,6 +62,8 @@ pub async fn init_schema() {
     init_notice_message_table().await;
     // 邮件通知模板表（全局 / reseller 覆盖，独立存储）
     init_mail_templates_table().await;
+    // 群发通知模板表（用户自建命名模板：全局 / 私有）
+    init_broadcast_templates_table().await;
     // API Token 管理表
     init_api_token_table().await;
     // SSL/TLS 证书管理表
@@ -1490,6 +1492,28 @@ async fn init_notice_message_table() {
         created_at INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_notice_user ON notice_message(user_id, id);
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+/// 群发通知模板：用户自建的命名模板（如「维护通知」），列表预填群发用。
+/// 作用域：`global`（owner_id=0，仅管理员可建/改/删）、`self`（owner_id=创建者，私有）。
+async fn init_broadcast_templates_table() {
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS broadcast_templates (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        owner_id INTEGER NOT NULL DEFAULT 0,
+        scope TEXT NOT NULL DEFAULT 'self',
+        name TEXT NOT NULL DEFAULT '',
+        subject TEXT NOT NULL DEFAULT '',
+        body_text TEXT NOT NULL DEFAULT '',
+        body_html TEXT NOT NULL DEFAULT '',
+        is_html INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_btpl_owner ON broadcast_templates(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_btpl_scope ON broadcast_templates(scope);
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }

@@ -10,7 +10,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use rust_embed::RustEmbed;
 use serde_json::json;
@@ -573,6 +573,17 @@ fn api_routers() -> Router {
         .route(
             "/system/mail/broadcast",
             post(system_basic::mail_broadcast_send),
+        )
+        // 群发通知模板（用户自建命名模板：admin 可建全局/私有，reseller 仅私有）
+        .route(
+            "/system/broadcast/templates",
+            get(system_basic::broadcast_templates_list)
+                .post(system_basic::broadcast_templates_create),
+        )
+        .route(
+            "/system/broadcast/templates/:id",
+            put(system_basic::broadcast_templates_update)
+                .delete(system_basic::broadcast_templates_delete),
         )
         // Zap 设置（系统设置 → Zap 设置，admin only）：动态修改 zap.yaml 的 server.*
         .route(

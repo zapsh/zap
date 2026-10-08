@@ -105,3 +105,46 @@ export function broadcastMail(payload: {
     }
   }>('/system/mail/broadcast', payload)
 }
+
+/** 群发通知模板（用户自建命名模板） */
+export interface BroadcastTemplate {
+  id: number
+  owner_id: number
+  /** global=全局（仅管理员）；self=私有（创建者自己） */
+  scope: 'global' | 'self'
+  name: string
+  subject: string
+  body_text: string
+  body_html: string
+  is_html: boolean
+}
+
+/** 读取可用模板（全局 + 自己的私有） */
+export function getBroadcastTemplates() {
+  return http.get<{ code: number; message: string; data: { list: BroadcastTemplate[] } }>(
+    '/system/broadcast/templates',
+  )
+}
+
+/** 创建 / 更新群发通知模板（id 省略=创建） */
+export function saveBroadcastTemplate(
+  payload: {
+    name: string
+    scope?: 'global' | 'self'
+    subject: string
+    body_text: string
+    body_html?: string
+    is_html: boolean
+  },
+  id?: number,
+) {
+  const body = { ...payload, body_html: payload.body_html || undefined }
+  return id
+    ? http.put<{ code: number; message: string }>(`/system/broadcast/templates/${id}`, body)
+    : http.post<{ code: number; message: string }>('/system/broadcast/templates', body)
+}
+
+/** 删除群发通知模板 */
+export function deleteBroadcastTemplate(id: number) {
+  return http.delete<{ code: number; message: string }>(`/system/broadcast/templates/${id}`)
+}

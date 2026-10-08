@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::{Json, extract::Extension};
+use axum::{Json, extract::Extension, extract::Path};
 use sqlx::{QueryBuilder, Sqlite};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -714,4 +714,194 @@ pub async fn mail_broadcast_send(
         "message": message,
         "data": { "sent_email": sent_email, "sent_inbox": sent_inbox, "failed": failed }
     })))
+}
+
+// ── 群发通知模板（用户自建命名模板，如「维护通知」）─────────────────
+//
+// 作用域：
+// - `global`：owner_id = 0，仅管理员可见 / 可建可改可删；
+// - `self`：owner_id = 创建者自身，私有（reseller 只能建这种）。
+// 列表返回「全局 + 自己私有」，供群发时一键预填。
+
+#[derive(Debug, Deserialize)]
+pub struct BroadcastTemplatePayload {
+    /// 模板名称（必填）
+    pub name: String,
+    /// 作用域：global / self；留空按 self 处理（创建时非管理员强制 self）
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// 主题（必填）
+    pub subject: String,
+    /// 纯文本正文
+    #[serde(default)]
+    pub body_text: String,
+    /// HTML 正文（is_html=true 时使用）
+    #[serde(default)]
+    pub body_html: Option<String>,
+    /// 是否 HTML 格式
+    #[serde(default)]
+    pub is_html: bool,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+struct BroadcastTemplateRow {
+    id: i64,
+    owner_id: i64,
+    scope: String,
+    name: String,
+    subject: String,
+    body_text: String,
+    body_html: String,
+    is_html: i64,
+}
+
+fn now_ts() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 权限：global 仅管理员可改删；self 管理员可改删任意，非管理员只能改删 owner=自身 的。
+fn can_edit_template(claims: &ValidatedClaims, owner_id: i64, scope: &str) -> bool {
+    if is_admin(claims) {
+        return true;
+    }
+    scope == "self" && owner_id == claims.id as i64
+}
+
+/// GET /system/broadcast/templates —— 列表：全局 + 自己私有。
+pub async fn broadcast_templates_list(claims: ValidatedClaims) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let rows = sqlx::query_as::<_, BroadcastTemplateRow>(
+        "SELECT id, owner_id, scope, name, subject, body_text, body_html, is_html \
+         FROM broadcast_templates WHERE scope = 'global' OR owner_id = ? ORDER BY id DESC",
+    )
+    .bind(claims.id as i64)
+    .fetch_all(pool)
+    .await?;
+    let list: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "owner_id": r.owner_id,
+                "scope": r.scope,
+                "name": r.name,
+                "subject": r.subject,
+                "body_text": r.body_text,
+                "body_html": r.body_html,
+                "is_html": r.is_html != 0,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "list": list } })))
+}
+
+/// POST /system/broadcast/templates —— 新建。
+pub async fn broadcast_templates_create(
+    claims: ValidatedClaims,
+    Json(payload): Json<BroadcastTemplatePayload>,
+) -> ZapJsonResult {
+    let name = payload.name.trim();
+    if name.is_empty() {
+        return Err(ZapError::New(-1, "模板名称不能为空".to_string()));
+    }
+    if payload.subject.trim().is_empty() {
+        return Err(ZapError::New(-1, "模板主题不能为空".to_string()));
+    }
+    let scope = payload.scope.clone().unwrap_or_else(|| "self".to_string());
+    if scope != "global" && scope != "self" {
+        return Err(ZapError::New(-1, "scope 只能是 global 或 self".to_string()));
+    }
+    if scope == "global" && !is_admin(&claims) {
+        return Err(ZapError::New(-1, "仅管理员可创建全局模板".to_string()));
+    }
+    let owner_id = if scope == "global" { 0 } else { claims.id as i64 };
+    let now = now_ts();
+    let pool = db::get_db_pool().await;
+    let body_html = payload.body_html.as_deref().unwrap_or("").trim();
+    let res = sqlx::query(
+        "INSERT INTO broadcast_templates \
+         (owner_id, scope, name, subject, body_text, body_html, is_html, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(owner_id)
+    .bind(&scope)
+    .bind(name)
+    .bind(payload.subject.trim())
+    .bind(payload.body_text.trim())
+    .bind(body_html)
+    .bind(payload.is_html as i64)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(Json(json!({
+        "code": 0,
+        "message": "模板已创建",
+        "data": { "id": res.last_insert_rowid() }
+    })))
+}
+
+/// PUT /system/broadcast/templates/:id —— 编辑（不改 scope / owner）。
+pub async fn broadcast_templates_update(
+    claims: ValidatedClaims,
+    Path(id): Path<i64>,
+    Json(payload): Json<BroadcastTemplatePayload>,
+) -> ZapJsonResult {
+    let name = payload.name.trim();
+    if name.is_empty() {
+        return Err(ZapError::New(-1, "模板名称不能为空".to_string()));
+    }
+    if payload.subject.trim().is_empty() {
+        return Err(ZapError::New(-1, "模板主题不能为空".to_string()));
+    }
+    let pool = db::get_db_pool().await;
+    let (owner_id, scope): (i64, String) =
+        sqlx::query_as("SELECT owner_id, scope FROM broadcast_templates WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| ZapError::New(-1, "模板不存在".to_string()))?;
+    if !can_edit_template(&claims, owner_id, &scope) {
+        return Err(ZapError::New(-1, "无权编辑该模板".to_string()));
+    }
+    let body_html = payload.body_html.as_deref().unwrap_or("").trim();
+    sqlx::query(
+        "UPDATE broadcast_templates SET name = ?, subject = ?, body_text = ?, \
+         body_html = ?, is_html = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(name)
+    .bind(payload.subject.trim())
+    .bind(payload.body_text.trim())
+    .bind(body_html)
+    .bind(payload.is_html as i64)
+    .bind(now_ts())
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(Json(json!({ "code": 0, "message": "模板已更新" })))
+}
+
+/// DELETE /system/broadcast/templates/:id —— 删除。
+pub async fn broadcast_templates_delete(
+    claims: ValidatedClaims,
+    Path(id): Path<i64>,
+) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let (owner_id, scope): (i64, String) =
+        sqlx::query_as("SELECT owner_id, scope FROM broadcast_templates WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| ZapError::New(-1, "模板不存在".to_string()))?;
+    if !can_edit_template(&claims, owner_id, &scope) {
+        return Err(ZapError::New(-1, "无权删除该模板".to_string()));
+    }
+    sqlx::query("DELETE FROM broadcast_templates WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(Json(json!({ "code": 0, "message": "模板已删除" })))
 }

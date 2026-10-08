@@ -6,10 +6,13 @@
 
       <el-form label-width="88px" label-position="right">
         <el-form-item :label="t('notifyCfg.tplSelect')">
-          <el-select v-model="tplKey" :placeholder="t('notifyCfg.tplNone')" clearable style="width: 280px">
-            <el-option :value="''" :label="t('notifyCfg.tplNone')" />
-            <el-option v-for="o in tplOptions" :key="o.value" :value="o.value" :label="o.label" />
-          </el-select>
+          <div class="tpl-row">
+            <el-select v-model="tplKey" :placeholder="t('notifyCfg.tplNone')" clearable style="width: 280px">
+              <el-option :value="''" :label="t('notifyCfg.tplNone')" />
+              <el-option v-for="tpl in templates" :key="tpl.id" :value="String(tpl.id)" :label="tpl.name" />
+            </el-select>
+            <el-button link type="primary" @click="openManage">{{ t('notifyCfg.tplManage') }}</el-button>
+          </div>
         </el-form-item>
 
         <el-form-item :label="t('notifyCfg.channel')">
@@ -75,26 +78,139 @@
         </el-button>
       </div>
     </el-card>
+
+    <el-dialog
+      v-model="manageVisible"
+      :title="t('notifyCfg.tplManage')"
+      width="640px"
+      top="6vh"
+      destroy-on-close
+    >
+      <template v-if="!editing">
+        <div class="tpl-list-head">
+          <span>{{ t('notifyCfg.tplManage') }}</span>
+          <el-button type="primary" size="small" @click="startCreate">{{ t('notifyCfg.tplNew') }}</el-button>
+        </div>
+        <el-table :data="templates" height="360" v-loading="tplLoading">
+          <el-table-column prop="name" :label="t('notifyCfg.tplName')" min-width="160" />
+          <el-table-column :label="t('notifyCfg.tplScope')" width="100">
+            <template #default="{ row }">
+              <el-tag v-if="row.scope === 'global'" size="small" type="warning">
+                {{ t('notifyCfg.tplGlobalTag') }}
+              </el-tag>
+              <el-tag v-else size="small">{{ t('notifyCfg.tplSelfTag') }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('common.operation')" width="150">
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" @click="startEdit(row)">
+                {{ t('notifyCfg.tplEdit') }}
+              </el-button>
+              <el-button link type="danger" size="small" @click="remove(row)">
+                {{ t('notifyCfg.tplDelete') }}
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty
+          v-if="!tplLoading && templates.length === 0"
+          :description="t('notifyCfg.tplNoContent')"
+        />
+      </template>
+
+      <template v-else>
+        <el-form label-width="88px" label-position="right">
+          <el-form-item :label="t('notifyCfg.tplName')" required>
+            <el-input
+              v-model="form.name"
+              :placeholder="t('notifyCfg.tplName')"
+              maxlength="60"
+              show-word-limit
+            />
+          </el-form-item>
+          <el-form-item v-if="isAdmin" :label="t('notifyCfg.tplScope')">
+            <el-radio-group v-model="form.scope">
+              <el-radio value="self">{{ t('notifyCfg.tplScopeSelf') }}</el-radio>
+              <el-radio value="global">{{ t('notifyCfg.tplScopeGlobal') }}</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item :label="t('notifyCfg.subject')" required>
+            <el-input
+              v-model="form.subject"
+              :placeholder="t('notifyCfg.subject')"
+              maxlength="200"
+              show-word-limit
+            />
+          </el-form-item>
+          <el-form-item :label="t('notifyCfg.format')">
+            <el-radio-group v-model="form.isHtml">
+              <el-radio :value="false">{{ t('notifyCfg.formatText') }}</el-radio>
+              <el-radio :value="true">{{ t('notifyCfg.formatHtml') }}</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item :label="t('notifyCfg.body')">
+            <div class="editor-wrap">
+              <CodeEditor
+                :model-value="form.isHtml ? form.bodyHtml : form.bodyText"
+                :lang="form.isHtml ? 'html' : 'text'"
+                :placeholder="t('notifyCfg.body')"
+                @update:model-value="onFormBody"
+              />
+            </div>
+          </el-form-item>
+        </el-form>
+      </template>
+
+      <template #footer>
+        <template v-if="editing">
+          <el-button @click="editing = false">{{ t('notifyCfg.tplBack') }}</el-button>
+          <el-button type="primary" :loading="saving" @click="save">
+            {{ t('notifyCfg.tplSave') }}
+          </el-button>
+        </template>
+        <template v-else>
+          <el-button @click="manageVisible = false">{{ t('common.close') }}</el-button>
+        </template>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import CodeEditor from '@/components/CodeEditor.vue'
-import { getMailTemplates, broadcastMail } from '@/api/systemNotify'
+import {
+  broadcastMail,
+  getBroadcastTemplates,
+  saveBroadcastTemplate,
+  deleteBroadcastTemplate,
+} from '@/api/systemNotify'
+import type { BroadcastTemplate } from '@/api/systemNotify'
 import { getUserList } from '@/api/user'
+import { useUserStore } from '@/stores/user'
 import type { UserListItem } from '@/api/user'
 
 const { t } = useI18n()
+const userStore = useUserStore()
+const isAdmin = computed(() => userStore.roles.includes('admin'))
 
-const tplOptions = [
-  { value: 'login_success', label: t('notifyCfg.evLogin') },
-  { value: 'password_change', label: t('notifyCfg.evPassword') },
-  { value: 'site_created', label: t('notifyCfg.evSiteCreated') },
-  { value: 'disk_low', label: t('notifyCfg.evDiskLow') },
-]
+// ── 自建群发通知模板 ──
+const templates = ref<BroadcastTemplate[]>([])
+const tplLoading = ref(false)
+const manageVisible = ref(false)
+const editing = ref(false)
+const saving = ref(false)
+const editId = ref<number | null>(null)
+const form = reactive({
+  name: '',
+  scope: 'self' as 'global' | 'self',
+  subject: '',
+  isHtml: false,
+  bodyText: '',
+  bodyHtml: '',
+})
 
 const tplKey = ref('')
 const subject = ref('')
@@ -113,28 +229,121 @@ function onBodyInput(v: string) {
   else bodyText.value = v
 }
 
-// 选模板预填：取到该事件的主题 + 正文（含 HTML 标记与纯文本兜底）
-watch(tplKey, async (key) => {
-  if (!key) {
+// 选模板预填：从自建模板取主题 + 正文（HTML 标记与纯文本兜底）
+watch(tplKey, (key) => {
+  const id = Number(key)
+  if (!id) {
     subject.value = ''
     bodyText.value = ''
     bodyHtml.value = ''
     isHtml.value = false
     return
   }
-  try {
-    const { data } = await getMailTemplates()
-    const ev = data.events[key]
-    if (ev) {
-      subject.value = ev.subject
-      isHtml.value = ev.is_html
-      bodyText.value = ev.body_text
-      bodyHtml.value = ev.body_html
-    }
-  } catch {
-    /* 取模板失败不影响自由撰写 */
+  const tpl = templates.value.find((x) => x.id === id)
+  if (tpl) {
+    subject.value = tpl.subject
+    isHtml.value = tpl.is_html
+    bodyText.value = tpl.body_text
+    bodyHtml.value = tpl.body_html
   }
 })
+
+async function loadTemplates() {
+  tplLoading.value = true
+  try {
+    const { data } = await getBroadcastTemplates()
+    templates.value = data.list ?? []
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    tplLoading.value = false
+  }
+}
+
+function openManage() {
+  editing.value = false
+  manageVisible.value = true
+  loadTemplates()
+}
+
+function startCreate() {
+  editId.value = null
+  form.name = ''
+  form.scope = 'self'
+  form.subject = ''
+  form.isHtml = false
+  form.bodyText = ''
+  form.bodyHtml = ''
+  editing.value = true
+}
+
+function startEdit(row: BroadcastTemplate) {
+  editId.value = row.id
+  form.name = row.name
+  form.scope = row.scope
+  form.subject = row.subject
+  form.isHtml = row.is_html
+  form.bodyText = row.body_text
+  form.bodyHtml = row.body_html
+  editing.value = true
+}
+
+function onFormBody(v: string) {
+  if (form.isHtml) form.bodyHtml = v
+  else form.bodyText = v
+}
+
+async function save() {
+  if (!form.name.trim()) {
+    ElMessage.warning(t('notifyCfg.tplNameRequired'))
+    return
+  }
+  if (!form.subject.trim()) {
+    ElMessage.warning(t('notifyCfg.emptySubject'))
+    return
+  }
+  saving.value = true
+  try {
+    await saveBroadcastTemplate(
+      {
+        name: form.name.trim(),
+        scope: isAdmin.value ? form.scope : 'self',
+        subject: form.subject.trim(),
+        body_text: form.bodyText,
+        body_html: form.bodyHtml || undefined,
+        is_html: form.isHtml,
+      },
+      editId.value ?? undefined,
+    )
+    ElMessage.success(editId.value ? t('notifyCfg.tplUpdated') : t('notifyCfg.tplCreated'))
+    editing.value = false
+    await loadTemplates()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    saving.value = false
+  }
+}
+
+async function remove(row: BroadcastTemplate) {
+  try {
+    await ElMessageBox.confirm(
+      t('notifyCfg.tplConfirmDelete', { name: row.name }),
+      t('notifyCfg.tplManage'),
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteBroadcastTemplate(row.id)
+    ElMessage.success(t('notifyCfg.tplDeleted'))
+    if (String(row.id) === tplKey.value) tplKey.value = ''
+    await loadTemplates()
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
 
 const recipients = ref<UserListItem[]>([])
 const recipientsLoading = ref(false)
@@ -205,7 +414,10 @@ async function send() {
   }
 }
 
-onMounted(loadRecipients)
+onMounted(() => {
+  loadRecipients()
+  loadTemplates()
+})
 </script>
 
 <style scoped>
@@ -226,6 +438,18 @@ onMounted(loadRecipients)
   font-weight: 400;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+.tpl-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tpl-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-weight: 600;
 }
 .editor-wrap {
   width: 100%;
