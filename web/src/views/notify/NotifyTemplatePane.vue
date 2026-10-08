@@ -1,15 +1,17 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
-import { reactive, ref, onMounted } from 'vue'
+import { reactive, ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { getMailTemplates, saveMailTemplates } from '@/api/systemNotify'
 import type { MailTemplate } from '@/api/systemNotify'
+import CodeEditor from '@/components/CodeEditor.vue'
 
 const { t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
 const scope = ref<'global' | 'self'>('global')
+const activeEvent = ref('')
 
 const eventDefs = [
   {
@@ -35,7 +37,26 @@ const eventDefs = [
 ]
 // 预先用各事件键初始化，避免首次渲染时 templates[ev.key] 为 undefined
 const templates = reactive<Record<string, MailTemplate>>(
-  Object.fromEntries(eventDefs.map((e) => [e.key, { subject: '', body: '' }])),
+  Object.fromEntries(
+    eventDefs.map((e) => [e.key, { subject: '', body_text: '', body_html: '', is_html: false }]),
+  ),
+)
+
+// 正文双向绑定：根据当前格式在 body_text / body_html 之间切换
+const bodyModels = reactive(
+  Object.fromEntries(
+    eventDefs.map((ev) => [
+      ev.key,
+      computed<string>({
+        get: () =>
+          templates[ev.key].is_html ? templates[ev.key].body_html : templates[ev.key].body_text,
+        set: (v) => {
+          if (templates[ev.key].is_html) templates[ev.key].body_html = v
+          else templates[ev.key].body_text = v
+        },
+      }),
+    ]),
+  ),
 )
 
 async function load() {
@@ -43,9 +64,20 @@ async function load() {
   try {
     const res = await getMailTemplates()
     scope.value = res.data.scope
+    activeEvent.value = eventDefs[0].key
     for (const ev of eventDefs) {
-      const tpl = res.data.events[ev.key] ?? { subject: '', body: '' }
-      templates[ev.key] = { subject: tpl.subject ?? '', body: tpl.body ?? '' }
+      const tpl = res.data.events[ev.key] ?? {
+        subject: '',
+        body_text: '',
+        body_html: '',
+        is_html: false,
+      }
+      templates[ev.key] = {
+        subject: tpl.subject ?? '',
+        body_text: tpl.body_text ?? '',
+        body_html: tpl.body_html ?? '',
+        is_html: tpl.is_html ?? false,
+      }
     }
   } catch {
     /* 拦截器已弹窗 */
@@ -54,14 +86,29 @@ async function load() {
   }
 }
 
+// 切换到 HTML 且 HTML 正文为空时，用纯文本正文预填，减少重复输入
+function onFormatChange(key: string, val: boolean | string | number) {
+  if (val && !templates[key].body_html.trim()) {
+    templates[key].body_html = templates[key].body_text
+  }
+}
+
 async function save() {
   saving.value = true
   try {
     const payload: Record<string, MailTemplate> = {}
     for (const ev of eventDefs) {
+      const tpl = templates[ev.key] ?? {
+        subject: '',
+        body_text: '',
+        body_html: '',
+        is_html: false,
+      }
       payload[ev.key] = {
-        subject: (templates[ev.key]?.subject ?? '').trim(),
-        body: (templates[ev.key]?.body ?? '').trim(),
+        subject: (tpl.subject ?? '').trim(),
+        body_text: (tpl.body_text ?? '').trim(),
+        body_html: (tpl.body_html ?? '').trim(),
+        is_html: !!tpl.is_html,
       }
     }
     await saveMailTemplates(payload)
@@ -93,29 +140,50 @@ onMounted(load)
     </el-tag>
 
     <div v-loading="loading" style="margin-top: 12px">
-      <div v-for="ev in eventDefs" :key="ev.key" class="tpl-block">
-        <div class="tpl-head">
-          <strong>{{ ev.label }}</strong>
-          <span class="tpl-vars">{{ t('notifyCfg.varHint', { vars: ev.vars }) }}</span>
-        </div>
-        <el-input
-          v-model="templates[ev.key].subject"
-          :placeholder="t('notifyCfg.templateSubject')"
-          style="margin-bottom: 8px"
-        />
-        <el-input
-          v-model="templates[ev.key].body"
-          type="textarea"
-          :rows="3"
-          :placeholder="t('notifyCfg.templateBody')"
-        />
-      </div>
-      <el-button
-        type="primary"
-        :loading="saving"
-        style="margin-top: 12px"
-        @click="save"
-      >
+      <el-tabs v-model="activeEvent" class="tpl-tabs" type="border-card">
+        <el-tab-pane
+          v-for="ev in eventDefs"
+          :key="ev.key"
+          :name="ev.key"
+          :label="ev.label"
+          lazy
+        >
+          <div class="tpl-vars">{{ t('notifyCfg.varHint', { vars: ev.vars }) }}</div>
+
+          <label class="tpl-label">{{ t('notifyCfg.templateSubjectLabel') }}</label>
+          <el-input
+            v-model="templates[ev.key].subject"
+            :placeholder="t('notifyCfg.templateSubject')"
+            style="margin-bottom: 12px"
+          />
+
+          <div class="tpl-format">
+            <span class="tpl-format-label">{{ t('notifyCfg.templateFormat') }}</span>
+            <el-switch
+              v-model="templates[ev.key].is_html"
+              :active-text="t('notifyCfg.templateHtml')"
+              :inactive-text="t('notifyCfg.templateText')"
+              @change="(v: boolean | string | number) => onFormatChange(ev.key, v)"
+            />
+          </div>
+
+          <label class="tpl-label">{{ t('notifyCfg.templateBodyLabel') }}</label>
+          <div class="tpl-editor-wrap">
+            <CodeEditor
+              v-model="bodyModels[ev.key]"
+              :lang="templates[ev.key].is_html ? 'html' : 'text'"
+              :placeholder="
+                templates[ev.key].is_html
+                  ? t('notifyCfg.templateBodyHtml')
+                  : t('notifyCfg.templateBody')
+              "
+              :active="activeEvent === ev.key"
+            />
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+
+      <el-button type="primary" :loading="saving" style="margin-top: 12px" @click="save">
         {{ t('notifyCfg.saveTemplates') }}
       </el-button>
     </div>
@@ -123,21 +191,34 @@ onMounted(load)
 </template>
 
 <style scoped>
-.tpl-block {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 12px 14px;
-  margin-bottom: 12px;
-}
-.tpl-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
+.tpl-tabs {
+  margin-top: 12px;
 }
 .tpl-vars {
   color: var(--el-text-color-secondary);
   font-size: 12px;
+  margin-bottom: 12px;
+}
+.tpl-label {
+  display: block;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.tpl-format {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.tpl-format-label {
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+}
+.tpl-editor-wrap {
+  height: 260px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  overflow: hidden;
 }
 </style>

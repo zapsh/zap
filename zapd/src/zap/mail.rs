@@ -165,10 +165,20 @@ pub fn load_config() -> Option<MailConfig> {
     Some(cfg)
 }
 
-/// 发送一封 HTML 邮件。
+/// 发送一封邮件。
+///
+/// `body` 为**主内容**，`is_html` 标记其是否为 HTML；`alt_text` 为可选的纯文本兜底
+/// （HTML 模式下用于构造 `multipart/alternative`，提升客户端兼容性与垃圾邮件评分）。
+/// 仅纯文本模式下则只发 `text/plain`。
 ///
 /// 未配置对应渠道时静默跳过（返回 Ok）；发送失败返回 Err(原因) 供调用方记录。
-pub async fn send(to: &str, subject: &str, html: &str) -> Result<(), String> {
+pub async fn send(
+    to: &str,
+    subject: &str,
+    body: &str,
+    is_html: bool,
+    alt_text: Option<&str>,
+) -> Result<(), String> {
     let cfg = match load_config() {
         Some(c) => c,
         None => return Ok(()), // 未配置，不阻塞业务
@@ -177,19 +187,30 @@ pub async fn send(to: &str, subject: &str, html: &str) -> Result<(), String> {
     if to.is_empty() {
         return Ok(());
     }
+    let (html, text) = if is_html {
+        (Some(body), alt_text)
+    } else {
+        (None, Some(body))
+    };
     match cfg.provider {
-        MailProvider::Smtp => smtp_send(&cfg, to, subject, html).await,
-        MailProvider::SendGrid => sendgrid_send(&cfg, to, subject, html).await,
-        MailProvider::Aliyun => aliyun_send(&cfg, to, subject, html).await,
-        MailProvider::Tencent => tencent_send(&cfg, to, subject, html).await,
+        MailProvider::Smtp => smtp_send(&cfg, to, subject, html, text).await,
+        MailProvider::SendGrid => sendgrid_send(&cfg, to, subject, html, text).await,
+        MailProvider::Aliyun => aliyun_send(&cfg, to, subject, html, text).await,
+        MailProvider::Tencent => tencent_send(&cfg, to, subject, html, text).await,
     }
 }
 
 // ── SMTP（lettre）──────────────────────────────────────────────
-async fn smtp_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) -> Result<(), String> {
+async fn smtp_send(
+    cfg: &MailConfig,
+    to: &str,
+    subject: &str,
+    html: Option<&str>,
+    text: Option<&str>,
+) -> Result<(), String> {
     use lettre::{
         AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-        message::{Mailbox, header::ContentType},
+        message::{Mailbox, MultiPart, SinglePart, header::ContentType},
         transport::smtp::authentication::Credentials,
     };
 
@@ -199,13 +220,41 @@ async fn smtp_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) -> Res
         .map_err(|e| format!("发件人地址非法: {e}"))?;
     let to_mbox: Mailbox = to.parse().map_err(|e| format!("收件人地址非法: {e}"))?;
 
-    let msg = Message::builder()
-        .from(from)
-        .to(to_mbox)
-        .subject(subject)
-        .header(ContentType::TEXT_HTML)
-        .body(html.to_string())
-        .map_err(|e| format!("构建邮件失败: {e}"))?;
+    let msg = match (html.filter(|h| !h.is_empty()), text.filter(|t| !t.is_empty())) {
+        (Some(h), Some(t)) => Message::builder()
+            .from(from)
+            .to(to_mbox)
+            .subject(subject)
+            .multipart(
+                MultiPart::alternative()
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_PLAIN)
+                            .body(t.to_string()),
+                    )
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_HTML)
+                            .body(h.to_string()),
+                    ),
+            )
+            .map_err(|e| format!("构建邮件失败: {e}"))?,
+        (Some(h), None) => Message::builder()
+            .from(from)
+            .to(to_mbox)
+            .subject(subject)
+            .header(ContentType::TEXT_HTML)
+            .body(h.to_string())
+            .map_err(|e| format!("构建邮件失败: {e}"))?,
+        (None, Some(t)) => Message::builder()
+            .from(from)
+            .to(to_mbox)
+            .subject(subject)
+            .header(ContentType::TEXT_PLAIN)
+            .body(t.to_string())
+            .map_err(|e| format!("构建邮件失败: {e}"))?,
+        (None, None) => return Ok(()),
+    };
 
     let mut builder = match cfg.smtp_encryption {
         SmtpEncryption::Ssl => AsyncSmtpTransport::<Tokio1Executor>::relay(&cfg.smtp_host)
@@ -234,13 +283,29 @@ async fn smtp_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) -> Res
 }
 
 // ── SendGrid（Web API v3）──────────────────────────────────────
-async fn sendgrid_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) -> Result<(), String> {
+async fn sendgrid_send(
+    cfg: &MailConfig,
+    to: &str,
+    subject: &str,
+    html: Option<&str>,
+    text: Option<&str>,
+) -> Result<(), String> {
     let client = reqwest::Client::new();
+    let mut content = Vec::new();
+    if let Some(t) = text.filter(|t| !t.is_empty()) {
+        content.push(serde_json::json!({ "type": "text/plain", "value": t }));
+    }
+    if let Some(h) = html.filter(|h| !h.is_empty()) {
+        content.push(serde_json::json!({ "type": "text/html", "value": h }));
+    }
+    if content.is_empty() {
+        return Ok(());
+    }
     let body = serde_json::json!({
         "personalizations": [{ "to": [{ "email": to }] }],
         "from": { "email": cfg.from },
         "subject": subject,
-        "content": [{ "type": "text/html", "value": html }],
+        "content": content,
     });
     let resp = client
         .post("https://api.sendgrid.com/v3/mail/send")
@@ -258,7 +323,13 @@ async fn sendgrid_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) ->
 }
 
 // ── 阿里云 DirectMail（SingleSendMail，RPC + HMAC-SHA1）──────────
-async fn aliyun_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) -> Result<(), String> {
+async fn aliyun_send(
+    cfg: &MailConfig,
+    to: &str,
+    subject: &str,
+    html: Option<&str>,
+    text: Option<&str>,
+) -> Result<(), String> {
     let ak = &cfg.aliyun_access_key;
     let sk = &cfg.aliyun_access_secret;
     let region = if cfg.aliyun_region.is_empty() {
@@ -277,7 +348,12 @@ async fn aliyun_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) -> R
     params.insert("AccountName".into(), cfg.from.clone());
     params.insert("ToAddress".into(), to.to_string());
     params.insert("Subject".into(), subject.to_string());
-    params.insert("HtmlBody".into(), html.to_string());
+    if let Some(h) = html.filter(|h| !h.is_empty()) {
+        params.insert("HtmlBody".into(), h.to_string());
+    }
+    if let Some(t) = text.filter(|t| !t.is_empty()) {
+        params.insert("TextBody".into(), t.to_string());
+    }
     params.insert("ReplyToAddress".into(), "false".into());
     params.insert("AddressType".into(), "0".into());
     params.insert("RegionId".into(), region);
@@ -335,7 +411,13 @@ async fn aliyun_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) -> R
 }
 
 // ── 腾讯云 SES（SendEmail，TC3-HMAC-SHA256）─────────────────────
-async fn tencent_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) -> Result<(), String> {
+async fn tencent_send(
+    cfg: &MailConfig,
+    to: &str,
+    subject: &str,
+    html: Option<&str>,
+    text: Option<&str>,
+) -> Result<(), String> {
     let secret_id = &cfg.tencent_secret_id;
     let secret_key = &cfg.tencent_secret_key;
     let region = if cfg.tencent_region.is_empty() {
@@ -348,11 +430,19 @@ async fn tencent_send(cfg: &MailConfig, to: &str, subject: &str, html: &str) -> 
     let action = "SendEmail";
     let version = "2021-01-11";
 
+    let mut body_map = serde_json::Map::new();
+    if let Some(h) = html.filter(|h| !h.is_empty()) {
+        body_map.insert("Html".into(), serde_json::json!({ "Data": h }));
+    }
+    if let Some(t) = text.filter(|t| !t.is_empty()) {
+        body_map.insert("Text".into(), serde_json::json!({ "Data": t }));
+    }
+
     let payload = serde_json::json!({
         "FromEmailAddress": cfg.from,
         "Destination": { "To": [to] },
         "Subject": { "Data": subject },
-        "Body": { "Html": { "Data": html } },
+        "Body": serde_json::Value::Object(body_map),
     });
     let payload_str = payload.to_string();
 

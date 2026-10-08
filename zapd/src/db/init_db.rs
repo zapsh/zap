@@ -60,6 +60,8 @@ pub async fn init_schema() {
     init_nginx_stream_global_table().await;
     // 站内信（通知中心）表
     init_notice_message_table().await;
+    // 邮件通知模板表（全局 / reseller 覆盖，独立存储）
+    init_mail_templates_table().await;
     // API Token 管理表
     init_api_token_table().await;
     // SSL/TLS 证书管理表
@@ -1445,6 +1447,23 @@ async fn init_notice_message_table() {
         created_at INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_notice_user ON notice_message(user_id, id);
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+async fn init_mail_templates_table() {
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS mail_templates (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        owner_id INTEGER NOT NULL DEFAULT 0,
+        event TEXT NOT NULL,
+        subject TEXT NOT NULL DEFAULT '',
+        body_text TEXT NOT NULL DEFAULT '',
+        body_html TEXT NOT NULL DEFAULT '',
+        is_html INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(owner_id, event)
+    );
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }

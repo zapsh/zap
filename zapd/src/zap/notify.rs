@@ -177,37 +177,52 @@ async fn load_user_meta(user_id: i64) -> Option<(String, i64, Value)> {
     Some((email, owner_id, prefs))
 }
 
-/// 模板解析：内置默认 → 全局覆盖（server_env `mail_templates`）→ reseller 自定义覆盖。
+/// 解析后的邮件模板（已选定最终生效的内容）。
+pub struct ResolvedTemplate {
+    pub subject: String,
+    pub body_text: String,
+    pub body_html: String,
+    pub is_html: bool,
+}
+
+/// 模板解析：内置默认 → 全局覆盖（mail_templates 表 owner_id=0）→ reseller 覆盖
+/// （owner_id=收件用户归属 reseller）。
 ///
-/// `owner_id` 为收件用户的归属 reseller；reseller 可在自己的偏好 `mail_templates` 里
-/// 自定义其名下用户通知的模版（主题/正文），实现「经销商自定义模板」需求。
-async fn resolve_template(event: &str, owner_id: i64) -> (String, String) {
-    let (mut subj, mut body) = builtin_template(event);
-    if let Some(raw) = server_env::conf_get("mail_templates") {
-        if let Ok(map) = serde_json::from_str::<Value>(&raw) {
-            if let Some(t) = map.get(event) {
-                if let Some(s) = t.get("subject").and_then(|x| x.as_str()) {
-                    subj = s.to_string();
-                }
-                if let Some(b) = t.get("body").and_then(|x| x.as_str()) {
-                    body = b.to_string();
-                }
+/// 所有自定义模板统一存于 `mail_templates` 表，以 `(owner_id, event)` 唯一标识；
+/// reseller 的覆盖仅影响其名下用户（即 `owner_id` 等于该 reseller 的用户）。
+pub async fn resolve_template(event: &str, owner_id: i64) -> ResolvedTemplate {
+    let (subj, text) = builtin_template(event);
+    let mut rt = ResolvedTemplate {
+        subject: subj,
+        body_text: text,
+        body_html: String::new(),
+        is_html: false,
+    };
+    let pool = db::get_db_pool().await;
+    // 先查 reseller 自身覆盖，再回退全局；owner_id=0 时只查全局
+    let owners: Vec<i64> = if owner_id == 0 { vec![0] } else { vec![owner_id, 0] };
+    for oid in owners {
+        let row: Option<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT subject, body_text, body_html, is_html \
+             FROM mail_templates WHERE owner_id = ? AND event = ?",
+        )
+        .bind(oid)
+        .bind(event)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+        if let Some((s, bt, bh, ih)) = row {
+            if !s.is_empty() {
+                rt.subject = s;
             }
+            rt.body_text = bt;
+            rt.body_html = bh;
+            rt.is_html = ih != 0;
+            break;
         }
     }
-    if owner_id != 0 {
-        if let Some((_, _, owner_prefs)) = load_user_meta(owner_id).await {
-            if let Some(t) = owner_prefs.get("mail_templates").and_then(|x| x.get(event)) {
-                if let Some(s) = t.get("subject").and_then(|x| x.as_str()) {
-                    subj = s.to_string();
-                }
-                if let Some(b) = t.get("body").and_then(|x| x.as_str()) {
-                    body = b.to_string();
-                }
-            }
-        }
-    }
-    (subj, body)
+    rt
 }
 
 /// 给单个用户发邮件（是否真正发送由调用方按全局渠道 `notify_channels` 控制；
@@ -219,10 +234,27 @@ async fn email_user(user_id: i64, event: &str, params: &HashMap<&str, String>) {
     if email.trim().is_empty() {
         return;
     }
-    let (subj_t, body_t) = resolve_template(event, owner_id).await;
-    let subject = render(&subj_t, params);
-    let body = render(&body_t, params);
-    if let Err(e) = mail::send(&email, &subject, &body).await {
+    let rt = resolve_template(event, owner_id).await;
+    let subject = render(&rt.subject, params);
+    // 优先使用 HTML 正文（含纯文本兜底），否则使用纯文本正文
+    let (body, is_html, alt) = if rt.is_html && !rt.body_html.trim().is_empty() {
+        (
+            rt.body_html.clone(),
+            true,
+            if rt.body_text.trim().is_empty() {
+                None
+            } else {
+                Some(rt.body_text.clone())
+            },
+        )
+    } else {
+        (rt.body_text.clone(), false, None)
+    };
+    let rendered = render(&body, params);
+    let alt_rendered = alt.as_deref().map(|a| render(a, params));
+    if let Err(e) =
+        mail::send(&email, &subject, &rendered, is_html, alt_rendered.as_deref()).await
+    {
         mail::log_send_error(event, &e);
     }
 }

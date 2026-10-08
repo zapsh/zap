@@ -419,79 +419,32 @@ const MAIL_EVENTS: &[&str] = &[
     "disk_low",
 ];
 
-/// 读取某用户的 prefs JSON（空则 Null）。
-async fn read_user_prefs(user_id: i64) -> Value {
-    let pool = db::get_db_pool().await;
-    let raw: Option<String> = sqlx::query_scalar("SELECT prefs FROM user WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
-    raw.and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null)
-}
-
-/// 写回某用户的 prefs JSON。
-async fn write_user_prefs(user_id: i64, prefs: Value) -> Result<(), ZapError> {
-    let pool = db::get_db_pool().await;
-    let s = serde_json::to_string(&prefs)
-        .map_err(|e| ZapError::New(-1, format!("prefs 序列化失败: {e}")))?;
-    sqlx::query("UPDATE user SET prefs = ? WHERE id = ?")
-        .bind(s)
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .map_err(|e| ZapError::New(-1, format!("保存失败: {e}")))?;
-    Ok(())
-}
-
-/// 读取当前生效的「全局覆盖」模板（存于 server_env `mail_templates`）。
-fn global_template_override() -> Value {
-    server_env::conf_get("mail_templates")
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .unwrap_or(Value::Null)
-}
-
 /// GET /system/mail/templates
 ///
-/// 返回当前登录者「可编辑范围」下各事件的**当前生效**模板：
-/// - 管理员 → 全局覆盖（作用域 `global`），影响所有 owner_id=0 的用户通知；
-/// - reseller → 自身覆盖（作用域 `self`），叠加在全局之上，仅影响其名下用户。
+/// 返回当前登录者「可编辑范围」下各事件的**当前生效**模板（含纯文本与 HTML 两种正文、
+/// 以及是否 HTML 标记）：
+/// - 管理员 → 全局覆盖（作用域 `global`，owner_id=0），影响所有用户；
+/// - reseller → 自身覆盖（作用域 `self`，owner_id=其自身），叠加在全局之上，仅影响其名下用户。
 ///
 /// 展示文本 = 内置默认 → 全局覆盖 → 自身覆盖（依次叠加），让用户看到真实生效内容。
 pub async fn mail_templates_get(claims: ValidatedClaims) -> ZapJsonResult {
     let is_adm = is_admin(&claims);
     let scope = if is_adm { "global" } else { "self" };
-    let global_ov = global_template_override();
-    let self_ov = if is_adm {
-        Value::Null
-    } else {
-        read_user_prefs(claims.id as i64).await
-    };
+    // 管理员编辑全局（owner_id=0）；reseller 编辑自身覆盖（owner_id=其 id）
+    let owner_id = if is_adm { 0 } else { claims.id as i64 };
 
     let mut map = serde_json::Map::new();
     for &ev in MAIL_EVENTS {
-        let (mut subj, mut body) = crate::zap::notify::builtin_template(ev);
-        if let Some(t) = global_ov.get(ev) {
-            if let Some(s) = t.get("subject").and_then(|x| x.as_str()) {
-                subj = s.to_string();
-            }
-            if let Some(b) = t.get("body").and_then(|x| x.as_str()) {
-                body = b.to_string();
-            }
-        }
-        if !is_adm {
-            if let Some(t) = self_ov.get("mail_templates").and_then(|x| x.get(ev)) {
-                if let Some(s) = t.get("subject").and_then(|x| x.as_str()) {
-                    subj = s.to_string();
-                }
-                if let Some(b) = t.get("body").and_then(|x| x.as_str()) {
-                    body = b.to_string();
-                }
-            }
-        }
-        map.insert(ev.to_string(), json!({ "subject": subj, "body": body }));
+        let rt = crate::zap::notify::resolve_template(ev, owner_id).await;
+        map.insert(
+            ev.to_string(),
+            json!({
+                "subject": rt.subject,
+                "body_text": rt.body_text,
+                "body_html": rt.body_html,
+                "is_html": rt.is_html,
+            }),
+        );
     }
 
     Ok(Json(json!({
@@ -507,67 +460,61 @@ pub async fn mail_templates_get(claims: ValidatedClaims) -> ZapJsonResult {
 #[derive(Debug, Default, Deserialize)]
 pub struct MailTemplateEvent {
     subject: Option<String>,
-    body: Option<String>,
+    body_text: Option<String>,
+    body_html: Option<String>,
+    is_html: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct MailTemplatePayload {
-    /// 事件 -> { subject, body }；仅提交需要改的事件，未提交事件保留原值。
+    /// 事件 -> { subject, body_text, body_html, is_html }；仅提交需要改的事件，未提交事件保留原值。
     pub events: HashMap<String, MailTemplateEvent>,
 }
 
 /// POST /system/mail/templates
 ///
-/// 保存当前登录者作用域下的模板覆盖：
-/// - 管理员 → 写入 server_env `mail_templates`（全局）；
-/// - reseller → 写入自身 `user.prefs.mail_templates`（私有）。
+/// 保存当前登录者作用域下的模板覆盖，统一写入 `mail_templates` 表：
+/// - 管理员 → owner_id=0（全局）；
+/// - reseller → owner_id=自身（私有，仅影响其名下用户）。
 ///
-/// 仅提交的事件被覆盖，其余事件保留；非法事件名 / 超长会被拒绝。
+/// 仅提交的事件被覆盖（按 `(owner_id, event)` upsert），其余事件保留；非法事件名 / 超长会被拒绝。
 pub async fn mail_templates_save(
     claims: ValidatedClaims,
     Json(payload): Json<MailTemplatePayload>,
 ) -> ZapJsonResult {
     let is_adm = is_admin(&claims);
-
-    let mut override_map: serde_json::Map<String, Value> = if is_adm {
-        global_template_override()
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
-    } else {
-        read_user_prefs(claims.id as i64)
-            .await
-            .get("mail_templates")
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default()
-    };
+    let owner_id = if is_adm { 0 } else { claims.id as i64 };
+    let now = chrono::Local::now().timestamp();
+    let pool = db::get_db_pool().await;
 
     for (ev, t) in &payload.events {
         if !MAIL_EVENTS.contains(&ev.as_str()) {
             return Err(ZapError::New(-1, format!("未知事件类型: {ev}")));
         }
         let subject = t.subject.clone().unwrap_or_default();
-        let body = t.body.clone().unwrap_or_default();
-        if subject.len() > 256 || body.len() > 4096 {
-            return Err(ZapError::New(-1, "模板内容过长（主题≤256，正文≤4096）".to_string()));
+        let body_text = t.body_text.clone().unwrap_or_default();
+        let body_html = t.body_html.clone().unwrap_or_default();
+        let is_html = t.is_html.unwrap_or(false);
+        if subject.len() > 256 || body_text.len() > 16384 || body_html.len() > 16384 {
+            return Err(ZapError::New(-1, "模板内容过长（主题≤256，正文≤16384）".to_string()));
         }
-        override_map.insert(ev.clone(), json!({ "subject": subject, "body": body }));
-    }
-
-    if is_adm {
-        let s = serde_json::to_string(&Value::Object(override_map))
-            .map_err(|e| ZapError::New(-1, format!("序列化失败: {e}")))?;
-        server_env::conf_set_many(&[("mail_templates".to_string(), s)], "邮件通知模板");
-    } else {
-        let mut prefs = read_user_prefs(claims.id as i64).await;
-        if prefs.is_null() {
-            prefs = Value::Object(serde_json::Map::new());
-        }
-        prefs
-            .as_object_mut()
-            .unwrap()
-            .insert("mail_templates".to_string(), Value::Object(override_map));
-        write_user_prefs(claims.id as i64, prefs).await?;
+        sqlx::query(
+            "INSERT INTO mail_templates (owner_id, event, subject, body_text, body_html, is_html, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(owner_id, event) DO UPDATE SET \
+               subject=excluded.subject, body_text=excluded.body_text, body_html=excluded.body_html, \
+               is_html=excluded.is_html, updated_at=excluded.updated_at",
+        )
+        .bind(owner_id)
+        .bind(ev)
+        .bind(&subject)
+        .bind(&body_text)
+        .bind(&body_html)
+        .bind(if is_html { 1i64 } else { 0i64 })
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| ZapError::New(-1, format!("保存失败: {e}")))?;
     }
 
     Ok(Json(json!({ "code": 0, "message": "模板已保存" })))
@@ -595,6 +542,8 @@ pub async fn mail_test_send(
         &to,
         "【ZAP】邮件发送测试",
         "<p>这是一封来自 ZAP 的测试邮件，说明您的邮件发信渠道配置正确。</p>",
+        true,
+        None,
     )
     .await
     {

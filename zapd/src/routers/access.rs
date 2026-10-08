@@ -904,6 +904,14 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Admin,
         Some(Perm::module("system.config")),
     ),
+    // 通知邮件模板：admin 编辑全局 / reseller 编辑私有（作用域与数据隔离由
+    // handler 按 owner_id 收敛，无需动作级权限点）
+    ("/system/mail/templates", Required::Reseller, None),
+    // 测试邮件发送仅管理员
+    ("/system/mail/test", Required::Admin, None),
+    // 代登录（一键登录客户面板）：admin 可代登录任意账号，reseller 仅限自己
+    // 名下客户（目标合法性由 handler 二次校验）
+    ("/system/user/sudo", Required::Reseller, None),
     // ── 只读监控 / 审计 ──────────────────────────────────────
     (
         "/system/info",

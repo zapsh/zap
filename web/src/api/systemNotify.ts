@@ -50,10 +50,15 @@ export function saveMailSettings(mail: Partial<MailSettings>) {
   return http.post<{ code: number; message: string }>('/system/config/basic', { mail })
 }
 
-/** 单个事件的邮件模板（主题 + 正文，正文支持 {{var}} 占位符） */
+/** 单个事件的邮件模板（主题 + 纯文本正文 + HTML 正文 + 是否 HTML） */
 export interface MailTemplate {
   subject: string
-  body: string
+  /** 纯文本正文（非 HTML 模式使用，亦作为 HTML 模式的纯文本兜底） */
+  body_text: string
+  /** HTML 正文（is_html=true 时使用） */
+  body_html: string
+  /** 是否为 HTML 格式 */
+  is_html: boolean
 }
 
 /** 邮件模板读取结果 */
