@@ -461,9 +461,13 @@ async function mountMenus(roles: string[]) {
   })
 
   // 添加404页面
+  // 注意：这里必须直接渲染 404 组件，不能写成 redirect: '/404' ——
+  // '/404' 本身没有真实路由，会再次命中本 catch-all，形成同步自递归
+  // （pushWithRedirect 无限循环 → RangeError: Maximum call stack size）。
+  // 任何未注册路径（比如角色没有的菜单）都会落到这里，所以必须是组件兜底。
   router.addRoute({
     path: '/:pathMatch(.*)*',
-    redirect: '/404',
+    component: () => import('@/views/error-page/404.vue'),
     meta: { hidden: true },
   })
 }

@@ -328,7 +328,9 @@ const groups = computed<AppGroup[]>(() => [
       {
         title: t('dashboardReseller.itemCustomers'),
         icon: 'material-symbols:account-circle',
-        path: '/system/access',
+        // reseller 的客户管理路由（父路由会重定向到 /reseller/users/index）；
+        // 不能用 admin 的 /system/access —— reseller 没有这条路由，会落进 404
+        path: '/reseller/users',
         roles: ['reseller'],
       },
       {
