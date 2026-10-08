@@ -173,6 +173,38 @@ const ROOT_ADMIN_ID: i64 = 1;
 /// 用户类型：成员（子账号）。与 `access::USER_KIND_MEMBER` 同一取值。
 pub const USER_KIND_MEMBER: i32 = crate::routers::access::USER_KIND_MEMBER;
 
+// ── 账号状态 ───────────────────────────────────────────────
+/// 正常：可登录，网站/服务正常运行
+pub const USER_STATUS_NORMAL: i32 = 1;
+/// 已禁用：禁止登录、强制下线
+#[allow(dead_code)]
+pub const USER_STATUS_DISABLED: i32 = 0;
+/// 已封禁：禁止登录、强制下线
+#[allow(dead_code)]
+pub const USER_STATUS_BANNED: i32 = -1;
+/// 欠费停用：禁止登录、强制下线
+#[allow(dead_code)]
+pub const USER_STATUS_OVERDUE: i32 = -2;
+/// 已暂停：仍可登录，但名下网站/服务被停止，且暂停期间禁止启动；恢复后自动拉起
+pub const USER_STATUS_SUSPEND: i32 = -3;
+
+/// 账号是否因「硬禁用」类状态而无法登录（禁用 / 封禁 / 欠费停用）。
+/// 「暂停」(-3) 不在其中：暂停允许登录，仅停止其网站与服务。
+pub fn is_login_blocked(status: i32) -> bool {
+    status != USER_STATUS_NORMAL && status != USER_STATUS_SUSPEND
+}
+
+/// 账号是否处于「暂停」状态。
+pub async fn is_suspended(user_id: i64) -> bool {
+    let pool = db::get_db_pool().await;
+    sqlx::query_scalar::<_, i32>("SELECT status FROM user WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        == Some(USER_STATUS_SUSPEND)
+}
+
 /// 用户的归属与运行实体信息（成员创建 / 删除时读取父账号用）。
 #[derive(sqlx::FromRow)]
 struct UserAccountRow {
@@ -1037,6 +1069,13 @@ async fn update_user_inner(
     let pool = db::get_db_pool().await;
     let now = chrono::Local::now().timestamp();
 
+    // 记录账号旧状态，用于判断「进入/退出暂停」等流转
+    let old_status: i32 = sqlx::query_scalar("SELECT status FROM user WHERE id = ?")
+        .bind(payload.id)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or(USER_STATUS_NORMAL);
+
     let has_any_field = payload.email.is_some()
         || payload.phone.is_some()
         || payload.nickname.is_some()
@@ -1171,11 +1210,22 @@ async fn update_user_inner(
     )
     .await;
 
-    // 账号被置为非「正常」状态（禁用 / 封禁 / 欠费停用）：强制下线其所有已登录会话
-    if let Some(s) = payload.status
-        && s != 1
-    {
-        let _ = crate::zap::session::bump(payload.id).await;
+    // 账号状态流转处理
+    if let Some(s) = payload.status {
+        // 硬禁用（禁用 / 封禁 / 欠费停用）：强制下线其所有已登录会话
+        if is_login_blocked(s) {
+            let _ = crate::zap::session::bump(payload.id).await;
+        }
+        // 进入「暂停」：停止其名下所有网站与应用服务（记录原状态，恢复时拉起）
+        if s == USER_STATUS_SUSPEND {
+            let _ = crate::routers::site::suspend_user_services(payload.id).await;
+            let _ = crate::routers::app::suspend_user_apps(payload.id).await;
+        }
+        // 从「暂停」恢复为正常：把被暂停的网站与应用服务按原状态重新拉起
+        else if old_status == USER_STATUS_SUSPEND && s == USER_STATUS_NORMAL {
+            let _ = crate::routers::app::resume_user_apps(payload.id).await;
+            let _ = crate::routers::site::resume_user_services(payload.id).await;
+        }
     }
 
     // 附加权限 / 收紧清单 / 只读标记变更：单独审计；这几项与角色都会改变生效权限，

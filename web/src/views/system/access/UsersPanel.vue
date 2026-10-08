@@ -665,8 +665,8 @@ import { useUserStatus } from '@/utils/userStatus'
 
 const { t } = useI18n()
 const { meta: statusMeta } = useUserStatus()
-/** 账号状态可选值：1=正常 0=已禁用 -1=已封禁 -2=欠费停用 */
-const statusOptions = [1, 0, -1, -2]
+/** 账号状态可选值：1=正常 0=已禁用 -1=已封禁 -2=欠费停用 -3=已暂停（可登录，停服） */
+const statusOptions = [1, 0, -1, -2, -3]
 
 /** 权限点目录：附加权限 / 成员收紧权限下拉用（admin 与 reseller 加载） */
 const permCatalog = ref<PermGroupItem[]>([])

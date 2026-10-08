@@ -426,18 +426,19 @@ const enUS: Messages = {
     pillMember: 'Members',
     memberQuotaTip:
       'Members share the parent account home directory, package and FPM spec — nothing to set here',
-    // Account status: 1=active 0=disabled -1=banned -2=suspended (translated by code)
+    // Account status: 1=active 0=disabled -1=banned -2=overdue -3=suspended (translated by code)
     statusMap: {
       '1': 'Active',
       '0': 'Disabled',
       '-1': 'Banned',
-      '-2': 'Suspended',
+      '-2': 'Overdue',
+      '-3': 'Suspended',
     },
     setStatus: 'Set status',
     statusSetTitle: 'Set account status',
     statusSetConfirm: 'Change "{name}" status to "{label}"?',
     statusHint:
-      'Once disabled / banned / suspended, the account cannot log in and active sessions are forcibly terminated',
+      'Disabled / banned / overdue accounts cannot log in and active sessions are forcibly terminated. "Suspended" is the exception: login stays allowed, but the account\'s websites and services are stopped, starting is blocked while suspended, and they are restored automatically on resume',
     statusUpdated: 'Status updated',
   },
 

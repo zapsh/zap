@@ -19,6 +19,10 @@ pub async fn init_schema() {
     init_system_user_table_schema().await;
     // 老库补列：新增的 user.max_users（经销商名下账号数上限）
     ensure_column("user", "max_users", "INTEGER NOT NULL DEFAULT 0").await;
+    // 老库补列：暂停时记录的被停站点原状态（JSON），恢复时按原样拉起
+    ensure_column("user", "suspend_sites", "TEXT NOT NULL DEFAULT ''").await;
+    // 老库补列：暂停时记录的被停应用（JSON 数组），恢复时按原样拉起
+    ensure_column("user", "suspend_apps", "TEXT NOT NULL DEFAULT ''").await;
     init_system_monitor_table_schema().await;
     init_system_monitor_networks_table_schema().await;
     init_monitor_indexes().await;
@@ -185,6 +189,12 @@ async fn init_system_user_table_schema() {
         -- max_users：该账户名下（owner_id=自己）可创建的账号上限（0 = 不限）。
         --   仅对具备建客户/成员能力的账户（reseller）有意义，admin 不受限。
         max_users INTEGER NOT NULL DEFAULT 0,
+        -- suspend_sites：账号被「暂停」时，记录名下原在运行的站点及其状态（JSON map: {site_id: run_state}），
+        --   恢复为正常时按原状态重新拉起；空串表示未暂停或无记录。
+        suspend_sites TEXT NOT NULL DEFAULT '',
+        -- suspend_apps：账号被「暂停」时，记录名下原在运行的应用（JSON 数组: [{site_id, name}]），
+        --   恢复为正常时按原样重新拉起；空串表示未暂停或无记录。
+        suspend_apps TEXT NOT NULL DEFAULT '',
         totp_secret TEXT NOT NULL DEFAULT '',
         totp_enabled INTEGER NOT NULL DEFAULT 0,
         -- token_version：会话版本号。「下线所有设备」时 +1，JWT Claims 里带 tv，

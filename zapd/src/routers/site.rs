@@ -2171,13 +2171,18 @@ pub async fn site_add(
     let domains = norm_domains(&payload.domains)?;
     let ips = norm_ips(&payload.ips);
     let name = fallback_name(payload.name.as_deref().unwrap_or(""), &domains);
-    let status = payload.status.unwrap_or(1).clamp(0, 1);
+    let mut status = payload.status.unwrap_or(1).clamp(0, 1);
     // 新建站点默认 running；显式传 status=0 时按 stopped 建（保持老行为）
-    let run_state = if status == 0 {
+    let mut run_state = if status == 0 {
         RUN_STOPPED
     } else {
         RUN_RUNNING
     };
+    // 暂停期禁止创建即运行的站点：归属用户暂停时改为停止态建站，避免对外提供服务
+    if status == 1 && crate::routers::user::is_suspended(owner).await {
+        status = 0;
+        run_state = RUN_STOPPED;
+    }
     let remark = payload.remark.unwrap_or_default().trim().to_string();
     // 归一到脚本登记的 instance（php74 / php83）：下拉里选的可能是槽位名（default / 74）
     let php_instance = crate::zap::appstore::canonical_php_instance(
@@ -2492,6 +2497,15 @@ pub async fn site_update(
                 RUN_RUNNING.to_string()
             };
         }
+    }
+    // 暂停期禁止启动站点：归属用户处于「暂停」且本次要让站点运行 → 拦截
+    if (run_state == RUN_RUNNING || status == 1)
+        && crate::routers::user::is_suspended(new_owner).await
+    {
+        return Err(ZapError::New(
+            -1,
+            "账号已暂停，暂停期间禁止启动网站，请先恢复账号状态".to_string(),
+        ));
     }
     if let Some(rk) = &payload.remark {
         remark = rk.trim().to_string();
@@ -2939,6 +2953,14 @@ pub async fn site_state(
         )
     })?;
 
+    // 暂停期禁止启动网站：归属用户处于「暂停」且本次要启动 → 拦截
+    if state == RUN_RUNNING && site_owner_suspended(payload.id).await {
+        return Err(ZapError::New(
+            -1,
+            "账号已暂停，暂停期间禁止启动网站，请先恢复账号状态".to_string(),
+        ));
+    }
+
     let pool = db::get_db_pool().await;
     let status = run_state_to_status(state);
     let now = chrono::Local::now().timestamp();
@@ -3035,6 +3057,84 @@ pub(crate) async fn sync_one_site(
             mark_sync_result(id, false, &e.to_string()).await;
             Err(e)
         }
+    }
+}
+
+/// 站点归属用户是否处于「暂停」状态（暂停期间禁止启动网站）。
+async fn site_owner_suspended(site_id: i64) -> bool {
+    let pool = db::get_db_pool().await;
+    let owner: Option<i64> = sqlx::query_scalar("SELECT user_id FROM site WHERE id = ?")
+        .bind(site_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+    match owner {
+        Some(uid) if uid > 0 => crate::routers::user::is_suspended(uid).await,
+        _ => false,
+    }
+}
+
+/// 暂停用户：停止其名下所有在运行的网站/服务，并记录原运行状态以便恢复。
+pub(crate) async fn suspend_user_services(user_id: i64) {
+    let pool = db::get_db_pool().await;
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, run_state FROM site WHERE user_id = ? AND run_state <> 'stopped'",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    // 记录原状态：恢复时按原样拉起（running / maintenance）
+    let prev: std::collections::HashMap<i64, String> =
+        rows.iter().map(|(id, rs)| (*id, rs.clone())).collect();
+    let _ = sqlx::query("UPDATE user SET suspend_sites = ? WHERE id = ?")
+        .bind(serde_json::to_string(&prev).unwrap_or_default())
+        .bind(user_id)
+        .execute(pool)
+        .await;
+    let now = chrono::Local::now().timestamp();
+    for (id, _) in &rows {
+        let _ = sqlx::query(
+            "UPDATE site SET run_state = 'stopped', status = 0, vhost_state = 'pending', updated_at = ? WHERE id = ?",
+        )
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await;
+        // 真实撤掉 vhost / 停服（幂等，失败仅记日志不阻断）
+        let _ = sync_one_site(*id).await;
+    }
+}
+
+/// 恢复用户：把暂停时记录的运行中网站/服务按原状态重新拉起。
+pub(crate) async fn resume_user_services(user_id: i64) {
+    let pool = db::get_db_pool().await;
+    let raw: Option<String> = sqlx::query_scalar("SELECT suspend_sites FROM user WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let _ = sqlx::query("UPDATE user SET suspend_sites = '' WHERE id = ?")
+        .bind(user_id)
+        .execute(pool)
+        .await;
+    let prev: std::collections::HashMap<i64, String> =
+        raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let now = chrono::Local::now().timestamp();
+    for (id, state) in prev {
+        let state = normalize_run_state(&state).unwrap_or(RUN_RUNNING);
+        let status = run_state_to_status(state);
+        let _ = sqlx::query(
+            "UPDATE site SET run_state = ?, status = ?, vhost_state = 'pending', updated_at = ? WHERE id = ?",
+        )
+        .bind(state)
+        .bind(status)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await;
+        let _ = sync_one_site(id).await;
     }
 }
 

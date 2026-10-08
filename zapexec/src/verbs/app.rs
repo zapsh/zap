@@ -1355,7 +1355,7 @@ pub async fn action(site_id: i64, name: &str, action: &str) -> Response {
         }
         let unit = unit_name(site_id, &name);
         match action.as_str() {
-            "start" | "stop" | "restart" | "enable" | "disable" => {
+            "start" | "stop" | "restart" | "enable" | "disable" | "mask" | "unmask" => {
                 let (ok, out) = systemctl(&[action.as_str(), &unit])?;
                 if !ok {
                     return Err(format!("{action} 失败：{out}"));

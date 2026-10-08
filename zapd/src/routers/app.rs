@@ -636,6 +636,27 @@ pub async fn app_deploy(
 ) -> ZapJsonResult {
     let caps = require_caps(&claims).await?;
 
+    // 暂停期禁止部署/启动应用：归属用户处于「暂停」→ 拦截（避免部署把 unit 拉起绕过暂停）
+    {
+        let pool = db::get_db_pool().await;
+        let owner: i64 = if payload.site_id > 0 {
+            sqlx::query_scalar("SELECT user_id FROM site WHERE id = ?")
+                .bind(payload.site_id)
+                .fetch_optional(pool)
+                .await
+                .unwrap_or(None)
+                .unwrap_or(claims.id as i64)
+        } else {
+            claims.id as i64
+        };
+        if crate::routers::user::is_suspended(owner).await {
+            return Err(ZapError::New(
+                -1,
+                "账号已暂停，暂停期间禁止部署/启动应用，请先恢复账号状态".to_string(),
+            ));
+        }
+    }
+
     let app_type = payload.app_type.trim().to_ascii_lowercase();
     if !caps.types.iter().any(|t| *t == app_type) {
         return Err(ZapError::New(
@@ -1056,6 +1077,21 @@ pub async fn app_git_update(
 
     // 权限：站点必须在当前用户可见范围内；普通用户只能更新自己的应用
     site::site_in_scope(&claims, row.site_id).await?;
+    // 暂停期禁止重新部署/启动应用：归属用户处于「暂停」→ 拦截
+    {
+        let pool = db::get_db_pool().await;
+        let owner: Option<i64> = sqlx::query_scalar("SELECT user_id FROM site WHERE id = ?")
+            .bind(row.site_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+        if matches!(owner, Some(uid) if uid > 0 && crate::routers::user::is_suspended(uid).await) {
+            return Err(ZapError::New(
+                -1,
+                "账号已暂停，暂停期间禁止部署/启动应用，请先恢复账号状态".to_string(),
+            ));
+        }
+    }
     let (requester, skip_owner_check) = if jwt::is_admin(&claims) {
         (None, true)
     } else {
@@ -1357,6 +1393,21 @@ pub async fn app_action(
 ) -> ZapJsonResult {
     site::site_in_scope(&claims, payload.site_id).await?;
     require_caps(&claims).await?;
+    // 暂停期禁止启动应用：归属用户处于「暂停」且本次要启动 → 拦截
+    if payload.action == "start" || payload.action == "restart" {
+        let pool = db::get_db_pool().await;
+        let owner: Option<i64> = sqlx::query_scalar("SELECT user_id FROM site WHERE id = ?")
+            .bind(payload.site_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+        if matches!(owner, Some(uid) if uid > 0 && crate::routers::user::is_suspended(uid).await) {
+            return Err(ZapError::New(
+                -1,
+                "账号已暂停，暂停期间禁止启动应用，请先恢复账号状态".to_string(),
+            ));
+        }
+    }
     let resp = crate::zapexec::call(Request::AppAction {
         site_id: payload.site_id,
         name: payload.name.clone(),
@@ -1700,6 +1751,101 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
     let _ = append_task_log(&log_path, &format!("部署完成（commit={git_commit}）\nsync={sync_ok}"));
     let _ = append_task_log(&log_path, &format!("{} 0", task::DONE_MARKER));
     let _ = task::finish(&task_id, task::STATUS_SUCCESS, 0).await;
+}
+
+// ── 账号暂停 / 恢复：停掉 / 拉起该用户全部运行中的应用 ──────────
+// 应用以独立 systemd unit（`Restart=always`）运行，停止时仅 `stop` 会被自动拉起，
+// 因此用 `mask`（阻止自动重启，且保留原 enable 状态）+ `stop`；恢复时 `unmask` + `start`。
+
+/// 暂停用户：停止其名下所有正在运行的应用，并记录以便恢复时拉起。
+pub(crate) async fn suspend_user_apps(user_id: i64) {
+    let pool = db::get_db_pool().await;
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT a.site_id, a.name FROM site_apps a \
+         JOIN site s ON s.id = a.site_id WHERE s.user_id = ? AND a.running = 1",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    // 记录被停应用（恢复时只拉起这些）
+    let list: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(sid, n)| serde_json::json!({ "site_id": sid, "name": n }))
+        .collect();
+    let _ = sqlx::query("UPDATE user SET suspend_apps = ? WHERE id = ?")
+        .bind(serde_json::to_string(&list).unwrap_or_default())
+        .bind(user_id)
+        .execute(pool)
+        .await;
+    for (sid, name) in &rows {
+        let _ = sqlx::query(
+            "UPDATE site_apps SET running = 0, updated_at = ? WHERE site_id = ? AND name = ?",
+        )
+        .bind(chrono::Local::now().timestamp())
+        .bind(sid)
+        .bind(name)
+        .execute(pool)
+        .await;
+        // mask + stop：真正停掉进程且不触发 Restart=always 的自动重启（失败仅记日志不阻断）
+        let _ = crate::zapexec::call(Request::AppAction {
+            site_id: *sid,
+            name: name.clone(),
+            action: "mask".to_string(),
+        })
+        .await;
+        let _ = crate::zapexec::call(Request::AppAction {
+            site_id: *sid,
+            name: name.clone(),
+            action: "stop".to_string(),
+        })
+        .await;
+    }
+}
+
+/// 恢复用户：把暂停时记录的运行中应用按原样重新拉起。
+pub(crate) async fn resume_user_apps(user_id: i64) {
+    let pool = db::get_db_pool().await;
+    let raw: Option<String> = sqlx::query_scalar("SELECT suspend_apps FROM user WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let _ = sqlx::query("UPDATE user SET suspend_apps = '' WHERE id = ?")
+        .bind(user_id)
+        .execute(pool)
+        .await;
+    let list: Vec<serde_json::Value> =
+        raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    for item in list {
+        let sid = item.get("site_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if sid <= 0 || name.is_empty() {
+            continue;
+        }
+        let _ = sqlx::query(
+            "UPDATE site_apps SET running = 1, updated_at = ? WHERE site_id = ? AND name = ?",
+        )
+        .bind(chrono::Local::now().timestamp())
+        .bind(sid)
+        .bind(name)
+        .execute(pool)
+        .await;
+        // unmask + start：恢复可启动状态并拉起（失败仅记日志不阻断）
+        let _ = crate::zapexec::call(Request::AppAction {
+            site_id: sid,
+            name: name.to_string(),
+            action: "unmask".to_string(),
+        })
+        .await;
+        let _ = crate::zapexec::call(Request::AppAction {
+            site_id: sid,
+            name: name.to_string(),
+            action: "start".to_string(),
+        })
+        .await;
+    }
 }
 
 #[cfg(test)]

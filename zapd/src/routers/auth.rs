@@ -232,8 +232,9 @@ pub async fn login(
     if let Ok(row) = record
         && let Ok(true) = bcrypt::verify(&payload.password, &row.password)
     {
-        // 账号状态校验：仅「正常(1)」可登录；禁用 / 封禁 / 欠费停用等一律拒绝
-        if row.status != 1 {
+        // 账号状态校验：「正常(1)」与「暂停(-3)」可登录；
+        // 禁用 / 封禁 / 欠费停用等硬禁用状态一律拒绝（暂停允许登录，仅停止其网站/服务）
+        if crate::routers::user::is_login_blocked(row.status) {
             audit::log(
                 None,
                 Some(&ip),

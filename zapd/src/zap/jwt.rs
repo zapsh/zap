@@ -338,7 +338,11 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
         .duration_since(UNIX_EPOCH)
         .ok()?
         .as_secs() as i64;
-    if r.token_status != 1 || r.user_status != 1 || (r.expires_at > 0 && r.expires_at <= now) {
+    // 用户状态：硬禁用（禁用/封禁/欠费停用）拒绝；「暂停」(-3) 允许（仅停止网站/服务）
+    if r.token_status != 1
+        || crate::routers::user::is_login_blocked(r.user_status as i32)
+        || (r.expires_at > 0 && r.expires_at <= now)
+    {
         return None;
     }
 
