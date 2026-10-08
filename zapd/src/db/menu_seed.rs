@@ -1,28 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! 菜单种子数据（结构化）：侧栏入口的唯一真源。
 //!
-//! 以前是一整段 `INSERT INTO menus (...) VALUES (...)` 的 SQL，三个痛点：
-//!
-//! - id 要手写：加一个菜单得先想「用哪个号」，父子靠数字 id 关联，看不出结构；
-//! - 状态分散：真正的最终形态（hidden / status / feature / 父级）要靠
-//!   一段段 UPDATE 补丁事后补，种子里写的是历史形态；
-//! - 授权另写一套：`role_menus` 又抄了一遍 id 列表，两者极易对不上。
-//!
-//! 现在改成一张声明式清单：
-//!
 //! - `name` 是稳定逻辑键（同时是前端路由名，表上有 UNIQUE），父子用
 //!   `parent("父 name")` 关联，不再出现数字；
-//! - **id 由 SQLite 自增**：声明顺序即插入顺序（父必须先于子），所以加菜单
-//!   不用再挑号，也不用管历史库里哪些号被占了；
+//! - **id 由 SQLite 自增**：声明顺序即插入顺序
 //! - `roles` 逗号分隔，既写进 `menus.roles`（标注），也用来生成 `role_menus`
-//!   （真正的可见性），一份数据两处用，不会对不上；
 //! - 加菜单 = 往 [`MENU_SEEDS`] 里加一行，`sync_added_menus()` 不用再动。
 //!
 //! 只作用于**新建库**：已存在的库保留原样（菜单可由管理员在「菜单管理」里改），
 //! 这正是我们想要的 —— 种子是初始状态，不是每启动一次就覆盖用户改过的菜单。
 //!
-//! 显示顺序 = 数组声明顺序（见 [`seed_menus`]）。要调整侧栏顺序，直接挪动数组里
-//! 的行即可，无需再维护分组用的 `sort_order` 数字（该字段已不再参与排序）。
+//! 无需再维护分组用的 `sort_order` 数字（该字段已不再参与排序）。
 
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -407,6 +395,32 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     )
     .parent("reseller-users")
     .icon("material-symbols:storefront"),
+    // ── 通知设置（目录）：admin / user / reseller 都看得到入口；页内「通知模板」页签
+    // 所有人可自定义（reseller 仅影响自己名下用户），「发信渠道 / 测试邮件」两个页签仅管理员可见。
+    MenuSeed::new(
+        "notify",
+        "通知设置",
+        "dir",
+        "/notify",
+        "Layout",
+        R_ADMIN_USER_RESELLER,
+        13,
+    )
+    .icon("material-symbols:notifications")
+    .redirect("/notify/index")
+    .affix(),
+    MenuSeed::new(
+        "notify-index",
+        "通知设置",
+        "menu",
+        "index",
+        "notify/index",
+        R_ADMIN_USER_RESELLER,
+        1,
+    )
+    .parent("notify")
+    .icon("material-symbols:notifications")
+    .affix(),
     // ── 服务器状态（目录）────────────────────────────────────
     MenuSeed::new(
         "server-status",
@@ -602,41 +616,11 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .affix()
     .hidden(),
     // ── 系统设置（目录）：仅管理员可见（其下子菜单均 R_ADMIN）。
-    // 普通用户/reseller/demo 不应看到「系统设置」——此前为让非 admin 能进 About ZAP
-    // 而把父目录设为 R_ALL，但 About ZAP 现已迁到首页快捷入口 / 页脚，不再挂在
-    // 本目录下，故这里收紧为 R_ADMIN，非 admin 不再出现这个（原本还是空的）入口。
     MenuSeed::new("system", "系统设置", "dir", "/system", "Layout", R_ADMIN, 12)
         .icon("material-symbols:settings")
         .redirect("/system/access")
         .affix(),
-    // ── 通知设置（目录）：admin / user / reseller 都看得到入口；页内「通知模板」页签
-    // 所有人可自定义（reseller 仅影响自己名下用户），「发信渠道 / 测试邮件」两个页签仅管理员可见。
-    MenuSeed::new(
-        "notify",
-        "通知设置",
-        "dir",
-        "/notify",
-        "Layout",
-        R_ADMIN_USER_RESELLER,
-        13,
-    )
-    .icon("material-symbols:notifications")
-    .redirect("/notify/index")
-    .affix(),
-    MenuSeed::new(
-        "notify-index",
-        "通知设置",
-        "menu",
-        "index",
-        "notify/index",
-        R_ADMIN_USER_RESELLER,
-        1,
-    )
-    .parent("notify")
-    .icon("material-symbols:notifications")
-    .affix(),
-    // 「基础设置」已整体下线：Mail 并入 Zap 设置的「通知设置」页签，建站默认网络
-    // 与联系信息不再提供界面入口（键值仍留在 server_env.yaml）。
+    
     MenuSeed::new(
         "zap-config",
         "Zap 设置",
@@ -649,7 +633,7 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("system")
     .icon("material-symbols:settings-applications")
     .affix(),
-    // 用户管理 + 角色管理合到一页（页面内 nav pill 切换）
+    // 用户管理 + 角色管理
     MenuSeed::new(
         "access",
         "用户与角色",

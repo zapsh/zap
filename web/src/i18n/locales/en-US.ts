@@ -2935,7 +2935,7 @@ const enUS: Messages = {
     scriptLabel: 'Script',
     scriptPlaceholder: 'Select or enter a script path under scripts/',
     scriptTip:
-      'Pick one of the scripts below, or type your own; only files under scripts/ are supported (e.g. scripts/admin/backup.sh)',
+      'Pick one of the scripts below, or type your own; only files under scripts/ are supported (e.g. scripts/backup.sh)',
     presetLabel: 'Frequency Preset',
     cronLabel: 'cron expression',
     cronPlaceholder: 'min hour day month weekday (e.g. */5 * * * *)',

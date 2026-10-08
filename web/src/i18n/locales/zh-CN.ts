@@ -2920,7 +2920,7 @@ export default {
     namePlaceholder: '例如：每日备份网站',
     scriptLabel: '脚本',
     scriptPlaceholder: '选择或输入 scripts/ 下的脚本路径',
-    scriptTip: '可选下方脚本；也可自行输入，仅支持 scripts/ 目录下（如 scripts/admin/backup.sh）',
+    scriptTip: '可选下方脚本；也可自行输入，仅支持 scripts/ 目录下（如 scripts/backup.sh）',
     presetLabel: '频率预设',
     cronLabel: 'cron 表达式',
     cronPlaceholder: '分 时 日 月 周（如 */5 * * * *）',
