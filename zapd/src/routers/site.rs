@@ -2077,7 +2077,7 @@ pub async fn site_ip_options(
         claims.id as i64
     };
 
-    let rows: Vec<(i64, String, i32, String, i32)> = if jwt::is_admin(&claims) {
+    let rows: Vec<(i64, String, i32, String, i64)> = if jwt::is_admin(&claims) {
         if q.owner.is_some() {
             sqlx::query_as(
                 "SELECT id, address, version, ip_type, owner_id FROM ip_pool \

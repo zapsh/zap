@@ -122,6 +122,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("site", "view")),
     ),
+    // 建站可选 IP：读取当前归属用户可见的 IP（自己的静态 IP + 系统共享）
+    (
+        "/site/ip-options",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
     // POST 但只做目录浏览，按读取授权
     (
         "/site/dirs",
