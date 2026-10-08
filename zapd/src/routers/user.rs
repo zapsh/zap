@@ -446,6 +446,9 @@ fn default_autossl_mode() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct NoticePrefs {
+    /// 默认发送渠道：site=站内信 / email=邮件（多选）
+    #[serde(default)]
+    pub notify_channels: Vec<String>,
     /// 账户接近磁盘配额
     #[serde(default = "default_true")]
     pub notify_disk_quota: bool,
@@ -473,6 +476,7 @@ pub struct NoticePrefs {
 impl Default for NoticePrefs {
     fn default() -> Self {
         Self {
+            notify_channels: vec!["site".to_string()],
             notify_disk_quota: true,
             notify_bandwidth: true,
             notify_ssl_expiry: true,

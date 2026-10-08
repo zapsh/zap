@@ -221,13 +221,12 @@ async function copySecret() {
 
 // ── 偏好设置 ───────────────────────────────────────────────
 const prefs = reactive<NoticePrefs>({
+  notify_channels: ['site'],
   notify_disk_quota: true,
   notify_bandwidth: true,
   notify_ssl_expiry: true,
   notify_password_change: true,
-  password_change_disable: false,
   notify_login: false,
-  login_disable: false,
   autossl_notify_mode: 'deferrals',
 })
 const prefsLoading = ref(false)
@@ -474,48 +473,51 @@ async function logoutAllDevices() {
             <h4 class="prefs-title">{{ t('profilePage.prefsTitle') }}</h4>
             <p class="prefs-desc">{{ t('profilePage.prefsDesc') }}</p>
 
-            <el-checkbox v-model="prefs.notify_disk_quota" class="prefs-item">
-              {{ t('profilePage.prefDiskQuota') }}
-            </el-checkbox>
-
-            <el-checkbox v-model="prefs.notify_bandwidth" class="prefs-item">
-              {{ t('profilePage.prefBandwidth') }}
-            </el-checkbox>
-
-            <el-checkbox v-model="prefs.notify_ssl_expiry" class="prefs-item">
-              {{ t('profilePage.prefSslExpiry') }}
-            </el-checkbox>
-
-            <el-checkbox v-model="prefs.notify_password_change" class="prefs-item">
-              {{ t('profilePage.prefPasswordChange') }}
-            </el-checkbox>
-            <div v-if="prefs.notify_password_change" class="prefs-sub">
-              <el-checkbox v-model="prefs.password_change_disable">{{
-                t('profilePage.prefNoNotify')
-              }}</el-checkbox>
+            <!-- 通知事件 -->
+            <div class="prefs-section">
+              <h4 class="prefs-title prefs-section-title">{{ t('profilePage.prefEvents') }}</h4>
+              <el-checkbox v-model="prefs.notify_disk_quota" class="prefs-item">
+                {{ t('profilePage.prefDiskQuota') }}
+              </el-checkbox>
+              <el-checkbox v-model="prefs.notify_bandwidth" class="prefs-item">
+                {{ t('profilePage.prefBandwidth') }}
+              </el-checkbox>
+              <el-checkbox v-model="prefs.notify_ssl_expiry" class="prefs-item">
+                {{ t('profilePage.prefSslExpiry') }}
+              </el-checkbox>
+              <el-checkbox v-model="prefs.notify_password_change" class="prefs-item">
+                {{ t('profilePage.prefPasswordChange') }}
+              </el-checkbox>
+              <el-checkbox v-model="prefs.notify_login" class="prefs-item">
+                {{ t('profilePage.prefLogin') }}
+              </el-checkbox>
             </div>
 
-            <el-checkbox v-model="prefs.notify_login" class="prefs-item">
-              {{ t('profilePage.prefLogin') }}
-            </el-checkbox>
-            <div v-if="prefs.notify_login" class="prefs-sub">
-              <el-checkbox v-model="prefs.login_disable">{{
-                t('profilePage.prefNoNotify')
-              }}</el-checkbox>
+            <!-- 默认发送渠道 -->
+            <div class="prefs-section">
+              <h4 class="prefs-title prefs-section-title">{{ t('profilePage.prefChannels') }}</h4>
+              <p class="prefs-desc">{{ t('profilePage.prefChannelsDesc') }}</p>
+              <el-checkbox-group v-model="prefs.notify_channels" class="prefs-channel-group">
+                <el-checkbox value="site" class="prefs-item">{{ t('profilePage.channelSite') }}</el-checkbox>
+                <el-checkbox value="email" class="prefs-item">{{ t('profilePage.channelEmail') }}</el-checkbox>
+              </el-checkbox-group>
             </div>
 
-            <h4 class="prefs-title prefs-group-title">{{ t('profilePage.autosslTitle') }}</h4>
-            <el-radio-group v-model="prefs.autossl_notify_mode" class="prefs-radio-group">
-              <el-radio value="deferrals" class="prefs-radio">{{
-                t('profilePage.autosslDeferrals')
-              }}</el-radio>
-              <el-radio value="failures" class="prefs-radio">{{
-                t('profilePage.autosslFailures')
-              }}</el-radio>
-              <el-radio value="disabled" class="prefs-radio">{{
-                t('profilePage.autosslDisabled')
-              }}</el-radio>
-            </el-radio-group>
+            <!-- AutoSSL 通知 -->
+            <div class="prefs-section">
+              <h4 class="prefs-title prefs-section-title">{{ t('profilePage.autosslTitle') }}</h4>
+              <el-radio-group v-model="prefs.autossl_notify_mode" class="prefs-radio-group">
+                <el-radio value="deferrals" class="prefs-radio">{{
+                  t('profilePage.autosslDeferrals')
+                }}</el-radio>
+                <el-radio value="failures" class="prefs-radio">{{
+                  t('profilePage.autosslFailures')
+                }}</el-radio>
+                <el-radio value="disabled" class="prefs-radio">{{
+                  t('profilePage.autosslDisabled')
+                }}</el-radio>
+              </el-radio-group>
+            </div>
 
             <div style="margin-top: 28px">
               <el-button type="primary" :loading="prefsSaving" @click="savePrefs">{{
@@ -695,8 +697,15 @@ async function logoutAllDevices() {
   font-weight: 600;
   color: var(--el-text-color-primary);
 }
-.prefs-group-title {
-  margin-top: 28px;
+.prefs-section {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+  background: var(--el-fill-color-blank);
+}
+.prefs-section-title {
+  margin: 0 0 12px;
 }
 .prefs-desc {
   margin: 0 0 16px;
@@ -721,5 +730,11 @@ async function logoutAllDevices() {
 }
 .prefs-radio {
   margin: 0 0 10px;
+}
+.prefs-channel-group {
+  margin: 0 0 8px;
+}
+.prefs-channel-group .prefs-item {
+  margin-right: 24px;
 }
 </style>

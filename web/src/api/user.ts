@@ -362,6 +362,8 @@ export function totpStatus() {
 
 /** 当前用户通知偏好（个人中心 → 偏好设置） */
 export interface NoticePrefs {
+  /** 默认发送渠道：site=站内信 / email=邮件（多选） */
+  notify_channels: ('site' | 'email')[]
   /** 账户接近磁盘配额 */
   notify_disk_quota: boolean
   /** 账户接近带宽限制 */

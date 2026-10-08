@@ -4,7 +4,7 @@
 //! 事件发生时向 `notice_message` 写入一条站内信；是否真正送达取决于
 //! 该用户在「个人中心 → 偏好设置」中的通知偏好（存 `user.prefs`，JSON）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 use tracing::error;
@@ -69,6 +69,34 @@ pub async fn push(user_id: i64, msg_type: &str, title: &str, body: &str) {
     }
 }
 
+/// 读取用户「默认发送渠道」偏好（存 `user.prefs.notify_channels`，数组）。
+///
+/// 取值：`site`（站内信）/ `email`（邮件）。未配置或为空时回退为仅 `site`。
+async fn prefs_channels(user_id: i64) -> HashSet<String> {
+    let pool = db::get_db_pool().await;
+    let raw: Option<String> = sqlx::query_scalar("SELECT prefs FROM user WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let prefs: Value = raw
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let mut set = HashSet::new();
+    if let Some(arr) = prefs.get("notify_channels").and_then(|v| v.as_array()) {
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                set.insert(s.to_string());
+            }
+        }
+    }
+    if set.is_empty() {
+        set.insert("site".to_string());
+    }
+    set
+}
+
 /// 登录成功通知（偏好：登录成功通知，默认不通知）。
 pub async fn login_success(user_id: i64, username: &str, ip: &str) {
     if !prefs_allows(user_id, "notify_login", "login_disable", false).await {
@@ -78,14 +106,17 @@ pub async fn login_success(user_id: i64, username: &str, ip: &str) {
     let body = format!(
         "您的账户 {username} 于 {time} 通过 IP {ip} 成功登录。若非本人操作，请立即修改密码或联系管理员。"
     );
-    push(user_id, "login_success", "登录成功通知", &body).await;
-
-    // 邮件渠道（受用户「邮件偏好」与发信配置控制，未配置则静默跳过）
-    let mut p = HashMap::new();
-    p.insert("username", username.to_string());
-    p.insert("time", time);
-    p.insert("ip", ip.to_string());
-    email_user(user_id, "login_success", &p).await;
+    let channels = prefs_channels(user_id).await;
+    if channels.contains("site") {
+        push(user_id, "login_success", "登录成功通知", &body).await;
+    }
+    if channels.contains("email") {
+        let mut p = HashMap::new();
+        p.insert("username", username.to_string());
+        p.insert("time", time);
+        p.insert("ip", ip.to_string());
+        email_user(user_id, "login_success", &p).await;
+    }
 }
 
 /// 账户密码变更通知（偏好：账户密码变更通知，默认通知）。
@@ -105,12 +136,16 @@ pub async fn password_changed(user_id: i64, operator: &str) {
     let body = format!(
         "您的账户密码已于 {time} 被修改（操作者：{operator}）。若非本人操作，请立即联系管理员。"
     );
-    push(user_id, "password_change", "账户密码变更通知", &body).await;
-
-    let mut p = HashMap::new();
-    p.insert("time", time);
-    p.insert("operator", operator.to_string());
-    email_user(user_id, "password_change", &p).await;
+    let channels = prefs_channels(user_id).await;
+    if channels.contains("site") {
+        push(user_id, "password_change", "账户密码变更通知", &body).await;
+    }
+    if channels.contains("email") {
+        let mut p = HashMap::new();
+        p.insert("time", time);
+        p.insert("operator", operator.to_string());
+        email_user(user_id, "password_change", &p).await;
+    }
 }
 
 // ── 邮件渠道 + 模板 ───────────────────────────────────────────
@@ -140,21 +175,6 @@ async fn load_user_meta(user_id: i64) -> Option<(String, i64, Value)> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(Value::Null);
     Some((email, owner_id, prefs))
-}
-
-/// 邮件渠道偏好（默认关闭，需用户在偏好里手动开启）。
-async fn prefs_email_allows(user_id: i64, key: &str) -> bool {
-    let pool = db::get_db_pool().await;
-    let raw: Option<String> = sqlx::query_scalar("SELECT prefs FROM user WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
-    let prefs: Value = raw
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null);
-    prefs.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 /// 模板解析：内置默认 → 全局覆盖（server_env `mail_templates`）→ reseller 自定义覆盖。
@@ -190,15 +210,13 @@ async fn resolve_template(event: &str, owner_id: i64) -> (String, String) {
     (subj, body)
 }
 
-/// 给单个用户发邮件（受邮件偏好 + 发信配置控制；失败仅记录）。
+/// 给单个用户发邮件（是否真正发送由调用方按全局渠道 `notify_channels` 控制；
+/// 此处仅校验邮箱非空与发信配置，未配置则静默跳过；失败仅记录）。
 async fn email_user(user_id: i64, event: &str, params: &HashMap<&str, String>) {
     let Some((email, owner_id, _)) = load_user_meta(user_id).await else {
         return;
     };
     if email.trim().is_empty() {
-        return;
-    }
-    if !prefs_email_allows(user_id, &format!("email_{event}")).await {
         return;
     }
     let (subj_t, body_t) = resolve_template(event, owner_id).await;
@@ -232,20 +250,25 @@ pub fn builtin_template(event: &str) -> (String, String) {
     }
 }
 
-/// 站点创建成功：站内信 + 邮件（受偏好与发信配置控制）。
+/// 站点创建成功：按全局渠道下发（受发信配置控制；未配置邮件则静默跳过）。
 pub async fn site_created(user_id: i64, site_name: &str) {
     let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    push(
-        user_id,
-        "site_created",
-        "站点创建成功",
-        &format!("您创建的站点「{site_name}」已成功部署。"),
-    )
-    .await;
-    let mut p = HashMap::new();
-    p.insert("site", site_name.to_string());
-    p.insert("time", time);
-    email_user(user_id, "site_created", &p).await;
+    let channels = prefs_channels(user_id).await;
+    if channels.contains("site") {
+        push(
+            user_id,
+            "site_created",
+            "站点创建成功",
+            &format!("您创建的站点「{site_name}」已成功部署。"),
+        )
+        .await;
+    }
+    if channels.contains("email") {
+        let mut p = HashMap::new();
+        p.insert("site", site_name.to_string());
+        p.insert("time", time);
+        email_user(user_id, "site_created", &p).await;
+    }
 }
 
 /// 磁盘空间不足预警（带 24h 冷却，避免周期采集重复打扰）。
@@ -258,16 +281,21 @@ pub async fn disk_low(user_id: i64, _owner_id: i64, pct: i32) {
             }
         }
     }
-    push(
-        user_id,
-        "disk_low",
-        "磁盘空间不足预警",
-        &format!("您的磁盘用量已达 {pct}%，即将超过套餐配额。"),
-    )
-    .await;
-    let mut p = HashMap::new();
-    p.insert("pct", pct.to_string());
-    email_user(user_id, "disk_low", &p).await;
+    let channels = prefs_channels(user_id).await;
+    if channels.contains("site") {
+        push(
+            user_id,
+            "disk_low",
+            "磁盘空间不足预警",
+            &format!("您的磁盘用量已达 {pct}%，即将超过套餐配额。"),
+        )
+        .await;
+    }
+    if channels.contains("email") {
+        let mut p = HashMap::new();
+        p.insert("pct", pct.to_string());
+        email_user(user_id, "disk_low", &p).await;
+    }
     let _ = server_env::conf_set_many(
         &[(cooldown_key, chrono::Local::now().timestamp().to_string())],
         "磁盘预警冷却",

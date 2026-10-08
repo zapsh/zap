@@ -3097,6 +3097,12 @@ const enUS: Messages = {
     copyFailed: 'Copy failed, please copy it manually',
     prefsTitle: 'Notification Preferences',
     prefsDesc: 'Choose how you want to be notified. Notify me when:',
+    prefChannels: 'Default delivery channels',
+    prefChannelsDesc:
+      'All notifications are delivered through the channels above. "Site message" shows in the panel inbox; "Email" is sent to your account email.',
+    channelSite: 'Site message',
+    channelEmail: 'Email',
+    prefEvents: 'Notification events',
     prefDiskQuota: 'My account approaches its disk quota.',
     prefBandwidth: 'My account approaches its bandwidth limit.',
     prefSslExpiry:
