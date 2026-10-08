@@ -19,8 +19,10 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{Json, extract::Extension};
+use sqlx::{QueryBuilder, Sqlite};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -550,4 +552,166 @@ pub async fn mail_test_send(
         Ok(()) => Ok(Json(json!({ "code": 0, "message": "测试邮件已发送，请检查收件箱" }))),
         Err(e) => Err(ZapError::New(-1, format!("发送失败: {e}"))),
     }
+}
+
+/// POST /system/mail/broadcast —— admin 全局 / reseller 名下客户：主动向客户群发通知。
+///
+/// 收件人按角色自动收敛，无需（也不能）在前端指定越权范围：
+/// - admin：全平台所有「启用」账号；
+/// - reseller：仅自己名下（owner_id = 自身）的客户。
+///
+/// 渠道 `channel`：
+/// - `inbox`：仅站内信（落 `notice_message`，无需邮箱）；
+/// - `email`：仅邮件（需邮箱，无邮箱的账号自动跳过）；
+/// - `both`：两者都发（默认）。
+///
+/// 若传 `user_ids` 则在这些账号内再筛选（reseller 传入的越权 id 会被 owner 条件自动剔除）。
+/// 主题 / 正文由调用方自由撰写（可先在前端复用通知模板预填后再改），后端只负责投递。
+#[derive(Debug, Deserialize)]
+pub struct MailBroadcastPayload {
+    /// 通知主题（必填）
+    pub subject: String,
+    /// 纯文本正文（站内信恒用此字段；邮件非 HTML 模式必填，亦作 HTML 兜底）
+    #[serde(default)]
+    pub body_text: String,
+    /// HTML 正文（is_html=true 且含邮件渠道时必填）
+    #[serde(default)]
+    pub body_html: Option<String>,
+    /// 邮件是否为 HTML 格式（默认纯文本）
+    #[serde(default)]
+    pub is_html: bool,
+    /// 发送渠道：inbox=仅站内信，email=仅邮件，both=两者都发（默认 both）
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// 指定收件人 id 列表；留空 = 当前角色作用域内的全部客户
+    #[serde(default)]
+    pub user_ids: Option<Vec<i64>>,
+}
+
+pub async fn mail_broadcast_send(
+    claims: ValidatedClaims,
+    Json(payload): Json<MailBroadcastPayload>,
+) -> ZapJsonResult {
+    let is_adm = is_admin(&claims);
+    let subject = payload.subject.trim();
+    if subject.is_empty() {
+        return Err(ZapError::New(-1, "通知主题不能为空".to_string()));
+    }
+    let channel = payload.channel.clone().unwrap_or_else(|| "both".to_string());
+    let do_email = channel == "email" || channel == "both";
+    let do_inbox = channel == "inbox" || channel == "both";
+    if !do_email && !do_inbox {
+        return Err(ZapError::New(-1, "请选择有效的发送渠道".to_string()));
+    }
+
+    let body_text = payload.body_text.trim();
+    let body_html = payload.body_html.as_deref().unwrap_or("").trim();
+    if do_email && !payload.is_html && body_text.is_empty() {
+        return Err(ZapError::New(-1, "邮件纯文本正文不能为空".to_string()));
+    }
+    if do_email && payload.is_html && body_html.is_empty() {
+        return Err(ZapError::New(-1, "邮件 HTML 正文不能为空".to_string()));
+    }
+    if do_inbox && body_text.is_empty() {
+        return Err(ZapError::New(-1, "站内信正文不能为空".to_string()));
+    }
+
+    // 收件人：启用状态；reseller 仅限名下（owner_id=自身），admin 不限。
+    // 站内信不依赖邮箱，所以这里不再强制 email 非空（邮件渠道再按 email 过滤）。
+    let pool = db::get_db_pool().await;
+    let mut qb: QueryBuilder<Sqlite> =
+        QueryBuilder::new("SELECT id, username, email FROM user WHERE status = 1");
+    if !is_adm {
+        qb.push(" AND owner_id = ").push_bind(claims.id as i64);
+    }
+    if let Some(ids) = &payload.user_ids {
+        if !ids.is_empty() {
+            qb.push(" AND id IN (");
+            let mut first = true;
+            for id in ids {
+                if !first {
+                    qb.push(", ");
+                }
+                qb.push_bind(*id);
+                first = false;
+            }
+            qb.push(")");
+        }
+    }
+    let recipients: Vec<(i64, String, String)> = qb.build_query_as().fetch_all(pool).await?;
+    if recipients.is_empty() {
+        return Ok(Json(json!({ "code": 0, "message": "没有符合条件的收件人" })));
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let mut sent_email = 0i64;
+    let mut sent_inbox = 0i64;
+    let mut failed: Vec<Value> = Vec::new();
+
+    for (id, username, email) in recipients {
+        // 站内信：无邮箱也能收到，直接落 notice_message（type=broadcast）
+        if do_inbox {
+            match sqlx::query(
+                "INSERT INTO notice_message (user_id, type, title, body, is_read, created_at) \
+                 VALUES (?, 'broadcast', ?, ?, 0, ?)",
+            )
+            .bind(id)
+            .bind(subject)
+            .bind(body_text)
+            .bind(now)
+            .execute(pool)
+            .await
+            {
+                Ok(_) => sent_inbox += 1,
+                Err(e) => failed.push(json!({
+                    "username": username,
+                    "error": format!("站内信写入失败: {e}")
+                })),
+            }
+        }
+
+        // 邮件：需要邮箱，无邮箱的账号跳过（站内信已单独计入）
+        if do_email {
+            if email.is_empty() {
+                if !do_inbox {
+                    failed.push(json!({
+                        "username": username,
+                        "error": "该账号未填写邮箱，已跳过"
+                    }));
+                }
+                continue;
+            }
+            let (body, alt) = if payload.is_html {
+                (body_html, Some(body_text))
+            } else {
+                (body_text, None)
+            };
+            match crate::zap::mail::send(&email, subject, body, payload.is_html, alt).await {
+                Ok(()) => sent_email += 1,
+                Err(e) => failed.push(json!({ "email": email, "username": username, "error": e })),
+            }
+        }
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if do_email {
+        parts.push(format!("邮件 {sent_email} 封"));
+    }
+    if do_inbox {
+        parts.push(format!("站内信 {sent_inbox} 条"));
+    }
+    let message = if failed.is_empty() {
+        format!("已发送：{}", parts.join("，"))
+    } else {
+        format!("{}，失败 {} 项", parts.join("，"), failed.len())
+    };
+    Ok(Json(json!({
+        "code": 0,
+        "message": message,
+        "data": { "sent_email": sent_email, "sent_inbox": sent_inbox, "failed": failed }
+    })))
 }

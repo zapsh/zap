@@ -395,32 +395,31 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     )
     .parent("reseller-users")
     .icon("material-symbols:storefront"),
-    // ── 通知设置（目录）：admin / user / reseller 都看得到入口；页内「通知模板」页签
-    // 所有人可自定义（reseller 仅影响自己名下用户），「发信渠道 / 测试邮件」两个页签仅管理员可见。
+    // ── 通知（客户管理下的平铺子菜单）：reseller 可编辑私有模板 + 主动向名下客户群发邮件；
+    //    admin 两项都可用。全局发信配置（发信渠道 / 测试邮件）在「Zap 设置 → 通知设置」里。
+    //    注意：dir 会映射成嵌套 Layout，不能挂在另一个 Layout 菜单下，所以这里直接用 menu。
     MenuSeed::new(
-        "notify",
-        "通知设置",
-        "dir",
-        "/notify",
-        "Layout",
-        R_ADMIN_USER_RESELLER,
-        13,
-    )
-    .icon("material-symbols:notifications")
-    .redirect("/notify/index")
-    .affix(),
-    MenuSeed::new(
-        "notify-index",
-        "通知设置",
+        "notify-templates",
+        "通知模板",
         "menu",
-        "index",
-        "notify/index",
-        R_ADMIN_USER_RESELLER,
-        1,
+        "notify/templates",
+        "notify/NotifyTemplatePane",
+        R_ADMIN_RESELLER,
+        3,
     )
-    .parent("notify")
-    .icon("material-symbols:notifications")
-    .affix(),
+    .parent("reseller-users")
+    .icon("material-symbols:notifications"),
+    MenuSeed::new(
+        "notify-broadcast",
+        "群发通知",
+        "menu",
+        "notify/broadcast",
+        "notify/BroadcastPane",
+        R_ADMIN_RESELLER,
+        4,
+    )
+    .parent("reseller-users")
+    .icon("material-symbols:campaign"),
     // ── 服务器状态（目录）────────────────────────────────────
     MenuSeed::new(
         "server-status",
@@ -1030,7 +1029,7 @@ mod tests {
         // 注：「系统设置」目录已收紧为仅 admin，故 demo 少 1 项
         assert_eq!(demo.len(), 15, "demo 可见菜单数变化");
         let reseller = grants(&pool, "reseller").await;
-        assert_eq!(reseller.len(), 28, "reseller 可见菜单数变化");
+        assert_eq!(reseller.len(), 30, "reseller 可见菜单数变化");
         // 客户管理（admin / reseller 都可见）
         assert!(reseller.iter().any(|n| n == "reseller-users"));
         assert!(admin.iter().any(|n| n == "reseller-users"));

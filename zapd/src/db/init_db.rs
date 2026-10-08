@@ -534,6 +534,49 @@ async fn init_roles_table() {
 ///     .execute(pool).await;
 /// ```
 async fn sync_added_menus() {
+    // 通知入口收敛（一次性、幂等）：通知菜单历经「顶层目录 → 客户管理下嵌套 dir →
+    // 客户管理下平铺 menu」三个形态。dir 会映射成嵌套 Layout，挂在本身就是 Layout
+    // 的「客户管理」下会渲染出双层布局（内容整体错位），所以最终形态是平铺 menu。
+    // 存量库在这里统一收敛：两个页面挂到 reseller-users 下并修正组件路径，
+    // 残留的 notify 目录 / 旧 notify-index 页面删除（功能未发布，无需保留自定义）。
+    // 注意先改父级再删目录，嵌套 dir 形态下的子菜单才不会变孤儿。
+    let pool = get_db_pool().await;
+    let parent_id: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM menus WHERE name = 'reseller-users'")
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+    if let Some(pid) = parent_id {
+        sqlx::query(
+            "UPDATE menus SET parent_id = ?, path = 'notify/templates', component = 'notify/NotifyTemplatePane' \
+             WHERE name = 'notify-templates' AND (parent_id <> ? OR path <> 'notify/templates' OR component <> 'notify/NotifyTemplatePane')",
+        )
+        .bind(pid)
+        .bind(pid)
+        .execute(pool)
+        .await
+        .ok();
+        sqlx::query(
+            "UPDATE menus SET parent_id = ?, path = 'notify/broadcast', component = 'notify/BroadcastPane' \
+             WHERE name = 'notify-broadcast' AND (parent_id <> ? OR path <> 'notify/broadcast' OR component <> 'notify/BroadcastPane')",
+        )
+        .bind(pid)
+        .bind(pid)
+        .execute(pool)
+        .await
+        .ok();
+    }
+    sqlx::query(
+        "DELETE FROM role_menus WHERE menu_id IN (SELECT id FROM menus WHERE name IN ('notify', 'notify-index'))",
+    )
+    .execute(pool)
+    .await
+    .ok();
+    sqlx::query("DELETE FROM menus WHERE name IN ('notify', 'notify-index')")
+        .execute(pool)
+        .await
+        .ok();
+
     // Zap Pro（商业模块）的菜单同样在**建库**时播入（见 `menu_seed::pro_seeds()`）。
     // 但社区版机器用 `install.sh --pro` 重装后，zapd 换成了 Pro 二进制、库还是老库，
     // 建库播种不会再跑一次 —— Pro 菜单就得在下面按种子补齐，否则面板一个 Pro 入口都没有

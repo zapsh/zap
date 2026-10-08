@@ -909,6 +909,8 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     ("/system/mail/templates", Required::Reseller, None),
     // 测试邮件发送仅管理员
     ("/system/mail/test", Required::Admin, None),
+    // 群发邮件：admin 发全平台 / reseller 仅发自己名下客户（作用域由 handler 收敛）
+    ("/system/mail/broadcast", Required::Reseller, None),
     // 代登录（一键登录客户面板）：admin 可代登录任意账号，reseller 仅限自己
     // 名下客户（目标合法性由 handler 二次校验）
     ("/system/user/sudo", Required::Reseller, None),

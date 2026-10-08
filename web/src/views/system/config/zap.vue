@@ -6,12 +6,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Download, Setting } from '@/icons'
+import { Download, Setting, Bell } from '@/icons'
 import NavPillPanels from '@/components/NavPillPanels.vue'
 import ZapPanel from './ZapPanel.vue'
 import MirrorPanel from './MirrorPanel.vue'
 import CachePanel from './CachePanel.vue'
 import SecurityPanel from './SecurityPanel.vue'
+import NotifyIndex from '../../notify/index.vue'
 
 const { t } = useI18n()
 
@@ -50,6 +51,13 @@ const tabs = computed(() => [
     icon: Setting,
     panel: SecurityPanel,
     hint: t('zapCfg.secSubtitle'),
+  },
+  {
+    key: 'notify',
+    label: t('zapCfg.notifyTitle'),
+    icon: Bell,
+    panel: NotifyIndex,
+    hint: t('notifyCfg.subtitle'),
   },
 ])
 </script>

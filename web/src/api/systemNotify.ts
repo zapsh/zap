@@ -84,3 +84,24 @@ export function saveMailTemplates(events: Record<string, MailTemplate>) {
 export function sendTestMail(to: string) {
   return http.post<{ code: number; message: string }>('/system/mail/test', { to })
 }
+
+/** 群发通知（admin 全平台 / reseller 名下客户；可指定 user_ids 或全发）
+ * channel: inbox=仅站内信，email=仅邮件，both=两者都发 */
+export function broadcastMail(payload: {
+  subject: string
+  body_text: string
+  body_html?: string
+  is_html: boolean
+  channel?: 'inbox' | 'email' | 'both'
+  user_ids?: number[]
+}) {
+  return http.post<{
+    code: number
+    message: string
+    data: {
+      sent_email: number
+      sent_inbox: number
+      failed: Array<{ email?: string; username: string; error: string }>
+    }
+  }>('/system/mail/broadcast', payload)
+}

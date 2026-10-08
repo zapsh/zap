@@ -569,6 +569,11 @@ fn api_routers() -> Router {
             get(system_basic::mail_templates_get).post(system_basic::mail_templates_save),
         )
         .route("/system/mail/test", post(system_basic::mail_test_send))
+        // 群发邮件（admin 全局 / reseller 名下客户）：主动向客户发送邮件
+        .route(
+            "/system/mail/broadcast",
+            post(system_basic::mail_broadcast_send),
+        )
         // Zap 设置（系统设置 → Zap 设置，admin only）：动态修改 zap.yaml 的 server.*
         .route(
             "/system/config/zap",
