@@ -581,7 +581,7 @@ fn api_routers() -> Router {
                 .post(system_basic::broadcast_templates_create),
         )
         .route(
-            "/system/broadcast/templates/:id",
+            "/system/broadcast/templates/{id}",
             put(system_basic::broadcast_templates_update)
                 .delete(system_basic::broadcast_templates_delete),
         )
