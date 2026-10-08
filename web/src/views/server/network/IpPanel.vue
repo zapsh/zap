@@ -13,7 +13,15 @@ interface IpItem {
   ip_type: string
   reserved: number
   remark: string
+  owner_id: number
+  owner_username: string
   created_at: number
+}
+
+interface OwnerOption {
+  id: number
+  username: string
+  nickname: string
 }
 
 const { t } = useI18n()
@@ -22,6 +30,16 @@ const list = ref<IpItem[]>([])
 const stats = reactive({ total: 0, v4: 0, v6: 0, shared: 0, dedicated: 0, reserved: 0 })
 const loading = ref(false)
 const selection = ref<IpItem[]>([])
+
+// 归属用户下拉数据（分配 IP 给指定用户）
+const ownerOptions = ref<OwnerOption[]>([])
+const ownersLoading = ref(false)
+const ownerLabel = (id: number, fallbackName: string) => {
+  if (id === 0) return ''
+  const o = ownerOptions.value.find((x) => x.id === id)
+  if (o) return o.nickname || o.username
+  return fallbackName || `ID:${id}`
+}
 
 // 筛选
 const keyword = ref('')
@@ -41,6 +59,19 @@ const filtered = computed(() => {
 })
 
 // ── 加载 ───────────────────────────────────────────────────
+async function loadOwners() {
+  ownersLoading.value = true
+  try {
+    // 复用站点归属用户接口：admin 返回全部账号，足够用于 IP 分配选择
+    const res = await http.get<{ code: number; data: OwnerOption[] }>('/site/users')
+    ownerOptions.value = res.data || []
+  } catch {
+    ownerOptions.value = []
+  } finally {
+    ownersLoading.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -65,6 +96,7 @@ const addForm = reactive({
   text: '',
   ip_type: 'shared',
   reserved: false,
+  owner_id: 0,
   remark: '',
 })
 
@@ -72,6 +104,7 @@ function openAdd() {
   addForm.text = ''
   addForm.ip_type = 'shared'
   addForm.reserved = false
+  addForm.owner_id = 0
   addForm.remark = ''
   addVisible.value = true
 }
@@ -95,6 +128,7 @@ async function submitAdd() {
       addresses,
       ip_type: addForm.ip_type,
       reserved: addForm.reserved ? 1 : 0,
+      owner_id: addForm.owner_id || 0,
       remark: addForm.remark,
     })
     if (res.code === 0) {
@@ -121,13 +155,14 @@ async function submitAdd() {
 // ── 编辑单个 IP ────────────────────────────────────────────
 const editVisible = ref(false)
 const editLoading = ref(false)
-const editForm = reactive({ id: 0, address: '', ip_type: 'shared', reserved: false, remark: '' })
+const editForm = reactive({ id: 0, address: '', ip_type: 'shared', reserved: false, owner_id: 0, remark: '' })
 
 function openEdit(row: IpItem) {
   editForm.id = row.id
   editForm.address = row.address
   editForm.ip_type = row.ip_type
   editForm.reserved = row.reserved === 1
+  editForm.owner_id = row.owner_id || 0
   editForm.remark = row.remark
   editVisible.value = true
 }
@@ -139,6 +174,7 @@ async function submitEdit() {
       id: editForm.id,
       ip_type: editForm.ip_type,
       reserved: editForm.reserved ? 1 : 0,
+      owner_id: editForm.owner_id || 0,
       remark: editForm.remark,
     })
     ElMessage.success(t('common.updateSuccess'))
@@ -220,7 +256,10 @@ function handleSelectionChange(rows: IpItem[]) {
   selection.value = rows
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadOwners()
+})
 </script>
 
 <template>
@@ -382,6 +421,12 @@ onMounted(load)
             />
           </template>
         </el-table-column>
+        <el-table-column :label="t('serverIp.owner')" min-width="160">
+          <template #default="{ row }">
+            <span v-if="row.owner_id !== 0">{{ ownerLabel(row.owner_id, row.owner_username) }}</span>
+            <el-tag v-else size="small" type="info" effect="plain">{{ t('serverIp.unassigned') }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column
           prop="remark"
           :label="t('common.remark')"
@@ -428,6 +473,25 @@ onMounted(load)
             <el-radio value="dedicated">{{ t('serverIp.dedicatedIp') }}</el-radio>
           </el-radio-group>
         </el-form-item>
+        <el-form-item :label="t('serverIp.owner')">
+          <el-select
+            v-model="addForm.owner_id"
+            :placeholder="t('serverIp.ownerPlaceholder')"
+            clearable
+            filterable
+            :loading="ownersLoading"
+            style="width: 100%"
+          >
+            <el-option :label="t('serverIp.unassigned')" :value="0" />
+            <el-option
+              v-for="o in ownerOptions"
+              :key="o.id"
+              :label="`${o.nickname || o.username} (${o.username})`"
+              :value="o.id"
+            />
+          </el-select>
+          <span class="form-tip">{{ t('serverIp.ownerTip') }}</span>
+        </el-form-item>
         <el-form-item label="Reserved">
           <el-switch
             v-model="addForm.reserved"
@@ -469,6 +533,25 @@ onMounted(load)
             <el-radio value="shared">{{ t('serverIp.sharedIp') }}</el-radio>
             <el-radio value="dedicated">{{ t('serverIp.dedicatedIp') }}</el-radio>
           </el-radio-group>
+        </el-form-item>
+        <el-form-item :label="t('serverIp.owner')">
+          <el-select
+            v-model="editForm.owner_id"
+            :placeholder="t('serverIp.ownerPlaceholder')"
+            clearable
+            filterable
+            :loading="ownersLoading"
+            style="width: 100%"
+          >
+            <el-option :label="t('serverIp.unassigned')" :value="0" />
+            <el-option
+              v-for="o in ownerOptions"
+              :key="o.id"
+              :label="`${o.nickname || o.username} (${o.username})`"
+              :value="o.id"
+            />
+          </el-select>
+          <span class="form-tip">{{ t('serverIp.ownerTip') }}</span>
         </el-form-item>
         <el-form-item label="Reserved">
           <el-switch

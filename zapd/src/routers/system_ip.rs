@@ -21,6 +21,7 @@ struct IpPoolRow {
     ip_type: String,
     reserved: i32,
     remark: String,
+    owner_id: i64,
     created_at: i64,
     updated_at: i64,
 }
@@ -32,6 +33,9 @@ pub struct IpPoolAddPayload {
     pub ip_type: Option<String>,
     #[serde(default)]
     pub reserved: Option<i32>,
+    /// 归属用户 id；0 = 未分配（系统持有）。分配给指定用户后，该 IP 仅可用于该用户的站点。
+    #[serde(default)]
+    pub owner_id: Option<i64>,
     #[serde(default)]
     pub remark: Option<String>,
 }
@@ -43,6 +47,9 @@ pub struct IpPoolUpdatePayload {
     pub ip_type: Option<String>,
     #[serde(default)]
     pub reserved: Option<i32>,
+    /// 归属用户 id；0 = 取消分配（归还系统）
+    #[serde(default)]
+    pub owner_id: Option<i64>,
     #[serde(default)]
     pub remark: Option<String>,
 }
@@ -81,10 +88,22 @@ fn validate_ip_type(ip_type: &str) -> Result<String, ZapError> {
 pub async fn ip_list(claims: ValidatedClaims) -> ZapJsonResult {
     require_admin(&claims)?;
     let pool = db::get_db_pool().await;
-    let rows: Vec<IpPoolRow> =
-        sqlx::query_as("SELECT * FROM ip_pool ORDER BY version ASC, address ASC")
+    let rows: Vec<IpPoolRow> = sqlx::query_as(
+        "SELECT id, address, version, ip_type, reserved, remark, owner_id, created_at, updated_at \
+         FROM ip_pool ORDER BY version ASC, address ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // 归属用户名映射（一次性取出，避免 N 次查询）
+    let owners: Vec<(i64, String, String)> =
+        sqlx::query_as("SELECT id, username, nickname FROM user")
             .fetch_all(pool)
             .await?;
+    let owner_map: std::collections::HashMap<i64, (String, String)> = owners
+        .into_iter()
+        .map(|(id, u, n)| (id, (u, n)))
+        .collect();
 
     let (mut v4, mut v6, mut shared, mut dedicated, mut reserved) =
         (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -115,6 +134,20 @@ pub async fn ip_list(claims: ValidatedClaims) -> ZapJsonResult {
     let list: Vec<Value> = rows
         .iter()
         .map(|r| {
+            let owner_username = if r.owner_id != 0 {
+                owner_map
+                    .get(&r.owner_id)
+                    .map(|(u, n)| {
+                        if n.is_empty() {
+                            u.clone()
+                        } else {
+                            format!("{}（{}）", n, u)
+                        }
+                    })
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
             json!({
                 "id": r.id,
                 "address": r.address,
@@ -122,6 +155,8 @@ pub async fn ip_list(claims: ValidatedClaims) -> ZapJsonResult {
                 "ip_type": r.ip_type,
                 "reserved": r.reserved,
                 "remark": r.remark,
+                "owner_id": r.owner_id,
+                "owner_username": owner_username,
                 "created_at": r.created_at,
                 "updated_at": r.updated_at,
             })
@@ -150,6 +185,7 @@ pub async fn ip_add(
         .to_lowercase();
     let ip_type = validate_ip_type(&ip_type)?;
     let reserved = payload.reserved.unwrap_or(0).clamp(0, 1);
+    let owner_id = payload.owner_id.unwrap_or(0).max(0);
     let remark = payload.remark.unwrap_or_default().trim().to_string();
 
     let mut added = 0usize;
@@ -181,13 +217,14 @@ pub async fn ip_add(
         }
         let version = if parsed.is_ipv6() { 6 } else { 4 };
         sqlx::query(
-            "INSERT INTO ip_pool (address, version, ip_type, reserved, remark, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO ip_pool (address, version, ip_type, reserved, remark, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(address)
         .bind(version)
         .bind(&ip_type)
         .bind(reserved)
         .bind(&remark)
+        .bind(owner_id)
         .bind(now)
         .bind(now)
         .execute(pool)
@@ -253,14 +290,18 @@ pub async fn ip_delete(
     })))
 }
 
-/// 更新单个 IP（类型 / Reserved / 备注）
+/// 更新单个 IP（类型 / Reserved / 备注 / 归属用户）
 pub async fn ip_update(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
     Json(payload): Json<IpPoolUpdatePayload>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
-    if payload.ip_type.is_none() && payload.reserved.is_none() && payload.remark.is_none() {
+    if payload.ip_type.is_none()
+        && payload.reserved.is_none()
+        && payload.remark.is_none()
+        && payload.owner_id.is_none()
+    {
         return Err(ZapError::New(-1, "没有需要更新的字段".to_string()));
     }
     let ip_type = match payload.ip_type {
@@ -271,33 +312,45 @@ pub async fn ip_update(
     let pool = db::get_db_pool().await;
     let now = chrono::Local::now().timestamp();
 
-    let result = if let Some(ip_type) = &ip_type {
+    // 各提供的字段单独更新（保持与历史实现一致的单字段语义，避免动态拼 SQL 的绑定复杂度）
+    if let Some(ip_type) = &ip_type {
         sqlx::query("UPDATE ip_pool SET ip_type = ?, updated_at = ? WHERE id = ?")
             .bind(ip_type)
             .bind(now)
             .bind(payload.id)
             .execute(pool)
-            .await?
-    } else if let Some(reserved) = payload.reserved {
+            .await?;
+    }
+    if let Some(reserved) = payload.reserved {
         let reserved = reserved.clamp(0, 1);
         sqlx::query("UPDATE ip_pool SET reserved = ?, updated_at = ? WHERE id = ?")
             .bind(reserved)
             .bind(now)
             .bind(payload.id)
             .execute(pool)
-            .await?
-    } else if let Some(remark) = &payload.remark {
+            .await?;
+    }
+    if let Some(remark) = &payload.remark {
         sqlx::query("UPDATE ip_pool SET remark = ?, updated_at = ? WHERE id = ?")
             .bind(remark.trim())
             .bind(now)
             .bind(payload.id)
             .execute(pool)
-            .await?
-    } else {
-        return Err(ZapError::New(-1, "没有需要更新的字段".to_string()));
-    };
+            .await?;
+    }
+    if let Some(owner_id) = payload.owner_id {
+        let owner_id = owner_id.max(0);
+        sqlx::query("UPDATE ip_pool SET owner_id = ?, updated_at = ? WHERE id = ?")
+            .bind(owner_id)
+            .bind(now)
+            .bind(payload.id)
+            .execute(pool)
+            .await?;
+    }
 
-    if result.rows_affected() == 0 {
+    let exists: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM ip_pool WHERE id = ?").bind(payload.id).fetch_optional(pool).await?;
+    if exists.is_none() {
         return Err(ZapError::New(-1, "IP 不存在".to_string()));
     }
     audit::log(

@@ -1513,6 +1513,11 @@ const enUS: Messages = {
     addPlaceholder: 'One IP per line, IPv4 / IPv6 supported, e.g.\n1.2.3.4\n2001:db8::1',
     reservedTip: 'Reserved IPs are excluded from automatic shared-host allocation',
     remarkPlaceholder: 'e.g. main site VIP / dedicated IP for customer XXX',
+    owner: 'Owner',
+    ownerPlaceholder: 'Assign to a user (empty = held by system)',
+    ownerTip:
+      'Assigned to a user, this IP can only be used by that user’s sites; dedicated IPs are best assigned one-to-one',
+    unassigned: 'Unassigned (system)',
     editTitle: 'Edit IP',
     needIp: 'Enter at least one IP address',
     invalidSkipped: 'Invalid (ignored): {list}',

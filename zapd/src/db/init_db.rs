@@ -1075,22 +1075,23 @@ async fn sync_script_task_kind() {
 // ── ip_pool（IP 池管理）─────────────────────────────────────
 
 async fn init_ip_pool_table() {
-    if table_exists("ip_pool").await {
-        return;
+    if !table_exists("ip_pool").await {
+        let sql = r#"
+        CREATE TABLE ip_pool (
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            address TEXT NOT NULL UNIQUE,
+            version INTEGER NOT NULL DEFAULT 4,
+            ip_type TEXT NOT NULL DEFAULT 'shared',
+            reserved INTEGER NOT NULL DEFAULT 0,
+            remark TEXT NOT NULL DEFAULT '',
+            created_at INTEGER,
+            updated_at INTEGER
+        );
+        "#;
+        let _ = get_db_pool().await.execute(sql).await;
     }
-    let sql = r#"
-    CREATE TABLE ip_pool (
-        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        address TEXT NOT NULL UNIQUE,
-        version INTEGER NOT NULL DEFAULT 4,
-        ip_type TEXT NOT NULL DEFAULT 'shared',
-        reserved INTEGER NOT NULL DEFAULT 0,
-        remark TEXT NOT NULL DEFAULT '',
-        created_at INTEGER,
-        updated_at INTEGER
-    );
-    "#;
-    let _ = get_db_pool().await.execute(sql).await;
+    // 存量库补列：owner_id = 归属用户（0 = 未分配 / 系统持有）
+    ensure_column("ip_pool", "owner_id", "INTEGER NOT NULL DEFAULT 0").await;
 }
 
 // ── site（用户站点管理）─────────────────────────────────────
