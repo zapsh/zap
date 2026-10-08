@@ -12,9 +12,6 @@ const { elementLocale } = useLocale()
 </script>
 
 <style>
-* {
-  user-select: none;
-}
 html,
 body {
   margin: 0;

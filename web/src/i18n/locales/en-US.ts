@@ -2898,6 +2898,7 @@ const enUS: Messages = {
     guest: 'Guest',
     statDomains: 'Domains',
     statSsl: 'SSL Certs',
+    statApps: 'Apps',
     greetNight: "It's late",
     greetMorning: 'Good morning',
     greetNoon: 'Good noon',

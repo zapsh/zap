@@ -242,6 +242,7 @@ import type { LoginRecordItem } from '@/api/user'
 import { getNotices } from '@/api/notice'
 import type { NoticeMessage } from '@/api/notice'
 import { getCertList } from '@/api/ssl'
+import { listAllApps } from '@/api/site'
 import { http } from '@/utils/request'
 
 interface AppEntry {
@@ -330,8 +331,8 @@ function handleClick(item: AppEntry) {
   }
 }
 
-// ── 统计卡片（普通用户：站点 / 域名 / SSL） ──────────────
-const stats = ref({ total: 0, running: 0, domains: 0, ssl: 0 })
+// ── 统计卡片（普通用户：站点 / 域名 / SSL / 应用） ──────────────
+const stats = ref({ total: 0, running: 0, domains: 0, ssl: 0, apps: 0 })
 
 const statCards = computed(() => [
   {
@@ -341,7 +342,7 @@ const statCards = computed(() => [
     icon: 'material-symbols:public',
     color: '#409eff',
     bg: '#ecf5ff',
-    span: 8,
+    span: 6,
   },
   {
     key: 'domains',
@@ -350,7 +351,7 @@ const statCards = computed(() => [
     icon: 'material-symbols:language',
     color: '#e6a23c',
     bg: '#fdf6ec',
-    span: 8,
+    span: 6,
   },
   {
     key: 'ssl',
@@ -359,7 +360,16 @@ const statCards = computed(() => [
     icon: 'material-symbols:lock',
     color: '#f56c6c',
     bg: '#fef0f0',
-    span: 8,
+    span: 6,
+  },
+  {
+    key: 'apps',
+    title: t('dashboardCpanel.statApps'),
+    value: stats.value.apps,
+    icon: 'material-symbols:apps',
+    color: '#67c23a',
+    bg: '#f0f9eb',
+    span: 6,
   },
 ])
 
@@ -475,6 +485,16 @@ async function loadStats() {
     const res = await getCertList()
     const arr = Array.isArray(res?.data) ? (res.data as any[]) : []
     stats.value.ssl = arr.length
+  } catch {
+    /* ignore */
+  }
+  // 站点应用数（跨站点，按角色返回可见范围）
+  try {
+    const payload = (await listAllApps()) as any
+    const d = payload?.data
+    if (Array.isArray(d)) stats.value.apps = d.length
+    else if (d && Array.isArray(d.rows)) stats.value.apps = d.rows.length
+    else if (d && typeof d.total === 'number') stats.value.apps = d.total
   } catch {
     /* ignore */
   }
@@ -701,11 +721,14 @@ onMounted(async () => {
 }
 
 .app-tile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   background: var(--el-bg-color);
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
-  padding: 20px 8px;
-  text-align: center;
+  padding: 14px 16px;
+  text-align: left;
   cursor: pointer;
   transition: all 0.2s;
   margin-bottom: 16px;
@@ -718,13 +741,18 @@ onMounted(async () => {
 }
 
 .app-icon {
-  font-size: 32px;
+  font-size: 28px;
   color: var(--el-color-primary);
-  margin-bottom: 8px;
+  flex: none;
+  margin-bottom: 0;
 }
 
 .app-title {
   font-size: 14px;
   color: var(--el-text-color-primary);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
