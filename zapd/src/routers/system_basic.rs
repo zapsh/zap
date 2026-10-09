@@ -409,7 +409,7 @@ pub async fn basic_save(
     }
 
     // 一次落盘到 {data}/server_env.yaml
-    server_env::conf_set_many(&upserts, "面板基础设置");
+    server_env::conf_set_many(&upserts, "panel basic config");
 
     let detail = upserts
         .iter()
@@ -430,7 +430,7 @@ pub async fn basic_save(
     )
     .await;
 
-    Ok(Json(json!({ "code": 0, "message": "基础设置已保存" })))
+    Ok(Json(json!({ "code": 0, "message": "Basic config saved" })))
 }
 
 // ── 通知邮件模板（admin 全局 / reseller 私有）────────────────
