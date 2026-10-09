@@ -54,10 +54,54 @@ sign_checksums() {
   local outdir="$1"
   mkdir -p "$outdir"
 
-  if [[ -z "${GPG_PRIVATE_KEY:-}" ]]; then
-    echo "info: GPG_PRIVATE_KEY not set; skip checksum signing."
+  # 优先 SSH 签名：用 ssh-keygen -Y sign 对校验和文件签名（与 git SSH 签名同一套）。
+  # 未配置 SSH_PRIVATE_KEY 时回退到 GPG。两者都未配置则跳过。
+  if [[ -n "${SSH_PRIVATE_KEY:-}" ]]; then
+    sign_ssh "$outdir"
     return 0
   fi
+
+  if [[ -z "${GPG_PRIVATE_KEY:-}" ]]; then
+    echo "info: neither SSH_PRIVATE_KEY nor GPG_PRIVATE_KEY set; skip checksum signing."
+    return 0
+  fi
+
+  sign_gpg "$outdir"
+}
+
+# SSH 签名：对每个 *.sha256 生成 *.sha256.sig（armored 内部格式，无需 .asc）
+# 验证方需准备 allowed_signers 文件，例：
+#   echo "release@example.com $(cat ssh_public_key.pub)" > allowed_signers
+#   ssh-keygen -Y verify -f allowed_signers -I release@example.com -n file <file>.sha256 < <file>.sha256.sig
+sign_ssh() {
+  local outdir="$1"
+
+  local keyfile
+  keyfile="$(mktemp)"
+  chmod 600 "$keyfile"
+  printf '%s\n' "$SSH_PRIVATE_KEY" > "$keyfile"
+
+  local extra=()
+  if [[ -n "${SSH_KEY_PASSPHRASE:-}" ]]; then
+    extra=(-P "$SSH_KEY_PASSPHRASE")
+  fi
+
+  find "$outdir" -type f -name "*.sha256" -print | sort | while read -r file; do
+    if ssh-keygen -Y sign -f "$keyfile" "${extra[@]}" "$file" >/dev/null 2>&1; then
+      echo "signed (ssh): ${file}.sig"
+    else
+      echo "error: ssh signing failed: $file" >&2
+      rm -f "$keyfile"
+      return 1
+    fi
+  done
+
+  rm -f "$keyfile"
+}
+
+# GPG 签名：对每个 *.sha256 生成 *.sha256.asc（detached armored 签名）
+sign_gpg() {
+  local outdir="$1"
 
   echo "$GPG_PRIVATE_KEY" | gpg --batch --import >/dev/null 2>&1 || true
 
