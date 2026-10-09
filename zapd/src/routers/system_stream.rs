@@ -350,7 +350,7 @@ fn validate_time_opt(raw: &str, label: &str) -> Result<String, ZapError> {
         return Ok(String::new());
     }
     let ok = (v.ends_with("ms") && v[..v.len() - 2].chars().all(|c| c.is_ascii_digit()))
-        || (v.ends_with(|c: char| matches!(c, 's' | 'm' | 'h' | 'd'))
+        || (v.ends_with(['s', 'm', 'h', 'd'])
             && v[..v.len() - 1].chars().all(|c| c.is_ascii_digit()))
         || v.chars().all(|c| c.is_ascii_digit());
     if !ok {
@@ -569,7 +569,7 @@ fn render_rule(r: &StreamRow) -> String {
 
     let extra = r.extra.trim();
     if !extra.is_empty() {
-        out.push_str(&format!("\n        # 自定义指令\n"));
+        out.push_str("\n        # 自定义指令\n");
         for line in extra.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -590,15 +590,14 @@ fn split_target(raw: &str) -> Result<(String, i64), ZapError> {
     if v.is_empty() {
         return Err(ZapError::New(-1, "后端地址不能为空".to_string()));
     }
-    if let Some((h, p)) = v.rsplit_once(':') {
-        if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
+    if let Some((h, p)) = v.rsplit_once(':')
+        && !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
             let port: i64 = p
                 .parse()
                 .map_err(|_| ZapError::New(-1, format!("后端端口不是数字：{p}（{v}）")))?;
             let port = validate_port(port, "后端端口")?;
             return Ok((validate_host(h)?, port));
         }
-    }
     Ok((validate_host(v)?, 0))
 }
 

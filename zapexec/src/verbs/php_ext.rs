@@ -803,6 +803,64 @@ pub async fn remove(svc: &str, name: &str, log_path: &str) -> Response {
     Response::ok("ok", Some(json!({ "started": true })))
 }
 
+/// 卸载主体：删 ini（含注释主 php.ini 的行）→ pecl uninstall → 删 .so → 重载。
+fn remove_inner(c: &PhpCtx, name: &str, log: &str) -> i32 {
+    if let Ok(p) = managed_ini(c, name)
+        && p.is_file()
+    {
+        let _ = std::fs::remove_file(&p);
+        super::log_line(log, &format!("已删除 {}", p.display()));
+    }
+    if let Some(ini) = &c.ini
+        && let Ok(content) = std::fs::read_to_string(ini)
+    {
+        let want = format!("{name}.so");
+        let mut touched = false;
+        let mut out = String::new();
+        for line in content.lines() {
+            let t = line.trim_start();
+            if (t.starts_with("extension") || t.starts_with("zend_extension"))
+                && t.contains(&want)
+                && !t.starts_with(';')
+            {
+                out.push_str(&format!("; {line}\n"));
+                touched = true;
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        if touched && write_atomic(ini, &out).is_ok() {
+            super::log_line(
+                log,
+                &format!("已注释 {ini} 中的 {name} 声明", ini = ini.display()),
+            );
+        }
+    }
+    if which("pecl").is_some() {
+        let _ = super::run_step(log, "pecl uninstall", &format!("pecl uninstall {name}"));
+    }
+    let so = c.ext_dir.join(format!("{name}.so"));
+    if so.is_file() {
+        if std::fs::remove_file(&so).is_ok() {
+            super::log_line(log, &format!("已删除 {}", so.display()));
+        } else {
+            super::log_line(log, &format!("删除 {} 失败", so.display()));
+        }
+    }
+    super::log_line(log, &reload(c));
+    if enabled_exts(&c.bin)
+        .iter()
+        .any(|e| e.eq_ignore_ascii_case(name))
+    {
+        super::log_line(log, &format!("{name} 仍在 php -m 中，请检查上方输出"));
+        1
+    } else {
+        super::log_line(log, &format!("{name} 已卸载"));
+        0
+    }
+}
+
 /// 安装 / 卸载的产物文件名与选路是纯逻辑，这里钉住行为（避免以后改脚本时改坏）。
 #[cfg(test)]
 mod tests {
@@ -885,63 +943,5 @@ mod tests {
         assert!((7, 4) < (PIE_MIN_MAJOR, PIE_MIN_MINOR));
         assert!((8, 1) >= (PIE_MIN_MAJOR, PIE_MIN_MINOR));
         assert!((8, 3) >= (PIE_MIN_MAJOR, PIE_MIN_MINOR));
-    }
-}
-
-/// 卸载主体：删 ini（含注释主 php.ini 的行）→ pecl uninstall → 删 .so → 重载。
-fn remove_inner(c: &PhpCtx, name: &str, log: &str) -> i32 {
-    if let Ok(p) = managed_ini(c, name)
-        && p.is_file()
-    {
-        let _ = std::fs::remove_file(&p);
-        super::log_line(log, &format!("已删除 {}", p.display()));
-    }
-    if let Some(ini) = &c.ini
-        && let Ok(content) = std::fs::read_to_string(ini)
-    {
-        let want = format!("{name}.so");
-        let mut touched = false;
-        let mut out = String::new();
-        for line in content.lines() {
-            let t = line.trim_start();
-            if (t.starts_with("extension") || t.starts_with("zend_extension"))
-                && t.contains(&want)
-                && !t.starts_with(';')
-            {
-                out.push_str(&format!("; {line}\n"));
-                touched = true;
-            } else {
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-        if touched && write_atomic(ini, &out).is_ok() {
-            super::log_line(
-                log,
-                &format!("已注释 {ini} 中的 {name} 声明", ini = ini.display()),
-            );
-        }
-    }
-    if which("pecl").is_some() {
-        let _ = super::run_step(log, "pecl uninstall", &format!("pecl uninstall {name}"));
-    }
-    let so = c.ext_dir.join(format!("{name}.so"));
-    if so.is_file() {
-        if std::fs::remove_file(&so).is_ok() {
-            super::log_line(log, &format!("已删除 {}", so.display()));
-        } else {
-            super::log_line(log, &format!("删除 {} 失败", so.display()));
-        }
-    }
-    super::log_line(log, &reload(c));
-    if enabled_exts(&c.bin)
-        .iter()
-        .any(|e| e.eq_ignore_ascii_case(name))
-    {
-        super::log_line(log, &format!("{name} 仍在 php -m 中，请检查上方输出"));
-        1
-    } else {
-        super::log_line(log, &format!("{name} 已卸载"));
-        0
     }
 }

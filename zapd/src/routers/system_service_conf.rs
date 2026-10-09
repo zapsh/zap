@@ -66,7 +66,7 @@ async fn registered_services() -> &'static Vec<String> {
                             .map(|k| k.to_string())
                             .collect()
                     })
-                    .unwrap_or_else(|| fallback_keys()),
+                    .unwrap_or_else(fallback_keys),
                 _ => fallback_keys(),
             }
         })

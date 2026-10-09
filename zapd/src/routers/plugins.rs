@@ -474,7 +474,7 @@ pub async fn plugin_install_upload(
         Some(&*claims),
         Some(client_addr.ip().to_string().as_str()),
         "plugin_install",
-        &format!("system:archive"),
+        "system:archive",
         &src,
     )
     .await;
@@ -697,10 +697,7 @@ pub async fn plugin_watch(
     });
 
     let s = stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Some(item) => Some((item, rx)),
-            None => None,
-        }
+        rx.recv().await.map(|item| (item, rx))
     });
     Ok(Sse::new(s).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }

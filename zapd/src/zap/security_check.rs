@@ -276,11 +276,10 @@ async fn zap_checks() -> Vec<SecurityCheck> {
         cfg.clone(),
     ];
     for p in &scan {
-        if let Ok(meta) = std::fs::metadata(p) {
-            if meta.mode() & 0o002 != 0 {
+        if let Ok(meta) = std::fs::metadata(p)
+            && meta.mode() & 0o002 != 0 {
                 bad.push(p.display().to_string());
             }
-        }
     }
     if bad.is_empty() {
         v.push(mk(
@@ -344,16 +343,14 @@ async fn zap_checks() -> Vec<SecurityCheck> {
 
 /// 当前进程有效 uid（Linux：读 `/proc/self/status` 的 `Uid:` 字段，避免引入额外依赖）。
 fn current_uid() -> u32 {
-    if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
-        if let Some(line) = s.lines().find(|l| l.starts_with("Uid:")) {
+    if let Ok(s) = std::fs::read_to_string("/proc/self/status")
+        && let Some(line) = s.lines().find(|l| l.starts_with("Uid:")) {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(u) = parts[1].parse::<u32>() {
+            if parts.len() >= 2
+                && let Ok(u) = parts[1].parse::<u32>() {
                     return u;
                 }
-            }
         }
-    }
     0
 }
 
@@ -362,13 +359,11 @@ fn username_of(uid: u32) -> String {
     if let Ok(content) = std::fs::read_to_string("/etc/passwd") {
         for line in content.lines() {
             let f: Vec<&str> = line.split(':').collect();
-            if f.len() >= 3 {
-                if let Ok(u) = f[2].parse::<u32>() {
-                    if u == uid {
+            if f.len() >= 3
+                && let Ok(u) = f[2].parse::<u32>()
+                    && u == uid {
                         return f[0].to_string();
                     }
-                }
-            }
         }
     }
     format!("uid={uid}")

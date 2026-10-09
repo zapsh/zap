@@ -413,11 +413,10 @@ static LAST_OK: AtomicUsize = AtomicUsize::new(0);
 /// 统一走文本后，上层解析逻辑与列的实际类型（VARCHAR / BIGINT / UNSIGNED …）
 /// 解耦，不会因为 MySQL 返回的列类型变化而解码失败。
 fn cell_text(row: &MySqlRow, i: usize) -> String {
-    if let Ok(v) = row.try_get_raw(i) {
-        if v.is_null() {
+    if let Ok(v) = row.try_get_raw(i)
+        && v.is_null() {
             return String::new();
         }
-    }
     if let Ok(v) = row.try_get::<String, _>(i) {
         return v;
     }

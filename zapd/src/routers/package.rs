@@ -422,7 +422,7 @@ pub fn validate_port_span(span: i64) -> Result<i64, ZapError> {
     if span == 0 {
         return Ok(0);
     }
-    if span < 1 || span > 4096 {
+    if !(1..=4096).contains(&span) {
         return Err(ZapError::New(
             -1,
             "每用户端口数需在 1-4096 之间（0 = 不限）".to_string(),
@@ -653,8 +653,8 @@ pub async fn package_update(
     }
 
     // reseller 修改自有子套餐时，结果各项不得超过其父套餐（reseller 自身套餐）的允许范围
-    if is_reseller && !is_admin {
-        if let Some(parent) = package_of_user(claims.id as i64).await {
+    if is_reseller && !is_admin
+        && let Some(parent) = package_of_user(claims.id as i64).await {
             let eff = ResellerSubVals {
                 disk_quota_mb: payload.disk_quota_mb.unwrap_or(current.disk_quota_mb),
                 max_sites: payload.max_sites.unwrap_or(current.max_sites),
@@ -680,15 +680,14 @@ pub async fn package_update(
             };
             enforce_reseller_subpackage(&parent, &eff)?;
         }
-    }
 
     let pool = db::get_db_pool().await;
     let now = chrono::Local::now().timestamp();
 
     // 归属变更（仅管理员可改）：global -> owner_id=0（全局）；self -> 当前管理员名下私有。
     // reseller 忽略 scope；全局套餐的归属变更也只允许管理员操作（上面已拦截非管理员）。
-    if is_admin {
-        if let Some(scope) = payload.scope.as_deref() {
+    if is_admin
+        && let Some(scope) = payload.scope.as_deref() {
             let new_owner: i64 = match scope {
                 "self" => claims.id as i64,
                 _ => 0,
@@ -702,7 +701,6 @@ pub async fn package_update(
                     .await?;
             }
         }
-    }
 
     // 逐字段更新，便于精确审计与错误提示
     if let Some(n) = payload.name {

@@ -290,11 +290,10 @@ pub async fn rotate(log_roots: Vec<String>, keep_days: u32) -> Response {
 
         // 全局 WAF 审计日志（/var/log/modsec_audit.log）：ModSecurity 模块持有 fd、不随
         // nginx USR1 重开，故用 copytruncate（拷贝→压缩→截断原文件），随主日志一并轮转。
-        if let Some(log) = super::waf::audit_log_path() {
-            if let Some(a) = rotate_one_audit_log(&log, keep) {
+        if let Some(log) = super::waf::audit_log_path()
+            && let Some(a) = rotate_one_audit_log(&log, keep) {
                 rotated.push(a);
             }
-        }
 
         let reopened = if rotated.is_empty() {
             false
@@ -329,7 +328,7 @@ fn rotate_one_audit_log(log: &Path, keep: u32) -> Option<serde_json::Value> {
     }
     let dir = log.parent()?;
     let base = log.file_name()?.to_string_lossy().to_string();
-    let meta = std::fs::metadata(&log).ok()?;
+    let meta = std::fs::metadata(log).ok()?;
     let bytes = meta.len();
     if bytes == 0 {
         // 空日志不产归档，但顺手清掉过期归档
@@ -344,7 +343,7 @@ fn rotate_one_audit_log(log: &Path, keep: u32) -> Option<serde_json::Value> {
         n += 1;
     }
     // 拷贝当前内容到归档，再压缩
-    let copied = match root_cmd("cp").arg("-f").arg(&log).arg(&dest).output() {
+    let copied = match root_cmd("cp").arg("-f").arg(log).arg(&dest).output() {
         Ok(o) if o.status.success() => dest,
         _ => {
             tracing::warn!("拷贝 WAF 审计日志失败: {}", log.display());
@@ -358,7 +357,7 @@ fn rotate_one_audit_log(log: &Path, keep: u32) -> Option<serde_json::Value> {
     // 截断原审计日志：保留 inode，ModSecurity 继续往同一文件追加
     if std::fs::OpenOptions::new()
         .write(true)
-        .open(&log)
+        .open(log)
         .and_then(|f| f.set_len(0))
         .is_err()
     {

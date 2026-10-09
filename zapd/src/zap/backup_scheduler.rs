@@ -79,9 +79,9 @@ async fn tick() {
     // 与任务共用 30s 扫描节拍 + 同分钟去重（last_run 落 global_settings）。
     let all_enabled = gs_get("backup_all_enabled").await != "0";
     let all_schedule = gs_get("backup_all_schedule").await;
-    if all_enabled && !all_schedule.trim().is_empty() {
-        if let Ok(cron) = Cron::parse(&all_schedule) {
-            if cron.matches(&now) {
+    if all_enabled && !all_schedule.trim().is_empty()
+        && let Ok(cron) = Cron::parse(&all_schedule)
+            && cron.matches(&now) {
                 let last = gs_get("backup_all_last_run")
                     .await
                     .parse::<i64>()
@@ -92,8 +92,6 @@ async fn tick() {
                     tokio::spawn(crate::routers::system_backup::run_backup_all());
                 }
             }
-        }
-    }
 }
 
 async fn run_job(
@@ -114,7 +112,7 @@ async fn run_job(
                 "UPDATE backup_jobs SET last_run_at=?, last_status=-1, last_message=? WHERE id=?",
             )
             .bind(ts)
-            .bind(&e.to_string())
+            .bind(e.to_string())
             .bind(id)
             .execute(pool)
             .await;

@@ -131,9 +131,7 @@ pub async fn run(
         // 沙箱校验（权威执行处）：提权指令 / 家目录外的路径 / 越权重定向一律拒绝。
         // home 取系统账号真实家目录，确保规则与「以该用户身份运行」对齐。
         let home = resolve_home(&linux_user, &home_dir);
-        if let Err(e) = cron_sandbox::check(cmd, &home) {
-            return Err(e);
-        }
+        cron_sandbox::check(cmd, &home)?;
         let log_path = safe_log_path(&log_path)?;
         if let Some(parent) = log_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;

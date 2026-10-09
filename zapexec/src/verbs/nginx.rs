@@ -1268,11 +1268,10 @@ pub async fn stream_apply(content: &str) -> Response {
         );
     }
     let file = stream_conf_path();
-    if let Some(dir) = file.parent() {
-        if let Err(e) = std::fs::create_dir_all(dir) {
+    if let Some(dir) = file.parent()
+        && let Err(e) = std::fs::create_dir_all(dir) {
             return Response::err(-1, format!("创建目录 {} 失败: {e}", dir.display()));
         }
-    }
     // 回滚用的两份原始内容
     let main_backup = std::fs::read_to_string(&conf).unwrap_or_default();
     let file_backup = std::fs::read_to_string(&file).ok();

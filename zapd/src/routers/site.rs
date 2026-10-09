@@ -1657,14 +1657,13 @@ async fn validate_advanced_inputs(
                     ));
                 }
             }
-            "raw" => {
-                if l.raw.trim().is_empty() {
+            "raw"
+                if l.raw.trim().is_empty() => {
                     return Err(ZapError::New(
                         -1,
                         format!("location「{}」类型为 raw 时指令体不能为空", l.path),
                     ));
                 }
-            }
             _ => {}
         }
         // 任意类型的 location 都可在高级模式下附带 raw 自由指令体（含 rewrite 等自定义规则）；
@@ -2389,11 +2388,10 @@ pub async fn site_add(
     }
 
     // 安全配置随建站落库：随后的 vhost 同步（前端建站后调用的 /site/sync）会读它渲染
-    if let Some(s) = &sec {
-        if let Err(e) = save_site_sec(id, s).await {
+    if let Some(s) = &sec
+        && let Err(e) = save_site_sec(id, s).await {
             warn!("save site_sec failed (id={}): {}", id, e);
         }
-    }
 
     audit::log(
         Some(&claims),

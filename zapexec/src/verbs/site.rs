@@ -203,7 +203,8 @@ pub(super) fn nginx_bin(nginx_conf: &Path) -> PathBuf {
 }
 
 pub(super) fn nginx_running() -> bool {
-    for pid_file in [PathBuf::from("/var/run/nginx.pid")] {
+    {
+        let pid_file = PathBuf::from("/var/run/nginx.pid");
         if let Ok(content) = std::fs::read_to_string(&pid_file)
             && let Ok(pid) = content.trim().parse::<i32>()
             && pid > 0
@@ -1663,6 +1664,7 @@ mod loc_extra_tests {
             },
         ];
         let s = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id: 21,
             name: "m",
@@ -1732,6 +1734,7 @@ mod loc_extra_tests {
             },
         ];
         let s = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id: 21,
             name: "m",
@@ -2803,11 +2806,10 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
     // 而真正写日志的是 nginx 的 www 工作进程 → 无写权限、审计日志静默落空（现象就是
     // WAF 命中信息只出现在 error.log，waf.log 一直 0 字节）。这里把日志目录（含刚被
     // root 建出的 waf.log）重新归给 www，确保 worker 可写。失败不阻断发布，仅告警。
-    if let Some(d) = &log_dir {
-        if let Err(e) = fix_tree_owner(d, "www", true) {
+    if let Some(d) = &log_dir
+        && let Err(e) = fix_tree_owner(d, "www", true) {
             tracing::warn!("重置站点日志目录属主失败（WAF 审计日志可能无写权限）: {e}");
         }
-    }
 
     let data = json!({
         "site_id": site_id,
@@ -3209,6 +3211,7 @@ mod tests {
     fn shared_ip_binds_listen_address() {
         let domains = vec!["a.com".to_string()];
         let s = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id: 11,
             name: "shared",
@@ -3238,6 +3241,7 @@ mod tests {
         assert!(!s.contains("listen 80;"), "不应再出现通配监听");
 
         let d = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id: 12,
             name: "default",
@@ -3262,13 +3266,13 @@ mod tests {
     }
 
     #[test]
-    fn listen_directive_forms() {
+    fn render_listen_forms() {
         assert_eq!(
-            listen_directive("", "", 80, ""),
+            render_listen(&[], "", "", 80, ""),
             "    listen 80;\n    listen [::]:80;\n"
         );
         assert_eq!(
-            listen_directive("1.2.3.4", "2408::1", 443, " ssl"),
+            render_listen(&[], "1.2.3.4", "2408::1", 443, " ssl"),
             "    listen 1.2.3.4:443 ssl;\n    listen [2408::1]:443 ssl;\n"
         );
     }
@@ -3338,6 +3342,7 @@ mod tests {
         error_log: Option<&str>,
     ) -> String {
         render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id,
             name,
@@ -3467,6 +3472,7 @@ mod tests {
     #[test]
     fn render_static_type_has_no_php_and_tryfiles() {
         let s = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id: 1,
             name: "s",
@@ -3503,6 +3509,7 @@ mod tests {
             ..Default::default()
         }];
         let s = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id: 7,
             name: "aug",
@@ -3575,6 +3582,7 @@ mod tests {
             },
         ];
         let s = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id: 3,
             name: "proxy",
@@ -3656,6 +3664,7 @@ mod tests {
         }];
         expect(
             &render_vhost_full(VhostRenderSpec {
+                site_ips: &[],
                 security: None,
                 site_id: 5,
                 name: "p",
@@ -3905,6 +3914,7 @@ mod tests {
             http2_on_syntax: true, // nginx ≥ 1.25.1
         };
         let s = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id: 9,
             name: "ssl",
@@ -3943,6 +3953,7 @@ mod tests {
             http2_on_syntax: false,
         };
         let s2 = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
             security: None,
             site_id: 10,
             name: "legacy",

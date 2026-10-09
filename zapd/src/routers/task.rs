@@ -318,11 +318,11 @@ async fn handle_ws_log(mut socket: WebSocket, task_id: String) {
         // 以 DB 任务状态为准：只要已落终态，立即推送 done（不依赖日志里的 __ZAP_DONE__ 标记是否落盘）。
         // 否则后端已 finish、但日志完成标记因故未写入时，前端会一直卡在「运行中」，
         // 而点击「结束」又会因为 DB 已是终态而提示「任务已结束」。
-        if let Some(latest) = task::get(&task_id).await.ok().flatten() {
-            if task::is_final(&latest.status) {
+        if let Some(latest) = task::get(&task_id).await.ok().flatten()
+            && task::is_final(&latest.status) {
                 // 先把尚未推送的新日志推过去（去掉收尾标记行，避免重复展示）
-                if let Ok((text, _, _)) = task::read_log(&log_path, offset).await {
-                    if !text.is_empty() {
+                if let Ok((text, _, _)) = task::read_log(&log_path, offset).await
+                    && !text.is_empty() {
                         let clean = task::strip_done_marker(&text);
                         if !clean.is_empty()
                             && socket
@@ -335,7 +335,6 @@ async fn handle_ws_log(mut socket: WebSocket, task_id: String) {
                             return;
                         }
                     }
-                }
                 let status = if latest.exit_code == 0 {
                     "success"
                 } else {
@@ -350,7 +349,6 @@ async fn handle_ws_log(mut socket: WebSocket, task_id: String) {
                 let _ = socket.close().await;
                 return;
             }
-        }
 
         match task::read_log(&log_path, offset).await {
             Ok((text, exit_code, done)) => {

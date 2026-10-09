@@ -32,11 +32,10 @@ fn known_units() -> BTreeSet<String> {
         let Some(info) = appstore::read_info_yaml(&slot.dir) else {
             continue;
         };
-        if let Some(s) = info.get("svc_name").and_then(|v| v.as_str()) {
-            if !s.trim().is_empty() {
+        if let Some(s) = info.get("svc_name").and_then(|v| v.as_str())
+            && !s.trim().is_empty() {
                 set.insert(s.trim().to_string());
             }
-        }
     }
     set
 }

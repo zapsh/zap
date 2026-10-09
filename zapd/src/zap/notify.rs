@@ -331,13 +331,11 @@ pub async fn site_created(user_id: i64, site_name: &str) {
 /// 磁盘空间不足预警（带 24h 冷却，避免周期采集重复打扰）。
 pub async fn disk_low(user_id: i64, _owner_id: i64, pct: i32) {
     let cooldown_key = format!("disk_alert_at_{user_id}");
-    if let Some(last) = server_env::conf_get(&cooldown_key) {
-        if let Ok(ts) = last.parse::<i64>() {
-            if chrono::Local::now().timestamp() - ts < 86400 {
+    if let Some(last) = server_env::conf_get(&cooldown_key)
+        && let Ok(ts) = last.parse::<i64>()
+            && chrono::Local::now().timestamp() - ts < 86400 {
                 return; // 24h 内已提醒
             }
-        }
-    }
     let channels = prefs_channels(user_id).await;
     if channels.contains("site") {
         push(
@@ -353,7 +351,7 @@ pub async fn disk_low(user_id: i64, _owner_id: i64, pct: i32) {
         p.insert("pct", pct.to_string());
         email_user(user_id, "disk_low", &p).await;
     }
-    let _ = server_env::conf_set_many(
+    server_env::conf_set_many(
         &[(cooldown_key, chrono::Local::now().timestamp().to_string())],
         "磁盘预警冷却",
     );

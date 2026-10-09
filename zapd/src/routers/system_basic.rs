@@ -666,8 +666,8 @@ pub async fn mail_broadcast_send(
     if !is_adm {
         qb.push(" AND owner_id = ").push_bind(claims.id as i64);
     }
-    if let Some(ids) = &payload.user_ids {
-        if !ids.is_empty() {
+    if let Some(ids) = &payload.user_ids
+        && !ids.is_empty() {
             qb.push(" AND id IN (");
             let mut first = true;
             for id in ids {
@@ -679,7 +679,6 @@ pub async fn mail_broadcast_send(
             }
             qb.push(")");
         }
-    }
     let recipients: Vec<(i64, String, String)> = qb.build_query_as().fetch_all(pool).await?;
     if recipients.is_empty() {
         return Ok(Json(

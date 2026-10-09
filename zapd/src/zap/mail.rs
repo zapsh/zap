@@ -430,14 +430,12 @@ async fn aliyun_send(
         return Err(format!("阿里云返回 {status}: {txt}"));
     }
     // 阿里云成功时返回 {"RequestId":...}；业务错误返回 {"Code":"...","Message":"..."}
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-        if let Some(code) = v.get("Code").and_then(|c| c.as_str()) {
-            if code != "OK" && !code.is_empty() {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt)
+        && let Some(code) = v.get("Code").and_then(|c| c.as_str())
+            && code != "OK" && !code.is_empty() {
                 let msg = v.get("Message").and_then(|m| m.as_str()).unwrap_or("");
                 return Err(format!("阿里云发送失败 [{code}]: {msg}"));
             }
-        }
-    }
     Ok(())
 }
 
@@ -502,13 +500,12 @@ async fn tencent_request(cfg: &MailConfig, payload: serde_json::Value) -> Result
     if !status.is_success() {
         return Err(format!("腾讯云返回 {status}: {txt}"));
     }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-        if let Some(err) = v.get("Response").and_then(|r| r.get("Error")) {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt)
+        && let Some(err) = v.get("Response").and_then(|r| r.get("Error")) {
             let code = err.get("Code").and_then(|c| c.as_str()).unwrap_or("");
             let msg = err.get("Message").and_then(|m| m.as_str()).unwrap_or("");
             return Err(format!("腾讯云发送失败 [{code}]: {msg}"));
         }
-    }
     Ok(())
 }
 

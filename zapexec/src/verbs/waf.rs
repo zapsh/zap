@@ -881,11 +881,10 @@ fn extract_audit(log: &Path, uid: &str) -> Result<Value, String> {
         if in_b && request_line.is_empty() {
             request_line = line.clone();
         }
-        if line.starts_with("ModSecurity:") {
-            if let Some(m) = parse_message_line(line) {
+        if line.starts_with("ModSecurity:")
+            && let Some(m) = parse_message_line(line) {
                 messages.push(m);
             }
-        }
     }
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     let request = json!({
@@ -1152,14 +1151,14 @@ fn install_inner(
     // 从 `nginx/1.31.5` 里取版本号，用于下载对应源码编动态模块
     let ver = nginx_version
         .split('/')
-        .last()
+        .next_back()
         .unwrap_or("")
         .trim()
         .to_string();
 
     // 1) 构建依赖（有 apt 才装，别的发行版假定已具备）
-    if has_cmd("apt-get") {
-        if super::run_step(
+    if has_cmd("apt-get")
+        && super::run_step(
             log,
             "安装编译依赖",
             "apt-get update -qq && apt-get install -y -qq --no-install-recommends \
@@ -1170,7 +1169,6 @@ fn install_inner(
             super::log_line(log, "依赖安装失败，中止（后续编译大概率也过不去）");
             return 1;
         }
-    }
 
     // 2) libmodsecurity（规则引擎）—— 从下载源 pkg/modsecurity/ 取，不碰 GitHub
     let lib_script = format!(
@@ -1532,7 +1530,7 @@ mod tests {
     #[test]
     fn nginx_source_version_is_parsed() {
         let v = "nginx/1.31.5";
-        assert_eq!(v.split('/').last().unwrap(), "1.31.5");
+        assert_eq!(v.split('/').next_back().unwrap(), "1.31.5");
     }
 
     /// 按 unique_id 反查审计日志：应抽中对应条目并结构化解析出请求行与命中规则。

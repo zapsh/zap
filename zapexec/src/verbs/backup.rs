@@ -265,8 +265,8 @@ pub async fn dir(
     };
     // 合并排除模式：管理员通用清单（inline）+ 用户自定义文件（root 读取，含注释/空行）
     let mut excludes = exclude;
-    if let Some(f) = exclude_file.as_deref().filter(|s| !s.is_empty()) {
-        if let Ok(content) = std::fs::read_to_string(f) {
+    if let Some(f) = exclude_file.as_deref().filter(|s| !s.is_empty())
+        && let Ok(content) = std::fs::read_to_string(f) {
             for line in content.lines() {
                 let line = line.trim();
                 if line.is_empty() || line.starts_with('#') {
@@ -275,7 +275,6 @@ pub async fn dir(
                 excludes.push(line.to_string());
             }
         }
-    }
     // 写盘前先确认磁盘空间够用
     let needed = dir_size(&paths);
     if let Err(e) = ensure_disk_space(&dest, needed) {
@@ -315,17 +314,14 @@ pub async fn dir(
     // 归档权限 0600（root 属主，避免别的账号读到备份内容）
     let _ = std::fs::set_permissions(&archive, std::fs::Permissions::from_mode(0o600));
     // 若指定了属主，把归档交还该账号（不改变 root 读权限下的安全性，仅便于该用户管理）
-    if let Some(user) = as_user.as_deref() {
-        if !user.is_empty() {
-            if let Ok(acc) = crate::verbs::linux_account(user) {
-                if let Ok(c) = std::ffi::CString::new(archive.to_str().unwrap_or_default()) {
+    if let Some(user) = as_user.as_deref()
+        && !user.is_empty()
+            && let Ok(acc) = crate::verbs::linux_account(user)
+                && let Ok(c) = std::ffi::CString::new(archive.to_str().unwrap_or_default()) {
                     unsafe {
                         libc::chown(c.as_ptr(), acc.uid, acc.gid);
                     }
                 }
-            }
-        }
-    }
 
     let size = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
     Response::ok(

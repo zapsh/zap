@@ -553,15 +553,14 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
     // 实时状态：zapexec 不可用时静默降级（列表照出，状态为 unknown）
     let mut live: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
     let names: Vec<String> = rows.iter().map(|r| r.1.clone()).collect();
-    if !names.is_empty() {
-        if let Ok(resp) = crate::zapexec::call(Request::AppStatus {
+    if !names.is_empty()
+        && let Ok(resp) = crate::zapexec::call(Request::AppStatus {
             site_id: q.site_id,
             names,
         })
         .await
-        {
-            if resp.code == 0 {
-                if let Some(list) = resp
+            && resp.code == 0
+                && let Some(list) = resp
                     .data
                     .as_ref()
                     .and_then(|d| d.get("apps"))
@@ -573,9 +572,6 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
                         }
                     }
                 }
-            }
-        }
-    }
 
     let apps: Vec<Value> = rows
         .into_iter()
@@ -659,7 +655,7 @@ pub async fn app_deploy(
     }
 
     let app_type = payload.app_type.trim().to_ascii_lowercase();
-    if !caps.types.iter().any(|t| *t == app_type) {
+    if !caps.types.contains(&app_type) {
         return Err(ZapError::New(
             -1,
             format!(
@@ -1829,8 +1825,8 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
     // 同步站点：静态型改写 web_root，进程型位置首次部署已建，这里重同步确保生效
     let is_static = app_type == "static";
     let mut sync_ok = true;
-    if is_static {
-        if let Some(ref od) = output_dir {
+    if is_static
+        && let Some(ref od) = output_dir {
             let mount = mount_path.trim();
             if !mount.is_empty() && mount != "/" {
                 // 子目录挂载：在站点下加一条 alias location 服务构建产物，
@@ -1841,7 +1837,6 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
                 let _ = update_site_web_root(site_id, od).await;
             }
         }
-    }
     if let Err(e) = site::sync_one_site(site_id).await {
         sync_ok = false;
         info!("app deploy task: site sync failed: site={site_id} err={e}");

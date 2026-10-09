@@ -342,11 +342,10 @@ fn sandbox_path(
     // 已存在的路径：规范化后比对（拦截符号链接逃逸）
     if let Ok(canon) = resolved.canonicalize() {
         for (_, canon_root) in &roots {
-            if let Some(root) = canon_root {
-                if within_prefix(&canon, root) {
+            if let Some(root) = canon_root
+                && within_prefix(&canon, root) {
                     return Ok(());
                 }
-            }
         }
     }
     // 不存在的路径：按清洗后的绝对路径比对前缀
@@ -719,12 +718,11 @@ pub async fn upload(
             return Response::err(-1, e);
         }
         // 同设备用 rename（原子、无需额外空间）；跨设备（/data 与 /home 分盘）退回复制
-        if std::fs::rename(&tmp_path, &dest).is_err() {
-            if let Err(e) = std::fs::copy(&tmp_path, &dest) {
+        if std::fs::rename(&tmp_path, &dest).is_err()
+            && let Err(e) = std::fs::copy(&tmp_path, &dest) {
                 let _ = std::fs::remove_file(&tmp_path);
                 return Response::err(-1, format!("写入文件失败: {e}"));
             }
-        }
         // rename 已消耗源文件；复制分支才需要删。两种都调一次，不存在时静默
         let _ = std::fs::remove_file(&tmp_path);
         // 与早先 `std::fs::write` 的落盘权限对齐，避免临时文件把 0600 带进目标

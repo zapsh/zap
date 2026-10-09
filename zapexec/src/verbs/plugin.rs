@@ -224,7 +224,7 @@ fn action_flag(m: &serde_yaml::Value, action: &str, key: &str) -> bool {
     m.get("actions")
         .and_then(|a| a.get(action))
         .and_then(|v| v.as_mapping())
-        .and_then(|mp| mp.get(&serde_yaml::Value::String(key.to_string())))
+        .and_then(|mp| mp.get(serde_yaml::Value::String(key.to_string())))
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
 }
@@ -236,7 +236,7 @@ fn action_label(m: &serde_yaml::Value, action: &str) -> Option<String> {
         return Some(s.to_string());
     }
     v.as_mapping()
-        .and_then(|mp| mp.get(&serde_yaml::Value::String("label".to_string())))
+        .and_then(|mp| mp.get(serde_yaml::Value::String("label".to_string())))
         .and_then(|l| l.as_str())
         .map(|s| s.to_string())
 }
@@ -260,24 +260,24 @@ fn action_specs(m: &serde_yaml::Value) -> Vec<Value> {
     out
 }
 
-//! 把一个插件目录整理成前端需要的描述对象。
-//! ── 插件文案国际化 ─────────────────────────────────────────
-//!
-//! manifest 里可以带一张翻译表：
-//!
-//! ```yaml
-//! i18n:
-//!   en-US:
-//!     title: Git
-//!     description: Repository operations
-//!     actions: { status: Status, push: Push }
-//!     options:
-//!       - { name: cwd, label: Directory, desc: Repository root }
-//!   zh-CN: { title: Git 版本库 }
-//! ```
-//!
-//! describe() 先按基准字段出一份结果，再按调用方语言把这张表盖上去（缺失的键保留基准值）。
-//! 语言名匹配顺序：`zh-CN` → `zh` → 兜底不覆盖，因此只有部分翻译也能用。
+/// 把一个插件目录整理成前端需要的描述对象。
+/// ── 插件文案国际化 ─────────────────────────────────────────
+///
+/// manifest 里可以带一张翻译表：
+///
+/// ```yaml
+/// i18n:
+///   en-US:
+///     title: Git
+///     description: Repository operations
+///     actions: { status: Status, push: Push }
+///     options:
+///       - { name: cwd, label: Directory, desc: Repository root }
+///   zh-CN: { title: Git 版本库 }
+/// ```
+///
+/// describe() 先按基准字段出一份结果，再按调用方语言把这张表盖上去（缺失的键保留基准值）。
+/// 语言名匹配顺序：`zh-CN` → `zh` → 兜底不覆盖，因此只有部分翻译也能用。
 
 /// 取 manifest 里命中 `lang` 的那张翻译表。
 fn i18n_table<'a>(m: &'a serde_yaml::Value, lang: Option<&str>) -> Option<&'a serde_yaml::Mapping> {
@@ -296,7 +296,7 @@ fn i18n_table<'a>(m: &'a serde_yaml::Value, lang: Option<&str>) -> Option<&'a se
     };
     for key in [Some(lang), variant, Some(primary)].into_iter().flatten() {
         if let Some(v) = i18n
-            .get(&serde_yaml::Value::String(key.to_string()))
+            .get(serde_yaml::Value::String(key.to_string()))
             .and_then(|v| v.as_mapping())
         {
             return Some(v);
@@ -306,7 +306,7 @@ fn i18n_table<'a>(m: &'a serde_yaml::Value, lang: Option<&str>) -> Option<&'a se
 }
 
 fn i18n_str<'a>(t: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
-    t.get(&serde_yaml::Value::String(key.to_string()))
+    t.get(serde_yaml::Value::String(key.to_string()))
         .and_then(|v| v.as_str())
 }
 
@@ -322,7 +322,7 @@ fn apply_i18n(info: &mut Value, table: &serde_yaml::Mapping) {
     }
     // actions：`<name>: 文案` 或 `<name>: { label: 文案 }`
     if let Some(actions) = table
-        .get(&serde_yaml::Value::String("actions".to_string()))
+        .get(serde_yaml::Value::String("actions".to_string()))
         .and_then(|v| v.as_mapping())
     {
         let mut labels: Vec<(String, String)> = Vec::new();
@@ -331,7 +331,7 @@ fn apply_i18n(info: &mut Value, table: &serde_yaml::Mapping) {
             let Some(label) = (if let Some(s) = v.as_str() {
                 Some(s.to_string())
             } else {
-                v.get(&serde_yaml::Value::String("label".to_string()))
+                v.get(serde_yaml::Value::String("label".to_string()))
                     .and_then(|l| l.as_str())
                     .map(|s| s.to_string())
             }) else {
@@ -350,20 +350,18 @@ fn apply_i18n(info: &mut Value, table: &serde_yaml::Mapping) {
                 let Some(sname) = spec.get("name").and_then(|n| n.as_str()) else {
                     continue;
                 };
-                if let Some((_, label)) = labels.iter().find(|(n, _)| n == sname) {
-                    if let Some(o) = spec.as_object_mut() {
+                if let Some((_, label)) = labels.iter().find(|(n, _)| n == sname)
+                    && let Some(o) = spec.as_object_mut() {
                         o.insert("label".to_string(), Value::String(label.clone()));
                     }
-                }
             }
         }
     }
     // options：按 name 匹配，覆盖 label / desc / placeholder（结构定义权仍归基准 manifest）
     if let Some(opts) = table
-        .get(&serde_yaml::Value::String("options".to_string()))
+        .get(serde_yaml::Value::String("options".to_string()))
         .and_then(|v| v.as_sequence())
-    {
-        if let Some(base) = obj.get_mut("options").and_then(|v| v.as_array_mut()) {
+        && let Some(base) = obj.get_mut("options").and_then(|v| v.as_array_mut()) {
             for ov in opts {
                 let Some(om) = ov.as_mapping() else { continue };
                 let Some(name) = i18n_str(om, "name") else {
@@ -384,7 +382,6 @@ fn apply_i18n(info: &mut Value, table: &serde_yaml::Mapping) {
                 }
             }
         }
-    }
 }
 
 fn describe(dir: &Path, name: &str) -> Result<Value, String> {
@@ -566,9 +563,9 @@ fn inject_uikit(
     let mut out = html.to_string();
     // manifest 的 `i18n` 表整份注入成 `window.__ZAP_I18N__`：插件 HTML 里的
     // T() / applyI18n 全靠它查译文，没有它就只能显示基准（中文）文案。
-    if let Some(t) = i18n {
-        if let Ok(json) = serde_json::to_string(t) {
-            if !matches!(json.as_str(), "null" | "{}") {
+    if let Some(t) = i18n
+        && let Ok(json) = serde_json::to_string(t)
+            && !matches!(json.as_str(), "null" | "{}") {
                 // `</` 会提前闭合 script 标签；`<\/` 在 JSON 里等价于 `/`，安全
                 let safe = json.replace("</", "<\\/");
                 out.insert_str(
@@ -576,8 +573,6 @@ fn inject_uikit(
                     &format!("<script>window.__ZAP_I18N__={safe};</script>\n"),
                 );
             }
-        }
-    }
     // 面板语言先落地：插在最前面，UIKit 与插件 HTML 都能读到 `zap.ui.lang`。
     // UIKit 里提供的 `zap.ui.t({'zh-CN':…, 'en-US':…})` 就靠它选文案，
     // 插件界面因此能跟随 Element Plus 的语言切换。
@@ -754,11 +749,10 @@ pub async fn plugin_list(
             };
             let pl_scope = manifest_str(&m, "scope").unwrap_or("system");
             let placements = placements_of(&m);
-            if let Some(sc) = &scope {
-                if pl_scope != sc.as_str() {
+            if let Some(sc) = &scope
+                && pl_scope != sc.as_str() {
                     continue;
                 }
-            }
             if let Some(sl) = &slot {
                 // placement 可以是数组：挂在任一个槽位上就算命中
                 if !placements.iter().any(|p| p == sl) {
@@ -950,8 +944,7 @@ pub async fn plugin_install(
         if scope_decl != "site" && scope_decl != "user" && scope_decl != "system" {
             return Err(format!(
                 "manifest 的 scope 非法: {scope_decl}（应为 site / user / system）"
-            )
-            .into());
+            ));
         }
         if !root.join("main.lua").is_file() {
             return Err("插件目录缺少 main.lua".into());
@@ -972,13 +965,12 @@ pub async fn plugin_install(
             }
             n
         };
-        if let Some(n) = manifest_str(&m, "name") {
-            if n != effective {
+        if let Some(n) = manifest_str(&m, "name")
+            && n != effective {
                 return Err(format!(
                     "manifest 里的 name（{n}）与插件名（{effective}）不一致"
                 ));
             }
-        }
 
         let target = base.join(&effective);
         if target.exists() {
@@ -1592,7 +1584,7 @@ pub async fn plugin_test(_actor: String, home: String, name: String) -> Response
         .filter(|r| r.get("ok").and_then(|v| v.as_bool()) == Some(false))
         .count();
     Response::ok(
-        &format!("冒烟测试完成：通过 {passed}，失败 {failed}"),
+        format!("冒烟测试完成：通过 {passed}，失败 {failed}"),
         Some(json!({ "results": results, "passed": passed, "failed": failed })),
     )
 }
@@ -1920,9 +1912,9 @@ fn run_lua(
             };
             let store = read_config_store(path);
             let v = store
-                .get(&serde_yaml::Value::String(actor_get.clone()))
+                .get(serde_yaml::Value::String(actor_get.clone()))
                 .and_then(|m| m.as_mapping())
-                .and_then(|m| m.get(&serde_yaml::Value::String(key)))
+                .and_then(|m| m.get(serde_yaml::Value::String(key)))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             match v {
@@ -2003,7 +1995,7 @@ fn run_lua(
     {
         let f_enc = lua.create_function(move |_, v: mlua::Value| {
             let j = lua_value_to_json(&v).map_err(mlua::Error::RuntimeError)?;
-            Ok(serde_json::to_string(&j).map_err(|e| mlua::Error::RuntimeError(e.to_string()))?)
+            serde_json::to_string(&j).map_err(|e| mlua::Error::RuntimeError(e.to_string()))
         });
         zap_tbl
             .set("json_encode", f_enc.map_err(|e| format!("{e}"))?)
@@ -2087,7 +2079,7 @@ fn lua_value_to_json(v: &mlua::Value) -> Result<Value, String> {
         mlua::Value::Integer(i) => Ok(json!(i)),
         mlua::Value::Number(n) => Ok(json!(n)),
         mlua::Value::String(s) => Ok(Value::String(
-            String::from_utf8_lossy(&s.as_bytes()).to_string(),
+            String::from_utf8_lossy(s.as_bytes()).to_string(),
         )),
         mlua::Value::Table(t) => {
             // 全是 1..n 的连续整数键 → 数组，否则当对象
@@ -2152,10 +2144,8 @@ fn json_to_lua<'a>(lua: &'a mlua::Lua, v: &Value) -> Result<mlua::Value<'a>, mlu
 
 fn table_to_vec(t: &mlua::Table) -> Vec<String> {
     let mut v = Vec::new();
-    for pair in t.clone().pairs::<i64, String>() {
-        if let Ok((_, s)) = pair {
-            v.push(s);
-        }
+    for (_, s) in t.clone().pairs::<i64, String>().flatten() {
+        v.push(s);
     }
     v
 }
@@ -2170,7 +2160,7 @@ fn extract_cwd(opts: &mlua::Value) -> Result<Option<PathBuf>, String> {
         _ => return Err("cwd 选项必须是表，例如 { cwd = '/abs/path' }".into()),
     };
     let raw = match t.get::<&str, mlua::Value>("cwd") {
-        Ok(mlua::Value::String(s)) => String::from_utf8_lossy(&s.as_bytes()).to_string(),
+        Ok(mlua::Value::String(s)) => String::from_utf8_lossy(s.as_bytes()).to_string(),
         Ok(mlua::Value::Nil) => return Ok(None),
         _ => return Ok(None),
     };
@@ -2729,7 +2719,7 @@ actions:
 
         // 改 alice 的 branch、再加一个键：合并语义（旧键保留）
         let mut store = read_config_store(&path);
-        let mut entry = match store.get(&serde_yaml::Value::String("alice".into())) {
+        let mut entry = match store.get(serde_yaml::Value::String("alice".into())) {
             Some(serde_yaml::Value::Mapping(m)) => m.clone(),
             _ => serde_yaml::Mapping::new(),
         };
@@ -2742,13 +2732,13 @@ actions:
 
         let store = read_config_store(&path);
         let alice = store
-            .get(&serde_yaml::Value::String("alice".into()))
+            .get(serde_yaml::Value::String("alice".into()))
             .and_then(|v| v.as_mapping())
             .unwrap();
         assert_eq!(alice.len(), 2, "合并后应保留两个键");
         assert!(
             store
-                .get(&serde_yaml::Value::String("bob".into()))
+                .get(serde_yaml::Value::String("bob".into()))
                 .is_none()
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -2822,7 +2812,7 @@ actions:
                 continue;
             };
             if let Some(actions) = table
-                .get(&serde_yaml::Value::String("actions".to_string()))
+                .get(serde_yaml::Value::String("actions".to_string()))
                 .and_then(|v| v.as_mapping())
             {
                 for (k, _) in actions {

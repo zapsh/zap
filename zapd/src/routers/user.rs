@@ -863,9 +863,9 @@ async fn create_user_inner(
     // 数量上限：若归属账户（owner）自身设了 max_users>0，则其名下账号数不得超过上限。
     // 这样无论是 reseller 自建客户，还是 admin 把账号挂到某个 reseller 名下，都会受同一上限约束；
     // owner_id=0（直属系统）或 admin 直接建则不限制。
-    if owner_id > 0 {
-        if let Some(owner) = load_account(owner_id).await? {
-            if owner.max_users > 0 {
+    if owner_id > 0
+        && let Some(owner) = load_account(owner_id).await?
+            && owner.max_users > 0 {
                 let owned: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user WHERE owner_id = ?")
                     .bind(owner_id)
                     .fetch_one(pool)
@@ -878,8 +878,6 @@ async fn create_user_inner(
                     ));
                 }
             }
-        }
-    }
     let result = sqlx::query(
         "INSERT INTO user (username, home_dir, linux_user, fpm_pool, fpm_spec_ref, password, email, phone, nickname, roles, permissions, owner_id, user_kind, perm_deny, read_only, package_id, max_users, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
     )

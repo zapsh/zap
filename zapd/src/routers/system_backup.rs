@@ -104,15 +104,12 @@ async fn user_retention(username: &str) -> i64 {
         .await
         .ok()
         .flatten();
-    if let Some((prefs,)) = row {
-        if let Ok(v) = serde_json::from_str::<Value>(&prefs) {
-            if let Some(n) = v.get("backup_retain").and_then(|x| x.as_i64()) {
-                if n > 0 {
+    if let Some((prefs,)) = row
+        && let Ok(v) = serde_json::from_str::<Value>(&prefs)
+            && let Some(n) = v.get("backup_retain").and_then(|x| x.as_i64())
+                && n > 0 {
                     return n;
                 }
-            }
-        }
-    }
     policy_global_retain().await
 }
 
@@ -583,13 +580,11 @@ pub async fn run_backup(
         .execute(pool)
         .await;
 
-    if let Some(jid) = job_id {
-        if let Ok(retain) = job_retain(jid).await {
-            if retain > 0 && !bpath.is_empty() {
+    if let Some(jid) = job_id
+        && let Ok(retain) = job_retain(jid).await
+            && retain > 0 && !bpath.is_empty() {
                 prune_old(jid, retain, &bpath, &eff_root).await;
             }
-        }
-    }
 
     Ok(json!({
         "record_id": record_id,
@@ -824,7 +819,7 @@ pub async fn db_quick(
         Some(&eff_root),
         &excludes,
         exf.as_deref(),
-        &[name.clone()],
+        std::slice::from_ref(&name),
     )
     .await?;
     // 按用户个人保留份数清理旧归档
@@ -1559,11 +1554,10 @@ pub async fn policy_set(
     if let Some(v) = payload.allow_user_job {
         gs_set("backup_allow_job", if v { "1" } else { "0" }).await;
     }
-    if let Some(v) = payload.global_retain {
-        if v >= 0 {
+    if let Some(v) = payload.global_retain
+        && v >= 0 {
             gs_set("backup_global_retain", &v.to_string()).await;
         }
-    }
     if let Some(v) = payload.all_enabled {
         gs_set("backup_all_enabled", if v { "1" } else { "0" }).await;
     }
@@ -2119,7 +2113,7 @@ async fn backup_all_dbs(report: &mut BackupAllReport, dest: &str, retain: i64) {
             Some(&root),
             &[],
             None,
-            &[db.clone()],
+            std::slice::from_ref(&db),
         )
         .await
         {

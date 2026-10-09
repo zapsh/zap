@@ -261,15 +261,14 @@ fn default_node_version() -> String {
         let s = target.to_string_lossy().to_string();
         // .../node-versions/v20.11.1/installation/bin/node
         for part in s.split('/') {
-            if let Some(v) = part.strip_prefix('v') {
-                if v.chars()
+            if let Some(v) = part.strip_prefix('v')
+                && v.chars()
                     .next()
                     .map(|c| c.is_ascii_digit())
                     .unwrap_or(false)
                 {
                     return v.to_string();
                 }
-            }
         }
     }
     String::new()
@@ -477,14 +476,13 @@ fn write_python_index(url: &str) -> Result<(), String> {
 fn current_python_index() -> String {
     if let Ok(txt) = std::fs::read_to_string("/etc/uv/uv.toml") {
         for line in txt.lines() {
-            if let Some(rest) = line.trim().strip_prefix("url") {
-                if let Some(v) = rest.split('=').nth(1) {
+            if let Some(rest) = line.trim().strip_prefix("url")
+                && let Some(v) = rest.split('=').nth(1) {
                     let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
                     if !v.is_empty() {
                         return v;
                     }
                 }
-            }
         }
     }
     "https://pypi.org/simple".to_string()
@@ -564,15 +562,14 @@ pub fn detect_python() -> Value {
         {
             txt = String::from_utf8_lossy(&o.stdout).to_string();
         }
-        if txt.trim().is_empty() {
-            if let Ok(o) = root_cmd(uv)
+        if txt.trim().is_empty()
+            && let Ok(o) = root_cmd(uv)
                 .args(["python", "list"])
                 .env("UV_PYTHON_INSTALL_DIR", UV_PYTHON_INSTALL_DIR)
                 .output()
             {
                 txt = String::from_utf8_lossy(&o.stdout).to_string();
             }
-        }
         for line in txt.lines() {
             if let Some((ver, path)) = uv_list_installed(line) {
                 versions.push(json!({
@@ -696,11 +693,10 @@ fn system_pythons() -> Vec<String> {
     if let Ok(rd) = std::fs::read_dir("/usr/bin") {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
-            if let Some(rest) = n.strip_prefix("python3.") {
-                if rest.chars().all(|c| c.is_ascii_digit()) {
+            if let Some(rest) = n.strip_prefix("python3.")
+                && rest.chars().all(|c| c.is_ascii_digit()) {
                     out.push(format!("3.{rest}"));
                 }
-            }
         }
     }
     out.sort();

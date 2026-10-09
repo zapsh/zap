@@ -121,11 +121,10 @@ fn scan_node_versions() -> Vec<String> {
             subs.sort();
             for p in subs {
                 let bin = p.join("bin/node");
-                if bin.exists() {
-                    if let Some(v) = node_version_of(&bin.to_string_lossy()) {
+                if bin.exists()
+                    && let Some(v) = node_version_of(&bin.to_string_lossy()) {
                         vs.push(v);
                     }
-                }
             }
         }
     }
@@ -138,11 +137,10 @@ fn scan_node_versions() -> Vec<String> {
                 subs.sort();
                 for p in subs {
                     let bin = p.join("bin/node");
-                    if bin.exists() {
-                        if let Some(v) = node_version_of(&bin.to_string_lossy()) {
+                    if bin.exists()
+                        && let Some(v) = node_version_of(&bin.to_string_lossy()) {
                             vs.push(v);
                         }
-                    }
                 }
             }
         }
@@ -178,15 +176,14 @@ pub async fn runtimes() -> Response {
         let mut py = scan_python_versions("/usr/bin");
         py.extend(scan_python_versions("/usr/local/bin"));
         // uv 管理的解释器也要列出来（系统 /usr/bin 下没有对应二进制）
-        if let Some(v) = super::env::detect_python().get("versions") {
-            if let Some(arr) = v.as_array() {
+        if let Some(v) = super::env::detect_python().get("versions")
+            && let Some(arr) = v.as_array() {
                 for item in arr {
                     if let Some(ver) = item.get("version").and_then(|x| x.as_str()) {
                         py.push(ver.to_string());
                     }
                 }
             }
-        }
         py.sort();
         py.dedup();
         py.reverse();
@@ -588,8 +585,8 @@ fn prepare_deps(
                     String::new()
                 };
                 let req_txt = std::fs::read_to_string(&req).unwrap_or_default();
-                if let Some(pkg) = server_pkg(entry, &src, &req_txt) {
-                    if !venv.join(format!("bin/{pkg}")).exists() {
+                if let Some(pkg) = server_pkg(entry, &src, &req_txt)
+                    && !venv.join(format!("bin/{pkg}")).exists() {
                         let cmd = match &uv {
                             Some(uv) => format!(
                                 "VIRTUAL_ENV={} {uv} pip install {pkg}",
@@ -610,7 +607,6 @@ fn prepare_deps(
                             }
                         }
                     }
-                }
             }
         }
         "nodejs" => {
@@ -654,7 +650,7 @@ fn prepare_deps(
                         "npm install"
                     };
                     log_line(task_log, &format!("开始安装依赖（{npm}）…\n"));
-                    if !run_as_stream(task_log, owner, workdir, &npm, pid_path)? {
+                    if !run_as_stream(task_log, owner, workdir, npm, pid_path)? {
                         if deploy_canceled(task_log) {
                             return Err(DEPLOY_CANCELED.to_string());
                         }
@@ -685,8 +681,8 @@ fn prepare_deps(
                 }
             }
         }
-        "rust" => {
-            if install && workdir.join("Cargo.toml").exists() {
+        "rust"
+            if install && workdir.join("Cargo.toml").exists() => {
                 let cmd = with_toolchain_path("rust", "cargo fetch");
                 log_line(task_log, "预取 Rust 依赖（cargo fetch）…\n");
                 if !run_as_stream(task_log, owner, workdir, &cmd, pid_path)? {
@@ -698,17 +694,15 @@ fn prepare_deps(
                     log.push_str("Rust 依赖预取完成\n");
                 }
             }
-        }
         _ => {}
     }
     // npm 11 起默认跳过未批准的 install 脚本（install-scripts 白名单机制），
     // 这类告警不影响安装成功（@parcel/watcher / esbuild 等通过 optionalDependencies
     // 自带预编译二进制）。检测到时在日志里给出为什么跳过、以及如何消除告警。
-    if let Ok(content) = std::fs::read_to_string(task_log) {
-        if content.contains("npm warn install-scripts") {
+    if let Ok(content) = std::fs::read_to_string(task_log)
+        && content.contains("npm warn install-scripts") {
             log.push_str(&build_install_scripts_hint(&content));
         }
-    }
     Ok(log)
 }
 
@@ -719,11 +713,10 @@ fn build_install_scripts_hint(content: &str) -> String {
     for line in content.lines() {
         if let Some(rest) = line.split_once("npm warn install-scripts") {
             // 形如：`  @parcel/watcher@2.6.0 (install: node scripts/build-from-source.js)`
-            if let Some(tok) = rest.1.trim().split_whitespace().next() {
-                if tok.contains('@') && !tok.starts_with('(') {
+            if let Some(tok) = rest.1.split_whitespace().next()
+                && tok.contains('@') && !tok.starts_with('(') {
                     pkgs.push(tok.to_string());
                 }
-            }
         }
     }
     if pkgs.is_empty() {
@@ -841,11 +834,10 @@ fn default_command(
                 return Ok(format!("{node} {entry}"));
             }
             // 未填入口：优先 package.json 的 start 脚本，其次常见入口文件
-            if let Ok(txt) = std::fs::read_to_string(workdir.join("package.json")) {
-                if txt.contains("\"start\"") {
+            if let Ok(txt) = std::fs::read_to_string(workdir.join("package.json"))
+                && txt.contains("\"start\"") {
                     return Ok("npm start".to_string());
                 }
-            }
             for f in ["server.js", "app.js", "index.js", "main.js"] {
                 if workdir.join(f).exists() {
                     return Ok(format!("{node} {f}"));
@@ -1028,8 +1020,8 @@ fn git_clone(
         }
         return Err("git 拉取失败（详见部署日志）".to_string());
     }
-    if !git_ref.is_empty() {
-        if !run_as_stream(
+    if !git_ref.is_empty()
+        && !run_as_stream(
             log,
             owner,
             dest,
@@ -1041,7 +1033,6 @@ fn git_clone(
             }
             return Err(format!("git checkout 失败（{git_ref}）"));
         }
-    }
     let (_, head) = run_as(owner, dest, "git rev-parse --short HEAD")?;
     let commit = head.lines().next().unwrap_or("").trim().to_string();
     let wd = if git_subdir.is_empty() {
@@ -1289,12 +1280,11 @@ pub async fn deploy(
             }
             // 重部署时若日志已过大就先归档一份，避免长期运行的站点被日志撑爆磁盘
             // （应用日志不参与站点日志轮转，这里是最省事的兜底）
-            if let Ok(meta) = f.metadata() {
-                if meta.len() > APP_LOG_MAX_BYTES {
+            if let Ok(meta) = f.metadata()
+                && meta.len() > APP_LOG_MAX_BYTES {
                     let old = f.with_extension("log.1");
                     let _ = std::fs::rename(f, old);
                 }
-            }
             if !f.exists() {
                 let _ = std::fs::write(f, "");
             }
