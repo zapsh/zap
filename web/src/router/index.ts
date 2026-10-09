@@ -7,8 +7,7 @@ import Layout from '@/layout/index.vue'
 import { useUserStore } from '@/stores/user'
 import { usePermissionStore } from '@/stores/permission'
 import { getMenusRevision } from '@/api/menu'
-import NProgress from 'nprogress'
-import 'nprogress/nprogress.css'
+import { BProgress } from '@bprogress/core'
 
 // 白名单路由
 const whiteList = ['/login']
@@ -505,7 +504,7 @@ async function ensureMenusFresh(roles: string[]): Promise<boolean> {
 }
 
 router.beforeEach(async (to, from, next) => {
-  NProgress.start()
+  BProgress.start()
 
   const userStore = useUserStore()
   const permissionStore = usePermissionStore()
@@ -517,7 +516,7 @@ router.beforeEach(async (to, from, next) => {
     if (to.path === '/login') {
       // 已登录且要跳转的页面是登录页
       next({ path: '/' })
-      NProgress.done()
+      BProgress.done()
     } else {
       // 检查用户信息和权限菜单是否已获取
       const hasRoles = userStore.roles && userStore.roles.length > 0
@@ -548,7 +547,7 @@ router.beforeEach(async (to, from, next) => {
           // 移除 token 并跳转登录页
           await userStore.resetToken()
           next(`/login?redirect=${to.path}`)
-          NProgress.done()
+          BProgress.done()
         }
       }
     }
@@ -560,13 +559,13 @@ router.beforeEach(async (to, from, next) => {
     } else {
       // 其他没有访问权限的页面将被重定向到登录页面
       next(`/login?redirect=${to.path}`)
-      NProgress.done()
+      BProgress.done()
     }
   }
 })
 
 router.afterEach(() => {
-  NProgress.done()
+  BProgress.done()
 })
 
 

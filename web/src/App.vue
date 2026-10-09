@@ -1,12 +1,15 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <el-config-provider :locale="elementLocale">
-    <router-view />
+    <ProgressProvider>
+      <router-view />
+    </ProgressProvider>
   </el-config-provider>
 </template>
 
 <script setup lang="ts">
 import { useLocale } from '@/composables/useLocale'
+import { ProgressProvider } from '@bprogress/vue'
 
 const { elementLocale } = useLocale()
 </script>
