@@ -47,17 +47,30 @@ pub struct SecurityCheck {
 }
 
 /// 构造一条检查结果。
-fn mk(
-    id: &str,
-    category: &str,
-    category_key: &str,
-    name_key: &str,
-    status: &str,
-    detail_key: &str,
+struct MkArgs<'a> {
+    id: &'a str,
+    category: &'a str,
+    category_key: &'a str,
+    name_key: &'a str,
+    status: &'a str,
+    detail_key: &'a str,
     detail_params: serde_json::Value,
-    suggestion_key: Option<&str>,
+    suggestion_key: Option<&'a str>,
     suggestion_params: serde_json::Value,
-) -> SecurityCheck {
+}
+
+fn mk(a: MkArgs) -> SecurityCheck {
+    let MkArgs {
+        id,
+        category,
+        category_key,
+        name_key,
+        status,
+        detail_key,
+        detail_params,
+        suggestion_key,
+        suggestion_params,
+    } = a;
     SecurityCheck {
         id: id.to_string(),
         category: category.to_string(),
@@ -87,30 +100,30 @@ async fn zap_checks() -> Vec<SecurityCheck> {
 
     // 1) 运行身份：是否以 root 运行
     if uid == 0 {
-        v.push(mk(
-            "zap_runtime_user",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secRuntimeUser",
-            "fail",
-            "zapCfg.secRuntimeUserRoot",
-            json!({ "uid": uid }),
-            Some("zapCfg.secRuntimeUserRootSug"),
-            json!({}),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_runtime_user",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secRuntimeUser",
+            status: "fail",
+            detail_key: "zapCfg.secRuntimeUserRoot",
+            detail_params: json!({ "uid": uid }),
+            suggestion_key: Some("zapCfg.secRuntimeUserRootSug"),
+            suggestion_params: json!({}),
+        }));
     } else {
         let name = username_of(uid);
-        v.push(mk(
-            "zap_runtime_user",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secRuntimeUser",
-            "pass",
-            "zapCfg.secRuntimeUserOk",
-            json!({ "name": name, "uid": uid }),
-            None,
-            json!({}),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_runtime_user",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secRuntimeUser",
+            status: "pass",
+            detail_key: "zapCfg.secRuntimeUserOk",
+            detail_params: json!({ "name": name, "uid": uid }),
+            suggestion_key: None,
+            suggestion_params: json!({}),
+        }));
     }
 
     // 2) 数据目录可写（面板要落盘配置 / 数据）
@@ -124,29 +137,29 @@ async fn zap_checks() -> Vec<SecurityCheck> {
         Err(_) => false,
     };
     if writable {
-        v.push(mk(
-            "zap_data_writable",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secDataWritable",
-            "pass",
-            "zapCfg.secDataWritableOk",
-            json!({ "path": data.display().to_string() }),
-            None,
-            json!({}),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_data_writable",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secDataWritable",
+            status: "pass",
+            detail_key: "zapCfg.secDataWritableOk",
+            detail_params: json!({ "path": data.display().to_string() }),
+            suggestion_key: None,
+            suggestion_params: json!({}),
+        }));
     } else {
-        v.push(mk(
-            "zap_data_writable",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secDataWritable",
-            "fail",
-            "zapCfg.secDataWritableFail",
-            json!({ "path": data.display().to_string(), "uid": uid }),
-            Some("zapCfg.secDataWritableSug"),
-            json!({ "uid": uid }),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_data_writable",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secDataWritable",
+            status: "fail",
+            detail_key: "zapCfg.secDataWritableFail",
+            detail_params: json!({ "path": data.display().to_string(), "uid": uid }),
+            suggestion_key: Some("zapCfg.secDataWritableSug"),
+            suggestion_params: json!({ "uid": uid }),
+        }));
     }
 
     // 3) 配置文件（zap.yaml）权限：含 JWT 密钥，不应被其他用户读取/改写
@@ -155,54 +168,54 @@ async fn zap_checks() -> Vec<SecurityCheck> {
         let mode = meta.mode();
         let modestr = mode_str(mode);
         if mode & 0o002 != 0 {
-            v.push(mk(
-                "zap_config_perms",
-                CAT_ZAP,
-                "zapCfg.secCatZap",
-                "zapCfg.secConfigPerms",
-                "fail",
-                "zapCfg.secConfigPermsWorldWrite",
-                json!({ "path": cfg.display().to_string(), "mode": modestr }),
-                Some("zapCfg.secConfigPermsSug"),
-                json!({}),
-            ));
+            v.push(mk(MkArgs {
+                id: "zap_config_perms",
+                category: CAT_ZAP,
+                category_key: "zapCfg.secCatZap",
+                name_key: "zapCfg.secConfigPerms",
+                status: "fail",
+                detail_key: "zapCfg.secConfigPermsWorldWrite",
+                detail_params: json!({ "path": cfg.display().to_string(), "mode": modestr }),
+                suggestion_key: Some("zapCfg.secConfigPermsSug"),
+                suggestion_params: json!({}),
+            }));
         } else if mode & 0o004 != 0 {
-            v.push(mk(
-                "zap_config_perms",
-                CAT_ZAP,
-                "zapCfg.secCatZap",
-                "zapCfg.secConfigPerms",
-                "warn",
-                "zapCfg.secConfigPermsWorldRead",
-                json!({ "path": cfg.display().to_string(), "mode": modestr }),
-                Some("zapCfg.secConfigPermsSug"),
-                json!({}),
-            ));
+            v.push(mk(MkArgs {
+                id: "zap_config_perms",
+                category: CAT_ZAP,
+                category_key: "zapCfg.secCatZap",
+                name_key: "zapCfg.secConfigPerms",
+                status: "warn",
+                detail_key: "zapCfg.secConfigPermsWorldRead",
+                detail_params: json!({ "path": cfg.display().to_string(), "mode": modestr }),
+                suggestion_key: Some("zapCfg.secConfigPermsSug"),
+                suggestion_params: json!({}),
+            }));
         } else {
-            v.push(mk(
-                "zap_config_perms",
-                CAT_ZAP,
-                "zapCfg.secCatZap",
-                "zapCfg.secConfigPerms",
-                "pass",
-                "zapCfg.secConfigPermsOk",
-                json!({ "path": cfg.display().to_string(), "mode": modestr }),
-                None,
-                json!({}),
-            ));
+            v.push(mk(MkArgs {
+                id: "zap_config_perms",
+                category: CAT_ZAP,
+                category_key: "zapCfg.secCatZap",
+                name_key: "zapCfg.secConfigPerms",
+                status: "pass",
+                detail_key: "zapCfg.secConfigPermsOk",
+                detail_params: json!({ "path": cfg.display().to_string(), "mode": modestr }),
+                suggestion_key: None,
+                suggestion_params: json!({}),
+            }));
         }
     } else {
-        v.push(mk(
-            "zap_config_perms",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secConfigPerms",
-            "info",
-            "zapCfg.secConfigPermsMissing",
-            json!({ "path": cfg.display().to_string() }),
-            None,
-            json!({}),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_config_perms",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secConfigPerms",
+            status: "info",
+            detail_key: "zapCfg.secConfigPermsMissing",
+            detail_params: json!({ "path": cfg.display().to_string() }),
+            suggestion_key: None,
+            suggestion_params: json!({}),
+        }));
     }
 
     // 4) 面板私钥权限：最敏感，应仅属主可读
@@ -214,54 +227,54 @@ async fn zap_checks() -> Vec<SecurityCheck> {
         let mode = meta.mode();
         let modestr = mode_str(mode);
         if mode & 0o002 != 0 {
-            v.push(mk(
-                "zap_cert_key_perms",
-                CAT_ZAP,
-                "zapCfg.secCatZap",
-                "zapCfg.secCertKey",
-                "fail",
-                "zapCfg.secCertKeyWorldWrite",
-                json!({ "path": key_file, "mode": modestr }),
-                Some("zapCfg.secCertKeySug"),
-                json!({}),
-            ));
+            v.push(mk(MkArgs {
+                id: "zap_cert_key_perms",
+                category: CAT_ZAP,
+                category_key: "zapCfg.secCatZap",
+                name_key: "zapCfg.secCertKey",
+                status: "fail",
+                detail_key: "zapCfg.secCertKeyWorldWrite",
+                detail_params: json!({ "path": key_file, "mode": modestr }),
+                suggestion_key: Some("zapCfg.secCertKeySug"),
+                suggestion_params: json!({}),
+            }));
         } else if mode & 0o004 != 0 {
-            v.push(mk(
-                "zap_cert_key_perms",
-                CAT_ZAP,
-                "zapCfg.secCatZap",
-                "zapCfg.secCertKey",
-                "warn",
-                "zapCfg.secCertKeyWorldRead",
-                json!({ "path": key_file, "mode": modestr }),
-                Some("zapCfg.secCertKeySug"),
-                json!({}),
-            ));
+            v.push(mk(MkArgs {
+                id: "zap_cert_key_perms",
+                category: CAT_ZAP,
+                category_key: "zapCfg.secCatZap",
+                name_key: "zapCfg.secCertKey",
+                status: "warn",
+                detail_key: "zapCfg.secCertKeyWorldRead",
+                detail_params: json!({ "path": key_file, "mode": modestr }),
+                suggestion_key: Some("zapCfg.secCertKeySug"),
+                suggestion_params: json!({}),
+            }));
         } else {
-            v.push(mk(
-                "zap_cert_key_perms",
-                CAT_ZAP,
-                "zapCfg.secCatZap",
-                "zapCfg.secCertKey",
-                "pass",
-                "zapCfg.secCertKeyOk",
-                json!({ "path": key_file, "mode": modestr }),
-                None,
-                json!({}),
-            ));
+            v.push(mk(MkArgs {
+                id: "zap_cert_key_perms",
+                category: CAT_ZAP,
+                category_key: "zapCfg.secCatZap",
+                name_key: "zapCfg.secCertKey",
+                status: "pass",
+                detail_key: "zapCfg.secCertKeyOk",
+                detail_params: json!({ "path": key_file, "mode": modestr }),
+                suggestion_key: None,
+                suggestion_params: json!({}),
+            }));
         }
     } else {
-        v.push(mk(
-            "zap_cert_key_perms",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secCertKey",
-            "info",
-            "zapCfg.secCertKeyMissing",
-            json!({ "path": key_file }),
-            None,
-            json!({}),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_cert_key_perms",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secCertKey",
+            status: "info",
+            detail_key: "zapCfg.secCertKeyMissing",
+            detail_params: json!({ "path": key_file }),
+            suggestion_key: None,
+            suggestion_params: json!({}),
+        }));
     }
 
     // 5) 全局可写扫描：数据目录 / 应用商店目录 / 用户目录及其关键子目录
@@ -282,29 +295,29 @@ async fn zap_checks() -> Vec<SecurityCheck> {
             }
     }
     if bad.is_empty() {
-        v.push(mk(
-            "zap_world_writable",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secWorldWritable",
-            "pass",
-            "zapCfg.secWorldWritableOk",
-            json!({}),
-            None,
-            json!({}),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_world_writable",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secWorldWritable",
+            status: "pass",
+            detail_key: "zapCfg.secWorldWritableOk",
+            detail_params: json!({}),
+            suggestion_key: None,
+            suggestion_params: json!({}),
+        }));
     } else {
-        v.push(mk(
-            "zap_world_writable",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secWorldWritable",
-            "warn",
-            "zapCfg.secWorldWritableWarn",
-            json!({ "count": bad.len(), "paths": bad.join("; ") }),
-            Some("zapCfg.secWorldWritableSug"),
-            json!({}),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_world_writable",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secWorldWritable",
+            status: "warn",
+            detail_key: "zapCfg.secWorldWritableWarn",
+            detail_params: json!({ "count": bad.len(), "paths": bad.join("; ") }),
+            suggestion_key: Some("zapCfg.secWorldWritableSug"),
+            suggestion_params: json!({}),
+        }));
     }
 
     // 6) 特权执行器(zapexec) IPC 套接字是否就绪
@@ -313,29 +326,29 @@ async fn zap_checks() -> Vec<SecurityCheck> {
         g.exec.socket_path.clone()
     };
     if Path::new(&sock).exists() {
-        v.push(mk(
-            "zap_zapexec",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secZapexec",
-            "pass",
-            "zapCfg.secZapexecOk",
-            json!({ "path": sock }),
-            None,
-            json!({}),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_zapexec",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secZapexec",
+            status: "pass",
+            detail_key: "zapCfg.secZapexecOk",
+            detail_params: json!({ "path": sock }),
+            suggestion_key: None,
+            suggestion_params: json!({}),
+        }));
     } else {
-        v.push(mk(
-            "zap_zapexec",
-            CAT_ZAP,
-            "zapCfg.secCatZap",
-            "zapCfg.secZapexec",
-            "fail",
-            "zapCfg.secZapexecFail",
-            json!({ "path": sock }),
-            Some("zapCfg.secZapexecSug"),
-            json!({}),
-        ));
+        v.push(mk(MkArgs {
+            id: "zap_zapexec",
+            category: CAT_ZAP,
+            category_key: "zapCfg.secCatZap",
+            name_key: "zapCfg.secZapexec",
+            status: "fail",
+            detail_key: "zapCfg.secZapexecFail",
+            detail_params: json!({ "path": sock }),
+            suggestion_key: Some("zapCfg.secZapexecSug"),
+            suggestion_params: json!({}),
+        }));
     }
 
     v

@@ -485,17 +485,30 @@ fn server_pkg(entry: &str, src: &str, req: &str) -> Option<&'static str> {
     Some(if is_asgi { "uvicorn" } else { "gunicorn" })
 }
 
-fn prepare_deps(
-    task_log: &str,
-    app_type: &str,
-    version: &str,
+struct PrepareDepsArgs<'a> {
+    task_log: &'a str,
+    app_type: &'a str,
+    version: &'a str,
     create_venv: bool,
-    workdir: &Path,
-    owner: &str,
+    workdir: &'a Path,
+    owner: &'a str,
     install: bool,
-    entry: &str,
-    pid_path: &str,
-) -> Result<String, String> {
+    entry: &'a str,
+    pid_path: &'a str,
+}
+
+fn prepare_deps(a: PrepareDepsArgs) -> Result<String, String> {
+    let PrepareDepsArgs {
+        task_log,
+        app_type,
+        version,
+        create_venv,
+        workdir,
+        owner,
+        install,
+        entry,
+        pid_path,
+    } = a;
     let mut log = String::new();
     match app_type {
         "python" => {
@@ -880,16 +893,28 @@ fn default_command(
 
 // ── unit 渲染 ───────────────────────────────────────────
 
-fn render_unit(
+struct RenderUnitArgs<'a> {
     site_id: i64,
-    name: &str,
-    owner: &str,
-    workdir: &Path,
-    exec: &str,
+    name: &'a str,
+    owner: &'a str,
+    workdir: &'a Path,
+    exec: &'a str,
     port: i64,
-    env: &str,
-    log_file: Option<&Path>,
-) -> String {
+    env: &'a str,
+    log_file: Option<&'a Path>,
+}
+
+fn render_unit(a: RenderUnitArgs) -> String {
+    let RenderUnitArgs {
+        site_id,
+        name,
+        owner,
+        workdir,
+        exec,
+        port,
+        env,
+        log_file,
+    } = a;
     let mut u = String::new();
     u.push_str("[Unit]\n");
     u.push_str(&format!("Description=Zap App {name} (site {site_id})\n"));
@@ -967,17 +992,30 @@ fn valid_repo(s: &str) -> bool {
 /// 把仓库拉取到 `dest`：若 `dest/.git` 已存在则 pull，否则 clone。
 /// 各 git 步骤的输出**实时追加**到 `log`（部署任务日志），方便前端边跑边看；
 /// 返回最终工作目录（在 `dest` 基础上叠加 `git_subdir`）与当前 HEAD 短哈希。
-fn git_clone(
-    log: &str,
-    repo_url: &str,
-    branch: &str,
-    git_ref: &str,
-    git_subdir: &str,
+struct GitCloneArgs<'a> {
+    log: &'a str,
+    repo_url: &'a str,
+    branch: &'a str,
+    git_ref: &'a str,
+    git_subdir: &'a str,
     git_depth: i64,
-    dest: &Path,
-    owner: &str,
-    pid_path: &str,
-) -> Result<(PathBuf, String), String> {
+    dest: &'a Path,
+    owner: &'a str,
+    pid_path: &'a str,
+}
+
+fn git_clone(a: GitCloneArgs) -> Result<(PathBuf, String), String> {
+    let GitCloneArgs {
+        log,
+        repo_url,
+        branch,
+        git_ref,
+        git_subdir,
+        git_depth,
+        dest,
+        owner,
+        pid_path,
+    } = a;
     log_line(log, &format!("== 同步仓库 {repo_url} =="));
     // 目标目录由调用方以站点用户身份建好（保证属主正确、clone 可写）
     let ok = if dest.join(".git").exists() {
@@ -1188,17 +1226,17 @@ pub async fn deploy(
             if let Some(parent) = dest.parent() {
                 let _ = run_as(&owner_user, parent, &format!("mkdir -p {}", dest.display()))?;
             }
-            let (wd, git_commit) = git_clone(
-                &task_log,
-                &repo_url,
-                &branch,
-                &git_ref,
-                &git_subdir,
+            let (wd, git_commit) = git_clone(GitCloneArgs {
+                log: &task_log,
+                repo_url: &repo_url,
+                branch: &branch,
+                git_ref: &git_ref,
+                git_subdir: &git_subdir,
                 git_depth,
-                &dest,
-                &owner_user,
-                &pid_path,
-            )?;
+                dest: &dest,
+                owner: &owner_user,
+                pid_path: &pid_path,
+            })?;
             (wd, git_commit)
         } else {
             (check_workdir(&workdir, &owner_user)?, String::new())
@@ -1209,17 +1247,17 @@ pub async fn deploy(
         }
         log_line(
             &task_log,
-            &prepare_deps(
-                &task_log,
-                &app_type,
-                &runtime_version,
+            &prepare_deps(PrepareDepsArgs {
+                task_log: &task_log,
+                app_type: &app_type,
+                version: &runtime_version,
                 create_venv,
-                &wd,
-                &owner_user,
-                install_deps,
-                &entry,
-                &pid_path,
-            )?,
+                workdir: &wd,
+                owner: &owner_user,
+                install: install_deps,
+                entry: &entry,
+                pid_path: &pid_path,
+            })?,
         );
 
         if deploy_canceled(&task_log) {
@@ -1294,16 +1332,16 @@ pub async fn deploy(
                 .output();
         }
 
-        let unit = render_unit(
+        let unit = render_unit(RenderUnitArgs {
             site_id,
-            &name,
-            &owner_user,
-            &wd,
-            &exec,
+            name: &name,
+            owner: &owner_user,
+            workdir: &wd,
+            exec: &exec,
             port,
-            &env,
-            log_file.as_deref(),
-        );
+            env: &env,
+            log_file: log_file.as_deref(),
+        });
         let path = unit_path(site_id, &name);
         std::fs::write(&path, unit).map_err(|e| format!("写入 unit 失败: {e}"))?;
 
@@ -1547,16 +1585,16 @@ mod tests {
 
     #[test]
     fn unit_renders_with_site_user_and_restart() {
-        let u = render_unit(
-            1,
-            "demo",
-            "admin",
-            Path::new("/home/admin/w4u.cn/app"),
-            "/home/admin/w4u.cn/app/.venv/bin/python main.py",
-            8000,
-            "DEBUG=1\nSECRET=x",
-            Some(Path::new("/home/admin/logs/1-w4u-cn/app-demo.log")),
-        );
+        let u = render_unit(RenderUnitArgs {
+            site_id: 1,
+            name: "demo",
+            owner: "admin",
+            workdir: Path::new("/home/admin/w4u.cn/app"),
+            exec: "/home/admin/w4u.cn/app/.venv/bin/python main.py",
+            port: 8000,
+            env: "DEBUG=1\nSECRET=x",
+            log_file: Some(Path::new("/home/admin/logs/1-w4u-cn/app-demo.log")),
+        });
         assert!(u.contains("User=admin"));
         assert!(u.contains("WorkingDirectory=/home/admin/w4u.cn/app"));
         assert!(u.contains("ExecStart=/home/admin/w4u.cn/app/.venv/bin/python main.py"));

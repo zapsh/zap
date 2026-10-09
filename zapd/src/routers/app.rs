@@ -241,16 +241,28 @@ async fn pick_free_port(caps: &AppCaps) -> Result<i64, ZapError> {
 
 /// 域名 -> 建一个反代站点：站点类型 proxy，挂载点（默认 `/`）反代到 127.0.0.1:<port>。
 /// 走 `site::site_add` 是为了复用建站那一整套校验（套餐站点数、反代开关、目录规划）。
-async fn create_proxy_site(
-    claims: &jwt::Claims,
+struct CreateProxySiteArgs<'a> {
+    claims: &'a jwt::Claims,
     client_addr: SocketAddr,
-    domain: &str,
-    name: &str,
+    domain: &'a str,
+    name: &'a str,
     port: i64,
-    mount: &str,
-    match_mode: &str,
+    mount: &'a str,
+    match_mode: &'a str,
     strip_prefix: bool,
-) -> Result<i64, ZapError> {
+}
+
+async fn create_proxy_site<'a>(a: CreateProxySiteArgs<'a>) -> Result<i64, ZapError> {
+    let CreateProxySiteArgs {
+        claims,
+        client_addr,
+        domain,
+        name,
+        port,
+        mount,
+        match_mode,
+        strip_prefix,
+    } = a;
     // 建站归属：admin / reseller 没有默认归属，落到操作者本人
     let owner = if jwt::is_admin(claims) || jwt::is_reseller(claims) {
         Some(claims.id as i64)
@@ -760,16 +772,16 @@ pub async fn app_deploy(
         if is_static {
             create_static_site(&claims, client_addr, &domain, &name).await?
         } else {
-            create_proxy_site(
-                &claims,
+            create_proxy_site(CreateProxySiteArgs {
+                claims: &claims,
                 client_addr,
-                &domain,
-                &name,
+                domain: &domain,
+                name: &name,
                 port,
-                &mount,
-                &match_mode,
-                strip_prefix.unwrap_or(mount != "/"),
-            )
+                mount: &mount,
+                match_mode: &match_mode,
+                strip_prefix: strip_prefix.unwrap_or(mount != "/"),
+            })
             .await?
         }
     };

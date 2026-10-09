@@ -9,7 +9,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::db::get_db_pool;
-use crate::routers::system_backup::run_backup;
+use crate::routers::system_backup::{run_backup, RunBackupArgs};
 use crate::zap::script_cron::Cron;
 
 /// 读全局策略 KV（与 `system_backup::gs_get` 同源，调度器独立实现避免跨模块依赖）。
@@ -119,18 +119,18 @@ async fn run_job(
             return;
         }
     };
-    let result = run_backup(
-        &target_type,
-        &target,
-        &name,
-        "",
-        Some(id),
-        &owner,
-        Some(&root),
-        &[],
-        None,
-        &[],
-    )
+    let result = run_backup(RunBackupArgs {
+        target_type: &target_type,
+        target_json: &target,
+        name: &name,
+        dest_dir: "",
+        job_id: Some(id),
+        owner: &owner,
+        dest_root: Some(&root),
+        excludes: &[],
+        exclude_file: None,
+        manifest: &[],
+    })
     .await;
     let pool = get_db_pool().await;
     match result {

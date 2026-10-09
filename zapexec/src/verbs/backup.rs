@@ -243,16 +243,28 @@ pub async fn list(dir: String, backup_root: String) -> Response {
 
 // ── 目录打包 ──────────────────────────────────────────────────────
 
-pub async fn dir(
-    name: String,
-    paths: Vec<String>,
-    dest_dir: String,
-    as_user: Option<String>,
-    _skip_owner_check: bool,
-    backup_root: String,
-    exclude: Vec<String>,
-    exclude_file: Option<String>,
-) -> Response {
+pub(crate) struct DirArgs {
+    pub(crate) name: String,
+    pub(crate) paths: Vec<String>,
+    pub(crate) dest_dir: String,
+    pub(crate) as_user: Option<String>,
+    pub(crate) skip_owner_check: bool,
+    pub(crate) backup_root: String,
+    pub(crate) exclude: Vec<String>,
+    pub(crate) exclude_file: Option<String>,
+}
+
+pub async fn dir(a: DirArgs) -> Response {
+    let DirArgs {
+        name,
+        paths,
+        dest_dir,
+        as_user,
+        skip_owner_check: _skip_owner_check,
+        backup_root,
+        exclude,
+        exclude_file,
+    } = a;
     if name.is_empty() {
         return Response::err(-1, "归档名不能为空".to_string());
     }
@@ -332,19 +344,34 @@ pub async fn dir(
 
 // ── 数据库导出 ────────────────────────────────────────────────────
 
-pub async fn db(
-    name: String,
-    engine: String,
-    db_name: String,
-    user: String,
-    password: String,
-    host: String,
-    port: i32,
-    socket: Option<String>,
-    dest_dir: String,
-    db_path: Option<String>,
-    backup_root: String,
-) -> Response {
+pub(crate) struct DbArgs {
+    pub(crate) name: String,
+    pub(crate) engine: String,
+    pub(crate) db_name: String,
+    pub(crate) user: String,
+    pub(crate) password: String,
+    pub(crate) host: String,
+    pub(crate) port: i32,
+    pub(crate) socket: Option<String>,
+    pub(crate) dest_dir: String,
+    pub(crate) db_path: Option<String>,
+    pub(crate) backup_root: String,
+}
+
+pub async fn db(a: DbArgs) -> Response {
+    let DbArgs {
+        name,
+        engine,
+        db_name,
+        user,
+        password,
+        host,
+        port,
+        socket,
+        dest_dir,
+        db_path,
+        backup_root,
+    } = a;
     if name.is_empty() {
         return Response::err(-1, "归档名不能为空".to_string());
     }
@@ -510,17 +537,30 @@ pub async fn restore_dir(
 
 // ── 数据库还原 ────────────────────────────────────────────────────
 
-pub async fn restore_db(
-    path: String,
-    engine: String,
-    db_name: String,
-    user: String,
-    password: String,
-    host: String,
-    port: i32,
-    db_path: Option<String>,
-    backup_root: String,
-) -> Response {
+pub(crate) struct RestoreDbArgs {
+    pub(crate) path: String,
+    pub(crate) engine: String,
+    pub(crate) db_name: String,
+    pub(crate) user: String,
+    pub(crate) password: String,
+    pub(crate) host: String,
+    pub(crate) port: i32,
+    pub(crate) db_path: Option<String>,
+    pub(crate) backup_root: String,
+}
+
+pub async fn restore_db(a: RestoreDbArgs) -> Response {
+    let RestoreDbArgs {
+        path,
+        engine,
+        db_name,
+        user,
+        password,
+        host,
+        port,
+        db_path,
+        backup_root,
+    } = a;
     let p = match assert_in_root(&path, &backup_root) {
         Ok(p) => p,
         Err(e) => return Response::err(-1, e),

@@ -463,18 +463,32 @@ struct BackupJobRow {
 
 /// 执行一次备份：写记录 → 调 zapexec → 更新记录；定时任务（job_id 有值）会按
 /// `retain_count` 清理旧归档。返回 `{ record_id, path, size, data }`。
-pub async fn run_backup(
-    target_type: &str,
-    target_json: &str,
-    name: &str,
-    dest_dir: &str,
-    job_id: Option<i64>,
-    owner: &str,
-    dest_root: Option<&str>,
-    excludes: &[String],
-    exclude_file: Option<&str>,
-    manifest: &[String],
-) -> Result<Value, ZapError> {
+pub(crate) struct RunBackupArgs<'a> {
+    pub(crate) target_type: &'a str,
+    pub(crate) target_json: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) dest_dir: &'a str,
+    pub(crate) job_id: Option<i64>,
+    pub(crate) owner: &'a str,
+    pub(crate) dest_root: Option<&'a str>,
+    pub(crate) excludes: &'a [String],
+    pub(crate) exclude_file: Option<&'a str>,
+    pub(crate) manifest: &'a [String],
+}
+
+pub async fn run_backup<'a>(a: RunBackupArgs<'a>) -> Result<Value, ZapError> {
+    let RunBackupArgs {
+        target_type,
+        target_json,
+        name,
+        dest_dir,
+        job_id,
+        owner,
+        dest_root,
+        excludes,
+        exclude_file,
+        manifest,
+    } = a;
     let ts = now_ts();
     // 定时任务给归档名加时间戳，避免覆盖上一次；手动用原名。
     let eff_name = match job_id {
@@ -676,18 +690,18 @@ pub async fn create_dir(
         as_user: payload.as_user,
     })
     .map_err(|e| ZapError::New(-1, format!("参数序列化失败: {e}")))?;
-    let data = run_backup(
-        "dir",
-        &target,
-        &name,
-        &payload.dest_dir,
-        None,
-        "",
-        None,
-        &[],
-        None,
-        &[],
-    )
+    let data = run_backup(RunBackupArgs {
+        target_type: "dir",
+        target_json: &target,
+        name: &name,
+        dest_dir: &payload.dest_dir,
+        job_id: None,
+        owner: "",
+        dest_root: None,
+        excludes: &[],
+        exclude_file: None,
+        manifest: &[],
+    })
     .await?;
     let _ = audit::log(
         Some(&claims),
@@ -724,18 +738,18 @@ pub async fn create_db(
         db_path: payload.db_path,
     })
     .map_err(|e| ZapError::New(-1, format!("参数序列化失败: {e}")))?;
-    let data = run_backup(
-        "db",
-        &target,
-        &name,
-        &payload.dest_dir,
-        None,
-        "",
-        None,
-        &[],
-        None,
-        &[],
-    )
+    let data = run_backup(RunBackupArgs {
+        target_type: "db",
+        target_json: &target,
+        name: &name,
+        dest_dir: &payload.dest_dir,
+        job_id: None,
+        owner: "",
+        dest_root: None,
+        excludes: &[],
+        exclude_file: None,
+        manifest: &[],
+    })
     .await?;
     let _ = audit::log(
         Some(&claims),
@@ -809,18 +823,18 @@ pub async fn db_quick(
     let home = root.trim_end_matches("/backups").trim_end_matches('/');
     let excludes = policy_exclude_default().await;
     let exf = user_exclude_file(home);
-    let data = run_backup(
-        "db",
-        &target,
-        &name,
-        "",
-        None,
-        &owner,
-        Some(&eff_root),
-        &excludes,
-        exf.as_deref(),
-        std::slice::from_ref(&name),
-    )
+    let data = run_backup(RunBackupArgs {
+        target_type: "db",
+        target_json: &target,
+        name: &name,
+        dest_dir: "",
+        job_id: None,
+        owner: &owner,
+        dest_root: Some(&eff_root),
+        excludes: &excludes,
+        exclude_file: exf.as_deref(),
+        manifest: std::slice::from_ref(&name),
+    })
     .await?;
     // 按用户个人保留份数清理旧归档
     prune_by_owner(&owner, retain, &root).await;
@@ -905,18 +919,18 @@ pub async fn site_quick(
         as_user: None,
     })
     .map_err(|e| ZapError::New(-1, format!("参数序列化失败: {e}")))?;
-    let data = run_backup(
-        "dir",
-        &target,
-        &arc_name,
-        "",
-        None,
-        &owner,
-        Some(&root),
-        &excludes,
-        exf.as_deref(),
-        &paths,
-    )
+    let data = run_backup(RunBackupArgs {
+        target_type: "dir",
+        target_json: &target,
+        name: &arc_name,
+        dest_dir: "",
+        job_id: None,
+        owner: &owner,
+        dest_root: Some(&root),
+        excludes: &excludes,
+        exclude_file: exf.as_deref(),
+        manifest: &paths,
+    })
     .await?;
     // 按用户个人保留份数清理旧归档
     prune_by_owner(&owner, retain, &root).await;
@@ -1456,18 +1470,18 @@ pub async fn job_run(
         }
     }
     let (eff_root, _) = resolve_job_root(&owner).await?;
-    let data = run_backup(
-        &target_type,
-        &target,
-        &name,
-        "",
-        Some(payload.id),
-        &owner,
-        Some(&eff_root),
-        &[],
-        None,
-        &[],
-    )
+    let data = run_backup(RunBackupArgs {
+        target_type: &target_type,
+        target_json: &target,
+        name: &name,
+        dest_dir: "",
+        job_id: Some(payload.id),
+        owner: &owner,
+        dest_root: Some(&eff_root),
+        excludes: &[],
+        exclude_file: None,
+        manifest: &[],
+    })
     .await?;
     // 同步任务状态
     let (status, msg) = (1i64, "");
@@ -1930,18 +1944,18 @@ async fn backup_all_home(
                 continue;
             }
         };
-        match run_backup(
-            "dir",
-            &target,
-            &username,
-            "",
-            None,
-            &username,
-            Some(&root),
+        match run_backup(RunBackupArgs {
+            target_type: "dir",
+            target_json: &target,
+            name: &username,
+            dest_dir: "",
+            job_id: None,
+            owner: &username,
+            dest_root: Some(&root),
             excludes,
-            exf.as_deref(),
-            &paths,
-        )
+            exclude_file: exf.as_deref(),
+            manifest: &paths,
+        })
         .await
         {
             Ok(_) => {
@@ -2011,18 +2025,18 @@ async fn backup_all_sites(
                 continue;
             }
         };
-        match run_backup(
-            "dir",
-            &target,
-            &arc,
-            "",
-            None,
-            &owner,
-            Some(&root),
+        match run_backup(RunBackupArgs {
+            target_type: "dir",
+            target_json: &target,
+            name: &arc,
+            dest_dir: "",
+            job_id: None,
+            owner: &owner,
+            dest_root: Some(&root),
             excludes,
-            exf.as_deref(),
-            &paths,
-        )
+            exclude_file: exf.as_deref(),
+            manifest: &paths,
+        })
         .await
         {
             Ok(_) => {
@@ -2103,18 +2117,18 @@ async fn backup_all_dbs(report: &mut BackupAllReport, dest: &str, retain: i64) {
                 continue;
             }
         };
-        match run_backup(
-            "db",
-            &target,
-            &db,
-            "",
-            None,
-            &owner,
-            Some(&root),
-            &[],
-            None,
-            std::slice::from_ref(&db),
-        )
+        match run_backup(RunBackupArgs {
+            target_type: "db",
+            target_json: &target,
+            name: &db,
+            dest_dir: "",
+            job_id: None,
+            owner: &owner,
+            dest_root: Some(&root),
+            excludes: &[],
+            exclude_file: None,
+            manifest: std::slice::from_ref(&db),
+        })
         .await
         {
             Ok(_) => {

@@ -312,7 +312,7 @@ pub async fn dispatch(req: Request) -> Response {
             options,
             roles,
         } => {
-            plugin::plugin_run(
+            plugin::plugin_run(plugin::PluginRunArgs {
                 name,
                 actor,
                 home,
@@ -323,7 +323,7 @@ pub async fn dispatch(req: Request) -> Response {
                 action,
                 options,
                 roles,
-            )
+            })
             .await
         }
         Request::PluginInstall {
@@ -724,7 +724,7 @@ pub async fn dispatch(req: Request) -> Response {
             exclude,
             exclude_file,
         } => {
-            backup::dir(
+            backup::dir(backup::DirArgs {
                 name,
                 paths,
                 dest_dir,
@@ -733,7 +733,7 @@ pub async fn dispatch(req: Request) -> Response {
                 backup_root,
                 exclude,
                 exclude_file,
-            )
+            })
             .await
         }
         Request::BackupDb {
@@ -749,7 +749,7 @@ pub async fn dispatch(req: Request) -> Response {
             db_path,
             backup_root,
         } => {
-            backup::db(
+            backup::db(backup::DbArgs {
                 name,
                 engine,
                 db_name,
@@ -761,7 +761,7 @@ pub async fn dispatch(req: Request) -> Response {
                 dest_dir,
                 db_path,
                 backup_root,
-            )
+            })
             .await
         }
         Request::BackupDelete { path, backup_root } => backup::delete(path, backup_root).await,
@@ -794,7 +794,7 @@ pub async fn dispatch(req: Request) -> Response {
             db_path,
             backup_root,
         } => {
-            backup::restore_db(
+            backup::restore_db(backup::RestoreDbArgs {
                 path,
                 engine,
                 db_name,
@@ -804,7 +804,7 @@ pub async fn dispatch(req: Request) -> Response {
                 port,
                 db_path,
                 backup_root,
-            )
+            })
             .await
         }
         Request::BackupDisk { dir } => backup::disk(dir).await,

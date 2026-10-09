@@ -1172,18 +1172,32 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 /// 运行插件。
-pub async fn plugin_run(
-    name: String,
-    actor: String,
-    home: String,
-    user: Option<String>,
-    _site_id: Option<i64>,
-    site_root: Option<String>,
-    site_linux_user: Option<String>,
-    action: String,
-    options: HashMap<String, String>,
-    roles: Option<String>,
-) -> Response {
+pub(crate) struct PluginRunArgs {
+    pub(crate) name: String,
+    pub(crate) actor: String,
+    pub(crate) home: String,
+    pub(crate) user: Option<String>,
+    pub(crate) site_id: Option<i64>,
+    pub(crate) site_root: Option<String>,
+    pub(crate) site_linux_user: Option<String>,
+    pub(crate) action: String,
+    pub(crate) options: HashMap<String, String>,
+    pub(crate) roles: Option<String>,
+}
+
+pub async fn plugin_run(a: PluginRunArgs) -> Response {
+    let PluginRunArgs {
+        name,
+        actor,
+        home,
+        user,
+        site_id: _site_id,
+        site_root,
+        site_linux_user,
+        action,
+        options,
+        roles,
+    } = a;
     if !is_plugin_name(&name) {
         return Response::err(-1, "非法插件名");
     }
