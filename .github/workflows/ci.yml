@@ -58,11 +58,12 @@ jobs:
       - name: Create zappro stub (commercial module placeholder)
         run: |
           mkdir -p zappro/src
-          cat > zappro/src/mod.rs <<'EOF'
-// Placeholder for the Zap Pro (commercial) module mount point.
-// Real source is cloned into zappro/ externally; this stub only
-// lets cargo fmt --all resolve zapd's `mod pro;`.
-EOF
+          # 用 printf 而非 heredoc：heredoc 内容必须顶格，会破坏 YAML 块标量的缩进解析
+          printf '%s\n' \
+            '// Placeholder for the Zap Pro (commercial) module mount point.' \
+            '// Real source is cloned into zappro/ externally.' \
+            '// This stub only lets cargo fmt --all resolve zapd mod pro declaration.' \
+            > zappro/src/mod.rs
 
       - name: Check formatting
         run: cargo fmt --all --check
