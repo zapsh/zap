@@ -23,20 +23,6 @@
       </div>
     </el-card>
 
-    <!-- 搜索 -->
-    <div class="search-bar">
-      <el-input
-        v-model="keyword"
-        :placeholder="t('dashboardCpanel.searchPlaceholder')"
-        clearable
-        class="search-input"
-      >
-        <template #prefix>
-          <el-icon><Icon icon="material-symbols:search" /></el-icon>
-        </template>
-      </el-input>
-    </div>
-
     <!-- 统计卡片 -->
     <el-row :gutter="16" class="stat-row">
       <el-col v-for="c in statCards" :key="c.key" :xs="12" :sm="8" :lg="c.span">
@@ -63,7 +49,7 @@
     <!-- 常规信息 + 使用情况 -->
     <el-row :gutter="16" class="info-row">
       <!-- 常规信息 -->
-      <el-col :xs="24" :sm="12">
+      <el-col :xs="24" :sm="10">
         <el-card shadow="hover" class="info-card">
           <template #header>
             <div class="card-header">
@@ -92,6 +78,12 @@
             <el-descriptions-item :label="t('dashboardCpanel.sharedIp')">{{
               server.public_ip || '—'
             }}</el-descriptions-item>
+            <el-descriptions-item :label="t('dashboardCpanel.os')">{{
+              server.os_name_version || server.os_name || '—'
+            }}</el-descriptions-item>
+            <el-descriptions-item :label="t('dashboardCpanel.webserver')">{{
+              server.webserver || '—'
+            }}</el-descriptions-item>
             <el-descriptions-item :label="t('dashboardCpanel.server')">{{
               server.host_name || '—'
             }}</el-descriptions-item>
@@ -100,7 +92,7 @@
       </el-col>
 
       <!-- 使用情况 -->
-      <el-col :xs="24" :sm="12">
+      <el-col :xs="24" :sm="14">
         <el-card shadow="hover" class="info-card usage-card">
           <template #header>
             <div class="card-header">
@@ -111,85 +103,86 @@
             </div>
           </template>
 
-          <!-- 用量仪表 -->
-          <div class="gauges">
-            <div class="gauge">
-              <el-progress
-                type="dashboard"
-                :width="104"
-                :percentage="diskPct"
-                :color="diskColor"
-                :stroke-width="9"
-              >
-                <template #default>
-                  <span class="gauge-pct">{{
-                    pkg.disk_quota_mb > 0 ? diskPct + '%' : t('dashboardCpanel.noLimit')
-                  }}</span>
-                  <span class="gauge-cap">{{ t('dashboardCpanel.diskQuota') }}</span>
-                </template>
-              </el-progress>
-              <div class="gauge-text">
+          <!-- 规格表：标签 / 数值 / 进度条 / 百分比 四列对齐，仅磁盘·流量带进度条 -->
+          <div class="usage-list">
+            <div class="usage-item">
+              <span class="u-label">{{ t('dashboardCpanel.package') }}</span>
+              <span class="u-value">{{ pkg.name || t('dashboardCpanel.packageUnbound') }}</span>
+            </div>
+            <div class="usage-item">
+              <span class="u-label">{{ t('dashboardCpanel.diskQuota') }}</span>
+              <span class="u-value">
                 {{ account.disk_used_bytes ? formatBytes(account.disk_used_bytes) : '0 B' }}
                 <span class="muted"> / {{ fmtMb(pkg.disk_quota_mb) }}</span>
+              </span>
+              <div class="u-bar">
+                <el-progress
+                  :percentage="diskPct"
+                  :color="diskColor"
+                  :stroke-width="7"
+                  :show-text="false"
+                />
               </div>
+              <span class="u-pct" :style="{ color: diskColor }">{{
+                pkg.disk_quota_mb > 0 ? diskPct + '%' : t('dashboardCpanel.noLimit')
+              }}</span>
             </div>
-            <div class="gauge">
-              <el-progress
-                type="dashboard"
-                :width="104"
-                :percentage="bwPct"
-                :color="bwColor"
-                :stroke-width="9"
-              >
-                <template #default>
-                  <span class="gauge-pct">{{
-                    pkg.max_bandwidth_mb > 0 ? bwPct + '%' : t('dashboardCpanel.noLimit')
-                  }}</span>
-                  <span class="gauge-cap">{{ t('dashboardCpanel.bandwidth') }}</span>
-                </template>
-              </el-progress>
-              <div class="gauge-text">
-                {{ account.bandwidth_used_bytes ? formatBytes(account.bandwidth_used_bytes) : '0 B' }}
+            <div class="usage-item">
+              <span class="u-label">{{ t('dashboardCpanel.bandwidth') }}</span>
+              <span class="u-value">
+                {{
+                  account.bandwidth_used_bytes
+                    ? formatBytes(account.bandwidth_used_bytes)
+                    : '0 B'
+                }}
                 <span class="muted"> / {{ fmtMb(pkg.max_bandwidth_mb) }}</span>
+              </span>
+              <div class="u-bar">
+                <el-progress
+                  :percentage="bwPct"
+                  :color="bwColor"
+                  :stroke-width="7"
+                  :show-text="false"
+                />
               </div>
+              <span class="u-pct" :style="{ color: bwColor }">{{
+                pkg.max_bandwidth_mb > 0 ? bwPct + '%' : t('dashboardCpanel.noLimit')
+              }}</span>
             </div>
-          </div>
-
-          <!-- 其余指标 -->
-          <el-descriptions :column="1" label-width="96px" class="usage-meta">
-            <el-descriptions-item :label="t('dashboardCpanel.package')">
-              {{ pkg.name || t('dashboardCpanel.packageUnbound') }}
-            </el-descriptions-item>
-            <el-descriptions-item :label="t('dashboardCpanel.siteCount')">
-              {{ t('dashboardCpanel.countUnit', { n: counts.sites }) }}
-              <span class="muted">{{
-                t('dashboardCpanel.siteLimit', { n: fmtLimit(pkg.max_sites) })
-              }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item :label="t('dashboardCpanel.domainCount')">
-              <span class="muted">{{
-                t('dashboardCpanel.domainLimit', { n: fmtLimit(pkg.max_domains) })
-              }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item :label="t('dashboardCpanel.fpmSpec')">
-              <el-tag v-if="!pkg.fpm_spec_ref" size="small" type="info" effect="plain">
-                {{ t('dashboardCpanel.panelDefault') }}
-              </el-tag>
-              <span v-else>{{ pkg.fpm_spec_ref }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item :label="t('dashboardCpanel.sshTerminal')">
-              {{
+            <div class="usage-item">
+              <span class="u-label">{{ t('dashboardCpanel.siteCount') }}</span>
+              <span class="u-value">
+                {{ t('dashboardCpanel.countUnit', { n: counts.sites }) }}
+                <span class="muted">{{
+                  t('dashboardCpanel.siteLimit', { n: fmtLimit(pkg.max_sites) })
+                }}</span>
+              </span>
+            </div>
+            <div class="usage-item">
+              <span class="u-label">{{ t('dashboardCpanel.domainCount') }}</span>
+              <span class="u-value">
+                <span class="muted">{{
+                  t('dashboardCpanel.domainLimit', { n: fmtLimit(pkg.max_domains) })
+                }}</span>
+              </span>
+            </div>
+            <div class="usage-item">
+              <span class="u-label">{{ t('dashboardCpanel.sshTerminal') }}</span>
+              <span class="u-value">{{
                 packageBound
                   ? pkg.allow_ssh
                     ? t('dashboardCpanel.allow')
                     : t('dashboardCpanel.deny')
                   : t('dashboardCpanel.allowUnbound')
-              }}
-            </el-descriptions-item>
-            <el-descriptions-item :label="t('dashboardCpanel.reverseProxy')">{{
-              pkg.allow_proxy ? t('dashboardCpanel.allow') : t('dashboardCpanel.deny')
-            }}</el-descriptions-item>
-          </el-descriptions>
+              }}</span>
+            </div>
+            <div class="usage-item">
+              <span class="u-label">{{ t('dashboardCpanel.reverseProxy') }}</span>
+              <span class="u-value">{{
+                pkg.allow_proxy ? t('dashboardCpanel.allow') : t('dashboardCpanel.deny')
+              }}</span>
+            </div>
+          </div>
         </el-card>
       </el-col>
     </el-row>
@@ -240,19 +233,6 @@
         </el-table-column>
       </el-table>
     </el-card>
-
-    <!-- 功能分组 -->
-    <div v-for="group in visibleGroups" :key="group.title" class="group">
-      <div class="group-title">{{ group.title }}</div>
-      <el-row :gutter="16">
-        <el-col :xs="12" :sm="8" :md="6" :lg="4" v-for="item in group.items" :key="item.title">
-          <div class="app-tile" @click="handleClick(item)">
-            <el-icon class="app-icon"><Icon :icon="item.icon" /></el-icon>
-            <div class="app-title">{{ item.title }}</div>
-          </div>
-        </el-col>
-      </el-row>
-    </div>
   </div>
 </template>
 
@@ -260,7 +240,6 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import { Icon, Plus, ArrowRight } from '@/icons'
 import { formatBytes } from '@/utils/fmt'
 import { useUserStore } from '@/stores/user'
@@ -270,108 +249,10 @@ import type { DashboardCounts } from '@/api/dashboard'
 import { getUserInfo, getUserList } from '@/api/user'
 import type { UserListItem } from '@/api/user'
 
-interface AppEntry {
-  title: string
-  icon: string
-  path?: string
-  roles: string[]
-  coming?: boolean
-}
-
-interface AppGroup {
-  title: string
-  items: AppEntry[]
-}
-
 const { t } = useI18n()
 const { meta: statusMeta } = useUserStatus()
 const router = useRouter()
 const userStore = useUserStore()
-const roles = userStore.roles
-
-const keyword = ref('')
-
-// 功能入口
-const groups = computed<AppGroup[]>(() => [
-  {
-    title: t('dashboardCpanel.groupCommon'),
-    items: [
-      {
-        title: t('dashboardCpanel.itemFiles'),
-        icon: 'material-symbols:folder',
-        path: '/files',
-        roles: ['reseller'],
-      },
-      {
-        title: t('dashboardCpanel.itemSite'),
-        icon: 'material-symbols:public',
-        path: '/site',
-        roles: ['reseller'],
-      },
-      {
-        title: t('dashboardCpanel.itemTerminal'),
-        icon: 'material-symbols:monitor',
-        path: '/terminal',
-        roles: ['reseller'],
-      },
-      {
-        title: t('dashboardCpanel.itemProfile'),
-        icon: 'material-symbols:person',
-        path: '/profile',
-        roles: ['reseller'],
-      },
-    ],
-  },
-  {
-    title: t('dashboardReseller.groupReseller'),
-    items: [
-      {
-        title: t('dashboardReseller.itemCustomers'),
-        icon: 'material-symbols:account-circle',
-        // reseller 的客户管理路由（父路由会重定向到 /reseller/users/index）；
-        // 不能用 admin 的 /system/access —— reseller 没有这条路由，会落进 404
-        path: '/reseller/users',
-        roles: ['reseller'],
-      },
-      {
-        title: t('dashboardReseller.itemQuota'),
-        icon: 'material-symbols:speed',
-        roles: ['reseller'],
-        coming: true,
-      },
-      {
-        title: t('dashboardReseller.itemAllocation'),
-        icon: 'material-symbols:tune',
-        roles: ['reseller'],
-        coming: true,
-      },
-    ],
-  },
-])
-
-const hasRole = (entryRoles: string[]) => entryRoles.some((r) => roles.includes(r))
-
-const visibleGroups = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  return groups.value
-    .map((g) => ({
-      ...g,
-      items: g.items.filter(
-        (it) => hasRole(it.roles) && (!kw || it.title.toLowerCase().includes(kw)),
-      ),
-    }))
-    .filter((g) => g.items.length > 0)
-})
-
-function handleClick(item: AppEntry) {
-  if (item.coming) {
-    ElMessage.info(t('dashboardCpanel.comingSoon'))
-    return
-  }
-  if (item.path) {
-    router.push(item.path)
-  }
-}
 
 // ── 统计卡片（经销商：名下客户 / 站点总数 / 数据库总数） ──
 const counts = ref<DashboardCounts>({ users: 0, sites: 0, databases: 0 })
@@ -568,14 +449,6 @@ onMounted(async () => {
   color: var(--el-text-color-secondary);
 }
 
-.search-bar {
-  margin-bottom: 16px;
-}
-
-.search-input {
-  max-width: 480px;
-}
-
 .stat-row {
   margin-bottom: 16px;
 }
@@ -597,24 +470,27 @@ onMounted(async () => {
   color: var(--el-color-warning);
 }
 
+.stat-card {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06) !important;
+}
 .stat-card :deep(.el-card__body) {
-  padding: 16px;
+  padding: 12px 16px;
 }
 
 .stat-body {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
 }
 
 .stat-icon {
-  font-size: 26px;
-  padding: 10px;
-  border-radius: 10px;
+  font-size: 22px;
+  padding: 8px;
+  border-radius: 8px;
 }
 
 .stat-value {
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 600;
   line-height: 1.2;
 }
@@ -643,46 +519,53 @@ onMounted(async () => {
   font-weight: 600;
 }
 
-/* 用量仪表 */
-.gauges {
-  display: flex;
-  justify-content: space-around;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 8px 0 4px;
-}
-.gauge {
+/* 使用情况：规格表网格（标签/数值/进度条/百分比 四列对齐） */
+.usage-list {
   display: flex;
   flex-direction: column;
+}
+.usage-item {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) 180px 40px;
   align-items: center;
-  gap: 8px;
+  column-gap: 14px;
+  padding: 11px 2px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
-.gauge :deep(.el-progress__text) {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+.usage-item:last-child {
+  border-bottom: none;
 }
-.gauge-pct {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-  line-height: 1.1;
-}
-.gauge-cap {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-top: 2px;
-}
-.gauge-text {
+.u-label {
   font-size: 13px;
-  font-weight: 500;
-  color: var(--el-text-color-primary);
-  text-align: center;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
 }
-.usage-meta {
-  margin-top: 6px;
-  border-top: 1px solid var(--el-border-color-lighter);
-  padding-top: 8px;
+.u-value {
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.u-bar {
+  min-width: 0;
+}
+/* 进度条本体：细圆角轨道 + 圆角端点 + 轻微内阴影，更精致 */
+.u-bar :deep(.el-progress-bar__outer) {
+  background-color: var(--el-fill-color-light);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.u-bar :deep(.el-progress-bar__inner) {
+  border-radius: 999px;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.08) inset;
+}
+.u-pct {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 客户概览 */
@@ -696,47 +579,6 @@ onMounted(async () => {
 }
 .cell-name {
   font-weight: 500;
-  color: var(--el-text-color-primary);
-}
-
-.group {
-  margin-bottom: 24px;
-}
-
-.group-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-  margin-bottom: 12px;
-  border-left: 3px solid #e6a23c;
-  padding-left: 10px;
-}
-
-.app-tile {
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 20px 8px;
-  text-align: center;
-  cursor: pointer;
-  transition: all 0.2s;
-  margin-bottom: 16px;
-}
-
-.app-tile:hover {
-  border-color: #e6a23c;
-  box-shadow: 0 2px 12px rgba(230, 162, 60, 0.2);
-  transform: translateY(-2px);
-}
-
-.app-icon {
-  font-size: 32px;
-  color: var(--el-color-warning);
-  margin-bottom: 8px;
-}
-
-.app-title {
-  font-size: 14px;
   color: var(--el-text-color-primary);
 }
 </style>

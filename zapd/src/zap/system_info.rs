@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use crate::{
     db,
-    zap::{ZapJsonResult, jwt::ValidatedClaims},
+    zap::{ZapJsonResult, jwt::ValidatedClaims, server_env},
 };
 use axum::{Json, extract::Query};
 use serde::{Deserialize, Serialize};
@@ -156,6 +156,8 @@ pub async fn get_system_info() -> ZapJsonResult {
             "os_name_version": System::long_os_version().unwrap_or("".to_string()),
             "os_id":System::distribution_id(),
             "host_name":System::host_name().unwrap_or("".to_string()),
+            // 探测到的 Web 服务器（nginx / openresty…），供面板首页展示；仅 flavor 名，无敏感信息
+            "webserver": server_env::conf_get("webserver").unwrap_or_default(),
             "arch":System::cpu_arch(),
             "physical_core_count":System::physical_core_count(),
             "cpu_num":sys.cpus().len(),

@@ -71,6 +71,12 @@
             <el-descriptions-item :label="t('dashboardCpanel.sharedIp')">{{
               server.public_ip || '—'
             }}</el-descriptions-item>
+            <el-descriptions-item :label="t('dashboardCpanel.os')">{{
+              server.os_name_version || server.os_name || '—'
+            }}</el-descriptions-item>
+            <el-descriptions-item :label="t('dashboardCpanel.webserver')">{{
+              server.webserver || '—'
+            }}</el-descriptions-item>
             <el-descriptions-item :label="t('dashboardCpanel.server')">{{
               server.host_name || '—'
             }}</el-descriptions-item>
@@ -152,15 +158,6 @@
                 <span class="muted">{{
                   t('dashboardCpanel.domainLimit', { n: fmtLimit(pkg.max_domains) })
                 }}</span>
-              </span>
-            </div>
-            <div class="usage-item">
-              <span class="u-label">{{ t('dashboardCpanel.fpmSpec') }}</span>
-              <span class="u-value">
-                <el-tag v-if="!pkg.fpm_spec_ref" size="small" type="info" effect="plain">
-                  {{ t('dashboardCpanel.panelDefault') }}
-                </el-tag>
-                <template v-else>{{ pkg.fpm_spec_ref }}</template>
               </span>
             </div>
             <div class="usage-item">

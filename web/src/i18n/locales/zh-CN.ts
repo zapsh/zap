@@ -2838,7 +2838,7 @@ export default {
   /** 仪表盘 - 用户首页（cpanel） */
   dashboardCpanel: {
     searchPlaceholder: '搜索功能...',
-    generalInfo: '常规信息',
+    generalInfo: '账户信息',
     currentUser: '当前用户',
     usernameParen: '（{name}）',
     loginEmail: '登录邮箱',
@@ -2846,7 +2846,9 @@ export default {
     lastLoginIp: '上次登录 IP',
     lastLoginTime: '上次登录时间',
     sharedIp: '共享 IP',
-    server: '服务器',
+    server: '主机名',
+    os: '操作系统',
+    webserver: 'Web 服务器',
     usage: '使用情况',
     package: '套餐',
     packageUnbound: '未绑定套餐',

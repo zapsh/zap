@@ -2853,7 +2853,7 @@ const enUS: Messages = {
   /** Dashboard - user home (cpanel) */
   dashboardCpanel: {
     searchPlaceholder: 'Search features...',
-    generalInfo: 'General Info',
+    generalInfo: 'Account Summary',
     currentUser: 'Current User',
     usernameParen: ' ({name})',
     loginEmail: 'Login Email',
@@ -2861,7 +2861,9 @@ const enUS: Messages = {
     lastLoginIp: 'Last Login IP',
     lastLoginTime: 'Last Login Time',
     sharedIp: 'Shared IP',
-    server: 'Server',
+    server: 'Hostname',
+    os: 'Operating System',
+    webserver: 'Web Server',
     usage: 'Usage',
     package: 'Package',
     packageUnbound: 'No package bound',
