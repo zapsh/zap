@@ -67,11 +67,10 @@ bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # 手上已
 ```bash
 tar zxf zap-offline-v<版本>-linux-<架构>.tar.gz
 cd zap-offline
-sudo bash install-offline.sh
+sudo bash install.sh --pkg ./zap-v<版本>-linux-<arch>.tar.gz --offline
 ```
 
-- `install-offline.sh` 自动挑本目录下版本号最大的发行包，也可 `--pkg` 指定
-- 安装前按 `SHA256SUMS` 校验，确认无误但仍报不一致时加 `--no-verify`
+- 离线安装用 `install.sh --pkg <发行包> --offline`，需显式指定发行包（不自动挑包、不校验）
 - AppStore 用发行包内置的种子包，面板里可随时重试更新
 
 ## 已安装机器的离线升级

@@ -5,7 +5,6 @@
 # 产物 zap-offline-v<版本>[-pro]-linux-<arch>.tar.gz 解开后是：
 #   zap-v<版本>[-pro]-linux-<arch>.tar.gz   发布包本体（与在线安装用的是同一个）
 #   install.sh / uninstall.sh               与实际安装一致的那份脚本
-#   install-offline.sh                      内网机上的安装入口（自动挑包 + 校验）
 #   upgrade-offline.sh                      内网机上的升级入口（同一个包，两种用法）
 #   SHA256SUMS                              传递过程有没有损坏，装之前先验一遍
 #   README-offline.txt                      内网安装步骤
@@ -64,7 +63,6 @@ done
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 [ -f "$HERE/install.sh" ] || die "未找到 scripts/install.sh（请在本仓库内运行）"
-[ -f "$HERE/install-offline.sh" ] || die "未找到 scripts/install-offline.sh（请在本仓库内运行）"
 [ -f "$HERE/upgrade-offline.sh" ] || die "未找到 scripts/upgrade-offline.sh（请在本仓库内运行）
   本包同时用于**安装**与**升级**，两个入口都得带上。"
 
@@ -130,7 +128,6 @@ mkdir -p "$STAGE"
 mv -f "$WORK/${PKG_NAME}" "$STAGE/"
 cp -f "$HERE/install.sh" "$STAGE/install.sh"
 [ -f "$HERE/uninstall.sh" ] && cp -f "$HERE/uninstall.sh" "$STAGE/uninstall.sh"
-cp -f "$HERE/install-offline.sh" "$STAGE/install-offline.sh"
 cp -f "$HERE/upgrade-offline.sh" "$STAGE/upgrade-offline.sh"
 chmod 0755 "$STAGE"/*.sh
 
@@ -148,7 +145,7 @@ ZAP ${VERSION}（${EDITION}）离线安装包 · linux-${ARCH}
 
     tar zxf zap-offline-v${VERSION}${PRO_SUFFIX}-linux-${ARCH}.tar.gz
     cd zap-offline
-    sudo bash install-offline.sh
+    sudo bash install.sh --pkg "$PKG_NAME" --offline
 
 常用参数（原样透传给 install.sh）：
 
@@ -157,7 +154,7 @@ ZAP ${VERSION}（${EDITION}）离线安装包 · linux-${ARCH}
 
 Zap Pro 集群接入（可选）：
 
-    sudo ZAP_JOIN_TOKEN='zec_…' bash install-offline.sh \\
+    sudo ZAP_JOIN_TOKEN='zec_…' bash install.sh --pkg "$PKG_NAME" --offline \\
         --join-url https://ctrl.example.com:2600/zap --join-insecure
 
 离线升级（已装过 ZAP 的机器）：
@@ -166,7 +163,7 @@ Zap Pro 集群接入（可选）：
     cd zap-offline
     sudo bash upgrade-offline.sh
 
-  它挑包的规则与安装一致（本目录版本号最大的那个，或 --pkg 指定），
+  升级会自动挑本目录下版本号最大的发布包，也可 --pkg 指定，
   升级前自动备份当前二进制，失败会自动回滚，事后也能手工回滚：
 
     sudo ${ZAP_DIR:-/usr/local/zap}/zapupgrade rollback --list
@@ -177,8 +174,9 @@ Zap Pro 集群接入（可选）：
     --no-verify          跳过 sha256 校验
 
 说明：
-  · 两个入口都会自动挑本目录下版本号最大的发布包，也可用 --pkg 指定
-  · 安装 / 升级前都会按 SHA256SUMS 校验发布包；确认无误但仍报不一致时用 --no-verify
+  · 升级（upgrade-offline.sh）会自动挑本目录下版本号最大的发布包，也可用 --pkg 指定
+  · 升级前会按 SHA256SUMS 校验发布包；确认包无误但仍报不一致时用 --no-verify
+  · 安装（install.sh --pkg <发布包> --offline）需显式指定发布包，不做自动挑包与校验
   · AppStore 使用发行包内置的种子包，不克隆远端仓库（面板里可随时重试更新）
   · 升级走的是与在线升级同一套流程（备份 → 替换 → 重启 → 失败回滚）
 
@@ -203,5 +201,5 @@ echo "  架构:   linux-${ARCH}"
 echo "  产物:   ${OUT_DIR}/${OUT_NAME}（${SIZE}）"
 printf "\n"
 printf "  拷到内网后：tar zxf ${OUT_NAME} && cd zap-offline\n"
-printf "    新装： sudo bash install-offline.sh\n"
+printf "    新装： sudo bash install.sh --pkg <发布包> --offline\n"
 printf "    升级： sudo bash upgrade-offline.sh\n"

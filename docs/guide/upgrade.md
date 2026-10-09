@@ -14,7 +14,7 @@ title:
 | --- | --- | --- |
 | 面板 | 日常升级：有进度条、历史记录、可配自动更新 | 系统设置 → About ZAP → 系统更新 → 检查更新 / 立即更新 |
 | 命令行 | 面板打不开、服务起不来、批量运维 | `zapupgrade upgrade --to latest` |
-| 离线脚本 | 内网 / 无外网：用本地发行包安装或升级 | `bash install-offline.sh` / `bash upgrade-offline.sh` |
+| 离线脚本 | 内网 / 无外网：用本地发行包安装或升级 | `bash install.sh --pkg <发行包> --offline` / `bash upgrade-offline.sh` |
 | 安装脚本 | 首次部署、手上已有发行包 | `bash scripts/install.sh [版本]` |
 
 命令行与面板走的是同一套替换流程（备份 → 原子替换 → 重启 → 失败回滚），区别只在谁去下载发行包。
@@ -34,7 +34,7 @@ bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # 手上已
 ```
 
 产物 `dist/zap-offline-v<版本>[-pro]-linux-<架构>.tar.gz`，解开后是：
-发行包本体 + `install.sh` / `install-offline.sh` / `upgrade-offline.sh` / `uninstall.sh`
+发行包本体 + `install.sh` / `upgrade-offline.sh` / `uninstall.sh`
 + `SHA256SUMS` + `<发行包>.sha256` + 说明。同一个包既能装也能升。
 
 **2. 拷到内网机器上安装**
@@ -42,11 +42,10 @@ bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # 手上已
 ```bash
 tar zxf zap-offline-v<版本>-linux-<架构>.tar.gz
 cd zap-offline
-sudo bash install-offline.sh          # --admin-pass / --join-url 等参数原样透传给 install.sh
+sudo bash install.sh --pkg <发行包> --offline   # --admin-pass / --join-url 等参数原样透传给 install.sh
 ```
 
-`install-offline.sh` 自动挑本目录下版本号最大的发行包、按 `SHA256SUMS` 校验，
-再以 `--pkg <包> --offline` 交给 `install.sh`。也可以直接：
+直接离线安装（需显式指定发行包，`install.sh` 不会自动挑包、也不校验）：
 
 ```bash
 sudo bash install.sh --pkg ./zap-v<版本>-linux-amd64.tar.gz --offline
@@ -70,7 +69,7 @@ sudo bash upgrade-offline.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz
 sudo bash upgrade-offline.sh --force              # 版本不高于当前也要升（重装 / 回退）
 ```
 
-它挑包与校验的规则和 `install-offline.sh` 一样，然后把包交给
+`upgrade-offline.sh` 自动挑本目录下版本号最大的发行包、按 `SHA256SUMS` 校验，然后把包交给
 `zapupgrade upgrade --pkg <包>` —— **与在线升级同一套替换流程**
 （备份 → 原子替换 → 重启 → 失败自动回滚 → 可 `zapupgrade rollback`）。
 离线只是把「下载」换成「读本地文件」，升级质量与在线一致。

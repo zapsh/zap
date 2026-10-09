@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | Panel | day-to-day: progress, history, scheduled auto-update | System Settings → About ZAP → System Update → Check / Update now |
 | CLI | panel is down, services won't start, fleet ops | `zapupgrade upgrade --to latest` |
-| Offline scripts | air-gapped / intranet: install or upgrade from a local tarball | `bash install-offline.sh` / `bash upgrade-offline.sh` |
+| Offline scripts | air-gapped / intranet: install or upgrade from a local tarball | `bash install.sh --pkg <tarball> --offline` / `bash upgrade-offline.sh` |
 | Install script | first deploy, release tarball already at hand | `bash scripts/install.sh [version]` |
 
 The CLI and the panel share the exact same replacement routine
@@ -33,7 +33,7 @@ bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # tarball a
 ```
 
 Result: `dist/zap-offline-v<version>[-pro]-linux-<arch>.tar.gz`, containing the release tarball,
-`install.sh` / `install-offline.sh` / `upgrade-offline.sh` / `uninstall.sh`, a `SHA256SUMS`,
+`install.sh` / `upgrade-offline.sh` / `uninstall.sh`, a `SHA256SUMS`,
 a `<tarball>.sha256` and a short readme. One bundle serves both install and upgrade.
 
 **2. Copy it to the intranet host and install**
@@ -41,11 +41,11 @@ a `<tarball>.sha256` and a short readme. One bundle serves both install and upgr
 ```bash
 tar zxf zap-offline-v<version>-linux-<arch>.tar.gz
 cd zap-offline
-sudo bash install-offline.sh          # --admin-pass / --join-url ... are passed through
+sudo bash install.sh --pkg <tarball> --offline   # --admin-pass / --join-url ... are passed through
 ```
 
-`install-offline.sh` picks the highest-versioned release tarball in that directory, verifies it
-against `SHA256SUMS`, then hands over to `install.sh --pkg <tarball> --offline`. Equivalent one-liner:
+Install by pointing the install script at the local tarball with `--offline` (no auto-pick or
+verification); equivalent one-liner:
 
 ```bash
 sudo bash install.sh --pkg ./zap-v<version>-linux-amd64.tar.gz --offline
@@ -69,8 +69,8 @@ sudo bash upgrade-offline.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz
 sudo bash upgrade-offline.sh --force              # reinstall / downgrade to this version
 ```
 
-It picks and verifies the tarball exactly like `install-offline.sh`, then hands it to
-`zapupgrade upgrade --pkg <tarball>` — **the same replace flow as an online upgrade**
+`upgrade-offline.sh` picks the highest-versioned tarball in this directory and verifies it against
+`SHA256SUMS`, then hands it to `zapupgrade upgrade --pkg <tarball>` — **the same replace flow as an online upgrade**
 (backup → atomic replace → restart → auto-rollback on failure → `zapupgrade rollback`).
 Offline only swaps "download" for "read a local file"; the upgrade is just as safe.
 

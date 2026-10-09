@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # ZAP 离线升级入口 —— 给内网 / 无外网访问的机器。
 #
-# 与 install-offline.sh 同一套思路：它自己不替换任何二进制，只做
+# 离线升级入口：它自己不替换任何二进制，只做
 #   1. 找到本地发布包（--pkg 指定，或在本脚本同目录里挑版本号最大的那个）
 #   2. 有 SHA256SUMS 就先校验一遍（传递过程有没有损坏）
 #   3. 把剩下的活交给 zapupgrade upgrade --pkg <包>
@@ -84,9 +84,9 @@ done
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 # ── 升级前必须先有已安装实例 ─────────────────────────────────
-# 升级不管建库 / systemd，全靠现有安装；没装就用 install-offline.sh
+# 升级不管建库 / systemd，全靠现有安装；没装就用 install.sh 离线安装
 [ -x "$ZAP_DIR/zapd" ] || die "在 ${ZAP_DIR} 下没找到已安装的 zapd。
-  本机还没装 ZAP：请用 install-offline.sh 安装，而不是升级。
+  本机还没装 ZAP：请用 install.sh --pkg <发布包> --offline 安装，而不是升级。
   装在了别处时用 --dir 指定安装根目录。"
 
 UPGRADER="$ZAP_DIR/zapupgrade"
