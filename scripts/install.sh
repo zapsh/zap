@@ -616,8 +616,6 @@ ok "$L_DEPLOY_DONE"
 info "$L_CFG_DIR"
 mkdir -p /etc/zap
 
-printf '%s\n' "$EDITION_ID" > /etc/zap/edition
-chmod 0644 /etc/zap/edition
 chown zapadm:zapadm /etc/zap
 chmod 0750 /etc/zap
 

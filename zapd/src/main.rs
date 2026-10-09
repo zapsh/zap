@@ -39,6 +39,11 @@ struct Cli {
     #[clap(short, long, action)]
     version: bool,
 
+    /// 打印本二进制编译期确定的发行线（`pro` / `community`）后退出；不启动服务。
+    /// 供安装 / 升级工具判断该跟哪条发行线，替代原先的 `/etc/zap/edition` 文件。
+    #[clap(long, action)]
+    edition: bool,
+
     /// 初始化管理员账号后退出（install.sh 部署完成后调用，不启动面板服务）。
     /// 库不存在则建库建表；已有管理员则原样不动。
     #[clap(long, value_name = "USER")]
@@ -109,6 +114,10 @@ async fn main() {
     let cli = Cli::parse();
     if cli.version {
         println!("zapd version {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if cli.edition {
+        println!("{}", if cfg!(feature = "commercial") { "pro" } else { "community" });
         return;
     }
 

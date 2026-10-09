@@ -195,16 +195,10 @@ fn normalize_stage(stage: &Path) {
 /// 包名里的「发行线」后缀：商业版是 `-pro`，社区版没有。
 ///
 /// 商业版与社区版同版本号、不同包名：装的是哪条线就一直升哪条线，Pro 不会被社区版包
-/// 覆盖回去。以 `/etc/zap/edition`（install.sh 写入、zapupgrade 换线后回写）为准 ——
-/// 它是「这台机器跟哪条线」的唯一记录，能覆盖「二进制被回滚回旧版」这类不一致；
-/// 文件缺失时（老机器、或 /etc/zap 不可读）按本二进制的编译期特性兜底。
+/// 覆盖回去。以本二进制的编译期特性（`commercial` feature）为准 —— 二进制本身就是
+/// 发行线的唯一真相源，不需要外部文件记录。
 fn pkg_suffix() -> &'static str {
-    match std::fs::read_to_string("/etc/zap/edition") {
-        Ok(s) if s.trim() == "pro" => "-pro",
-        Ok(s) if s.trim() == "community" => "",
-        _ if cfg!(feature = "commercial") => "-pro",
-        _ => "",
-    }
+    if cfg!(feature = "commercial") { "-pro" } else { "" }
 }
 
 /// 下载发行包 → sha256 校验 → 解包 → 规整到 `stage/{run_id}/`（含 version 文件）。

@@ -35,7 +35,7 @@ sudo bash install.sh latest --pro
 | 参数 | 说明 |
 | --- | --- |
 | `[VERSION]` | 要安装的版本号，默认 `latest` |
-| `--pro` | 安装 Zap Pro；发行线会记进 `/etc/zap/edition`，之后升级自动跟同一条线 |
+| `--pro` | 安装 Zap Pro；发行线由所安装的二进制决定（pro / 社区），之后升级自动跟同一条线（也可显式 `--pro` / `--community`） |
 | `--admin-user <name>` | 管理员用户名（也是 Linux 账号名，家目录 `/home/<name>`），默认 `admin` |
 | `--admin-pass <pass>` | 管理员密码，可用字符 `字母 数字 . _ -`；不指定则随机生成 |
 | `--join-url <url>` | **Zap Pro**：接入主控的完整基址 |
@@ -89,7 +89,7 @@ sudo bash upgrade-offline.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz
 | 路径 | 内容 |
 | --- | --- |
 | `/usr/local/zap` | 程序与数据（`zapd` / `zapctl` / `zapexec` / `zapupgrade`、`data/`） |
-| `/etc/zap` | 配置（`zap.yaml`）、证书、发行线标记 `/etc/zap/edition` |
+| `/etc/zap` | 配置（`zap.yaml`）、证书 |
 | `/etc/systemd/system/zapd.service` 等 | systemd 单元 |
 
 服务管理：

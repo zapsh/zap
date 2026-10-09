@@ -53,7 +53,7 @@ sudo bash install.sh --pkg ./zap-v<version>-linux-amd64.tar.gz --offline
 
 Notes:
 
-- A `-pro` tarball installs as Zap Pro (recorded in `/etc/zap/edition`); no need to pass `--pro`
+- A `-pro` tarball installs as Zap Pro (the edition is baked into the binary); no need to pass `--pro`
 - AppStore falls back to the seed packages shipped inside the release; retry the update from the panel
 - Upgrading an installed host uses the other entry point: `upgrade-offline.sh`, see below
 

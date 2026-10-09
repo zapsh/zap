@@ -49,7 +49,7 @@ sudo bash install.sh --pkg ./zap-v<版本>-linux-amd64.tar.gz --offline
 
 要点：
 
-- 包名带 `-pro` 就按商业版装（写入 `/etc/zap/edition`），不必再加 `--pro`
+- 包名带 `-pro` 就按商业版装（发行线由二进制自带），不必再加 `--pro`
 - AppStore 用发行包内置的种子包，不克隆远端仓库；面板里可随时重试更新
 - 升级走另一个入口：`upgrade-offline.sh`，见下一节
 

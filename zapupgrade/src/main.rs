@@ -59,8 +59,6 @@ fn align_owner(path: &Path, data_dir: &Path) {
     }
 }
 
-/// 发行线标记文件：install.sh 写入，本工具升级成功后回写（见 persist_edition）。
-const EDITION_FILE: &str = "/etc/zap/edition";
 
 /// 默认更新渠道（与 zapd `zap::update_config::DEFAULT_CHANNEL` 保持一致）。
 const DEFAULT_CHANNEL: &str = "https://mirrors.zap.cn/zap/releases";
@@ -106,10 +104,10 @@ enum Command {
         /// 目标版本不高于当前版本时仍然安装
         #[arg(long, action)]
         force: bool,
-        /// 升级到商业版 Zap Pro（包名带 -pro）；缺省时按 /etc/zap/edition 判断
+        /// 升级到商业版 Zap Pro（包名带 -pro）；缺省时按已安装二进制的发行线（zapd --edition）判断
         #[arg(long, action)]
         pro: bool,
-        /// 回退到社区版（包名无后缀）；与 --pro 互斥，缺省时按 /etc/zap/edition 判断
+        /// 回退到社区版（包名无后缀）；与 --pro 互斥，缺省时按已安装二进制的发行线（zapd --edition）判断
         #[arg(long, action, conflicts_with = "pro")]
         community: bool,
         /// **离线升级**：用本地发行包，不联网（版本号 / 发行线 / 架构都从文件名解析）
@@ -630,46 +628,41 @@ fn normalize_stage(stage: &Path) {
 /// 包名里的「发行线」后缀：商业版是 `-pro`，社区版没有。
 ///
 /// 商业版与社区版同版本号、不同包名，装哪条就得一直升哪条 ——
-/// 优先级：`--pro` / `--community` > `/etc/zap/edition`（install.sh 写入、
-/// 本工具升级成功后回写）> 社区版。
-fn edition_suffix(pro: bool, community: bool) -> &'static str {
-    match edition_id(pro, community) {
+/// 优先级：`--pro` / `--community` > 已安装二进制的发行线（`zapd --edition`）> 社区版。
+fn edition_suffix(pro: bool, community: bool, dir: &Path) -> &'static str {
+    match edition_id(pro, community, dir) {
         "pro" => "-pro",
         _ => "",
     }
 }
 
-/// 这次（以及以后缺省时）要跟的发行线 id，与 install.sh 的 EDITION_ID 一致。
-fn edition_id(pro: bool, community: bool) -> &'static str {
+/// 这次（以及以后缺省时）要跟的发行线 id。
+///
+/// 优先级：`--pro` / `--community` > 已安装二进制的发行线（`zapd --edition`）> 社区版。
+/// 发行线由二进制编译期特性决定，本身就是真相源，不依赖外部文件。
+fn edition_id(pro: bool, community: bool, dir: &Path) -> &'static str {
     if pro {
         return "pro";
     }
     if community {
         return "community";
     }
-    match fs::read_to_string(EDITION_FILE) {
-        Ok(s) if s.trim() == "pro" => "pro",
+    match query_installed_edition(dir).as_str() {
+        "pro" => "pro",
         _ => "community",
     }
 }
 
-/// 把本次的发行线回写到 `/etc/zap/edition`。
+/// 查已安装 zapd 自己报的发行线：`zapd --edition` 打印 `pro` / `community` 后退出。
 ///
-/// 不写的话：装社区版时用 `--pro` 升级成功，下一次不带参数的升级（面板或命令行）
-/// 又会按文件里的 `community` 把社区版包拉回来，等于白升。
-/// 写失败不致命（非 root / 目录不存在）：记一条 warn，本次仍然生效。
-fn persist_edition(id: &str, log: &str) {
-    match fs::write(EDITION_FILE, format!("{id}\n")) {
-        Ok(_) => {
-            let _ = fs::set_permissions(EDITION_FILE, fs::Permissions::from_mode(0o644));
-            log_line(log, &format!("发行线已记录: {EDITION_FILE} = {id}"));
+/// 不读外部文件 —— 二进制编译期特性就是发行线，新系统无需兼容旧版标记文件；
+/// 二进制缺失 / 不可执行时回退社区版。
+fn query_installed_edition(dir: &Path) -> String {
+    match std::process::Command::new(dir.join("zapd")).arg("--edition").output() {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
         }
-        Err(e) => log_line(
-            log,
-            &format!(
-                "写入 {EDITION_FILE} 失败（{e}）：本次已生效，但后续不带 --pro 的升级会回到社区版"
-            ),
-        ),
+        _ => String::new(),
     }
 }
 
@@ -686,7 +679,7 @@ fn download_and_stage(
     let arch = target_arch()?;
     let base = format!(
         "{channel}/zap-v{version}{}-linux-{arch}.tar.gz",
-        edition_suffix(pro, community)
+        edition_suffix(pro, community, dir)
     );
     // 包名打进日志：升级完发现版本线不对（比如 --pro 没生效）时，一眼能看出拉的是哪个包
     log_line(log, &format!("下载发行包: {base}"));
@@ -906,7 +899,7 @@ fn cmd_upgrade(opts: &UpgradeOpts<'_>, dir: &Path, log: &str) -> i32 {
 
     let (version, edition, local_pkg) = match local {
         Some(Ok((v, info))) => {
-            // 发行线：显式参数 > 文件名 > /etc/zap/edition
+            // 发行线：显式参数 > 文件名 > 已安装二进制的发行线（zapd --edition）
             let id = if pro {
                 "pro"
             } else if community {
@@ -918,7 +911,7 @@ fn cmd_upgrade(opts: &UpgradeOpts<'_>, dir: &Path, log: &str) -> i32 {
             };
             // 换线（社区版 ⇄ Pro）是合法但影响很大的操作：不显式确认就不做，
             // 免得拷错包把 Pro 覆盖成社区版（或反过来把社区版升成无人授权的 Pro）
-            let installed = edition_id(false, false);
+            let installed = edition_id(false, false, dir);
             if id != installed && !pro && !community {
                 return fail(
                     log,
@@ -936,7 +929,7 @@ fn cmd_upgrade(opts: &UpgradeOpts<'_>, dir: &Path, log: &str) -> i32 {
             (v, id, Some((pkg.unwrap_or_default().to_string(), info)))
         }
         Some(Err(e)) => return fail(log, &format!("本地包不可用: {e}")),
-        None => (String::new(), edition_id(pro, community), None),
+        None => (String::new(), edition_id(pro, community, dir), None),
     };
 
     log_line(
@@ -1025,8 +1018,6 @@ fn cmd_upgrade(opts: &UpgradeOpts<'_>, dir: &Path, log: &str) -> i32 {
     });
     // 解包目录是一次性的：成功就清掉，失败时保留便于排查
     if code == 0 {
-        // 换线（社区版 → Pro，或 Pro → 社区版）必须落盘，否则下次升级又会按旧发行线拉包
-        persist_edition(edition, log);
         let _ = fs::remove_dir_all(&stage);
     }
     code
