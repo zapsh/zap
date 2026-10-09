@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# ZAP 服务器/VPS 管理系统 一键安装脚本
+# Zap One-Click Installer
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 # ── 终端颜色 ────────────────────────────────────────────────
@@ -17,22 +20,181 @@ detect_lang() {
     case "$loc" in
         zh_CN*|zh_TW*|zh_HK*|zh_SG*|zh) echo "zh" ;;
         en_US*|en_GB*|en)               echo "en" ;;
-        C|C.UTF-8|POSIX|"")             echo "zh" ;;  # 默认中文
-        *)                              echo "en" ;;  # 其它语言回退英文
+        C|C.UTF-8|POSIX|"")             echo "zh" ;;
+        *)                              echo "en" ;; 
     esac
 }
 
 LANG_MODE="$(detect_lang)"
 
+if [ "$LANG_MODE" = "zh" ]; then
+    L_MUST_ROOT="请以 root 身份运行: sudo bash $0"
+    L_FIND_BASH_FAIL="未找到 bash：请先安装后重试"
+    L_EDITION="发行版: %s"
+    L_TARGET="目标版本: %s   发行版: %s   系统: %s (systemd)   架构: %s"
+    L_NO_BASH="未找到 bash：AppStore 安装脚本与计划任务将无法执行，请先安装 bash"
+    L_QUERY_LATEST="查询最新版本..."
+    L_LATEST_VER="最新版本: %s"
+    L_QUERY_LATEST_FAIL="无法查询最新版本，使用 latest 标签"
+    L_OFFLINE_NO_QUERY="离线模式：不查询最新版本，请显式指定版本号"
+    L_OFFLINE_USE="离线安装：使用本地安装包 %s（版本 %s）"
+    L_USE_EXISTING="使用已存在的安装包 %s"
+    L_DOWNLOAD="下载 %s ..."
+    L_OFFLINE_NO_PKG="离线模式且当前目录没有安装包 %s：请先用 --pkg 指定本地包"
+    L_NO_WGET="未找到 wget，且当前目录没有安装包 %s：请先用 --pkg 指定本地包"
+    L_DOWNLOAD_FAIL="下载失败，请检查网络或版本号"
+    L_PKG_NOT_EXIST="指定的安装包不存在: %s"
+    L_PKG_EMPTY="指定的安装包为空: %s"
+    L_PKG_REQUIRED="--pkg 缺少安装包路径"
+    L_ADMIN_USER_REQUIRED="--admin-user 缺少用户名"
+    L_ADMIN_PASS_REQUIRED="--admin-pass 缺少密码"
+    L_PKG_NAME_BAD="包名不是 zap-v<版本>[-pro]-%s-%s.tar.gz，按 %s 继续（仅影响完成页显示）"
+    L_DECOMP="解压安装包..."
+    L_TMP_FAIL="无法创建临时目录"
+    L_EXTRACT_FAIL="解压失败，安装包可能已损坏"
+    L_PKG_FORMAT="安装包格式不正确：缺少 zap/ 目录"
+    L_PKG_CONTENT="安装包内容目录: %s"
+    L_OFFLINE_SKIP="离线模式：跳过 AppStore 仓库克隆，沿用发行包内置种子包"
+    L_INIT_APPSTORE="初始化 AppStore 官方仓库..."
+    L_APPSTORE_DONE="AppStore 官方仓库同步完成"
+    L_APPSTORE_FAIL="无法克隆 AppStore 仓库（网络不可达？），已保留内置种子包，可在面板中重试更新"
+    L_WWW_MISSING="安装包未包含 data/www，面板「文档」菜单将不可用"
+    L_DOC_DEPLOYED="文档已部署（%d 个 md → %s）"
+    L_WWW_DOC_MISSING="安装包未包含文档 md，面板「文档」菜单将不可用"
+    L_DEPLOY_PROGRAM="部署程序到 %s ..."
+    L_UPGRADE_DETECTED="检测到已安装版本，执行升级..."
+    L_PKG_MISSING_BIN="安装包缺少 %s（查找目录: %s）"
+    L_DEPLOY_BIN_FAIL="部署 %s 失败"
+    L_SCRIPTS_MISSING="安装包未包含 scripts 目录（查找目录: %s），systemd 服务文件将缺失"
+    L_DEPLOY_DONE="程序部署完成"
+    L_CFG_DIR="准备配置目录 /etc/zap ..."
+    L_GEN_CFG="生成默认配置 /etc/zap/zap.yaml"
+    L_WEBSERVER_DIR="站点配置目录已就绪（/etc/zap/webservers）"
+    L_RUNTIME_PERM="设置运行目录权限（zapadm）..."
+    L_CFG_DONE="配置准备完成"
+    L_INSTALL_SERVICE="安装 systemd 服务..."
+    L_SERVICE_INSTALL_FAIL="安装 %s.service 失败"
+    L_SERVICE_ENABLE_FAIL="%s 服务 enable 失败"
+    L_SERVICE_START_FAIL="%s 启动失败"
+    L_INIT_ADMIN="初始化管理员 %s ..."
+    L_INIT_ADMIN_FAIL="初始化管理员失败（可稍后手动执行 zapd --init-admin 重试）：%s"
+    L_SERVICE_ENABLED="systemd 服务已启用"
+    L_USER_EXISTS="用户 %s 已存在"
+    L_CREATE_USER="创建用户 %s"
+    L_CREATE_USER_FAIL="创建 %s 用户失败"
+    L_NO_USERADD="未找到 useradd / adduser，无法创建 %s 用户"
+    L_LINUX_ACCT_EXISTS="Linux 账号 %s 已存在"
+    L_LINUX_ACCT_CREATED="Linux 账号 %s 已创建（%s，nologin）"
+    L_HOME_READY="家目录已就绪: %s（www/logs/tmp）"
+    L_GROUP_FAIL="创建组 %s 失败（继续）"
+    L_USER_CREATED="用户 %s 创建完成"
+    L_HOME_SKEL_FAIL="创建家目录骨架失败: %s"
+    L_MKDIR_FAIL="无法创建安装目录 %s"
+    L_DEPLOY_SCRIPTS_FAIL="部署 scripts 失败"
+    L_WARN_EXISTING_ADMIN="⚠ 检测到库里已有管理员：本次未改动其密码，请用原密码登录"
+    L_WARN_RANDOM_PASS="⚠ 以上密码为随机生成，请立即保存（不会再次显示）"
+    L_WARN_CHANGE_PASS="⚠ 首次登录后请立即修改密码！"
+    L_WARN_OFFLINE="⚠ 离线安装：AppStore 用内置种子包，升级请用离线升级入口"
+    L_OFFLINE_UPGRADE_NOTE="（与 install-offline.sh 同目录；会自动备份，失败可 zapupgrade rollback）"
+    L_UNKNOWN_ARG="未知参数: %s（--help 查看用法）"
+    L_ADMIN_EMPTY="管理员用户名不能为空"
+    L_ADMIN_TOO_LONG="管理员用户名过长（≤32 字符）: %s"
+    L_ADMIN_START="管理员用户名需以小写字母或 _ 开头: %s"
+    L_ADMIN_CHARS="管理员用户名只能包含 a-z 0-9 _ -: %s"
+    L_PASS_CHARS="管理员密码只能包含字母、数字以及 . _ -（避免破坏 env 文件解析）"
+    L_PASS_SHORT="管理员密码不足 8 位，建议登录后修改"
+    L_NO_SYSTEMCTL="未检测到 systemctl：目前仅支持 systemd 作为服务管理器"
+    L_OS_UNSUPPORTED="不支持的操作系统: %s（当前仅支持 Linux）"
+    L_ARCH_UNSUPPORTED="不支持的架构: %s"
+    L_DOWNLOAD_EMPTY="下载内容为空: %s"
+else
+    L_MUST_ROOT="Please run as root: sudo bash $0"
+    L_FIND_BASH_FAIL="bash not found: please install it and retry"
+    L_EDITION="Edition: %s"
+    L_TARGET="Target version: %s   Edition: %s   OS: %s (systemd)   Arch: %s"
+    L_NO_BASH="bash not found: AppStore install scripts and cron jobs will fail; please install bash"
+    L_QUERY_LATEST="Querying latest version..."
+    L_LATEST_VER="Latest version: %s"
+    L_QUERY_LATEST_FAIL="Cannot query latest version, using 'latest' tag"
+    L_OFFLINE_NO_QUERY="Offline mode: not querying latest version, please specify a version explicitly"
+    L_OFFLINE_USE="Offline install: using local package %s (version %s)"
+    L_USE_EXISTING="Using existing package %s"
+    L_DOWNLOAD="Downloading %s ..."
+    L_OFFLINE_NO_PKG="Offline mode and no package in current dir %s: please specify a local package with --pkg"
+    L_NO_WGET="wget not found and no package in current dir %s: please specify a local package with --pkg"
+    L_DOWNLOAD_FAIL="Download failed, please check network or version"
+    L_PKG_NOT_EXIST="Specified package does not exist: %s"
+    L_PKG_EMPTY="Specified package is empty: %s"
+    L_PKG_REQUIRED="--pkg requires package path"
+    L_ADMIN_USER_REQUIRED="--admin-user requires username"
+    L_ADMIN_PASS_REQUIRED="--admin-pass requires password"
+    L_PKG_NAME_BAD="Package name is not zap-v<version>[-pro]-%s-%s.tar.gz, continuing with %s (affects completion page only)"
+    L_DECOMP="Extracting package..."
+    L_TMP_FAIL="Cannot create temp directory"
+    L_EXTRACT_FAIL="Extraction failed, the package may be corrupted"
+    L_PKG_FORMAT="Invalid package layout: missing zap/ directory"
+    L_PKG_CONTENT="Package content dir: %s"
+    L_OFFLINE_SKIP="Offline mode: skipping AppStore repo clone, using bundled seed package"
+    L_INIT_APPSTORE="Initializing AppStore official repo..."
+    L_APPSTORE_DONE="AppStore official repo synced"
+    L_APPSTORE_FAIL="Cannot clone AppStore repo (network unreachable?); kept bundled seed package, retry from panel later"
+    L_WWW_MISSING="Package does not contain data/www; the panel 'Docs' menu will be unavailable"
+    L_DOC_DEPLOYED="Documents deployed (%d md → %s)"
+    L_WWW_DOC_MISSING="Package does not contain doc md; the panel 'Docs' menu will be unavailable"
+    L_DEPLOY_PROGRAM="Deploying program to %s ..."
+    L_UPGRADE_DETECTED="Existing installation detected, upgrading..."
+    L_PKG_MISSING_BIN="Package missing %s (lookup dir: %s)"
+    L_DEPLOY_BIN_FAIL="Failed to deploy %s"
+    L_SCRIPTS_MISSING="Package does not contain scripts dir (lookup dir: %s); systemd unit files will be missing"
+    L_DEPLOY_DONE="Program deployed"
+    L_CFG_DIR="Preparing config dir /etc/zap ..."
+    L_GEN_CFG="Generating default config /etc/zap/zap.yaml"
+    L_WEBSERVER_DIR="Web server config dir ready (/etc/zap/webservers)"
+    L_RUNTIME_PERM="Setting runtime dir permissions (zapadm)..."
+    L_CFG_DONE="Config prepared"
+    L_INSTALL_SERVICE="Installing systemd service..."
+    L_SERVICE_INSTALL_FAIL="Failed to install %s.service"
+    L_SERVICE_ENABLE_FAIL="%s service enable failed"
+    L_SERVICE_START_FAIL="%s start failed"
+    L_INIT_ADMIN="Initializing admin %s ..."
+    L_INIT_ADMIN_FAIL="Failed to initialize admin (retry later with: zapd --init-admin): %s"
+    L_SERVICE_ENABLED="systemd services enabled"
+    L_USER_EXISTS="User %s already exists"
+    L_CREATE_USER="Creating user %s"
+    L_CREATE_USER_FAIL="Failed to create user %s"
+    L_NO_USERADD="useradd / adduser not found, cannot create user %s"
+    L_LINUX_ACCT_EXISTS="Linux account %s already exists"
+    L_LINUX_ACCT_CREATED="Linux account %s created (%s, nologin)"
+    L_HOME_READY="Home dir ready: %s (www/logs/tmp)"
+    L_GROUP_FAIL="Failed to create group %s (continuing)"
+    L_USER_CREATED="User %s created"
+    L_HOME_SKEL_FAIL="Failed to create home skeleton: %s"
+    L_MKDIR_FAIL="Cannot create install dir %s"
+    L_DEPLOY_SCRIPTS_FAIL="Failed to deploy scripts"
+    L_WARN_EXISTING_ADMIN="⚠ An admin already exists in the database: password was NOT changed this time, please log in with the original password"
+    L_WARN_RANDOM_PASS="⚠ The password above was randomly generated, save it now (it will not be shown again)"
+    L_WARN_CHANGE_PASS="⚠ Change your password immediately after first login!"
+    L_WARN_OFFLINE="⚠ Offline install: AppStore uses the bundled seed package; upgrade via the offline upgrade entry"
+    L_OFFLINE_UPGRADE_NOTE="(same dir as install-offline.sh; auto-backup, rollback with zapupgrade rollback on failure)"
+    L_UNKNOWN_ARG="Unknown argument: %s (use --help)"
+    L_ADMIN_EMPTY="Admin username cannot be empty"
+    L_ADMIN_TOO_LONG="Admin username too long (≤32 chars): %s"
+    L_ADMIN_START="Admin username must start with a-z or _: %s"
+    L_ADMIN_CHARS="Admin username may only contain a-z 0-9 _ -: %s"
+    L_PASS_CHARS="Admin password may only contain letters, digits and . _ - (to avoid breaking env-file parsing)"
+    L_PASS_SHORT="Admin password is shorter than 8 chars; change it after first login"
+    L_NO_SYSTEMCTL="systemctl not found: only systemd is supported as service manager"
+    L_OS_UNSUPPORTED="Unsupported OS: %s (only Linux supported)"
+    L_ARCH_UNSUPPORTED="Unsupported architecture: %s"
+    L_DOWNLOAD_EMPTY="Downloaded content is empty: %s"
+fi
+
 usage() {
-    cat <<'EOF'
+    if [ "$LANG_MODE" = "zh" ]; then
+        cat <<'EOF'
 用法: sudo bash install.sh [VERSION] [OPTIONS]
 
   VERSION                要安装的版本号（默认 latest）
-
-发行版（商业版与社区版同版本号，包名不同）：
-  --pro                  安装商业版 Zap Pro（包名为 zap-v<版本>-pro-<os>-<arch>.tar.gz）
-                         不带就是社区版；已装机器上可用 /etc/zap/edition 查看当前发行版
 
 离线安装（内网 / 无外网机器）：
   --pkg <路径>           使用**本地已有的**安装包，不联网下载（版本号从文件名解析）
@@ -46,30 +208,47 @@ usage() {
                          可用字符：字母、数字、. _ -（避免破坏 env 文件解析）
   环境变量                ZAP_ADMIN_USER / ZAP_ADMIN_PASSWORD（命令行参数优先）
 
-Zap Pro 集群接入（可选，需要含商业模块的构建）：
-  --join-url <url>       主控面板**完整基址**（含 url_prefix），如 https://ctrl.example.com:2600/zap
-  --join-token <code>    主控生成的注册口令（有 → 主控当场通过；不填 → 进主控的待审批队列）
-                         建议用环境变量 ZAP_JOIN_TOKEN 传（避免明文留在 ps / history）
-  --join-name <name>     在主控列表里显示的节点名（默认用主机名）
-  --join-insecure        主控是自签证书时跳过校验
-
 说明：安装末尾会执行 `zapd --init-admin` 建库并写入管理员（凭据只经命令行传递，
 不落任何文件）；已安装过的机器重新执行本脚本不会改动现有管理员密码。
-已接入主控的机器重跑本脚本**不会覆盖**现有凭据，除非显式再传 --join-token。
 
   -h, --help             显示本帮助
 
 示例:
   sudo bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
   sudo ZAP_ADMIN_PASSWORD='S3cret-Pass' bash install.sh
-  sudo bash install.sh latest --pro          # 商业版 Zap Pro
-  sudo ZAP_JOIN_TOKEN='zec_…' bash install.sh latest --pro --join-url https://ctrl.example.com:2600/zap --join-insecure
-
   sudo bash install.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz --offline   # 内网离线安装
 EOF
+    else
+        cat <<'EOF'
+Usage: sudo bash install.sh [VERSION] [OPTIONS]
+
+  VERSION                Version to install (default: latest)
+
+Offline install (intranet / no internet):
+  --pkg <path>           Use an existing local package, no download (version parsed from filename)
+  --offline              Fully offline: no latest check, no download, no AppStore clone
+                         (AppStore uses the bundled seed package; retry update from panel later)
+
+Initial admin credentials (only on first install with a fresh DB):
+  --admin-user <name>    Admin username (default: admin); also the Linux account, home at /home/<name>
+  --admin-pass <pass>    Admin password; if omitted a random one is generated and printed
+                         Allowed chars: letters, digits, . _ - (avoid breaking env-file parsing)
+  Env vars               ZAP_ADMIN_USER / ZAP_ADMIN_PASSWORD (CLI args take precedence)
+
+Notes: at the end `zapd --init-admin` creates the DB and writes the admin (credentials passed only via CLI,
+never written to disk); re-running on an installed machine won't change the existing admin password.
+
+  -h, --help             Show this help
+
+Examples:
+  sudo bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
+  sudo ZAP_ADMIN_PASSWORD='S3cret-Pass' bash install.sh
+  sudo bash install.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz --offline   # intranet offline install
+EOF
+    fi
 }
 
-# 16 位随机密码：优先 base64（可读性好），没有则退回十六进制
+# rand 16 chars from /dev/urandom, base64, strip = + / and newlines
 gen_password() {
     local raw
     raw=$(head -c 12 /dev/urandom 2>/dev/null | base64 2>/dev/null | tr -d '\n=+/') || raw=""
@@ -78,163 +257,90 @@ gen_password() {
     printf '%s' "${raw:0:16}"
 }
 
-# ── 解释器检查（脚本用到 bash 数组与 pipefail，sh/dash 下行为异常）──
-# Linux 发行版自带 bash：按常见路径找出来，找不到就提示先装，找到后 exec 重入本脚本。
-find_bash() {
-    local b
-    for b in /bin/bash /usr/bin/bash; do
-        [ -x "$b" ] && { printf '%s' "$b"; return 0; }
-    done
-    command -v bash 2>/dev/null
-}
-
-if [ -z "${BASH_VERSION:-}" ]; then
-    BASH_BIN=$(find_bash)
-    [ -n "$BASH_BIN" ] && [ -f "$0" ] \
-        || die "未找到 bash：请先安装后重试"
-    exec "$BASH_BIN" "$0" "$@"
-fi
-
-# ── 权限检查 ────────────────────────────────────────────────
-[ "$(id -u)" -eq 0 ] || die "请以 root 身份运行：sudo bash $0"
+zap_install_main() {
+[ "$(id -u)" -eq 0 ] || die "$L_MUST_ROOT"
 
 printf "${GREEN}========================================${NC}\n"
-printf "${GREEN}   ZAP 服务器/VPS 管理系统 · 安装程序${NC}\n"
+printf "${GREEN}   Zap One-Click Installer ${NC}\n"
 printf "${GREEN}========================================${NC}\n"
 
-# ── 解析参数：版本号（位置参数）+ 初始管理员凭据 ───────────
 VERSION="latest"
 ADMIN_USER=""; ADMIN_PASS=""; PASS_GENERATED=0; ADMIN_UNCHANGED=0
-JOIN_URL=""; JOIN_TOKEN=""; JOIN_NAME=""; JOIN_INSECURE=0
-PRO=0
 LOCAL_PKG=""; OFFLINE=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --pro)
-            PRO=1; shift ;;
         --pkg)
             LOCAL_PKG="${2:-}"
-            [ -n "$LOCAL_PKG" ] || die "--pkg 缺少安装包路径"
+            [ -n "$LOCAL_PKG" ] || die "$L_PKG_REQUIRED"
             shift 2 ;;
         --pkg=*)
             LOCAL_PKG="${1#*=}"
-            [ -n "$LOCAL_PKG" ] || die "--pkg 缺少安装包路径"
+            [ -n "$LOCAL_PKG" ] || die "$L_PKG_REQUIRED"
             shift ;;
         --offline)
             OFFLINE=1; shift ;;
-        --join-url)
-            JOIN_URL="${2:-}"
-            [ -n "$JOIN_URL" ] || die "--join-url 缺少主控地址"
-            shift 2 ;;
-        --join-url=*)
-            JOIN_URL="${1#*=}"
-            [ -n "$JOIN_URL" ] || die "--join-url 缺少主控地址"
-            shift ;;
-        --join-token)
-            JOIN_TOKEN="${2:-}"
-            [ -n "$JOIN_TOKEN" ] || die "--join-token 缺少注册口令"
-            shift 2 ;;
-        --join-token=*)
-            JOIN_TOKEN="${1#*=}"
-            [ -n "$JOIN_TOKEN" ] || die "--join-token 缺少注册口令"
-            shift ;;
-        --join-name)
-            JOIN_NAME="${2:-}"
-            [ -n "$JOIN_NAME" ] || die "--join-name 缺少节点名"
-            shift 2 ;;
-        --join-name=*)
-            JOIN_NAME="${1#*=}"
-            [ -n "$JOIN_NAME" ] || die "--join-name 缺少节点名"
-            shift ;;
-        --join-insecure)
-            JOIN_INSECURE=1; shift ;;
         --admin-user)
             ADMIN_USER="${2:-}"
-            [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
+            [ -n "$ADMIN_USER" ] || die "$L_ADMIN_USER_REQUIRED"
             shift 2 ;;
         --admin-user=*)
             ADMIN_USER="${1#*=}"
-            [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
+            [ -n "$ADMIN_USER" ] || die "$L_ADMIN_USER_REQUIRED"
             shift ;;
         --admin-pass|--admin-password)
             ADMIN_PASS="${2:-}"
-            [ -n "$ADMIN_PASS" ] || die "--admin-pass 缺少密码"
+            [ -n "$ADMIN_PASS" ] || die "$L_ADMIN_PASS_REQUIRED"
             shift 2 ;;
         --admin-pass=*|--admin-password=*)
             ADMIN_PASS="${1#*=}"
-            [ -n "$ADMIN_PASS" ] || die "--admin-pass 缺少密码"
+            [ -n "$ADMIN_PASS" ] || die "$L_ADMIN_PASS_REQUIRED"
             shift ;;
         -h|--help)
             usage; exit 0 ;;
         -*)
-            die "未知参数: $1（--help 查看用法）" ;;
+            die "$(printf "$L_UNKNOWN_ARG" "$1")" ;;
         *)
             VERSION="$1"; shift ;;
     esac
 done
 
-# 命令行未指定时回落到环境变量，再回落到默认值
 [ -n "$ADMIN_USER" ] || ADMIN_USER="${ZAP_ADMIN_USER:-admin}"
 [ -n "$ADMIN_PASS" ] || ADMIN_PASS="${ZAP_ADMIN_PASSWORD:-}"
-# 注册口令优先走环境变量：命令行参数会短暂出现在 ps / shell history 里
-[ -n "$JOIN_TOKEN" ] || JOIN_TOKEN="${ZAP_JOIN_TOKEN:-}"
 
-# 用户名即 Linux 账号名（家目录 /home/<name>），必须满足 useradd 约束
 ADMIN_USER=$(printf '%s' "$ADMIN_USER" | tr 'A-Z' 'a-z')
-[ -n "$ADMIN_USER" ] || die "管理员用户名不能为空"
-[ "${#ADMIN_USER}" -le 32 ] || die "管理员用户名过长（≤32 字符）: ${ADMIN_USER}"
+[ -n "$ADMIN_USER" ] || die "$L_ADMIN_EMPTY"
+[ "${#ADMIN_USER}" -le 32 ] || die "$(printf "$L_ADMIN_TOO_LONG" "$ADMIN_USER")"
 case "$ADMIN_USER" in
     [a-z_]*) ;;
-    *) die "管理员用户名需以小写字母或 _ 开头: ${ADMIN_USER}" ;;
+    *) die "$(printf "$L_ADMIN_START" "$ADMIN_USER")" ;;
 esac
 case "$ADMIN_USER" in
-    *[!a-z0-9_-]*) die "管理员用户名只能包含 a-z 0-9 _ -: ${ADMIN_USER}" ;;
+    *[!a-z0-9_-]*) die "$(printf "$L_ADMIN_CHARS" "$ADMIN_USER")" ;;
 esac
 
 if [ -z "$ADMIN_PASS" ]; then
     ADMIN_PASS=$(gen_password)
     PASS_GENERATED=1
 fi
-# 密码会写进 systemd 的 env 文件，含空白 / 引号 / $ 会破坏解析
 case "$ADMIN_PASS" in
-    *[!A-Za-z0-9._-]*) die "管理员密码只能包含字母、数字以及 . _ -（避免破坏 env 文件解析）" ;;
+    *[!A-Za-z0-9._-]*) die "$L_PASS_CHARS" ;;
 esac
-[ "${#ADMIN_PASS}" -ge 8 ] || warn "管理员密码不足 8 位，建议登录后修改"
-# ── 离线安装：发行线跟着包名走 ─────────────────────────────
-# 包名带 -pro 就是商业版，不必再显式 --pro —— 记错发行线的代价是
-# zapupgrade 以后会拉错那条线的包把 Pro 覆盖回社区版，宁可多认一次。
-if [ -n "$LOCAL_PKG" ] && [ "$PRO" != "1" ]; then
-    local_base=$(basename "$LOCAL_PKG")
-    if [[ "$local_base" =~ -pro-[a-z0-9_]+-[a-z0-9_]+\.tar\.gz$ ]]; then
-        PRO=1
-        info "离线包名带 -pro：按商业版安装"
-    fi
-fi
+[ "${#ADMIN_PASS}" -ge 8 ] || warn "$L_PASS_SHORT"
 
-# ── 发行版：社区版 / 商业版 Zap Pro ─────────────────────────
-# 两条线同版本号，只有包名不同（-pro 后缀）：装哪条就要一直升哪条，
-# 因此这里把发行线记进 /etc/zap/edition，zapupgrade 据此下载对应的包。
-if [ "$PRO" = "1" ]; then
-    EDITION="Zap Pro"; EDITION_ID="pro"; PRO_SUFFIX="-pro"
-else
-    EDITION="Zap Community"; EDITION_ID="community"; PRO_SUFFIX=""
-fi
-info "发行版: ${EDITION}"
-if [ "$PRO" != "1" ] && [ -n "$JOIN_URL" ]; then
-    warn "接入主控（--join-url）属于 Zap Pro 功能：本次装的是社区版，接入会失败（加 --pro 重试）"
-fi
+EDITION="${EDITION:-Zap Community}"
+EDITION_ID="${EDITION_ID:-community}"
+PRO_SUFFIX="${PRO_SUFFIX:-}"
+info "$(printf "$L_EDITION" "$EDITION")"
 
-# ── 平台探测：操作系统 + 服务管理器 ─────────────────────────
-# 只支持 Linux + systemd：安装包、服务单元、防火墙后端都按这一套来。
 OS=$(uname -s)
 case "$OS" in
     Linux)
         command -v systemctl >/dev/null 2>&1 \
-            || die "未检测到 systemctl：目前仅支持 systemd 作为服务管理器"
+            || die "$L_NO_SYSTEMCTL"
         OS_PKG=linux
         ;;
     *)
-        die "不支持的操作系统: ${OS}（当前仅支持 Linux）"
+        die "$(printf "$L_OS_UNSUPPORTED" "$OS")"
         ;;
 esac
 
@@ -244,20 +350,10 @@ case "$ARCH" in
     aarch64|arm64|arm*)  ARCH="arm64" ;;
     ppc64le)             ;;
     s390x)               ;;
-    *) die "不支持的架构: $ARCH" ;;
+    *) die "$(printf "$L_ARCH_UNSUPPORTED" "$ARCH")" ;;
 esac
-info "目标版本: ${VERSION}   发行版: ${EDITION}   系统: ${OS} (systemd)   架构: ${ARCH}"
+info "$(printf "$L_TARGET" "$VERSION" "$EDITION" "$OS" "$ARCH")"
 
-# ── bash 可用性提示（运行时由 zapexec 自行解析路径）──
-# 面板运行时按绝对路径调用 bash 拉起 AppStore 包脚本、计划任务与用户脚本，
-# zapexec 会自动探测实际路径，这里只在找不到 bash 时提前告警，
-# 避免装完才发现装不了软件。
-if ! find_bash >/dev/null 2>&1; then
-    warn "未找到 bash：AppStore 安装脚本与计划任务将无法执行，请先安装 bash"
-fi
-
-# ── 下载工具 ────────────────────────────────────────────────
-# 离线安装（--pkg）时用不到下载，缺 wget 不该拦住安装：这里只记录能力。
 HAVE_FETCH=0
 if command -v wget >/dev/null 2>&1; then
     fetch_url()  { wget -q -O - "$1"; }
@@ -265,7 +361,6 @@ if command -v wget >/dev/null 2>&1; then
     HAVE_FETCH=1
 fi
 
-# ── 解析 latest 版本号 ──────────────────────────────────────
 DOWNLOAD_ZAP_URL="https://mirrors.zap.cn/zap/releases"
 NEED_DOWNLOAD=1
 if [ -n "$LOCAL_PKG" ]; then
@@ -273,15 +368,15 @@ if [ -n "$LOCAL_PKG" ]; then
 fi
 if [ "$VERSION" = "latest" ] && [ "$NEED_DOWNLOAD" = "1" ]; then
     if [ "$HAVE_FETCH" = "1" ] && [ "$OFFLINE" != "1" ]; then
-        info "查询最新版本..."
+        info "$L_QUERY_LATEST"
         if LATEST=$(fetch_url "${DOWNLOAD_ZAP_URL}/latest.txt?t=$(date +%s)") && [ -n "$LATEST" ]; then
             VERSION="$LATEST"
-            info "最新版本: ${VERSION}"
+            info "$(printf "$L_LATEST_VER" "$VERSION")"
         else
-            warn "无法查询最新版本，使用 latest 标签"
+            warn "$L_QUERY_LATEST_FAIL"
         fi
     else
-        warn "离线模式：不查询最新版本，请显式指定版本号"
+        warn "$L_OFFLINE_NO_QUERY"
     fi
 fi
 
@@ -290,43 +385,34 @@ ZAP_FILENAME="zap-v${VERSION}${PRO_SUFFIX}-${OS_PKG}-${ARCH}.tar.gz"
 # ── 取包：本地指定 > 当前目录已存在 > 下载 ────────────────────
 DOWNLOADED=0
 if [ -n "$LOCAL_PKG" ]; then
-    [ -f "$LOCAL_PKG" ] || die "指定的安装包不存在: ${LOCAL_PKG}"
-    [ -s "$LOCAL_PKG" ] || die "指定的安装包为空: ${LOCAL_PKG}"
+    [ -f "$LOCAL_PKG" ] || die "$(printf "$L_PKG_NOT_EXIST" "$LOCAL_PKG")"
+    [ -s "$LOCAL_PKG" ] || die "$(printf "$L_PKG_EMPTY" "$LOCAL_PKG")"
     # 版本号从文件名解析（zap-v<版本>[-pro]-<os>-<arch>.tar.gz），装完的总结页要用
     local_base=$(basename "$LOCAL_PKG")
     if [[ "$local_base" =~ ^zap-v(.+)(-pro)?-${OS_PKG}-${ARCH}\.tar\.gz$ ]]; then
         VERSION="${BASH_REMATCH[1]}"
     else
-        warn "包名不是 zap-v<版本>[-pro]-${OS_PKG}-${ARCH}.tar.gz，按 ${VERSION} 继续（仅影响完成页显示）"
+        warn "$(printf "$L_PKG_NAME_BAD" "$OS_PKG" "$ARCH" "$VERSION")"
     fi
     ZAP_FILENAME="$LOCAL_PKG"
-    info "离线安装：使用本地安装包 ${LOCAL_PKG}（版本 ${VERSION}）"
+    info "$(printf "$L_OFFLINE_USE" "$LOCAL_PKG" "$VERSION")"
 elif [ -f "$ZAP_FILENAME" ]; then
-    info "使用已存在的安装包 ${ZAP_FILENAME}"
+    info "$(printf "$L_USE_EXISTING" "$ZAP_FILENAME")"
 else
     # 只有真要下载这一步，才要求机器上有下载工具且允许连外网
-    [ "$OFFLINE" != "1" ] || die "离线模式且当前目录没有安装包 ${ZAP_FILENAME}：请先用 --pkg 指定本地包"
-    [ "$HAVE_FETCH" = "1" ] || die "未找到 wget，且当前目录没有安装包 ${ZAP_FILENAME}：请先用 --pkg 指定本地包"
-    info "下载 ${ZAP_FILENAME} ..."
+    [ "$OFFLINE" != "1" ] || die "$(printf "$L_OFFLINE_NO_PKG" "$ZAP_FILENAME")"
+    [ "$HAVE_FETCH" = "1" ] || die "$(printf "$L_NO_WGET" "$ZAP_FILENAME")"
+    info "$(printf "$L_DOWNLOAD" "$ZAP_FILENAME")"
     # fetch_file 需要两个参数：URL + 落盘路径
     # 先写 .part 再改名：中途失败不会留下半截包，被下次运行当成完整包解压
     rm -f "${ZAP_FILENAME}.part"
     fetch_file "${DOWNLOAD_ZAP_URL}/${ZAP_FILENAME}" "${ZAP_FILENAME}.part" \
-        || die "下载失败，请检查网络或版本号"
-    [ -s "${ZAP_FILENAME}.part" ] || die "下载内容为空: ${DOWNLOAD_ZAP_URL}/${ZAP_FILENAME}"
+        || die "$L_DOWNLOAD_FAIL"
+    [ -s "${ZAP_FILENAME}.part" ] || die "$(printf "$L_DOWNLOAD_EMPTY" "${DOWNLOAD_ZAP_URL}/${ZAP_FILENAME}")"
     mv -f "${ZAP_FILENAME}.part" "${ZAP_FILENAME}"
     DOWNLOADED=1
 fi
 
-# ── 创建运行用户 ───────────────────────────────────────────
-# 幂等创建：用户已存在则跳过；同名组已存在时改为加入现有组，
-# 避免 adduser 报 "The group `www' already exists" 中断安装。
-#
-# 工具选择：优先 useradd（shadow-utils，Debian / Ubuntu / RHEL / CentOS / Rocky
-# 等发行版均自带，参数一致）；只有 Debian 系才有的 adduser 作为回退。
-# 用法：create_user <用户名> <1=系统用户|0=普通用户>
-
-# 组是否存在：getent 是 glibc 工具（musl 系发行版没有），退化到读 /etc/group
 has_group() {
     if command -v getent >/dev/null 2>&1; then
         getent group "$1" >/dev/null 2>&1
@@ -338,11 +424,11 @@ has_group() {
 create_user() {
     local user="$1" is_system="$2"
     if id "$user" >/dev/null 2>&1; then
-        ok "用户 ${user} 已存在"
+        ok "$(printf "$L_USER_EXISTS" "$user")"
         return 0
     fi
 
-    info "创建用户 ${user}"
+    info "$(printf "$L_CREATE_USER" "$user")"
     local group_exists=0
     if has_group "$user"; then
         group_exists=1
@@ -366,7 +452,7 @@ create_user() {
         else
             opts+=(-U)
         fi
-        useradd "${opts[@]}" "$user" || die "创建 ${user} 用户失败"
+        useradd "${opts[@]}" "$user" || die "$(printf "$L_CREATE_USER_FAIL" "$user")"
     elif command -v adduser >/dev/null 2>&1; then
         local -a opts=(--shell /bin/false --no-create-home --disabled-password --disabled-login)
         [ "$is_system" = "1" ] && opts+=(--system)
@@ -375,44 +461,40 @@ create_user() {
         else
             opts+=(--group)
         fi
-        adduser "${opts[@]}" "$user" || die "创建 ${user} 用户失败"
+        adduser "${opts[@]}" "$user" || die "$(printf "$L_CREATE_USER_FAIL" "$user")"
     else
-        die "未找到 useradd / adduser，无法创建 ${user} 用户"
+        die "$(printf "$L_NO_USERADD" "$user")"
     fi
-    ok "用户 ${user} 创建完成"
+    ok "$(printf "$L_USER_CREATED" "$user")"
 }
 
-# ── 初始管理员：Linux 账号 + 家目录骨架 ────────────────────
-# 结构对齐 zapexec 的 user.home_init（家目录 711、www 755、logs 770 归 www、
-# tmp 700），区别只是这里由安装脚本以 root 直接建好，不必等面板首次启动
-# （否则由 zapd 启动后经 zapexec 补齐，见 zapd::zap::admin_bootstrap）。
-# 用法：create_admin_account <用户名> <家目录>
+
+# zapd::zap::admin_bootstrap
+# create_admin_account <username> <homedir>
 create_admin_account() {
     local user="$1" home="$2"
     local gname="$user"
-    # 同名组已被系统占用（如发行版预置的 admin 组）时改用专属组，避免继承额外权限
     if has_group "$user"; then
         gname="zap_${user}"
         if ! has_group "$gname" && command -v groupadd >/dev/null 2>&1; then
-            groupadd "$gname" 2>/dev/null || warn "创建组 ${gname} 失败（继续）"
+            groupadd "$gname" 2>/dev/null || warn "$(printf "$L_GROUP_FAIL" "$gname")"
         fi
     fi
     if id "$user" >/dev/null 2>&1; then
-        ok "Linux 账号 ${user} 已存在"
+        ok "$(printf "$L_LINUX_ACCT_EXISTS" "$user")"
     else
         local shell
         shell=$(command -v nologin 2>/dev/null || true)
         [ -n "$shell" ] || shell=/usr/sbin/nologin
-        # -m：连家目录一起建（面板账号需要真实家目录承载 www/logs/tmp）
         if has_group "$gname"; then
-            useradd -m -d "$home" -s "$shell" -g "$gname" "$user" || die "创建 ${user} 用户失败"
+            useradd -m -d "$home" -s "$shell" -g "$gname" "$user" || die "$(printf "$L_CREATE_USER_FAIL" "$user")"
         else
-            useradd -m -d "$home" -s "$shell" -U "$user" || die "创建 ${user} 用户失败"
+            useradd -m -d "$home" -s "$shell" -U "$user" || die "$(printf "$L_CREATE_USER_FAIL" "$user")"
         fi
-        ok "Linux 账号 ${user} 已创建（${home}，nologin）"
+        ok "$(printf "$L_LINUX_ACCT_CREATED" "$user" "$home")"
     fi
-    # 家目录骨架（幂等：已存在时只校正归属与权限）
-    mkdir -p "$home/www" "$home/logs" "$home/tmp" || die "创建家目录骨架失败: ${home}"
+
+    mkdir -p "$home/www" "$home/logs" "$home/tmp" || die "$(printf "$L_HOME_SKEL_FAIL" "$home")"
     chown -R "${user}:${gname}" "$home/www" 2>/dev/null || true
     chmod 755 "$home/www"
     chown -R www:www "$home/logs" 2>/dev/null || true
@@ -421,42 +503,32 @@ create_admin_account() {
     chmod 700 "$home/tmp"
     chown "${user}:${gname}" "$home" 2>/dev/null || true
     chmod 711 "$home"
-    ok "家目录已就绪: ${home}（www/logs/tmp）"
+    ok "$(printf "$L_HOME_READY" "$home")"
 }
 
-# www：站点运行用户（普通用户）；zapadm：面板运维用户（系统用户）
 create_user www 0
 create_user zapadm 1
 
-# ── 解压（解压到临时目录，避免污染当前目录）──────────────────
-info "解压安装包..."
-WORK_DIR=$(mktemp -d /tmp/zap-install.XXXXXX) || die "无法创建临时目录"
+info "$L_DECOMP"
+WORK_DIR=$(mktemp -d /tmp/zap-install.XXXXXX) || die "$L_TMP_FAIL"
 trap 'rm -rf "$WORK_DIR"' EXIT
-tar zxf "$ZAP_FILENAME" -C "$WORK_DIR" || die "解压失败，安装包可能已损坏"
+tar zxf "$ZAP_FILENAME" -C "$WORK_DIR" || die "$L_EXTRACT_FAIL"
 
-# 发行包布局（唯一，由 build.sh 保证）：整包内容都在 zap/ 下，
-# 二进制与 scripts / data 同级，因此二进制与资源共用同一个内容根。
 SRC="$WORK_DIR/zap"
-[ -d "$SRC" ] || die "安装包格式不正确：缺少 zap/ 目录"
-info "安装包内容目录: ${SRC}"
+[ -d "$SRC" ] || die "$L_PKG_FORMAT"
+info "$(printf "$L_PKG_CONTENT" "$SRC")"
 
-# ── AppStore 官方仓库地址 ──────────────────────────────────
-# 官方包脚本存放于独立 git 仓库，便于单独升级；面板中可添加/更换其他源
 APPSTORE_REPO_URL="${APPSTORE_REPO_URL:-https://github.com/zapsh/appstore.git}"
 
-# ── AppStore 目录部署（多 Git 源，幂等：不覆盖 repos/.git 与 custom/）──
 deploy_appstore() {
     local DEST="$ZAP_DIR/data/appstore"
     local BUILTIN="$DEST/repos/appstore"
     mkdir -p "$DEST"/{repos,custom,cache,tmp,logs}
     mkdir -p "$ZAP_DIR/data/apps"
 
-    # 仅在缺失时复制模板/配置文件，避免覆盖用户修改
     [ -f "$DEST/repos.yaml" ]       || cp -f "$SRC/data/appstore/repos.yaml" "$DEST/repos.yaml" 2>/dev/null || true
     [ -f "$DEST/custom/README.md" ] || cp -f "$SRC/data/appstore/custom/README.md" "$DEST/custom/README.md" 2>/dev/null || true
 
-    # 种子官方包（内置源）：复制发行包内置包（构建时从独立 git 仓库同步）作为离线兜底；
-    # 发行包无内置包时留空，交由下方 git clone 拉取（离线则面板中可重试更新）
     if [ ! -d "$BUILTIN/.git" ] && [ ! -d "$BUILTIN/database" ]; then
         mkdir -p "$BUILTIN"
         for c in infra application webapps database library; do
@@ -464,11 +536,10 @@ deploy_appstore() {
         done
     fi
 
-    # 首次初始化官方 git 仓库（离线时保留种子包，面板中可重试更新）
     if [ "$OFFLINE" = "1" ]; then
-        info "离线模式：跳过 AppStore 仓库克隆，沿用发行包内置种子包"
+        info "$L_OFFLINE_SKIP"
     elif [ ! -d "$BUILTIN/.git" ] && command -v git >/dev/null 2>&1; then
-        info "初始化 AppStore 官方仓库..."
+        info "$L_INIT_APPSTORE"
         if git clone -q --depth 1 "$APPSTORE_REPO_URL" "$DEST/repos/.tmp-appstore" 2>/dev/null; then
             local has_seed
             # 只看有没有条目（不用 find，避免依赖 GNU 扩展）
@@ -476,25 +547,18 @@ deploy_appstore() {
             [ -n "$has_seed" ] && mv "$BUILTIN" "$DEST/repos/.seed-appstore" 2>/dev/null || true
             mv "$DEST/repos/.tmp-appstore" "$BUILTIN"
             rm -rf "$DEST/repos/.seed-appstore" 2>/dev/null || true
-            ok "AppStore 官方仓库同步完成"
+            ok "$L_APPSTORE_DONE"
         else
             rm -rf "$DEST/repos/.tmp-appstore" 2>/dev/null || true
-            warn "无法克隆 AppStore 仓库（网络不可达？），已保留内置种子包，可在面板中重试更新"
+            warn "$L_APPSTORE_FAIL"
         fi
     fi
     chmod -R 755 "$DEST" 2>/dev/null || true
 }
 
-# ── www 资源部署（文档 md / 站点骨架 / IP 默认页 / 维护页）────
-# 发行包的 data/www 由 build.sh 准备好，内容分两类：
-#   html/*.md  「文档」菜单数据源（CHANGELOG / USER_MANUAL / FAQ / UPGRADE 及 *_zh-CN 变体）。
-#              文档随版本走，每次都覆盖成当前版本——否则面板「文档」页直接 404
-#              （docs.rs 只读 {ZAP_PATH}/data/www/html/，找不到就报“文档不存在”）。
-#   skel/      新站点默认首页模板     ┐ 运维可直接改，只在缺失时铺一份，不覆盖
-#   _zap/      IP 默认页 / 维护页     ┘（缺失时 zapexec 有内置兜底，不影响建站）
 deploy_www() {
     if [ ! -d "$SRC/data/www" ]; then
-        warn "安装包未包含 data/www（查找目录: ${SRC}），面板「文档」菜单将不可用"
+        warn "$(printf '%s (lookup dir: %s)' "$L_WWW_MISSING" "$SRC")"
         return 0
     fi
     local DEST="$ZAP_DIR/data/www"
@@ -507,9 +571,9 @@ deploy_www() {
     done
     chmod 0644 "$DEST"/html/*.md 2>/dev/null || true
     if [ "$n" -gt 0 ]; then
-        ok "文档已部署（${n} 个 md → ${DEST}/html）"
+        ok "$(printf "$L_DOC_DEPLOYED" "$n" "$DEST/html")"
     else
-        warn "安装包未包含文档 md（${SRC}/data/www/html），面板「文档」菜单将不可用"
+        warn "$(printf '%s (lookup dir: %s)' "$L_WWW_DOC_MISSING" "$SRC/data/www/html")"
     fi
 
     [ -d "$DEST/skel" ] || cp -Rf "$SRC/data/www/skel" "$DEST/" 2>/dev/null || true
@@ -517,55 +581,48 @@ deploy_www() {
     chmod 0755 "$DEST" "$DEST/html" 2>/dev/null || true
 }
 
-# ── 部署程序 ────────────────────────────────────────────────
+# Install to 
 TARGET="/usr/local"
 ZAP_DIR="$TARGET/zap"
 
-# 安装目录必须先显式创建：不能依赖 cp 隐式创建（包内布局变化或 /usr/local 缺失时
-# 会导致 /usr/local/zap 根本没建出来），同时避免"目录在但内容不全"被误判为升级。
-mkdir -p "$ZAP_DIR" "$ZAP_DIR/data" || die "无法创建安装目录 ${ZAP_DIR}"
 
-# 升级判定看二进制是否存在，而不是目录是否存在
+mkdir -p "$ZAP_DIR" "$ZAP_DIR/data" || die "$(printf "$L_MKDIR_FAIL" "$ZAP_DIR")"
+
 if [ -x "$ZAP_DIR/zapd" ]; then
-    info "检测到已安装版本，执行升级..."
+    info "$L_UPGRADE_DETECTED"
 else
-    info "部署程序到 ${ZAP_DIR} ..."
+    info "$(printf "$L_DEPLOY_PROGRAM" "$ZAP_DIR")"
 fi
 
-# 安装 / 升级共用同一段逻辑（幂等）：二进制 + 脚本 + 权限 + /usr/local/bin 软链
 for bin in zapd zapctl zapexec zapupgrade; do
-    [ -f "$SRC/$bin" ] || die "安装包缺少 ${bin}（查找目录: ${SRC}）"
-    cp -f "$SRC/$bin" "$ZAP_DIR/$bin" || die "部署 ${bin} 失败"
+    [ -f "$SRC/$bin" ] || die "$(printf "$L_PKG_MISSING_BIN" "$bin" "$SRC")"
+    cp -f "$SRC/$bin" "$ZAP_DIR/$bin" || die "$(printf "$L_DEPLOY_BIN_FAIL" "$bin")"
     chmod 0755 "$ZAP_DIR/$bin"
-    ln -sf "$ZAP_DIR/$bin" "/usr/local/bin/$bin"
 done
-# scripts 是必需资源（systemd 服务文件等）：缺失要显式报错，不能静默继续
-if [ -d "$SRC/scripts" ]; then
-    cp -Rf "$SRC/scripts" "$ZAP_DIR/" || die "部署 scripts 失败"
-else
-    warn "安装包未包含 scripts 目录（查找目录: ${SRC}），systemd 服务文件将缺失"
-fi
-# 部署 AppStore（升级不覆盖 git/.git 与 custom/）
-deploy_appstore
-# 部署 www（文档 md 随版本覆盖；skel / _zap 缺失才铺）
-deploy_www
-ok "程序部署完成"
+ln -sf "$ZAP_DIR/zapctl" "/usr/local/bin/zapctl"
+ln -sf "$ZAP_DIR/zapupgrade" "/usr/local/bin/zapupgrade"
 
-# ── 配置与凭据目录（/etc/zap）───────────────────────────────
-info "准备配置目录 /etc/zap ..."
+if [ -d "$SRC/scripts" ]; then
+    cp -Rf "$SRC/scripts" "$ZAP_DIR/" || die "$L_DEPLOY_SCRIPTS_FAIL"
+else
+    warn "$(printf "$L_SCRIPTS_MISSING" "$SRC")"
+fi
+
+deploy_appstore
+deploy_www
+ok "$L_DEPLOY_DONE"
+
+# configuration dir /etc/zap 
+info "$L_CFG_DIR"
 mkdir -p /etc/zap
-# 发行线标记：zapupgrade 升级时按它选包名（pro → -pro 包），
-# 否则 Pro 机器一升级就会被社区版包覆盖回去。可用 --pro 重装来改变。
+
 printf '%s\n' "$EDITION_ID" > /etc/zap/edition
 chmod 0644 /etc/zap/edition
-# zapd 以 zapadm 身份运行（见 zapd.service 的 User=），这里把 /etc/zap 交给 zapadm：
-# 首次启动要在此生成自签证书（zap.crt / zap.key）与面板自身的 secret.key。
-# 面板用户的 SSH 密钥存于各自家目录 ~/.ssh（zap_ 前缀），由 zapexec(root) 读写。
 chown zapadm:zapadm /etc/zap
 chmod 0750 /etc/zap
 
 if [ ! -f /etc/zap/zap.yaml ]; then
-    info "生成默认配置 /etc/zap/zap.yaml"
+    info "$L_GEN_CFG"
     cat > /etc/zap/zap.yaml <<'EOF'
 server:
   address: 0.0.0.0
@@ -586,89 +643,63 @@ fi
 chown root:zapadm /etc/zap/zap.yaml
 chmod 0660 /etc/zap/zap.yaml
 
-# ── 站点配置目录（由 zapexec/root 写入，zapd 只读）──────────
-# 与 webserver 安装位置（/usr/local/apps/...）解耦：
-#   sites-available 存放实际配置，sites-enabled 用软链启用/停用站点。
-#   nginx.conf / httpd.conf 首次同步时由 zapexec 幂等注入 include。
-mkdir -p /etc/zap/webservers/nginx/sites-available /etc/zap/webservers/nginx/sites-enabled \
-         /etc/zap/webservers/apache/sites-available /etc/zap/webservers/apache/sites-enabled
+mkdir -p /etc/zap/webservers/nginx/sites-available /etc/zap/webservers/nginx/sites-enabled
+
 chown root:zapadm /etc/zap/webservers \
     /etc/zap/webservers/nginx /etc/zap/webservers/nginx/sites-available \
-    /etc/zap/webservers/nginx/sites-enabled \
-    /etc/zap/webservers/apache /etc/zap/webservers/apache/sites-available \
-    /etc/zap/webservers/apache/sites-enabled
-chmod 0750 /etc/zap/webservers /etc/zap/webservers/nginx /etc/zap/webservers/apache \
-    /etc/zap/webservers/nginx/sites-available /etc/zap/webservers/nginx/sites-enabled \
-    /etc/zap/webservers/apache/sites-available /etc/zap/webservers/apache/sites-enabled
-ok "站点配置目录已就绪（/etc/zap/webservers）"
+    /etc/zap/webservers/nginx/sites-enabled
 
-# ── 运行时目录权限（zapd 以 zapadm 运行）────────────────────
-# 面板数据区：zap.db（sqlite 还会写 -wal/-shm）、AppStore、升级包目录都必须可写；
-# 证书改为 zapd 首次启动自行生成，故安装脚本只负责把目录/文件归属准备好。
-info "设置运行目录权限（zapadm）..."
+chmod 0750 /etc/zap/webservers /etc/zap/webservers/nginx \
+    /etc/zap/webservers/nginx/sites-available /etc/zap/webservers/nginx/sites-enabled
+
+ok "$L_WEBSERVER_DIR"
+
+info "$L_RUNTIME_PERM"
 mkdir -p "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/users" \
     "$ZAP_DIR/data/upgrade/stage" "$ZAP_DIR/data/upgrade/logs" "$ZAP_DIR/data/upgrade/backup"
 chown zapadm:zapadm "$ZAP_DIR/data" \
     "$ZAP_DIR/data/appstore" "$ZAP_DIR/data/apps" "$ZAP_DIR/data/users"
-# 升级数据区会被两种身份写入：zapd 本身（zapadm，下载解包）与 zapupgrade/zapexec
-# （root，备份替换）。谁先建目录谁就是属主，另一方立刻 EACCES 13 ——
-# 新装环境最常见的是 root 先建了 stage/，之后 zapd（zapadm）再也写不进去。
-# 所以这里预建子目录并递归改属：装完/升完整棵 upgrade/ 树都归 zapadm。
+
 chown -R zapadm:zapadm "$ZAP_DIR/data/upgrade" 2>/dev/null || true
 chmod 0755 "$ZAP_DIR/data/upgrade" 2>/dev/null || true
-# 用户私有目录（crontab.yaml / cloud / scripts）由面板进程直接读写：
-# 只放开 `users/<user>` 这一层，站点应用数据（webapps/<name>/<site_id>）仍归站点账号
+
 for d in "$ZAP_DIR"/data/users/*/; do
     [ -d "$d" ] && chown zapadm:zapadm "$d" 2>/dev/null || true
 done
-# 老版本以 root 跑过的话，库文件与 WAL 也需要一并改属，否则 sqlite 无法写入
 for f in zap.db zap.db-wal zap.db-shm; do
     [ -e "$ZAP_DIR/data/$f" ] && chown zapadm:zapadm "$ZAP_DIR/data/$f" || true
 done
-# AppStore 仓库/缓存由面板拉取与写入
 [ -d "$ZAP_DIR/data/appstore" ] && chown -R zapadm:zapadm "$ZAP_DIR/data/appstore" 2>/dev/null || true
-ok "配置准备完成"
+ok "$L_CFG_DONE"
 
-# ── 初始管理员的 Linux 账号 / 家目录 ────────────────────────
-# 账号与家目录先建好；建库 + 写入管理员交给下面的 `zapd --init-admin`，
-# 凭据只经命令行参数传递，不落任何文件（/etc/zap 下也不会留明文密码）。
 create_admin_account "$ADMIN_USER" "/home/${ADMIN_USER}"
 
-# ── 服务安装（systemd）───────────────────────────────────────
-info "安装 systemd 服务..."
+info "$L_INSTALL_SERVICE"
 
-# 用法：install_service <服务名>：装单元文件 + enable + 重启
+# install_service <service name>
 install_service() {
     local name="$1"
     cp -Rf "$SRC/scripts/systemd/${name}.service" /etc/systemd/system/ \
-        || die "安装 ${name}.service 失败"
+        || die "$(printf "$L_SERVICE_INSTALL_FAIL" "$name")"
     systemctl daemon-reload
-    systemctl enable "${name}.service" >/dev/null 2>&1 || warn "服务 ${name} enable 失败"
-    systemctl restart "${name}.service" || warn "${name} 启动失败"
+    systemctl enable "${name}.service" >/dev/null 2>&1 || warn "$(printf "$L_SERVICE_ENABLE_FAIL" "$name")"
+    systemctl restart "${name}.service" || warn "$(printf "$L_SERVICE_START_FAIL" "$name")"
 }
 
-# 顺序有意义：全新机器上 exec.key 由 zapexec 首启生成，zapd 随后才能读到
-# （systemd 侧对应 zapd.service 的 After=zapexec.service）
 install_service zapexec
 
-# 建库 + 写入初始管理员：必须在 zapd 首次启动前做，否则 zapd 自己建库时会用
-# 内置的 admin / 123456。`--init-admin` 只走命令行参数，不写任何凭据文件。
-# 注意：密码会在进程命令行上短暂可见（仅安装瞬间，且安装本身已是 root 操作）；
-# 想避免可改用 zapd 自动生成（不带 --admin-password，密码打印在输出里）。
 init_admin_account() {
-    info "初始化管理员 ${ADMIN_USER} ..."
+    info "$(printf "$L_INIT_ADMIN" "$ADMIN_USER")"
     local out
     if ! out=$(ZAP_CONFIG=/etc/zap/zap.yaml "$ZAP_DIR/zapd" --init-admin "$ADMIN_USER" \
             --admin-password "$ADMIN_PASS" 2>&1); then
-        warn "初始化管理员失败（可稍后手动执行 zapd --init-admin 重试）：${out}"
+        warn "$(printf "$L_INIT_ADMIN_FAIL" "$out")"
         return 1
     fi
     echo "$out"
-    # init-admin 以 root 运行，库文件要交还给 zapadm（zapd 服务以此身份读写）
     for f in zap.db zap.db-wal zap.db-shm; do
         [ -e "$ZAP_DIR/data/$f" ] && chown zapadm:zapadm "$ZAP_DIR/data/$f" || true
     done
-    # 库里已有管理员时 init-admin 不会改其密码，完成页据此调整提示
     case "$out" in
         *"未做修改"*) ADMIN_UNCHANGED=1 ;;
     esac
@@ -677,45 +708,13 @@ init_admin_account() {
 init_admin_account || true
 
 install_service zapd
-ok "systemd 服务已启用"
+ok "$L_SERVICE_ENABLED"
 
-# ── Zap Pro：接入主控（可选）───────────────────────────────
-# 单机一条命令：zapd --join 会注册、等审批（最多 1 分钟）、把凭据加密存进本地库。
-# 没带 --join-url 就整段跳过；失败只告警 —— 装面板不该被「接入主控」拖成失败。
-join_controller() {
-    [ -n "$JOIN_URL" ] || return 0
-    info "接入主控 ${JOIN_URL} ..."
-    local args=(--join-url "$JOIN_URL")
-    [ -n "$JOIN_TOKEN" ] && args+=(--join-token "$JOIN_TOKEN")
-    [ -n "$JOIN_NAME" ] && args+=(--join-name "$JOIN_NAME")
-    [ "$JOIN_INSECURE" = "1" ] && args+=(--join-insecure)
-
-    local out
-    if ! out=$(ZAP_CONFIG=/etc/zap/zap.yaml "$ZAP_DIR/zapd" "${args[@]}" 2>&1); then
-        # 重试提示直接复用上面拼好的 args（-token 除外，别把口令打进日志）
-        local retry=(--join-url "$JOIN_URL")
-        [ -n "$JOIN_NAME" ] && retry+=(--join-name "$JOIN_NAME")
-        [ "$JOIN_INSECURE" = "1" ] && retry+=(--join-insecure)
-        warn "接入主控失败（可稍后手动执行 zapd ${retry[*]} 重试）：${out}"
-        return 1
-    fi
-    echo "$out"
-    # 同上：以 root 写库后把文件还回 zapadm
-    for f in zap.db zap.db-wal zap.db-shm; do
-        [ -e "$ZAP_DIR/data/$f" ] && chown zapadm:zapadm "$ZAP_DIR/data/$f" || true
-    done
-    ok "已接入主控（可用 zapd --join-status 查看状态）"
-    return 0
-}
-join_controller || true
-
-# ── Cleanup ────────────────────────────────────────────
-# 只删本次**下载的**包；--pkg 指定的本地包是运维自己带进来的，不能删
 if [ "$DOWNLOADED" = "1" ]; then
     rm -f "$ZAP_FILENAME"
 fi
 systemctl status zapd.service --no-pager || true
-# ── 完成总结 ────────────────────────────────────────────────
+
 printf "\n"
 printf "${GREEN}========================================${NC}\n"
 printf "${GREEN}           ZAP Installation Complete${NC}\n"
@@ -726,10 +725,10 @@ echo "  Program Directory:  /usr/local/zap"
 echo "  Configuration Directory:  /etc/zap"
 echo "  Access URL:  https://<Server IP>:2600"
 if [ "$ADMIN_UNCHANGED" = "1" ]; then
-    echo "  Admin User:      ${ADMIN_USER}（已存在，密码未改动）"
+    echo "  Admin User:      ${ADMIN_USER}(Existing, Password Unchanged)"
     echo "  Home Directory:  /home/${ADMIN_USER}"
     printf "\n"
-    printf "${YELLOW}  ⚠ 检测到库里已有管理员：本次未改动其密码，请用原密码登录${NC}\n"
+    printf "${YELLOW}  ${L_WARN_EXISTING_ADMIN}${NC}\n"
     printf "\n"
 else
     echo "  Admin User:      ${ADMIN_USER}"
@@ -737,19 +736,24 @@ else
     echo "  Home Directory:  /home/${ADMIN_USER}"
     printf "\n"
     if [ "$PASS_GENERATED" = "1" ]; then
-        printf "${YELLOW}  ⚠ 以上密码为随机生成，请立即保存（不会再次显示）${NC}\n"
+        printf "${YELLOW}  ${L_WARN_RANDOM_PASS}${NC}\n"
         printf "\n"
     fi
-    printf "${YELLOW}  ⚠ 首次登录后请立即修改密码！${NC}\n"
+    printf "${YELLOW}  ${L_WARN_CHANGE_PASS}${NC}\n"
     printf "\n"
 fi
 if [ "$OFFLINE" = "1" ]; then
-    printf "${YELLOW}  ⚠ 离线安装：AppStore 用内置种子包，升级请用离线升级入口${NC}\n"
+    printf "${YELLOW}  ${L_WARN_OFFLINE}${NC}\n"
     printf "     sudo bash upgrade-offline.sh --pkg ./zap-v<版本>${PRO_SUFFIX}-linux-${ARCH}.tar.gz\n"
-    printf "     （与 install-offline.sh 同目录；会自动备份，失败可 zapupgrade rollback）\n"
+    printf "     ${L_OFFLINE_UPGRADE_NOTE}\n"
     printf "\n"
 else
     UPGRADE_HINT="zapupgrade upgrade --to latest"
     [ "$PRO" = "1" ] && UPGRADE_HINT="${UPGRADE_HINT} --pro"
     printf "  后续升级:  ${UPGRADE_HINT}（回滚: zapupgrade rollback --list）\n"
+fi
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    zap_install_main "$@"
 fi
