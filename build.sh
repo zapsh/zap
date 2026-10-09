@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# ZAP 发布打包脚本：构建 zapd / zapctl / zapexec / zapupgrade，打包并上传至 zap mirror
+# ZAP release packaging script: builds zapd / zapctl / zapexec / zapupgrade, packages them and uploads to the zap mirror
 if [ -z "${BASH_VERSION:-}" ]; then
     exec bash "$0" "$@"
 fi
 set -euo pipefail
 
-# ── 终端颜色 ────────────────────────────────────────────────
+# ── Terminal colors ────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 info() { echo -e "${BLUE}[*]${NC} $*"; }
 ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
@@ -14,30 +14,28 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
 CUR_DIR=$(pwd)
 
-# ── 参数 ────────────────────────────────────────────────────
-# 社区版发布脚本（商业版构建见 zappro/build_pro.sh）。
 usage() {
     cat <<'EOF'
-用法：build.sh [选项]
-  -h, --help   显示本帮助
+usage:build.sh [OPTIONS]
+  -h, --help   Show this help
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)  usage; exit 0 ;;
-        *)          echo -e "${RED}[✗]${NC} 未知参数: $1" >&2; usage >&2; exit 1 ;;
+        *)          echo -e "${RED}[✗]${NC} Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
 
-# ── 架构与 Rust target 映射 ─────────────────────────────────
-# 只支持 Linux 本机构建：打包产物按 OS / 架构命名。
+# ── Architecture and Rust target mapping ─────────────────────────────────
+# Linux native builds only: packaged artifacts are named by OS / architecture.
 OS_NAME=$(uname -s | tr '[:upper:]' '[:lower:]')
 MACHINE=$(uname -m)
 case "$MACHINE" in
     x86_64)        ARCH="amd64" ;;
     aarch64|arm64) ARCH="arm64" ;;
-    *) die "不支持的架构: $MACHINE" ;;
+    *) die "Unsupported architecture: $MACHINE" ;;
 esac
 case "$OS_NAME" in
     linux)
@@ -46,171 +44,174 @@ case "$OS_NAME" in
             aarch64|arm64) TARGET="aarch64-unknown-linux-gnu" ;;
         esac
         ;;
-    *) die "不支持的操作系统: ${OS_NAME}（当前仅支持 linux 本机构建）" ;;
+    *) die "Unsupported OS: ${OS_NAME} (only linux native builds are supported)" ;;
 esac
 info "OS: ${OS_NAME}   Arch: ${ARCH} (${TARGET})"
 
-# ── 依赖检查 ────────────────────────────────────────────────
-command -v cargo >/dev/null 2>&1 || die "未找到 cargo，请先安装 Rust"
-command -v wget >/dev/null 2>&1 || die "未找到 wget，请先安装"
+# ── Dependency checks ────────────────────────────────────────────────
+command -v cargo >/dev/null 2>&1 || die "cargo not found, please install Rust first"
+command -v wget >/dev/null 2>&1 || die "wget not found, please install it"
 
 if ! command -v zapfile >/dev/null 2>&1; then
-    info "未找到 zapfile，正在安装..."
+    info "zapfile not found, installing..."
     wget -qO- https://mirrors.zap.cn/zapfile/zapfile-linux-amd64 -O /usr/bin/zapfile \
-        || die "zapfile 下载失败"
+        || die "zapfile download failed"
     chmod +x /usr/bin/zapfile
-    ok "zapfile 安装完成"
+    ok "zapfile installed"
 fi
 
-# ── 上传凭据 ────────────────────────────────────────────────
-[ -n "${COS_ID:-}" ]  || die "环境变量 COS_ID 未设置"
-[ -n "${COS_KEY:-}" ] || die "环境变量 COS_KEY 未设置"
+# ── Upload credentials ────────────────────────────────────────────────
+[ -n "${COS_ID:-}" ]  || die "env var COS_ID is not set"
+[ -n "${COS_KEY:-}" ] || die "env var COS_KEY is not set"
 
-# ── 版本号（从根 Cargo.toml 的 [workspace.package] 读取，各 crate 统一继承）─
+# ── Version (read from [workspace.package] in root Cargo.toml; all crates inherit it) ─
 VERSION=$(awk -F'"' '/^\[workspace\.package\]/{f=1} f&&/^version/{print $2; exit}' Cargo.toml)
-[ -n "$VERSION" ] || die "无法从 Cargo.toml 解析 workspace 版本号"
-info "版本: ${VERSION}"
+[ -n "$VERSION" ] || die "failed to parse workspace version from Cargo.toml"
+info "Version: ${VERSION}"
 
-# ── 前端产物（zapd 通过 rust-embed 内嵌 ../web/dist）────────────
-# 必须在 cargo build **之前**构建：否则二进制内嵌的是上一次的前端产物，
-# 页脚 / 系统更新页展示的 Web 版本就会落后于本次发布版本。
+# ── Frontend assets (zapd embeds ../web/dist via rust-embed) ────
+# Must be built BEFORE cargo build: otherwise the binary embeds the previous frontend
+# assets, and the Web version shown in the footer / system-update page would lag behind this release.
 WEB_DIR="$CUR_DIR/web"
 if [ -f "$WEB_DIR/package.json" ] && command -v npm >/dev/null 2>&1; then
     WEB_BUILD=1
 else
     WEB_BUILD=0
-    warn "跳过前端构建（缺少 web/package.json 或 npm）：二进制将内嵌现有 web/dist，页面展示的 Web 版本可能落后于本次发布"
+    warn "Skipping frontend build (missing web/package.json or npm): the binary will embed the existing web/dist; the Web version shown may lag behind this release"
 fi
 
-# 用法：build_web
+# Usage: build_web
 build_web() {
     if [[ "$WEB_BUILD" -ne 1 ]]; then
-        warn "跳过前端构建：沿用现有 web/dist"
+        warn "Skipping frontend build: reusing existing web/dist"
         return 0
     fi
-    info "构建前端产物（web/dist）..."
-    # 版本唯一来源：上面从根 Cargo.toml 解析出的 $VERSION，显式传给前端构建
-    # （web/vite.config.ts 读取 ZAP_VERSION 注入；缺失时回退自行解析 Cargo.toml）
-    (cd "$WEB_DIR" && ZAP_VERSION="$VERSION" npm run build:prod) || die "前端构建失败"
-    ok "前端产物构建完成（v${VERSION}）"
+    info "Building frontend assets (web/dist)..."
+    # Single source of truth for version: $VERSION parsed above from root Cargo.toml,
+    # passed explicitly to the frontend build (web/vite.config.ts reads ZAP_VERSION to
+    # inject it; falls back to parsing Cargo.toml if missing)
+    (cd "$WEB_DIR" && ZAP_VERSION="$VERSION" npm run build:prod) || die "frontend build failed"
+    ok "Frontend assets built (v${VERSION})"
 }
 
-# ── 打包目录 ────────────────────────────────────────────────
+# ── Packaging directory ────────────────────────────────────────────────
 DIST_DIR="$CUR_DIR/dist"
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
 BIN_DIR="$CUR_DIR/target/$TARGET/release"
-# 构建完把四个二进制挪到暂存目录，最后打包（与资源一起塞进 zap/）。
+# After building, move the four binaries into a staging dir for final packaging (with resources, into zap/).
 BIN_STAGE="$DIST_DIR/.bins"
 PACKAGES=()
 
-# 用法：build_variant <community|pro>
-# 社区版不带商业特性（--features zapd/commercial 构建已拆到 zappro/build_pro.sh）。
+# Usage: build_variant <community|pro>
+# Community edition has no commercial features (the --features zapd/commercial build is split into zappro/build_pro.sh).
 build_variant() {
     local edition="$1"
-    info "构建 ${edition} 版 release 二进制（${TARGET}）..."
+    info "Building ${edition} release binaries (${TARGET})..."
     cargo build --release --target "$TARGET" \
-        || die "构建失败（${edition}）"
+        || die "build failed (${edition})"
     mkdir -p "$BIN_STAGE/$edition"
     for bin in zapd zapctl zapexec zapupgrade; do
         cp -f "$BIN_DIR/$bin" "$BIN_STAGE/$edition/$bin" \
-            || die "复制 $bin 失败（${edition}）"
+            || die "failed to copy $bin (${edition})"
     done
-    ok "${edition} 二进制就位"
+    ok "${edition} binaries ready"
 }
 
-# 发行包统一为「单层 zap/ 目录」布局：
+# Release packages use a single-level "zap/" directory layout:
 #   zap/{zapd, zapctl, zapexec, zapupgrade} + zap/scripts + zap/data
-# 二进制与资源同级，install.sh 直接以 zap/ 作为唯一内容根；
-# zapupgrade 的 normalize_stage 同样从 zap/ 里取二进制，无需额外适配。
+# Binaries and resources are at the same level; install.sh uses zap/ as the sole content root;
+# zapupgrade's normalize_stage also takes binaries from zap/, requiring no extra adaptation.
 DIST_ZAP="$DIST_DIR/zap"
 mkdir -p "$DIST_ZAP"
 
-# 用法：package_variant <community|pro> <包名后缀>
+# Usage: package_variant <community|pro> <package name suffix>
 package_variant() {
     local edition="$1" suffix="$2"
     for bin in zapd zapctl zapexec zapupgrade; do
         cp -f "$BIN_STAGE/$edition/$bin" "$DIST_ZAP/$bin" \
-            || die "复制 $bin 失败（${edition}）"
+            || die "failed to copy $bin (${edition})"
     done
     local name="zap-v${VERSION}${suffix}-${OS_NAME}-${ARCH}.tar.gz"
-    info "打包 ${name} ..."
-    (cd "$DIST_DIR" && tar -czf "$name" zap) || die "打包失败（${name}）"
+    info "Packaging ${name} ..."
+    (cd "$DIST_DIR" && tar -czf "$name" zap) || die "packaging failed (${name})"
     PACKAGES+=("$name")
-    ok "打包完成：${name}"
+    ok "Packaged: ${name}"
 }
 
-# ── 内置 AppStore 源（独立 git 仓库：data/appstore/repos/appstore）──────
-# 该目录已被 .gitignore 排除，作为独立于 zap 主仓库的 git 项目维护（不再用 submodule）。
-# 关键：发行包必须携带「自包含」的 .git（真实目录）。build.sh 打包时：
-#   有真实 .git 目录 → 原地切回 main 并快进；
-#   否则（目录缺失 / 仅快照）→ 用与 repos.yaml 一致的 HTTPS 地址浅克隆出真实 .git。
-# 这样目标机首次「更新」走 fetch 而非整仓 clone（慢且在国内常因 GitHub 不可达而 180s 超时）。
-# 注：必须用 HTTPS，避免沿用旧 .gitmodules 的 git@ SSH 地址（git@github.com:）导致目标机 fetch 因无密钥失败。
+# ── Bundled AppStore source (standalone git repo: data/appstore/repos/appstore) ──────
+# This dir is excluded by .gitignore and maintained as a git project independent of the
+# zap main repo (no longer a submodule).
+# Key: the release package must carry a "self-contained" .git (a real directory). When build.sh packages it:
+#   has a real .git dir -> switch back to main in place and fast-forward;
+#   otherwise (dir missing / snapshot only) -> shallow-clone a real .git using the same HTTPS URL as repos.yaml.
+# This way the target machine's first "update" does a fetch instead of a full clone
+# (slow and often times out at 180s in China due to GitHub being unreachable).
+# Note: HTTPS must be used to avoid the old .gitmodules git@ SSH address (git@github.com:)
+# causing the target machine's fetch to fail for lack of an SSH key.
 APPSTORE_BUILTIN="$CUR_DIR/data/appstore/repos/appstore"
-APPSTORE_URL="https://github.com/zapsh/appstore.git"   # 与 data/appstore/repos.yaml 保持一致
+APPSTORE_URL="https://github.com/zapsh/appstore.git"   # keep in sync with data/appstore/repos.yaml
 if [ -d "$APPSTORE_BUILTIN" ]; then
     if [ -d "$APPSTORE_BUILTIN/.git" ]; then
-        info "更新内置 AppStore 源（$APPSTORE_BUILTIN）..."
-        # submodule / CI 检出默认 detached HEAD，先切回 main 分支再快进拉取
+        info "Updating bundled AppStore source ($APPSTORE_BUILTIN)..."
+        # submodule / CI checkouts default to detached HEAD; switch back to main then fast-forward pull
         git -C "$APPSTORE_BUILTIN" checkout -q main 2>/dev/null \
             || git -C "$APPSTORE_BUILTIN" checkout -q -B main origin/main 2>/dev/null \
             || true
         git -C "$APPSTORE_BUILTIN" pull -q --ff-only 2>/dev/null \
-            || warn "内置源 git pull 失败，使用本地现有内容"
+            || warn "Bundled source git pull failed, using local existing content"
     else
-        # 无真实 .git（gitlink 指针或纯快照）：用 HTTPS 浅克隆生成自包含仓库，更新走 fetch 而非 clone
+        # No real .git (gitlink pointer or pure snapshot): shallow-clone via HTTPS to produce a
+        # self-contained repo; updates do fetch rather than clone
         APPSTORE_TMP="${APPSTORE_BUILTIN}.tmp"
         rm -rf "$APPSTORE_TMP"
         if git clone --depth 1 --branch main "$APPSTORE_URL" "$APPSTORE_TMP" 2>/dev/null; then
             rm -rf "$APPSTORE_BUILTIN"
             mv "$APPSTORE_TMP" "$APPSTORE_BUILTIN"
-            ok "内置 AppStore 源已浅克隆（自带 .git，更新走 fetch）"
+            ok "Bundled AppStore source shallow-cloned (ships its own .git, updates via fetch)"
         else
-            warn "内置源 clone 失败，使用现有内容（发行包不含 .git，更新需联网 clone）"
+            warn "Bundled source clone failed, using existing content (package lacks .git; update requires a networked clone)"
         fi
     fi
     [ -d "$APPSTORE_BUILTIN/database" ] \
-        && ok "内置 AppStore 源就绪" \
-        || warn "内置源目录为空（$APPSTORE_BUILTIN），发行包将不含内置包，可在面板中添加源"
+        && ok "Bundled AppStore source ready" \
+        || warn "Bundled source dir is empty ($APPSTORE_BUILTIN); package will ship no built-in apps, add a source from the panel"
 else
-    warn "未找到内置 AppStore 源（$APPSTORE_BUILTIN），发行包将不含内置包，可在面板中添加源"
+    warn "Bundled AppStore source not found ($APPSTORE_BUILTIN); package will ship no built-in apps, add a source from the panel"
 fi
 
-# 脚本、数据模板与配置（data/ 仅打包发行需要的内容，剔除运行时产物）
-# 与二进制同级，统一放进 zap/ 目录
+# Scripts, data templates and config (data/ packages only what's needed for release, dropping runtime artifacts)
+# Placed alongside the binaries, all under the zap/ dir
 cp -Rf "$CUR_DIR/scripts" "$DIST_ZAP/"
 
-# data/ 打包白名单：
-#   appstore/repos/appstore/          内置 AppStore 种子源
-#   appstore/repos.yaml、custom/README.md 安装脚本(install.sh)依赖的模板
-#   apps/README.md                        APPS_DIR 占位说明（apps 下其它为运行时安装实例，不打包）
-#   plugins/_lib/*.lua                   插件公共函数库（zapexec 在 main.lua 前自动加载）
-#   www/                                 站点骨架模板(data/www/skel) + IP 默认页 / 维护页(data/www/_zap)
-# 说明：systemd 服务模板、运维脚本、zap 共享工具与 conf 模板统一由 scripts/ 提供，
-#       不重复打进 data/；安装后 data/ 是运行时数据区（zap.db、apps、appstore、run/ 等）
-# 不打包：zap.db、run/、tmp/、apps/library、appstore 的 cache/logs/runs/tmp/custom/scripts
+# data/ packaging allowlist:
+#   appstore/repos/appstore/          bundled AppStore seed source
+#   appstore/repos.yaml, custom/README.md  templates the install script (install.sh) depends on
+#   apps/README.md                    APPS_DIR placeholder note (other files under apps are runtime install instances, not packaged)
+#   plugins/_lib/*.lua                 plugin common function library (loaded by zapexec automatically before main.lua)
+#   www/                              site skeleton template (data/www/skel) + IP default page / maintenance page (data/www/_zap)
+# Note: systemd service templates, ops scripts, zap shared tools and conf templates are all provided by scripts/,
+#       and are not duplicated into data/; after install, data/ is the runtime data area (zap.db, apps, appstore, run/, etc.)
+# Not packaged: zap.db, run/, tmp/, apps/library, and appstore's cache/logs/runs/tmp/custom/scripts
 DIST_DATA="$DIST_ZAP/data"
 mkdir -p "$DIST_DATA/apps"
 mkdir -p "$DIST_DATA/appstore/repos"
 cp -Rf "$CUR_DIR/data/appstore/repos/appstore" "$DIST_DATA/appstore/repos/" 2>/dev/null || true
 cp -f "$CUR_DIR/data/appstore/repos.yaml" "$DIST_DATA/appstore/" 2>/dev/null || true
 cp -f "$CUR_DIR/data/apps/README.md" "$DIST_DATA/apps/" 2>/dev/null || true
-# plugins/_lib：插件公共函数库，不带上它所有插件都会因加载失败而跑不起来；
-# *.css / *.js 是宿主注入插件界面的 UIKit（主题样式 + zap.ui.*），一并带上，
-# 缺它就是「界面能用但没样式、也没zap.ui」。
+
+# mlua plugin common library (loaded by zapexec)
 mkdir -p "$DIST_DATA/plugins/_lib"
 cp -f "$CUR_DIR/data/plugins/_lib/"*.lua "$DIST_DATA/plugins/_lib/" 2>/dev/null || true
 cp -f "$CUR_DIR/data/plugins/_lib/"*.css "$DIST_DATA/plugins/_lib/" 2>/dev/null || true
 cp -f "$CUR_DIR/data/plugins/_lib/"*.js  "$DIST_DATA/plugins/_lib/" 2>/dev/null || true
-# www/：站点骨架模板 skel/index.html 与 IP 默认页 / 维护页 _zap/*.html（运维可直接编辑）
+
+# www/: site skeleton template skel/index.html, plus IP default page / maintenance page _zap/*.html (editable by ops)
 cp -Rf "$CUR_DIR/data/www" "$DIST_DATA/" 2>/dev/null || true
 mkdir -p "$DIST_DATA/www/html"
-# 「文档」菜单的源 md（位于仓库根，供 build.sh 拷贝到 data/www/html/）。
-# 默认文件名必须与 zapd/src/routers/docs.rs 里的 DOCS 白名单一一对应，
-# 否则前端 GET /api/docs/<id> 会 404。
-# 多语言后缀：<FILE>_<locale>.md（例 USER_MANUAL_zh-CN.md），由后端按 ?lang= 自动回退。
+
+# Markdown docs (used by zapd for the online docs page)
 cp -Rf "$CUR_DIR/CHANGELOG.md"         "$DIST_DATA/www/html/" 2>/dev/null || true
 cp -Rf "$CUR_DIR/USER_MANUAL.md"       "$DIST_DATA/www/html/" 2>/dev/null || true
 cp -Rf "$CUR_DIR/FAQ.md"               "$DIST_DATA/www/html/" 2>/dev/null || true
@@ -219,48 +220,45 @@ cp -Rf "$CUR_DIR/CHANGELOG_zh-CN.md"   "$DIST_DATA/www/html/" 2>/dev/null || tru
 cp -Rf "$CUR_DIR/USER_MANUAL_zh-CN.md" "$DIST_DATA/www/html/" 2>/dev/null || true
 cp -Rf "$CUR_DIR/FAQ_zh-CN.md"         "$DIST_DATA/www/html/" 2>/dev/null || true
 cp -Rf "$CUR_DIR/UPGRADE_zh-CN.md"     "$DIST_DATA/www/html/" 2>/dev/null || true
-# 剔除 Windows 资源管理器在挂载盘/NTFS 上留下的 ADS 残留（形如 `FOO.md:Zone.Identifier`），
-# 否则它们会跟着发行包一起装到线上（无意义文件，还容易让文档目录看着一堆脏东西）
-find "$DIST_DATA/www/html" -type f -name '*:Zone.Identifier' -delete 2>/dev/null || true
 
-ok "资源复制完成（scripts / data 随包发布）"
+ok "Resources copied (scripts / data shipped with package)"
 
-# 注意：后面一律用绝对路径，不要再 `cd dist` —— cargo 必须落在仓库根的 target/。
-# ── 构建 + 打包 ───────────────────────────────────────────────
+# Note: always use absolute paths below; do not `cd dist` -- cargo must stay under the repo-root target/.
+# ── Build + package ───────────────────────────────────────────────
 build_web
 build_variant community
 package_variant community ""
 
-# 上传 install.sh 和 uninstall.sh（zapd 升级下载时使用）
+# Upload install.sh and uninstall.sh (used by zapd for upgrade downloads)
 if command -v zapfile >/dev/null 2>&1; then
-    info "上传 install.sh ..."
-    zapfile upload zap/ "$CUR_DIR/scripts/install.sh" || die "上传 install.sh 失败"
-    info "上传 uninstall.sh ..."
-    zapfile upload zap/ "$CUR_DIR/scripts/uninstall.sh" || die "上传 uninstall.sh 失败"
+    info "Uploading install.sh ..."
+    zapfile upload zap/ "$CUR_DIR/scripts/install.sh" || die "failed to upload install.sh"
+    info "Uploading uninstall.sh ..."
+    zapfile upload zap/ "$CUR_DIR/scripts/uninstall.sh" || die "failed to upload uninstall.sh"
 else
-    warn "未安装 zapfile：跳过 install.sh / uninstall.sh 上传（面板在线升级需要它们）"
+    warn "zapfile not installed: skipping install.sh / uninstall.sh upload (the panel's online upgrade needs them)"
 fi
 
-# ── 上传 ────────────────────────────────────────────────────
+# ── Upload ────────────────────────────────────────────────────
 for pkg in "${PACKAGES[@]}"; do
-    info "上传 ${pkg} ..."
-    zapfile upload zap/releases/ "$DIST_DIR/$pkg" || die "上传失败：${pkg}"
-    # sha256 校验文件（zapd 升级下载时比对；不带换行避免残留）
+    info "Uploading ${pkg} ..."
+    zapfile upload zap/releases/ "$DIST_DIR/$pkg" || die "upload failed: ${pkg}"
+    # sha256 checksum file (compared by zapd on upgrade download; no trailing newline to avoid residue)
     printf '%s' "$(sha256sum "$DIST_DIR/$pkg" | awk '{print $1}')" > "$DIST_DIR/$pkg.sha256"
-    info "上传校验文件 ${pkg}.sha256 ..."
-    zapfile upload zap/releases/ "$DIST_DIR/$pkg.sha256" || die "上传校验文件失败：${pkg}"
+    info "Uploading checksum ${pkg}.sha256 ..."
+    zapfile upload zap/releases/ "$DIST_DIR/$pkg.sha256" || die "failed to upload checksum: ${pkg}"
 done
 
-zapfile put "zap/releases/latest.txt" $VERSION || die "更新版本文件失败"
-ok "上传完成"
+zapfile put "zap/releases/latest.txt" $VERSION || die "failed to update version file"
+ok "Upload complete"
 
-# ── 完成总结 ────────────────────────────────────────────────
+# ── Completion summary ────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}   ZAP v${VERSION} (${ARCH}) 发布完成${NC}"
+echo -e "${GREEN}   ZAP v${VERSION} (${ARCH}) release complete${NC}"
 echo -e "${GREEN}========================================${NC}"
-echo "  版本: ${VERSION}"
+echo "  Version: ${VERSION}"
 for pkg in "${PACKAGES[@]}"; do
-    echo "  包名: ${pkg}"
+    echo "  Package: ${pkg}"
 done
-echo "  安装: bash install.sh ${VERSION}"
+echo "  Install: bash install.sh ${VERSION}"

@@ -19,9 +19,6 @@
 //!
 //! `access_key_id` / `secret_access_key` / `security_token` 序列化后用
 //! `zap-crypto`（AES-256-GCM，机器主密钥 `/etc/zap/secret.key`）加密，以
-//! `v1:<nonce>:<ct>` 形式存进 `secret` 字段；endpoint/bucket 等元数据保持明文，
-//! 便于排障与迁移。另外只存一份脱敏提示（`access_key_hint`）供列表展示，
-//! 因此**列表接口无需解密**。
 //!
 //! ## 统一访问层
 //!
@@ -179,9 +176,9 @@ impl CloudService {
     pub fn label(self) -> &'static str {
         match self {
             Self::AwsS3 => "AWS S3",
-            Self::Oss => "阿里云 OSS",
-            Self::Cos => "腾讯云 COS",
-            Self::S3Compat => "S3 兼容存储",
+            Self::Oss => "Aliyun OSS",
+            Self::Cos => "Tencent COS",
+            Self::S3Compat => "S3 Compatible",
         }
     }
 
@@ -1161,9 +1158,12 @@ mod tests {
             bucket: "probe".to_string(),
             root: String::new(),
             virtual_host_style: false,
-            // `decrypt` 对非 `v1:` 前缀的内容原样返回，测试里免去密钥文件
-            secret: r#"{"access_key_id":"ak","secret_access_key":"sk","security_token":""}"#
-                .to_string(),
+            // 新系统不再兼容历史明文：secret 必须是 v1: 密文（与运行时一致）。
+            // 用 encrypt() 生成，原「非 v1: 前缀原样返回」的明文回退路径已删除。
+            secret: encrypt(
+                r#"{"access_key_id":"ak","secret_access_key":"sk","security_token":""}"#,
+            )
+            .expect("加密测试凭据失败"),
             access_key_hint: String::new(),
             created_at: 0,
             updated_at: 0,
