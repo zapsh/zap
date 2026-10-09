@@ -54,19 +54,14 @@ sign_checksums() {
   local outdir="$1"
   mkdir -p "$outdir"
 
-  # 优先 SSH 签名：用 ssh-keygen -Y sign 对校验和文件签名（与 git SSH 签名同一套）。
-  # 未配置 SSH_PRIVATE_KEY 时回退到 GPG。两者都未配置则跳过。
-  if [[ -n "${SSH_PRIVATE_KEY:-}" ]]; then
-    sign_ssh "$outdir"
+  # 仅 SSH 签名：用 ssh-keygen -Y sign 对校验和文件签名（与 git SSH 签名同一套）。
+  # 未配置 SSH_PRIVATE_KEY 时跳过。
+  if [[ -z "${SSH_PRIVATE_KEY:-}" ]]; then
+    echo "info: SSH_PRIVATE_KEY not set; skip checksum signing."
     return 0
   fi
 
-  if [[ -z "${GPG_PRIVATE_KEY:-}" ]]; then
-    echo "info: neither SSH_PRIVATE_KEY nor GPG_PRIVATE_KEY set; skip checksum signing."
-    return 0
-  fi
-
-  sign_gpg "$outdir"
+  sign_ssh "$outdir"
 }
 
 # SSH 签名：对每个 *.sha256 生成 *.sha256.sig（armored 内部格式，无需 .asc）
@@ -97,32 +92,6 @@ sign_ssh() {
   done
 
   rm -f "$keyfile"
-}
-
-# GPG 签名：对每个 *.sha256 生成 *.sha256.asc（detached armored 签名）
-sign_gpg() {
-  local outdir="$1"
-
-  echo "$GPG_PRIVATE_KEY" | gpg --batch --import >/dev/null 2>&1 || true
-
-  local key_id="${GPG_KEY_ID:-}"
-  if [[ -z "$key_id" ]]; then
-    key_id="$(gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/ {print $5; exit}')"
-  fi
-
-  find "$outdir" -type f -name "*.sha256" -print | sort | while read -r file; do
-    local asc="${file}.asc"
-    if [[ -n "${GPG_PASSPHRASE:-}" ]]; then
-      gpg --batch --yes --pinentry-mode loopback \
-        --armor --local-user "$key_id" \
-        --passphrase "$GPG_PASSPHRASE" \
-        --output "$asc" --detach-sign "$file"
-    else
-      gpg --batch --yes --armor \
-        --local-user "$key_id" \
-        --output "$asc" --detach-sign "$file"
-    fi
-  done
 }
 
 # 完整发布包（与 build.sh 的 package_variant 一致）：

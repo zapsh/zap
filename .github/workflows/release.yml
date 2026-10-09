@@ -96,12 +96,11 @@ jobs:
           chmod +x scripts/release/package.sh
           bash scripts/release/package.sh checksum "dist"
 
-      - name: Optional sign shasum files
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+      - name: Optional sign shasum files (SSH)
+        if: ${{ secrets.SSH_PRIVATE_KEY != '' }}
         env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KEY_PASSPHRASE: ${{ secrets.SSH_KEY_PASSPHRASE }}
         run: |
           chmod +x scripts/release/package.sh
           bash scripts/release/package.sh sign "dist"
@@ -112,6 +111,6 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sha256
-            dist/*.sha256.asc
+            dist/*.sha256.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
