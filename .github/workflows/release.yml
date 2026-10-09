@@ -96,8 +96,9 @@ jobs:
           chmod +x scripts/release/package.sh
           bash scripts/release/package.sh checksum "dist"
 
+      # secrets 上下文不能用在 if: 里；密钥未配置时 package.sh 会自行跳过签名。
+      # 注意：SSH_PRIVATE_KEY 需配置为 Repository secret（环境 secret 需 job 声明 environment 才可见）。
       - name: Optional sign shasum files (SSH)
-        if: ${{ secrets.SSH_PRIVATE_KEY != '' }}
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_KEY_PASSPHRASE: ${{ secrets.SSH_KEY_PASSPHRASE }}
