@@ -412,8 +412,12 @@
             </el-form-item>
           </el-tab-pane>
 
-          <!-- 角色与权限 -->
-          <el-tab-pane :label="t('users.sectionAccess')" name="access">
+          <!-- 角色与权限：仅 admin 有角色 / 附加权限可配；reseller 建客户时无可配项，整个 tab 不显示 -->
+          <el-tab-pane
+            v-if="isAdmin || form.user_kind === 1"
+            :label="t('users.sectionAccess')"
+            name="access"
+          >
             <el-form-item v-if="isAdmin" :label="t('users.roles')" prop="roles">
               <el-select
                 v-model="form.roles"
