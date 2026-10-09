@@ -2890,6 +2890,7 @@ export default {
     greetAfternoon: '下午好',
     greetEvening: '晚上好',
     recentActivity: '最近动态',
+    viewAllLogs: '查看全部日志',
     recentEmpty: '暂无动态',
     recentLoginSuccess: '登录成功',
     recentLoginFailed: '登录失败',

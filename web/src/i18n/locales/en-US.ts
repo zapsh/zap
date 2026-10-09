@@ -2905,6 +2905,7 @@ const enUS: Messages = {
     greetAfternoon: 'Good afternoon',
     greetEvening: 'Good evening',
     recentActivity: 'Recent Activity',
+    viewAllLogs: 'View all logs',
     recentEmpty: 'No activity yet',
     recentLoginSuccess: 'Signed in',
     recentLoginFailed: 'Failed login',
