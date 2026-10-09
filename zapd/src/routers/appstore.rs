@@ -618,20 +618,22 @@ pub async fn install(
     // 运行身份门禁：run_as: user 仅 webapps 分类可用
     check_pkg_run_as(&payload.pkg_path).await?;
     // 插件去重：系统级已装的插件对所有人共享，普通用户无需（也不能）再装一份到自己的用户目录
-    if !crate::zap::jwt::is_admin(&claims) && payload.pkg_path.starts_with("plugins/")
-        && let Some(name) = payload.pkg_path.strip_prefix("plugins/") {
-            let sys = std::env::var("ZAP_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"))
-                .join("plugins")
-                .join(name);
-            if sys.is_dir() {
-                return Err(ZapError::New(
-                    -1,
-                    "该插件已由管理员安装到系统目录（全用户共享），无需重复安装".into(),
-                ));
-            }
+    if !crate::zap::jwt::is_admin(&claims)
+        && payload.pkg_path.starts_with("plugins/")
+        && let Some(name) = payload.pkg_path.strip_prefix("plugins/")
+    {
+        let sys = std::env::var("ZAP_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"))
+            .join("plugins")
+            .join(name);
+        if sys.is_dir() {
+            return Err(ZapError::New(
+                -1,
+                "该插件已由管理员安装到系统目录（全用户共享），无需重复安装".into(),
+            ));
         }
+    }
     // 自定义包包含任意脚本，仅管理员可安装
     if payload.source == "custom" {
         require_admin(&claims)?;

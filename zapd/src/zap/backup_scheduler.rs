@@ -9,7 +9,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::db::get_db_pool;
-use crate::routers::system_backup::{run_backup, RunBackupArgs};
+use crate::routers::system_backup::{RunBackupArgs, run_backup};
 use crate::zap::script_cron::Cron;
 
 /// 读全局策略 KV（与 `system_backup::gs_get` 同源，调度器独立实现避免跨模块依赖）。
@@ -79,19 +79,21 @@ async fn tick() {
     // 与任务共用 30s 扫描节拍 + 同分钟去重（last_run 落 global_settings）。
     let all_enabled = gs_get("backup_all_enabled").await != "0";
     let all_schedule = gs_get("backup_all_schedule").await;
-    if all_enabled && !all_schedule.trim().is_empty()
+    if all_enabled
+        && !all_schedule.trim().is_empty()
         && let Ok(cron) = Cron::parse(&all_schedule)
-            && cron.matches(&now) {
-                let last = gs_get("backup_all_last_run")
-                    .await
-                    .parse::<i64>()
-                    .unwrap_or(0);
-                if (ts - last) > 60 {
-                    gs_set("backup_all_last_run", &ts.to_string()).await;
-                    info!("触发全量备份（计划 {all_schedule}）");
-                    tokio::spawn(crate::routers::system_backup::run_backup_all());
-                }
-            }
+        && cron.matches(&now)
+    {
+        let last = gs_get("backup_all_last_run")
+            .await
+            .parse::<i64>()
+            .unwrap_or(0);
+        if (ts - last) > 60 {
+            gs_set("backup_all_last_run", &ts.to_string()).await;
+            info!("触发全量备份（计划 {all_schedule}）");
+            tokio::spawn(crate::routers::system_backup::run_backup_all());
+        }
+    }
 }
 
 async fn run_job(

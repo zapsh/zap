@@ -865,19 +865,20 @@ async fn create_user_inner(
     // owner_id=0（直属系统）或 admin 直接建则不限制。
     if owner_id > 0
         && let Some(owner) = load_account(owner_id).await?
-            && owner.max_users > 0 {
-                let owned: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user WHERE owner_id = ?")
-                    .bind(owner_id)
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or((0,));
-                if owned.0 >= owner.max_users {
-                    return Err(ZapError::New(
-                        -1,
-                        format!("已达该账户最大用户数上限（{}）", owner.max_users),
-                    ));
-                }
-            }
+        && owner.max_users > 0
+    {
+        let owned: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user WHERE owner_id = ?")
+            .bind(owner_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or((0,));
+        if owned.0 >= owner.max_users {
+            return Err(ZapError::New(
+                -1,
+                format!("已达该账户最大用户数上限（{}）", owner.max_users),
+            ));
+        }
+    }
     let result = sqlx::query(
         "INSERT INTO user (username, home_dir, linux_user, fpm_pool, fpm_spec_ref, password, email, phone, nickname, roles, permissions, owner_id, user_kind, perm_deny, read_only, package_id, max_users, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
     )

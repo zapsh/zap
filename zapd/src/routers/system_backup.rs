@@ -106,10 +106,11 @@ async fn user_retention(username: &str) -> i64 {
         .flatten();
     if let Some((prefs,)) = row
         && let Ok(v) = serde_json::from_str::<Value>(&prefs)
-            && let Some(n) = v.get("backup_retain").and_then(|x| x.as_i64())
-                && n > 0 {
-                    return n;
-                }
+        && let Some(n) = v.get("backup_retain").and_then(|x| x.as_i64())
+        && n > 0
+    {
+        return n;
+    }
     policy_global_retain().await
 }
 
@@ -596,9 +597,11 @@ pub async fn run_backup<'a>(a: RunBackupArgs<'a>) -> Result<Value, ZapError> {
 
     if let Some(jid) = job_id
         && let Ok(retain) = job_retain(jid).await
-            && retain > 0 && !bpath.is_empty() {
-                prune_old(jid, retain, &bpath, &eff_root).await;
-            }
+        && retain > 0
+        && !bpath.is_empty()
+    {
+        prune_old(jid, retain, &bpath, &eff_root).await;
+    }
 
     Ok(json!({
         "record_id": record_id,
@@ -1569,9 +1572,10 @@ pub async fn policy_set(
         gs_set("backup_allow_job", if v { "1" } else { "0" }).await;
     }
     if let Some(v) = payload.global_retain
-        && v >= 0 {
-            gs_set("backup_global_retain", &v.to_string()).await;
-        }
+        && v >= 0
+    {
+        gs_set("backup_global_retain", &v.to_string()).await;
+    }
     if let Some(v) = payload.all_enabled {
         gs_set("backup_all_enabled", if v { "1" } else { "0" }).await;
     }

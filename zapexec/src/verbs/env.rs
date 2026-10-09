@@ -266,9 +266,9 @@ fn default_node_version() -> String {
                     .next()
                     .map(|c| c.is_ascii_digit())
                     .unwrap_or(false)
-                {
-                    return v.to_string();
-                }
+            {
+                return v.to_string();
+            }
         }
     }
     String::new()
@@ -477,12 +477,13 @@ fn current_python_index() -> String {
     if let Ok(txt) = std::fs::read_to_string("/etc/uv/uv.toml") {
         for line in txt.lines() {
             if let Some(rest) = line.trim().strip_prefix("url")
-                && let Some(v) = rest.split('=').nth(1) {
-                    let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
-                    if !v.is_empty() {
-                        return v;
-                    }
+                && let Some(v) = rest.split('=').nth(1)
+            {
+                let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+                if !v.is_empty() {
+                    return v;
                 }
+            }
         }
     }
     "https://pypi.org/simple".to_string()
@@ -567,9 +568,9 @@ pub fn detect_python() -> Value {
                 .args(["python", "list"])
                 .env("UV_PYTHON_INSTALL_DIR", UV_PYTHON_INSTALL_DIR)
                 .output()
-            {
-                txt = String::from_utf8_lossy(&o.stdout).to_string();
-            }
+        {
+            txt = String::from_utf8_lossy(&o.stdout).to_string();
+        }
         for line in txt.lines() {
             if let Some((ver, path)) = uv_list_installed(line) {
                 versions.push(json!({
@@ -694,9 +695,10 @@ fn system_pythons() -> Vec<String> {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
             if let Some(rest) = n.strip_prefix("python3.")
-                && rest.chars().all(|c| c.is_ascii_digit()) {
-                    out.push(format!("3.{rest}"));
-                }
+                && rest.chars().all(|c| c.is_ascii_digit())
+            {
+                out.push(format!("3.{rest}"));
+            }
         }
     }
     out.sort();

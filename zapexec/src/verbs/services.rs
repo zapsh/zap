@@ -33,9 +33,10 @@ fn known_units() -> BTreeSet<String> {
             continue;
         };
         if let Some(s) = info.get("svc_name").and_then(|v| v.as_str())
-            && !s.trim().is_empty() {
-                set.insert(s.trim().to_string());
-            }
+            && !s.trim().is_empty()
+        {
+            set.insert(s.trim().to_string());
+        }
     }
     set
 }

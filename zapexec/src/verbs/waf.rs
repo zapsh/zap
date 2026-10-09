@@ -882,9 +882,10 @@ fn extract_audit(log: &Path, uid: &str) -> Result<Value, String> {
             request_line = line.clone();
         }
         if line.starts_with("ModSecurity:")
-            && let Some(m) = parse_message_line(line) {
-                messages.push(m);
-            }
+            && let Some(m) = parse_message_line(line)
+        {
+            messages.push(m);
+        }
     }
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     let request = json!({
@@ -1165,10 +1166,10 @@ fn install_inner(
              libtool autoconf automake g++ make pkg-config libpcre3-dev libxml2-dev \
              libcurl4-openssl-dev libgeoip-dev libyajl-dev flex bison",
         ) != 0
-        {
-            super::log_line(log, "依赖安装失败，中止（后续编译大概率也过不去）");
-            return 1;
-        }
+    {
+        super::log_line(log, "依赖安装失败，中止（后续编译大概率也过不去）");
+        return 1;
+    }
 
     // 2) libmodsecurity（规则引擎）—— 从下载源 pkg/modsecurity/ 取，不碰 GitHub
     let lib_script = format!(

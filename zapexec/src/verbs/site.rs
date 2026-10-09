@@ -2807,9 +2807,10 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
     // WAF 命中信息只出现在 error.log，waf.log 一直 0 字节）。这里把日志目录（含刚被
     // root 建出的 waf.log）重新归给 www，确保 worker 可写。失败不阻断发布，仅告警。
     if let Some(d) = &log_dir
-        && let Err(e) = fix_tree_owner(d, "www", true) {
-            tracing::warn!("重置站点日志目录属主失败（WAF 审计日志可能无写权限）: {e}");
-        }
+        && let Err(e) = fix_tree_owner(d, "www", true)
+    {
+        tracing::warn!("重置站点日志目录属主失败（WAF 审计日志可能无写权限）: {e}");
+    }
 
     let data = json!({
         "site_id": site_id,

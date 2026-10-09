@@ -1152,9 +1152,10 @@ pub async fn scan_installed(owner: Option<String>) -> Vec<Value> {
         for slot in scan_slots() {
             // 非 admin 只保留自己名下的安装；admin 看全部
             if let Some(u) = owner.as_deref()
-                && slot.owner.as_deref() != Some(u) {
-                    continue;
-                }
+                && slot.owner.as_deref() != Some(u)
+            {
+                continue;
+            }
             let Some(meta) = parse_slot_meta(&slot) else {
                 continue;
             };

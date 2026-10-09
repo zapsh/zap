@@ -653,54 +653,55 @@ pub async fn package_update(
     }
 
     // reseller 修改自有子套餐时，结果各项不得超过其父套餐（reseller 自身套餐）的允许范围
-    if is_reseller && !is_admin
-        && let Some(parent) = package_of_user(claims.id as i64).await {
-            let eff = ResellerSubVals {
-                disk_quota_mb: payload.disk_quota_mb.unwrap_or(current.disk_quota_mb),
-                max_sites: payload.max_sites.unwrap_or(current.max_sites),
-                max_domains: payload.max_domains.unwrap_or(current.max_domains),
-                max_bandwidth_mb: payload.max_bandwidth_mb.unwrap_or(current.max_bandwidth_mb),
-                max_mysql_dbs: payload.max_mysql_dbs.unwrap_or(current.max_mysql_dbs),
-                max_pgsql_dbs: payload.max_pgsql_dbs.unwrap_or(current.max_pgsql_dbs),
-                max_ftp_users: payload.max_ftp_users.unwrap_or(current.max_ftp_users),
-                app_max_total: payload.app_max_total.unwrap_or(current.app_max_total),
-                max_apps: payload.max_apps.unwrap_or(current.max_apps),
-                app_port_span: payload.app_port_span.unwrap_or(current.app_port_span),
-                allow_ssh: i32::from(payload.allow_ssh.unwrap_or(current.allow_ssh == 1)),
-                allow_proxy: i32::from(payload.allow_proxy.unwrap_or(current.allow_proxy == 1)),
-                allow_php: i32::from(payload.allow_php.unwrap_or(current.allow_php == 1)),
-                allow_docker: i32::from(payload.allow_docker.unwrap_or(current.allow_docker == 1)),
-                allow_waf: i32::from(payload.allow_waf.unwrap_or(current.allow_waf == 1)),
-                allow_apps: i32::from(payload.allow_apps.unwrap_or(current.allow_apps == 1)),
-                app_types: payload
-                    .app_types
-                    .clone()
-                    .map(|s| package_app_types_normalized(&s))
-                    .unwrap_or_else(|| current.app_types.clone()),
-            };
-            enforce_reseller_subpackage(&parent, &eff)?;
-        }
+    if is_reseller
+        && !is_admin
+        && let Some(parent) = package_of_user(claims.id as i64).await
+    {
+        let eff = ResellerSubVals {
+            disk_quota_mb: payload.disk_quota_mb.unwrap_or(current.disk_quota_mb),
+            max_sites: payload.max_sites.unwrap_or(current.max_sites),
+            max_domains: payload.max_domains.unwrap_or(current.max_domains),
+            max_bandwidth_mb: payload.max_bandwidth_mb.unwrap_or(current.max_bandwidth_mb),
+            max_mysql_dbs: payload.max_mysql_dbs.unwrap_or(current.max_mysql_dbs),
+            max_pgsql_dbs: payload.max_pgsql_dbs.unwrap_or(current.max_pgsql_dbs),
+            max_ftp_users: payload.max_ftp_users.unwrap_or(current.max_ftp_users),
+            app_max_total: payload.app_max_total.unwrap_or(current.app_max_total),
+            max_apps: payload.max_apps.unwrap_or(current.max_apps),
+            app_port_span: payload.app_port_span.unwrap_or(current.app_port_span),
+            allow_ssh: i32::from(payload.allow_ssh.unwrap_or(current.allow_ssh == 1)),
+            allow_proxy: i32::from(payload.allow_proxy.unwrap_or(current.allow_proxy == 1)),
+            allow_php: i32::from(payload.allow_php.unwrap_or(current.allow_php == 1)),
+            allow_docker: i32::from(payload.allow_docker.unwrap_or(current.allow_docker == 1)),
+            allow_waf: i32::from(payload.allow_waf.unwrap_or(current.allow_waf == 1)),
+            allow_apps: i32::from(payload.allow_apps.unwrap_or(current.allow_apps == 1)),
+            app_types: payload
+                .app_types
+                .clone()
+                .map(|s| package_app_types_normalized(&s))
+                .unwrap_or_else(|| current.app_types.clone()),
+        };
+        enforce_reseller_subpackage(&parent, &eff)?;
+    }
 
     let pool = db::get_db_pool().await;
     let now = chrono::Local::now().timestamp();
 
     // 归属变更（仅管理员可改）：global -> owner_id=0（全局）；self -> 当前管理员名下私有。
     // reseller 忽略 scope；全局套餐的归属变更也只允许管理员操作（上面已拦截非管理员）。
-    if is_admin
-        && let Some(scope) = payload.scope.as_deref() {
-            let new_owner: i64 = match scope {
-                "self" => claims.id as i64,
-                _ => 0,
-            };
-            if new_owner != current.owner_id {
-                sqlx::query("UPDATE packages SET owner_id = ?, updated_at = ? WHERE id = ?")
-                    .bind(new_owner)
-                    .bind(now)
-                    .bind(payload.id)
-                    .execute(pool)
-                    .await?;
-            }
+    if is_admin && let Some(scope) = payload.scope.as_deref() {
+        let new_owner: i64 = match scope {
+            "self" => claims.id as i64,
+            _ => 0,
+        };
+        if new_owner != current.owner_id {
+            sqlx::query("UPDATE packages SET owner_id = ?, updated_at = ? WHERE id = ?")
+                .bind(new_owner)
+                .bind(now)
+                .bind(payload.id)
+                .execute(pool)
+                .await?;
         }
+    }
 
     // 逐字段更新，便于精确审计与错误提示
     if let Some(n) = payload.name {

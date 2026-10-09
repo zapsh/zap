@@ -350,9 +350,10 @@ fn apply_i18n(info: &mut Value, table: &serde_yaml::Mapping) {
                     continue;
                 };
                 if let Some((_, label)) = labels.iter().find(|(n, _)| n == sname)
-                    && let Some(o) = spec.as_object_mut() {
-                        o.insert("label".to_string(), Value::String(label.clone()));
-                    }
+                    && let Some(o) = spec.as_object_mut()
+                {
+                    o.insert("label".to_string(), Value::String(label.clone()));
+                }
             }
         }
     }
@@ -360,27 +361,28 @@ fn apply_i18n(info: &mut Value, table: &serde_yaml::Mapping) {
     if let Some(opts) = table
         .get(serde_yaml::Value::String("options".to_string()))
         .and_then(|v| v.as_sequence())
-        && let Some(base) = obj.get_mut("options").and_then(|v| v.as_array_mut()) {
-            for ov in opts {
-                let Some(om) = ov.as_mapping() else { continue };
-                let Some(name) = i18n_str(om, "name") else {
+        && let Some(base) = obj.get_mut("options").and_then(|v| v.as_array_mut())
+    {
+        for ov in opts {
+            let Some(om) = ov.as_mapping() else { continue };
+            let Some(name) = i18n_str(om, "name") else {
+                continue;
+            };
+            for bo in base.iter_mut() {
+                if bo.get("name").and_then(|n| n.as_str()) != Some(name) {
+                    continue;
+                }
+                let Some(bo) = bo.as_object_mut() else {
                     continue;
                 };
-                for bo in base.iter_mut() {
-                    if bo.get("name").and_then(|n| n.as_str()) != Some(name) {
-                        continue;
-                    }
-                    let Some(bo) = bo.as_object_mut() else {
-                        continue;
-                    };
-                    for key in ["label", "desc", "placeholder"] {
-                        if let Some(s) = i18n_str(om, key) {
-                            bo.insert(key.to_string(), Value::String(s.to_string()));
-                        }
+                for key in ["label", "desc", "placeholder"] {
+                    if let Some(s) = i18n_str(om, key) {
+                        bo.insert(key.to_string(), Value::String(s.to_string()));
                     }
                 }
             }
         }
+    }
 }
 
 fn describe(dir: &Path, name: &str) -> Result<Value, String> {
@@ -564,14 +566,15 @@ fn inject_uikit(
     // T() / applyI18n 全靠它查译文，没有它就只能显示基准（中文）文案。
     if let Some(t) = i18n
         && let Ok(json) = serde_json::to_string(t)
-            && !matches!(json.as_str(), "null" | "{}") {
-                // `</` 会提前闭合 script 标签；`<\/` 在 JSON 里等价于 `/`，安全
-                let safe = json.replace("</", "<\\/");
-                out.insert_str(
-                    0,
-                    &format!("<script>window.__ZAP_I18N__={safe};</script>\n"),
-                );
-            }
+        && !matches!(json.as_str(), "null" | "{}")
+    {
+        // `</` 会提前闭合 script 标签；`<\/` 在 JSON 里等价于 `/`，安全
+        let safe = json.replace("</", "<\\/");
+        out.insert_str(
+            0,
+            &format!("<script>window.__ZAP_I18N__={safe};</script>\n"),
+        );
+    }
     // 面板语言先落地：插在最前面，UIKit 与插件 HTML 都能读到 `zap.ui.lang`。
     // UIKit 里提供的 `zap.ui.t({'zh-CN':…, 'en-US':…})` 就靠它选文案，
     // 插件界面因此能跟随 Element Plus 的语言切换。
@@ -749,9 +752,10 @@ pub async fn plugin_list(
             let pl_scope = manifest_str(&m, "scope").unwrap_or("system");
             let placements = placements_of(&m);
             if let Some(sc) = &scope
-                && pl_scope != sc.as_str() {
-                    continue;
-                }
+                && pl_scope != sc.as_str()
+            {
+                continue;
+            }
             if let Some(sl) = &slot {
                 // placement 可以是数组：挂在任一个槽位上就算命中
                 if !placements.iter().any(|p| p == sl) {
@@ -965,11 +969,12 @@ pub async fn plugin_install(
             n
         };
         if let Some(n) = manifest_str(&m, "name")
-            && n != effective {
-                return Err(format!(
-                    "manifest 里的 name（{n}）与插件名（{effective}）不一致"
-                ));
-            }
+            && n != effective
+        {
+            return Err(format!(
+                "manifest 里的 name（{n}）与插件名（{effective}）不一致"
+            ));
+        }
 
         let target = base.join(&effective);
         if target.exists() {
@@ -2761,11 +2766,7 @@ actions:
             .and_then(|v| v.as_mapping())
             .unwrap();
         assert_eq!(alice.len(), 2, "合并后应保留两个键");
-        assert!(
-            store
-                .get(serde_yaml::Value::String("bob".into()))
-                .is_none()
-        );
+        assert!(store.get(serde_yaml::Value::String("bob".into())).is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 

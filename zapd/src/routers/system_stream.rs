@@ -591,13 +591,15 @@ fn split_target(raw: &str) -> Result<(String, i64), ZapError> {
         return Err(ZapError::New(-1, "后端地址不能为空".to_string()));
     }
     if let Some((h, p)) = v.rsplit_once(':')
-        && !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
-            let port: i64 = p
-                .parse()
-                .map_err(|_| ZapError::New(-1, format!("后端端口不是数字：{p}（{v}）")))?;
-            let port = validate_port(port, "后端端口")?;
-            return Ok((validate_host(h)?, port));
-        }
+        && !p.is_empty()
+        && p.chars().all(|c| c.is_ascii_digit())
+    {
+        let port: i64 = p
+            .parse()
+            .map_err(|_| ZapError::New(-1, format!("后端端口不是数字：{p}（{v}）")))?;
+        let port = validate_port(port, "后端端口")?;
+        return Ok((validate_host(h)?, port));
+    }
     Ok((validate_host(v)?, 0))
 }
 

@@ -573,19 +573,19 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
             names,
         })
         .await
-            && resp.code == 0
-                && let Some(list) = resp
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("apps"))
-                    .and_then(|v| v.as_array())
-                {
-                    for a in list {
-                        if let Some(n) = a.get("name").and_then(|v| v.as_str()) {
-                            live.insert(n.to_string(), a.clone());
-                        }
-                    }
-                }
+        && resp.code == 0
+        && let Some(list) = resp
+            .data
+            .as_ref()
+            .and_then(|d| d.get("apps"))
+            .and_then(|v| v.as_array())
+    {
+        for a in list {
+            if let Some(n) = a.get("name").and_then(|v| v.as_str()) {
+                live.insert(n.to_string(), a.clone());
+            }
+        }
+    }
 
     let apps: Vec<Value> = rows
         .into_iter()
@@ -1839,18 +1839,17 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
     // 同步站点：静态型改写 web_root，进程型位置首次部署已建，这里重同步确保生效
     let is_static = app_type == "static";
     let mut sync_ok = true;
-    if is_static
-        && let Some(ref od) = output_dir {
-            let mount = mount_path.trim();
-            if !mount.is_empty() && mount != "/" {
-                // 子目录挂载：在站点下加一条 alias location 服务构建产物，
-                // 不覆盖站点原 web_root（域名根仍由原站点内容提供）。
-                let _ = site::ensure_app_static_location(site_id, &name, od, mount, "").await;
-            } else {
-                // 站点根：沿用原逻辑，把 web_root 改写为构建产物目录
-                let _ = update_site_web_root(site_id, od).await;
-            }
+    if is_static && let Some(ref od) = output_dir {
+        let mount = mount_path.trim();
+        if !mount.is_empty() && mount != "/" {
+            // 子目录挂载：在站点下加一条 alias location 服务构建产物，
+            // 不覆盖站点原 web_root（域名根仍由原站点内容提供）。
+            let _ = site::ensure_app_static_location(site_id, &name, od, mount, "").await;
+        } else {
+            // 站点根：沿用原逻辑，把 web_root 改写为构建产物目录
+            let _ = update_site_web_root(site_id, od).await;
         }
+    }
     if let Err(e) = site::sync_one_site(site_id).await {
         sync_ok = false;
         info!("app deploy task: site sync failed: site={site_id} err={e}");

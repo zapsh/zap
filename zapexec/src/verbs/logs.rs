@@ -291,9 +291,10 @@ pub async fn rotate(log_roots: Vec<String>, keep_days: u32) -> Response {
         // 全局 WAF 审计日志（/var/log/modsec_audit.log）：ModSecurity 模块持有 fd、不随
         // nginx USR1 重开，故用 copytruncate（拷贝→压缩→截断原文件），随主日志一并轮转。
         if let Some(log) = super::waf::audit_log_path()
-            && let Some(a) = rotate_one_audit_log(&log, keep) {
-                rotated.push(a);
-            }
+            && let Some(a) = rotate_one_audit_log(&log, keep)
+        {
+            rotated.push(a);
+        }
 
         let reopened = if rotated.is_empty() {
             false

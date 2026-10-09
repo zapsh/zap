@@ -1661,13 +1661,12 @@ async fn validate_advanced_inputs(
                     ));
                 }
             }
-            "raw"
-                if l.raw.trim().is_empty() => {
-                    return Err(ZapError::New(
-                        -1,
-                        format!("location「{}」类型为 raw 时指令体不能为空", l.path),
-                    ));
-                }
+            "raw" if l.raw.trim().is_empty() => {
+                return Err(ZapError::New(
+                    -1,
+                    format!("location「{}」类型为 raw 时指令体不能为空", l.path),
+                ));
+            }
             _ => {}
         }
         // 任意类型的 location 都可在高级模式下附带 raw 自由指令体（含 rewrite 等自定义规则）；
@@ -2391,9 +2390,10 @@ pub async fn site_add(
 
     // 安全配置随建站落库：随后的 vhost 同步（前端建站后调用的 /site/sync）会读它渲染
     if let Some(s) = &sec
-        && let Err(e) = save_site_sec(id, s).await {
-            warn!("save site_sec failed (id={}): {}", id, e);
-        }
+        && let Err(e) = save_site_sec(id, s).await
+    {
+        warn!("save site_sec failed (id={}): {}", id, e);
+    }
 
     audit::log(
         Some(&claims),
@@ -3470,18 +3470,17 @@ type SiteSecRow = (i64, i64, i64, i64, i64, i64, i64, String, i64, String, i64);
 
 async fn load_site_sec(site_id: i64) -> SiteSecurity {
     let pool = db::get_db_pool().await;
-    let row: Option<SiteSecRow> =
-        sqlx::query_as(
-            "SELECT waf_enable, limit_req_enable, limit_req_rate, limit_req_burst, \
+    let row: Option<SiteSecRow> = sqlx::query_as(
+        "SELECT waf_enable, limit_req_enable, limit_req_rate, limit_req_burst, \
                 limit_conn_enable, limit_conn_num, waf_mode, waf_rules, waf_audit, \
                 whitelist, limit_dry_run \
          FROM site_sec WHERE site_id = ?",
-        )
-        .bind(site_id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
+    )
+    .bind(site_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
     let Some((w, lr, rate, burst, lc, num, mode, rules, audit, wl, dry)) = row else {
         return SiteSecurity::default();
     };

@@ -333,9 +333,10 @@ pub async fn disk_low(user_id: i64, _owner_id: i64, pct: i32) {
     let cooldown_key = format!("disk_alert_at_{user_id}");
     if let Some(last) = server_env::conf_get(&cooldown_key)
         && let Ok(ts) = last.parse::<i64>()
-            && chrono::Local::now().timestamp() - ts < 86400 {
-                return; // 24h 内已提醒
-            }
+        && chrono::Local::now().timestamp() - ts < 86400
+    {
+        return; // 24h 内已提醒
+    }
     let channels = prefs_channels(user_id).await;
     if channels.contains("site") {
         push(
