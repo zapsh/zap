@@ -1251,6 +1251,11 @@ function connectTab(tab: TerminalTab, conn: SshConnection, authPassword?: string
           .catch(() => ws.close())
         return
       }
+      if (ctrl?.type === 'error') {
+        // 结构化错误帧：红字提示，不混进终端输出流
+        term.writeln('\r\n\x1b[31m' + (ctrl.message ?? '') + '\x1b[0m')
+        return
+      }
       term.write(event.data)
     }
   }

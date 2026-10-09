@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::{
     Json,
@@ -19,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{Executor, Row};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
 use zap_proto::Request;
@@ -28,6 +31,50 @@ use crate::zap::audit;
 use crate::zap::crypto;
 use crate::zap::jwt::{Claims, ValidatedClaims};
 use crate::zap::{ZapError, ZapJsonResult};
+
+/// SSH 建连 + 认证的**整段**超时。
+///
+/// 主机不可达时不能让请求干等到 OS 层 TCP 超时（分钟级），
+/// 那样会白白占着一个 WebSocket 和一个 tokio 任务。
+const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// 空闲自动断开：输入/输出都没有这么久就结束会话。
+///
+/// 用户忘关标签页时，一条 SSH 连接会一直占着（服务端也维持着会话），
+/// 时间久了既占资源又留着一个已认证的通道。
+const SSH_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// 单次会话最长时长：即使一直有活动也不无限期挂着。
+const SSH_MAX_SESSION: Duration = Duration::from_secs(8 * 60 * 60);
+
+/// 同一时刻最多允许的终端会话数。
+///
+/// 没有上限时，多开几个标签页就能堆出一大把 SSH 连接（每条都要占用本地 fd、
+/// 一个 tokio 任务，以及对端的一个会话）。满了直接拒绝开新会话。
+const MAX_SSH_SESSIONS: usize = 32;
+
+/// 认证失败限流：同一用户 + 同一连接在 `SSH_FAIL_WINDOW` 内失败这么多次就先不许再试。
+///
+/// 没有它的话，一个面板账号就能拿终端当爆破器，对着目标主机反复试密码
+/// （还会触发对端的 MaxStartups / fail2ban）。
+const SSH_FAIL_LIMIT: u32 = 5;
+const SSH_FAIL_WINDOW: Duration = Duration::from_secs(300);
+
+/// 全局并发会话配额（见 `MAX_SSH_SESSIONS`）
+static SSH_SESSION_SLOTS: Semaphore = Semaphore::const_new(MAX_SSH_SESSIONS);
+
+/// 认证失败计数：`(user_id, conn_id) -> (失败次数, 首次失败时刻)`
+static SSH_AUTH_FAILS: LazyLock<Mutex<HashMap<(i64, i64), (u32, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 结构化错误帧：和 resize / ask_password 同一套控制消息协议。
+///
+/// 以前错误是直接把文本混进终端输出流（`"认证失败: xxx\r\n"`），前端分不清
+/// 这是 shell 输出还是报错；现在统一成 JSON，前端据此弹提示。
+fn error_frame(msg: &str) -> Message {
+    Message::Text(axum::extract::ws::Utf8Bytes::from(
+        json!({ "type": "error", "message": msg }).to_string(),
+    ))
+}
 
 // ── Database schema ────────────────────────────────────────
 
@@ -45,6 +92,9 @@ pub async fn init_table() {
             auth_type VARCHAR(32) NOT NULL DEFAULT 'password',
             password VARCHAR(512) DEFAULT '',
             ssh_key_name VARCHAR(128) DEFAULT '',
+            -- host_key_fingerprint：主机密钥指纹（TOFU，见 ssh_connect）。
+            -- 空 = 还没信任过该主机的密钥，首次连成后写入；非空则后续连接必须匹配
+            host_key_fingerprint VARCHAR(128) DEFAULT '',
             remark TEXT DEFAULT '',
             status INTEGER DEFAULT 1,
             sort_order INTEGER DEFAULT 0,
@@ -61,6 +111,13 @@ pub async fn init_table() {
     let _ = db::get_db_pool()
         .await
         .execute("ALTER TABLE ssh_connections ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+        .await;
+    // 主机密钥指纹（TOFU）：存量库补列（幂等，已存在则报错被忽略）
+    let _ = db::get_db_pool()
+        .await
+        .execute(
+            "ALTER TABLE ssh_connections ADD COLUMN host_key_fingerprint VARCHAR(128) DEFAULT ''",
+        )
         .await;
     let _ = db::get_db_pool()
         .await
@@ -235,6 +292,9 @@ pub struct UpdateConnectionPayload {
     pub remark: Option<String>,
     pub status: Option<i32>,
     pub sort_order: Option<i32>,
+    /// `true` = 解除对当前主机密钥的信任（清空 TOFU 指纹），下次连接重新记录。
+    /// 主机重装但地址没变、导致指纹校验不过时用。缺省（老客户端）为 None，不动。
+    pub reset_host_key: Option<bool>,
 }
 
 fn default_port() -> i32 {
@@ -373,20 +433,28 @@ pub async fn update_connection(
             .await?;
     }
     if let Some(v) = payload.host.as_deref().map(|s| s.trim().to_string()) {
-        sqlx::query("UPDATE ssh_connections SET host = ?, updated_at = ? WHERE id = ?")
-            .bind(&v)
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?;
+        // 换了主机 → 原先信任的主机密钥不再适用，清空指纹，下次连接重新走 TOFU
+        sqlx::query(
+            "UPDATE ssh_connections SET host = ?, host_key_fingerprint = '', updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(&v)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
     }
     if let Some(v) = payload.port {
-        sqlx::query("UPDATE ssh_connections SET port = ?, updated_at = ? WHERE id = ?")
-            .bind(v)
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?;
+        // 端口变了同理：指向的已经不是之前那台服务了
+        sqlx::query(
+            "UPDATE ssh_connections SET port = ?, host_key_fingerprint = '', updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(v)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
     }
     if let Some(v) = payload.username {
         sqlx::query("UPDATE ssh_connections SET username = ?, updated_at = ? WHERE id = ?")
@@ -445,6 +513,15 @@ pub async fn update_connection(
             .bind(id)
             .execute(pool)
             .await?;
+    }
+
+    // 显式解除信任（主机重装但地址没变）：清空指纹，下次连接重新记录
+    if payload.reset_host_key == Some(true) {
+        sqlx::query("UPDATE ssh_connections SET host_key_fingerprint = '' WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        info!("SSH host key trust reset for connection {}", id);
     }
 
     info!("SSH connection updated: id={}", id);
@@ -570,11 +647,28 @@ pub async fn ws_terminal(
         .and_then(|v| v.parse().ok())
         .unwrap_or(80);
 
-    ws.on_upgrade(move |socket| handle_terminal(socket, id, rows, cols))
+    ws.on_upgrade(move |socket| handle_terminal(socket, id, rows, cols, claims))
 }
 
-async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) {
+async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32, claims: Claims) {
     info!("Terminal WebSocket connected for connection {}", conn_id);
+
+    // 并发会话配额：满了就不要再往下建 SSH 连接了。
+    // permit 持有到函数结束，会话关掉才归还。
+    let _session_permit = match SSH_SESSION_SLOTS.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            warn!("SSH terminal session limit reached (max {MAX_SSH_SESSIONS})");
+            let (mut tx, _) = socket.split();
+            let _ = tx
+                .send(error_frame(&format!(
+                    "并发终端会话已达上限（{MAX_SSH_SESSIONS}），请先关闭一些标签页"
+                )))
+                .await;
+            let _ = tx.close().await;
+            return;
+        }
+    };
 
     let conn_info = match load_connection_info(conn_id).await {
         Ok(c) => c,
@@ -585,7 +679,7 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
                 ZapError::New(_, m) => m.clone(),
                 other => other.to_string(),
             };
-            send_error_and_close(socket, &format!("{msg}\r\n")).await;
+            send_error_and_close(socket, &msg).await;
             return;
         }
     };
@@ -629,9 +723,7 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
         .unwrap_or_default();
         if pwd.is_empty() {
             let _ = tx
-                .send(Message::Text(axum::extract::ws::Utf8Bytes::from(
-                    "密码输入超时或已取消，连接已关闭\r\n",
-                )))
+                .send(error_frame("密码输入超时或已取消，连接已关闭"))
                 .await;
             let _ = tx.close().await;
             return;
@@ -642,20 +734,52 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
         socket.split()
     };
 
+    // 认证失败限流：别把一次连接浪费在被限流的请求上，也不给爆破留窗口
+    let user_id = claims.id as i64;
+    if let Some(wait) = ssh_auth_blocked(user_id, conn_id) {
+        let _ = ws_tx
+            .send(error_frame(&format!(
+                "认证失败次数过多（{SSH_FAIL_LIMIT} 次），请 {wait} 秒后再试"
+            )))
+            .await;
+        let _ = ws_tx.close().await;
+        return;
+    }
+
     // 认证：临时密码优先（空密码连接由前端下发），否则使用库中保存的凭据
     let mut auth_info = conn_info;
     if let Some(pwd) = temporary_password {
         auth_info.password = pwd;
     }
-    let handle = match ssh_connect(&auth_info).await {
-        Ok(h) => h,
-        Err(e) => {
+    // 整段超时：不可达主机不能一直挂到 OS 层 TCP 超时（分钟级），
+    // 也不让一个 WebSocket + tokio 任务无限期占着
+    let handle = match tokio::time::timeout(SSH_CONNECT_TIMEOUT, ssh_connect(&auth_info)).await {
+        Ok(Ok(h)) => {
+            // 认证成功，清掉这条连接的失败计数
+            clear_ssh_auth_failures(user_id, conn_id);
+            h
+        }
+        Ok(Err(e)) => {
             error!("SSH authentication failed: {}", e);
+            note_ssh_auth_failure(user_id, conn_id);
+            let _ = ws_tx.send(error_frame(&format!("认证失败: {e}"))).await;
+            let _ = ws_tx.close().await;
+            return;
+        }
+        Err(_) => {
+            // 连不上（主机不可达）不算凭据问题，不记入失败计数
+            error!(
+                "SSH connect timed out after {}s (connection {})",
+                SSH_CONNECT_TIMEOUT.as_secs(),
+                conn_id
+            );
             let _ = ws_tx
-                .send(Message::Text(axum::extract::ws::Utf8Bytes::from(format!(
-                    "认证失败: {}\r\n",
-                    e
-                ))))
+                .send(error_frame(&format!(
+                    "建连超时：{} 秒内没能连上 {}:{}",
+                    SSH_CONNECT_TIMEOUT.as_secs(),
+                    auth_info.host,
+                    auth_info.port
+                )))
                 .await;
             let _ = ws_tx.close().await;
             return;
@@ -667,10 +791,7 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
         Err(e) => {
             error!("Failed to open SSH channel: {}", e);
             let _ = ws_tx
-                .send(Message::Text(axum::extract::ws::Utf8Bytes::from(format!(
-                    "打开通道失败: {}\r\n",
-                    e
-                ))))
+                .send(error_frame(&format!("打开通道失败: {e}")))
                 .await;
             let _ = ws_tx.close().await;
             return;
@@ -682,12 +803,7 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
         .await
     {
         error!("Failed to request PTY: {}", e);
-        let _ = ws_tx
-            .send(Message::Text(axum::extract::ws::Utf8Bytes::from(format!(
-                "请求 PTY 失败: {}\r\n",
-                e
-            ))))
-            .await;
+        let _ = ws_tx.send(error_frame(&format!("请求 PTY 失败: {e}"))).await;
         let _ = ws_tx.close().await;
         return;
     }
@@ -695,10 +811,7 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
     if let Err(e) = channel.request_shell(true).await {
         error!("Failed to start shell: {}", e);
         let _ = ws_tx
-            .send(Message::Text(axum::extract::ws::Utf8Bytes::from(format!(
-                "启动 shell 失败: {}\r\n",
-                e
-            ))))
+            .send(error_frame(&format!("启动 shell 失败: {e}")))
             .await;
         let _ = ws_tx.close().await;
         return;
@@ -706,12 +819,29 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
 
     info!("SSH terminal started for connection {}", conn_id);
 
+    // 终端是最高危操作（等于把目标机器的 shell 交给登录者），会话必须留痕
+    audit::log(
+        Some(&claims),
+        None,
+        "ssh_session_start",
+        &format!(
+            "{}@{}:{}",
+            auth_info.username, auth_info.host, auth_info.port
+        ),
+        &format!("SSH 终端会话开启（连接 #{conn_id}）"),
+    )
+    .await;
+
     // Channel: WebSocket → PTY resize (cols, rows)
     let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel::<(u32, u32)>(16);
 
     // 主循环：远端输出 → WebSocket，WebSocket 输入 → 远端。
     // `ssh_writer` 是 'static 的写端，不占用 channel 借用，便于与 wait() 并发。
     let mut ssh_writer = channel.make_writer();
+    // 会话计时：空闲多久收尾 + 整条会话最长能开多久。
+    // 用 tokio 的 Instant —— `sleep_until` 只认它，和 `std::time::Instant` 不是同一类型。
+    let started = tokio::time::Instant::now();
+    let mut last_active = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -719,6 +849,7 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
                 let Some(msg) = msg else { break };
                 match msg {
                     ChannelMsg::Data { data } => {
+                        last_active = tokio::time::Instant::now();
                         if ws_tx.send(Message::Binary(data)).await.is_err() {
                             break;
                         }
@@ -729,26 +860,34 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
                             "SSH shell exited with status {} (connection {})",
                             exit_status, conn_id
                         );
+                        // 明确告诉前端「结束了」，否则界面会停在没有任何输出的假死状态
+                        let _ = ws_tx
+                            .send(Message::Text(axum::extract::ws::Utf8Bytes::from(
+                                format!("\r\n[远端 shell 已退出，状态码 {exit_status}]\r\n"),
+                            )))
+                            .await;
+                        break;
                     }
                     _ => {}
                 }
             }
             ws_msg = ws_rx.next() => {
                 let Some(Ok(msg)) = ws_msg else { break };
+                last_active = tokio::time::Instant::now();
                 match msg {
                     Message::Text(t) => {
                         let txt = t.as_ref();
-                        // resize 控制消息：前端 fit 后自动同步窗口尺寸
+                        // resize 控制消息：前端 fit 后自动同步窗口尺寸。
+                        // 这里刻意不用 continue —— 否则会跳过循环末尾的 window_change，
+                        // 导致空闲状态下改窗口要一直等到下一个事件才生效。
                         if let Ok(resize) = serde_json::from_str::<ResizeMsg>(txt)
                             && resize.kind == "resize"
                             && resize.cols > 0
                             && resize.rows > 0
                         {
                             let _ = resize_tx.send((resize.cols, resize.rows)).await;
-                            continue;
-                        }
-                        // 其余文本一律作为终端输入
-                        if ssh_writer.write_all(txt.as_bytes()).await.is_err() {
+                        } else if ssh_writer.write_all(txt.as_bytes()).await.is_err() {
+                            // 其余文本一律作为终端输入
                             break;
                         }
                     }
@@ -761,6 +900,34 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
                     _ => {}
                 }
                 let _ = ssh_writer.flush().await;
+            }
+            // 空闲超时：既没输入也没输出这么久，主动收尾（先告知前端，再断开）
+            _ = tokio::time::sleep_until(last_active + SSH_IDLE_TIMEOUT) => {
+                warn!(
+                    "SSH terminal idle timeout after {} min (connection {})",
+                    SSH_IDLE_TIMEOUT.as_secs() / 60,
+                    conn_id
+                );
+                let _ = ws_tx
+                    .send(Message::Text(axum::extract::ws::Utf8Bytes::from(
+                        "\r\n[空闲超时，会话已断开]\r\n".to_string(),
+                    )))
+                    .await;
+                break;
+            }
+            // 会话总时长上限：即便一直有活动也不无限期挂着
+            _ = tokio::time::sleep_until(started + SSH_MAX_SESSION) => {
+                warn!(
+                    "SSH terminal reached max session lifetime {} h (connection {})",
+                    SSH_MAX_SESSION.as_secs() / 3600,
+                    conn_id
+                );
+                let _ = ws_tx
+                    .send(Message::Text(axum::extract::ws::Utf8Bytes::from(
+                        "\r\n[已达单会话时长上限，会话已断开]\r\n".to_string(),
+                    )))
+                    .await;
+                break;
             }
         }
 
@@ -783,11 +950,7 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32) 
 
 async fn send_error_and_close(socket: WebSocket, msg: &str) {
     let (mut sender, _) = socket.split();
-    let _ = sender
-        .send(Message::Text(axum::extract::ws::Utf8Bytes::from(
-            msg.to_string(),
-        )))
-        .await;
+    let _ = sender.send(error_frame(msg.trim())).await;
     let _ = sender.close().await;
 }
 
@@ -797,18 +960,46 @@ async fn send_error_and_close(socket: WebSocket, msg: &str) {
 ///
 /// 面板只需要「连上去、开终端 / 执行命令」，不消费服务端主动推送的消息，
 /// 因此除 `check_server_key` 外全部使用默认实现。
-struct SshClient;
+struct SshClient {
+    /// 已记录的主机密钥指纹（TOFU）：`None` = 首次连接，暂不比对
+    expected: Option<String>,
+    /// 本次握手实际看到的指纹，回传给 `ssh_connect` 用于落库 / 报清楚错
+    observed: Arc<Mutex<Option<String>>>,
+}
 
 impl client::Handler for SshClient {
     type Error = russh::Error;
 
-    /// 不做 known_hosts 校验：面板里的主机由用户自己录入，
-    /// 语义等同于 OpenSSH 首次连接时接受该主机指纹。
+    /// 主机密钥校验：TOFU（Trust On First Use）。
+    ///
+    /// - 库里没记过指纹：接受，指纹由 `ssh_connect` 在**认证成功后**才落库
+    ///   （握手先于认证，没通过认证的对端还不配被信任，不能急着记下来）；
+    /// - 记过且一致：接受；
+    /// - 记过但不一致：拒绝。「主机重装换了密钥」和「中间人攻击」无法自动区分，
+    ///   所以一律拒绝，并给出可操作的提示。
+    ///
+    /// 证书（Certificate）由 CA 签发、自带权威校验，不参与指纹比对。
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKeyOrCertificate,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        let key = match server_public_key {
+            PublicKeyOrCertificate::PublicKey { key, .. } => key,
+            PublicKeyOrCertificate::Certificate(_) => return Ok(true),
+        };
+        let fingerprint = key.fingerprint(russh::keys::HashAlg::Sha256).to_string();
+        match &self.expected {
+            None => {
+                *self.observed.lock().unwrap() = Some(fingerprint);
+                Ok(true)
+            }
+            Some(expected) if *expected == fingerprint => Ok(true),
+            Some(expected) => {
+                warn!("SSH 主机密钥不匹配：已记录 {expected}，实际 {fingerprint}");
+                *self.observed.lock().unwrap() = Some(fingerprint);
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -838,12 +1029,88 @@ fn parse_private_key(content: &str) -> Result<PrivateKey, String> {
     PrivateKey::from_bytes(&bin).map_err(|e| format!("SSH 私钥解析失败: {e}"))
 }
 
+/// 认证失败限流：返回 `Some(还需等待的秒数)` 表示当前被限流、不该再试。
+///
+/// 计数以「用户 + 连接」为维度：别人失败不会连累你，你换一条连接也不受影响。
+fn ssh_auth_blocked(user_id: i64, conn_id: i64) -> Option<u64> {
+    let mut fails = SSH_AUTH_FAILS.lock().unwrap();
+    let Some((count, first)) = fails.get(&(user_id, conn_id)) else {
+        return None;
+    };
+    if *count < SSH_FAIL_LIMIT {
+        return None;
+    }
+    let elapsed = first.elapsed();
+    if elapsed >= SSH_FAIL_WINDOW {
+        // 窗口已过：解除限流，下次从 1 重新计
+        fails.remove(&(user_id, conn_id));
+        return None;
+    }
+    Some(SSH_FAIL_WINDOW.as_secs().saturating_sub(elapsed.as_secs()))
+}
+
+/// 记一次认证失败（窗口已过期则重新从 1 开始）。
+fn note_ssh_auth_failure(user_id: i64, conn_id: i64) {
+    let mut fails = SSH_AUTH_FAILS.lock().unwrap();
+    let entry = fails.entry((user_id, conn_id)).or_insert((0, Instant::now()));
+    if entry.1.elapsed() >= SSH_FAIL_WINDOW {
+        *entry = (1, Instant::now());
+    } else {
+        entry.0 = entry.0.saturating_add(1);
+    }
+}
+
+/// 认证成功后清零失败计数。
+fn clear_ssh_auth_failures(user_id: i64, conn_id: i64) {
+    SSH_AUTH_FAILS.lock().unwrap().remove(&(user_id, conn_id));
+}
+
 async fn ssh_connect(info: &ConnectionInfo) -> Result<client::Handle<SshClient>, String> {
     let addr = format!("{}:{}", info.host, info.port);
-    let config = Arc::new(client::Config::default());
-    let mut handle = client::connect(config, addr, SshClient)
-        .await
-        .map_err(|e| format!("SSH 连接失败: {}", e))?;
+    // 保活：30s 没收到数据就发一次 keepalive，连续 3 次没回应即判定链路已死。
+    // 没有它，NAT 超时 / 网络闪断之后这条连接会一直僵着 ——
+    // 双方都不发数据，谁也不会先断开，会话就这么悬着。
+    let config = Arc::new(client::Config {
+        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_max: 3,
+        ..Default::default()
+    });
+    // TOFU：库里没记过指纹就先放过去（连成 + 认证成功后由下面落库），记过就必须匹配
+    let expected = if info.host_key_fingerprint.is_empty() {
+        None
+    } else {
+        Some(info.host_key_fingerprint.clone())
+    };
+    let observed = Arc::new(Mutex::new(None));
+    let mut handle = match client::connect(
+        config,
+        addr,
+        SshClient {
+            expected: expected.clone(),
+            observed: Arc::clone(&observed),
+        },
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            // 指纹不匹配时 russh 只在握手层报错、看不出是「主机被换掉」，
+            // 这里补一句能看懂、也说清怎么办的提示
+            let seen = observed.lock().unwrap().clone();
+            if expected.is_some()
+                && let Some(actual) = seen.as_ref()
+            {
+                return Err(format!(
+                    "SSH 主机密钥指纹不匹配：已记录 {}，实际 {}。\
+                     若主机确实重装过 / 换过密钥，请删除并重新添加该连接以重新信任；\
+                     否则请警惕中间人攻击",
+                    expected.as_deref().unwrap_or_default(),
+                    actual
+                ));
+            }
+            return Err(format!("SSH 连接失败: {}", e));
+        }
+    };
 
     match info.auth_type.as_str() {
         "password" => {
@@ -883,16 +1150,36 @@ async fn ssh_connect(info: &ConnectionInfo) -> Result<client::Handle<SshClient>,
         }
         _ => return Err(format!("不支持的认证类型: {}", info.auth_type)),
     }
+
+    // TOFU 落库：此前没记过指纹 **且认证成功**（顺序很重要 —— 握手在认证之前，
+    // 没通过认证的对端还不配被信任），把本次看到的指纹写回这条连接。
+    // id = 0 是临时连接（「推送公钥」表单，尚未入库），无处记录则跳过。
+    let seen = observed.lock().unwrap().clone();
+    if expected.is_none() && info.id > 0
+        && let Some(fp) = seen.as_ref()
+    {
+        let pool = db::get_db_pool().await;
+        let _ = sqlx::query("UPDATE ssh_connections SET host_key_fingerprint = ? WHERE id = ?")
+            .bind(fp)
+            .bind(info.id)
+            .execute(pool)
+            .await;
+        info!("SSH 主机密钥已记录（TOFU）: 连接 {} → {}", info.id, fp);
+    }
     Ok(handle)
 }
 
 struct ConnectionInfo {
+    /// 连接 id；`0` = 临时连接（如「推送公钥」表单，尚未入库），TOFU 指纹无处落库
+    id: i64,
     host: String,
     port: i32,
     username: String,
     auth_type: String,
     password: String,
     ssh_key_name: String,
+    /// 已记录的主机密钥指纹（TOFU）：空 = 尚未信任过该主机密钥，首次连成后写回
+    host_key_fingerprint: String,
     /// 已按归属解析好的私钥/公钥内容（key 认证用；在进入阻塞认证前异步加载）
     ssh_private_key: Option<String>,
     ssh_public_key: Option<String>,
@@ -926,8 +1213,8 @@ struct AuthMsg {
 async fn load_connection_info(id: i64) -> Result<ConnectionInfo, ZapError> {
     let pool = db::get_db_pool().await;
     let row = sqlx::query(
-        "SELECT s.host, s.port, s.username, s.auth_type, s.password, s.ssh_key_name, \
-                s.user_id AS owner_id, u.linux_user AS linux_user \
+        "SELECT s.id, s.host, s.port, s.username, s.auth_type, s.password, s.ssh_key_name, \
+                s.host_key_fingerprint, s.user_id AS owner_id, u.linux_user AS linux_user \
          FROM ssh_connections s LEFT JOIN user u ON u.id = s.user_id \
          WHERE s.id = ? AND s.status = 1",
     )
@@ -942,6 +1229,7 @@ async fn load_connection_info(id: i64) -> Result<ConnectionInfo, ZapError> {
             let ssh_key_name: String = r.try_get("ssh_key_name").unwrap_or_default();
             let linux_user: String = r.try_get("linux_user").unwrap_or_default();
             let mut info = ConnectionInfo {
+                id: r.get("id"),
                 host: r.get("host"),
                 port: r.get("port"),
                 username: r.get("username"),
@@ -949,6 +1237,8 @@ async fn load_connection_info(id: i64) -> Result<ConnectionInfo, ZapError> {
                 // 解密后用于 SSH 认证；旧明文数据同样兼容
                 password: crypto::decrypt_password(&stored),
                 ssh_key_name: ssh_key_name.clone(),
+                // 存量行可能还没有这一列（升级前插入的），取不到就当作「尚未信任」
+                host_key_fingerprint: r.try_get("host_key_fingerprint").unwrap_or_default(),
                 ssh_private_key: None,
                 ssh_public_key: None,
             };
@@ -1112,10 +1402,20 @@ pub async fn test_connection(
     Query(params): Query<TestConnectionQuery>,
 ) -> ZapJsonResult {
     connection_in_scope(&claims, params.id).await?;
+    // 「测试连接」同样要限流：它是一次完整的认证尝试，也是顺手的爆破入口
+    let user_id = claims.id as i64;
+    if let Some(wait) = ssh_auth_blocked(user_id, params.id) {
+        return Ok(Json(json!({
+            "code": 0,
+            "success": false,
+            "message": format!("认证失败次数过多（{SSH_FAIL_LIMIT} 次），请 {wait} 秒后再试")
+        })));
+    }
     let conn_info = load_connection_info(params.id).await?;
 
     match ssh_connect(&conn_info).await {
         Ok(handle) => {
+            clear_ssh_auth_failures(user_id, params.id);
             // 只验证「能连上且能认证」，验证完立即断开
             let _ = handle
                 .disconnect(Disconnect::ByApplication, "", "English")
@@ -1124,7 +1424,10 @@ pub async fn test_connection(
                 json!({ "code": 0, "success": true, "message": "连接成功" }),
             ))
         }
-        Err(e) => Ok(Json(json!({ "code": 0, "success": false, "message": e }))),
+        Err(e) => {
+            note_ssh_auth_failure(user_id, params.id);
+            Ok(Json(json!({ "code": 0, "success": false, "message": e })))
+        }
     }
 }
 
@@ -1267,12 +1570,15 @@ async fn push_key_core(
     // 远程主机：用一次性密码认证后执行 ssh-copy-id 等价命令追加公钥
     let password = password.ok_or_else(|| ZapError::New(-1, "远程主机密码不能为空".to_string()))?;
     let info = ConnectionInfo {
+        // 临时连接：尚未入库，没有可写入指纹的行
+        id: 0,
         host: host.to_string(),
         port,
         username: username.to_string(),
         auth_type: "password".to_string(),
         password: password.to_string(),
         ssh_key_name: String::new(),
+        host_key_fingerprint: String::new(),
         ssh_private_key: None,
         ssh_public_key: None,
     };
