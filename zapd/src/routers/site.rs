@@ -760,6 +760,7 @@ fn is_operator(claims: &jwt::Claims) -> bool {
 /// 反向代理能力门禁（「自定义目录」已全量开放，不再受套餐限制）：
 /// - admin / reseller（operator）恒开放；
 /// - 普通用户以「绑定套餐」的 allow_proxy 为准；未绑定 / 套餐停用时回退全局「默认套餐」。
+///
 /// PHP 站点能力门禁：
 /// - admin / reseller（operator）恒开放；
 /// - 普通用户以「绑定套餐」的 allow_php 为准；未绑定 / 套餐停用时回退全局「默认套餐」。
@@ -1006,6 +1007,7 @@ pub(crate) fn normalize_mount_path(raw: &str) -> Result<String, String> {
 /// - 该应用之前挂过（按 `app_name` 认）→ 就地更新路径与端口，重新部署不重复添加；
 /// - 新挂载时路径已被其它规则占用 → 直接报错，让用户换一个；
 /// - 一个站点挂多个应用就是各自一个挂载点（`/`、`/api`、`/admin` …）。
+///
 /// 在已有 location 里挑出该应用应当复用的那条：
 /// 1) 标着同一应用名的（重新部署 / 端口变了都更新这一条）；
 /// 2) 没有标记的（部署功能早期挂载的），端口相同或挂载点相同就认作同一个应用，
@@ -1160,10 +1162,12 @@ pub(crate) async fn ensure_app_static_location(
             "站点反向代理规则已达上限（16 条）".to_string(),
         ));
     }
-    let mut l = LocationSpec::default();
-    l.path = path.clone();
+    let mut l = LocationSpec {
+        path: path.clone(),
+        app_name: app_name.to_string(),
+        ..Default::default()
+    };
     configure_static_alias(&mut l, output_dir, &mode);
-    l.app_name = app_name.to_string();
     locs.push(l);
     let ups: Vec<UpstreamSpec> = parse_specs(&prof.2);
     save_profile(
@@ -2045,9 +2049,7 @@ pub async fn site_ip_options(
 
     // 归属范围：传了 owner 且当前操作者有权管理 → 用该 owner；否则回退到自己
     let effective_owner: i64 = if let Some(o) = q.owner {
-        if o == claims.id as i64 {
-            o
-        } else if resolve_target_user(&claims, o).await.is_ok() {
+        if o == claims.id as i64 || resolve_target_user(&claims, o).await.is_ok() {
             o
         } else {
             return Err(ZapError::New(-1, "无权限查看该用户的 IP".to_string()));
@@ -3464,9 +3466,11 @@ impl Default for SiteSecurity {
 }
 
 /// 读取站点安全配置；老站点（无记录）返回默认值
+type SiteSecRow = (i64, i64, i64, i64, i64, i64, i64, String, i64, String, i64);
+
 async fn load_site_sec(site_id: i64) -> SiteSecurity {
     let pool = db::get_db_pool().await;
-    let row: Option<(i64, i64, i64, i64, i64, i64, i64, String, i64, String, i64)> =
+    let row: Option<SiteSecRow> =
         sqlx::query_as(
             "SELECT waf_enable, limit_req_enable, limit_req_rate, limit_req_burst, \
                 limit_conn_enable, limit_conn_num, waf_mode, waf_rules, waf_audit, \

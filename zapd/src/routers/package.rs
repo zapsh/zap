@@ -16,9 +16,9 @@
 //! - `allow_proxy`       是否允许普通用户创建/编辑「反向代理」站点（upstream / location）
 //! - `allow_php`         是否允许该套餐的用户建 PHP 站点（默认开放；admin/reseller 恒可）
 //! - `allow_waf`         是否允许该套餐的用户为站点开启 WAF / 限速 / 限并发
-//!                       （默认关闭，且仍要求全局 ModSecurity 已安装并启用）
+//!   （默认关闭，且仍要求全局 ModSecurity 已安装并启用）
 //! - `allow_docker`      是否允许该套餐的用户使用容器功能（默认关闭），
-//!                       且**仅当容器运行时为 Podman 时**才对非管理员生效
+//!   且**仅当容器运行时为 Podman 时**才对非管理员生效
 //! - `allow_apps`        是否允许部署应用（默认关闭）
 //! - `app_types`         允许部署的应用类型（逗号分隔，如 `python,nodejs`）；空 = 不限
 //! - `max_apps`          每个站点可部署的应用数量上限（0 = 不限）

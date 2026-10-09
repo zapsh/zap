@@ -278,7 +278,6 @@ fn action_specs(m: &serde_yaml::Value) -> Vec<Value> {
 ///
 /// describe() 先按基准字段出一份结果，再按调用方语言把这张表盖上去（缺失的键保留基准值）。
 /// 语言名匹配顺序：`zh-CN` → `zh` → 兜底不覆盖，因此只有部分翻译也能用。
-
 /// 取 manifest 里命中 `lang` 的那张翻译表。
 fn i18n_table<'a>(m: &'a serde_yaml::Value, lang: Option<&str>) -> Option<&'a serde_yaml::Mapping> {
     let lang = lang.unwrap_or("").trim();

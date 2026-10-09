@@ -44,7 +44,7 @@ impl MailProvider {
         }
     }
 
-    pub fn from_str(s: &str) -> MailProvider {
+    pub fn parse_str(s: &str) -> MailProvider {
         match s {
             "sendgrid" => MailProvider::SendGrid,
             "aliyun" => MailProvider::Aliyun,
@@ -64,7 +64,7 @@ pub enum SmtpEncryption {
 }
 
 impl SmtpEncryption {
-    pub fn from_str(s: &str) -> SmtpEncryption {
+    pub fn parse_str(s: &str) -> SmtpEncryption {
         match s {
             "ssl" => SmtpEncryption::Ssl,
             "none" => SmtpEncryption::None,
@@ -133,7 +133,7 @@ pub fn load_config() -> Option<MailConfig> {
         crypto::decrypt_password(&raw)
     };
 
-    let provider = MailProvider::from_str(&get(K_PROVIDER));
+    let provider = MailProvider::parse_str(&get(K_PROVIDER));
     let from = get(K_FROM).trim().to_string();
     if from.is_empty() {
         return None;
@@ -144,7 +144,7 @@ pub fn load_config() -> Option<MailConfig> {
         from,
         smtp_host: get(K_SMTP_HOST),
         smtp_port: get(K_SMTP_PORT).parse::<u16>().unwrap_or(587),
-        smtp_encryption: SmtpEncryption::from_str(&get(K_SMTP_ENC)),
+        smtp_encryption: SmtpEncryption::parse_str(&get(K_SMTP_ENC)),
         smtp_username: get(K_SMTP_USER),
         smtp_password: decrypt(K_SMTP_PASS),
         sg_api_key: decrypt(K_SG_KEY),

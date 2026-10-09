@@ -522,26 +522,28 @@ pub async fn app_caps(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
 }
 
 /// GET /site/app/list —— 应用列表 + 实时运行状态
+type SiteAppRow = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    i64,
+    i64,
+    String,
+    String,
+    String,
+);
+
 pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) -> ZapJsonResult {
     site::site_in_scope(&claims, q.site_id).await?;
     let pool = db::get_db_pool().await;
-    let rows: Vec<(
-        i64,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        String,
-        i64,
-        i64,
-        String,
-        String,
-        String,
-    )> = sqlx::query_as(
+    let rows: Vec<SiteAppRow> = sqlx::query_as(
         "SELECT id, name, app_type, runtime_version, build_cmd, workdir, entry, command, \
                 port, env, autostart, running, git_commit, repo_url, output_dir \
              FROM site_apps WHERE site_id = ? ORDER BY id",

@@ -675,8 +675,7 @@ pub async fn plugin_watch(
                 } else {
                     lines.len().saturating_sub(1)
                 };
-                for i in sent_lines..complete {
-                    let line = lines[i];
+                for line in &lines[sent_lines..complete] {
                     // 完成哨兵：原样透传退出码后结束流
                     if let Some(rest) = line.strip_prefix("__ZAP_DONE__ ") {
                         let code: i64 = rest.trim().parse().unwrap_or(-1);

@@ -818,9 +818,7 @@ async fn build_adv(input: AdvInput, cur: Option<&StreamRow>) -> Result<Adv, ZapE
     });
     let ssl_certificate_id = match input.ssl_certificate_id {
         Some(v) => {
-            if v < 0 {
-                0
-            } else if v == 0 {
+            if v <= 0 {
                 0
             } else {
                 // 保存时就确认证书还在，免得应用时才发现引用了不存在的证书
@@ -1482,7 +1480,6 @@ mod tests {
     #[test]
     /// access_log 必须是绝对路径：相对路径按 nginx prefix 解析，很多机器没有
     /// logs 目录，nginx 加载配置时 open 失败会直接起不来。
-    #[test]
     fn access_log_uses_abs_path() {
         let r = row(1, "t", "", 13306, "tcp", "10.0.0.5");
         let out = render_conf(std::slice::from_ref(&r), "");
@@ -1490,6 +1487,7 @@ mod tests {
         assert!(!out.contains("access_log logs/"));
     }
 
+    #[test]
     fn render_skips_disabled_and_empty() {
         let mut r = row(1, "mysql", "0.0.0.0", 13306, "tcp", "10.0.0.5");
         assert!(render_conf(&[r.clone()], "").contains("listen 0.0.0.0:13306;"));
