@@ -96,7 +96,14 @@ async fn tick() {
     }
 }
 
-async fn run_job(id: i64, name: String, target_type: String, target: String, owner: String, ts: i64) {
+async fn run_job(
+    id: i64,
+    name: String,
+    target_type: String,
+    target: String,
+    owner: String,
+    ts: i64,
+) {
     // 按任务归属解析归档落盘根：管理员任务（owner 空）= 系统备份根；用户任务 = 其家目录 backups。
     let root = match crate::routers::system_backup::resolve_job_root(&owner).await {
         Ok(r) => r.0,

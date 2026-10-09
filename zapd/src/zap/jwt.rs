@@ -348,9 +348,7 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
 
     // 「下线所有设备」把用户版本号推高；静态 Token 的 token_version 落后于它即已作废
     // （与 JWT 共用 session::version_of 校验）。集群节点凭据豁免，避免误踢整舰队。
-    if r.scope != "cluster"
-        && crate::zap::session::version_of(r.user_id as u64) > r.token_version
-    {
+    if r.scope != "cluster" && crate::zap::session::version_of(r.user_id as u64) > r.token_version {
         return None;
     }
 

@@ -22,15 +22,15 @@ use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{Json, extract::Extension, extract::Path};
-use sqlx::{QueryBuilder, Sqlite};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::{QueryBuilder, Sqlite};
 
+use crate::db;
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
 use crate::zap::audit;
 use crate::zap::crypto;
-use crate::db;
 use crate::zap::jwt::ValidatedClaims;
 use crate::zap::jwt::is_admin;
 use crate::zap::server_env;
@@ -169,11 +169,7 @@ pub async fn basic_get(claims: ValidatedClaims) -> ZapJsonResult {
     // provider 默认值（向后兼容：未配置视为 smtp）
     let mail_provider = {
         let p = get(&conf, K_MAIL_PROVIDER);
-        if p.is_empty() {
-            "smtp".to_string()
-        } else {
-            p
-        }
+        if p.is_empty() { "smtp".to_string() } else { p }
     };
     Ok(Json(json!({
         "code": 0,
@@ -388,7 +384,12 @@ pub async fn basic_save(
         push_secret(&mut upserts, &m.sg_api_key, K_MAIL_SG_KEY, 256)?;
         // ── 阿里云 ──
         push_opt(&mut upserts, &m.aliyun_access_key, K_MAIL_ALI_KEY, 128)?;
-        push_secret(&mut upserts, &m.aliyun_access_secret, K_MAIL_ALI_SECRET, 256)?;
+        push_secret(
+            &mut upserts,
+            &m.aliyun_access_secret,
+            K_MAIL_ALI_SECRET,
+            256,
+        )?;
         push_opt(&mut upserts, &m.aliyun_region, K_MAIL_ALI_REGION, 32)?;
         // ── 腾讯云 ──
         push_opt(&mut upserts, &m.tencent_secret_id, K_MAIL_TC_ID, 128)?;
@@ -522,10 +523,16 @@ pub async fn mail_templates_save(
         let is_html = t.is_html.unwrap_or(false);
         let template_id = t.template_id.clone().unwrap_or_default();
         if subject.len() > 256 || body_text.len() > 16384 || body_html.len() > 16384 {
-            return Err(ZapError::New(-1, "模板内容过长（主题≤256，正文≤16384）".to_string()));
+            return Err(ZapError::New(
+                -1,
+                "模板内容过长（主题≤256，正文≤16384）".to_string(),
+            ));
         }
         if template_id.len() > 128 {
-            return Err(ZapError::New(-1, "模板 ID 过长（最大 128 字符）".to_string()));
+            return Err(ZapError::New(
+                -1,
+                "模板 ID 过长（最大 128 字符）".to_string(),
+            ));
         }
         sqlx::query(
             "INSERT INTO mail_templates (owner_id, event, subject, body_text, body_html, is_html, template_id, updated_at) \
@@ -579,7 +586,9 @@ pub async fn mail_test_send(
     )
     .await
     {
-        Ok(()) => Ok(Json(json!({ "code": 0, "message": "测试邮件已发送，请检查收件箱" }))),
+        Ok(()) => Ok(Json(
+            json!({ "code": 0, "message": "测试邮件已发送，请检查收件箱" }),
+        )),
         Err(e) => Err(ZapError::New(-1, format!("发送失败: {e}"))),
     }
 }
@@ -627,7 +636,10 @@ pub async fn mail_broadcast_send(
     if subject.is_empty() {
         return Err(ZapError::New(-1, "通知主题不能为空".to_string()));
     }
-    let channel = payload.channel.clone().unwrap_or_else(|| "both".to_string());
+    let channel = payload
+        .channel
+        .clone()
+        .unwrap_or_else(|| "both".to_string());
     let do_email = channel == "email" || channel == "both";
     let do_inbox = channel == "inbox" || channel == "both";
     if !do_email && !do_inbox {
@@ -670,7 +682,9 @@ pub async fn mail_broadcast_send(
     }
     let recipients: Vec<(i64, String, String)> = qb.build_query_as().fetch_all(pool).await?;
     if recipients.is_empty() {
-        return Ok(Json(json!({ "code": 0, "message": "没有符合条件的收件人" })));
+        return Ok(Json(
+            json!({ "code": 0, "message": "没有符合条件的收件人" }),
+        ));
     }
 
     let now = SystemTime::now()
@@ -720,7 +734,9 @@ pub async fn mail_broadcast_send(
             } else {
                 (body_text, None)
             };
-            match crate::zap::mail::send(&email, subject, body, payload.is_html, alt, None, None).await {
+            match crate::zap::mail::send(&email, subject, body, payload.is_html, alt, None, None)
+                .await
+            {
                 Ok(()) => sent_email += 1,
                 Err(e) => failed.push(json!({ "email": email, "username": username, "error": e })),
             }
@@ -825,7 +841,9 @@ pub async fn broadcast_templates_list(claims: ValidatedClaims) -> ZapJsonResult 
             })
         })
         .collect();
-    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "list": list } })))
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": { "list": list } }),
+    ))
 }
 
 /// POST /system/broadcast/templates —— 新建。
@@ -847,7 +865,11 @@ pub async fn broadcast_templates_create(
     if scope == "global" && !is_admin(&claims) {
         return Err(ZapError::New(-1, "仅管理员可创建全局模板".to_string()));
     }
-    let owner_id = if scope == "global" { 0 } else { claims.id as i64 };
+    let owner_id = if scope == "global" {
+        0
+    } else {
+        claims.id as i64
+    };
     let now = now_ts();
     let pool = db::get_db_pool().await;
     let body_html = payload.body_html.as_deref().unwrap_or("").trim();

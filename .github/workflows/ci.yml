@@ -51,6 +51,19 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # zapd 通过 #[cfg(feature = "commercial")] + #[path] 引入 gitignored 的
+      # 商业模块 zappro/src/mod.rs。该目录默认不在仓库内，但 rustfmt 解析模块树
+      # 时需要它存在，否则 cargo fmt --all 会整体失败。CI 里建一个空占位以便 fmt 通过
+      # （不影响非 commercial 构建，真正的商业源码 clone 后会覆盖它）。
+      - name: Create zappro stub (commercial module placeholder)
+        run: |
+          mkdir -p zappro/src
+          cat > zappro/src/mod.rs <<'EOF'
+// Placeholder for the Zap Pro (commercial) module mount point.
+// Real source is cloned into zappro/ externally; this stub only
+// lets cargo fmt --all resolve zapd's `mod pro;`.
+EOF
+
       - name: Check formatting
         run: cargo fmt --all --check
 

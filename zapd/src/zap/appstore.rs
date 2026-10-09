@@ -664,8 +664,7 @@ mod tests {
     /// 因此在这里钉住它的关键声明。
     #[test]
     fn sample_wordpress_package_declares_provision() {
-        let repo =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/appstore/repos/appstore");
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/appstore/repos/appstore");
         let app = parse_app_yaml(&repo.join("webapps/wordpress/app.yaml"))
             .expect("样板包 app.yaml 解析失败");
         assert_eq!(app.category.as_deref(), Some("webapps"));
@@ -1070,7 +1069,15 @@ fn scan_source_dir(
     // AppStore 分类：基础设施 / 应用程序 / Web 应用程序 / 数据层 / 基础库 / 插件
     // `plugins` 让系统级 Lua 插件也能走应用商店分发（install.sh 负责把目录落到
     // $ZAP_PATH/plugins/<name>，卸载/升级同此；运行时仍是插件引擎）。
-    for category in ["infra", "application", "webapps", "database", "library", "plugins", "tools"] {
+    for category in [
+        "infra",
+        "application",
+        "webapps",
+        "database",
+        "library",
+        "plugins",
+        "tools",
+    ] {
         let cat_dir = dir.join(category);
         let Ok(entries) = std::fs::read_dir(&cat_dir) else {
             continue;

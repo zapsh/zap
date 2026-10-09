@@ -1313,13 +1313,12 @@ pub async fn sudo_login(
     }
 
     let pool = db::get_db_pool().await;
-    let row: Option<(i64, String, String, i64, i32)> = sqlx::query_as(
-        "SELECT id, username, roles, owner_id, status FROM user WHERE id = ?",
-    )
-    .bind(target_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| ZapError::New(-1, format!("查询目标账号失败：{e}")))?;
+    let row: Option<(i64, String, String, i64, i32)> =
+        sqlx::query_as("SELECT id, username, roles, owner_id, status FROM user WHERE id = ?")
+            .bind(target_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| ZapError::New(-1, format!("查询目标账号失败：{e}")))?;
     let (id, username, roles, owner_id, _status) = match row {
         Some(r) => r,
         None => return Err(ZapError::New(-1, "目标账号不存在".to_string())),

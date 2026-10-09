@@ -47,8 +47,6 @@ async fn demo_readonly_guard(req: Request, next: Next) -> Result<Response, Respo
 pub mod access;
 pub mod app;
 pub mod appstore;
-pub mod system_backup;
-pub mod plugins;
 pub mod auth;
 pub mod cloud;
 pub mod dashboard;
@@ -59,11 +57,13 @@ pub mod docs;
 pub mod fpm_spec;
 pub mod notice;
 pub mod package;
+pub mod plugins;
 pub mod site;
 pub mod ssh_terminal;
 pub mod ssh_user_keys;
 pub mod ssl;
 pub mod system_audit;
+pub mod system_backup;
 pub mod system_basic;
 pub mod system_config;
 pub mod system_cron;
@@ -325,7 +325,10 @@ fn api_routers() -> Router {
         .route("/system/backup/site_quick", post(system_backup::site_quick))
         .route("/system/backup/policy", get(system_backup::policy_get))
         .route("/system/backup/policy", post(system_backup::policy_set))
-        .route("/system/backup/my-retention", get(system_backup::my_retention_get))
+        .route(
+            "/system/backup/my-retention",
+            get(system_backup::my_retention_get),
+        )
         .route(
             "/system/backup/my-retention",
             post(system_backup::my_retention_set),
@@ -339,7 +342,10 @@ fn api_routers() -> Router {
         .route("/system/backup/setting", get(system_backup::setting_get))
         .route("/system/backup/setting", post(system_backup::setting_save))
         .route("/system/backup/delete", post(system_backup::delete))
-        .route("/system/backup/restore_dir", post(system_backup::restore_dir))
+        .route(
+            "/system/backup/restore_dir",
+            post(system_backup::restore_dir),
+        )
         .route("/system/backup/restore_db", post(system_backup::restore_db))
         .route("/system/backup/jobs", get(system_backup::jobs_list))
         .route("/system/backup/records", get(system_backup::records_list))
@@ -594,18 +600,12 @@ fn api_routers() -> Router {
             "/system/config/zap/ssl/self-sign",
             post(system_zap::ssl_self_sign),
         )
-        .route(
-            "/system/config/zap/cache",
-            get(system_zap::zap_cache_get),
-        )
+        .route("/system/config/zap/cache", get(system_zap::zap_cache_get))
         .route(
             "/system/config/zap/cache/clean",
             post(system_zap::zap_cache_clean),
         )
-        .route(
-            "/system/config/zap/security",
-            get(system_zap::zap_security),
-        )
+        .route("/system/config/zap/security", get(system_zap::zap_security))
         .route("/system/config/services", get(system_config::list_services))
         .route(
             "/system/config/services/action",

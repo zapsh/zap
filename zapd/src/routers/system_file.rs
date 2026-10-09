@@ -767,16 +767,14 @@ pub async fn file_extract(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "file_extract",
-        &format!(
-            "{} → {}",
-            archive.to_string_lossy(),
-            dest.to_string_lossy()
-        ),
+        &format!("{} → {}", archive.to_string_lossy(), dest.to_string_lossy()),
         "",
     )
     .await;
 
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 /// GET /system/files/download?path=...

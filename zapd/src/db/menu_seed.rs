@@ -249,10 +249,18 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .affix(),
     // ── 备份中心（目录 / 数据库备份与还原，可定时）───────────
     // 「我的备份」对所有登录角色可见（nav pill 切换）；「备份设置」仅管理员，pill 内按角色隐藏。
-    MenuSeed::new("backup", "备份", "dir", "/backup", "Layout", R_ADMIN_USER_RESELLER, 5)
-        .icon("material-symbols:cloud-upload")
-        .redirect("/backup/index")
-        .affix(),
+    MenuSeed::new(
+        "backup",
+        "备份",
+        "dir",
+        "/backup",
+        "Layout",
+        R_ADMIN_USER_RESELLER,
+        5,
+    )
+    .icon("material-symbols:cloud-upload")
+    .redirect("/backup/index")
+    .affix(),
     MenuSeed::new(
         "backup-index",
         "备份",
@@ -615,11 +623,18 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .affix()
     .hidden(),
     // ── 系统设置（目录）：仅管理员可见（其下子菜单均 R_ADMIN）。
-    MenuSeed::new("system", "系统设置", "dir", "/system", "Layout", R_ADMIN, 12)
-        .icon("material-symbols:settings")
-        .redirect("/system/access")
-        .affix(),
-    
+    MenuSeed::new(
+        "system",
+        "系统设置",
+        "dir",
+        "/system",
+        "Layout",
+        R_ADMIN,
+        12,
+    )
+    .icon("material-symbols:settings")
+    .redirect("/system/access")
+    .affix(),
     MenuSeed::new(
         "zap-config",
         "Zap 设置",
@@ -995,7 +1010,9 @@ mod tests {
             .collect();
         assert_eq!(
             admin.iter().collect::<std::collections::BTreeSet<_>>(),
-            expected_admin.iter().collect::<std::collections::BTreeSet<_>>(),
+            expected_admin
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>(),
             "管理员可见菜单与种子不一致"
         );
         // demo 是最小集合：仪表盘 / 终端 / 文件 / 应用市场 / 计划任务 / 文档 / About ZAP

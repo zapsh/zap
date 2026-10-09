@@ -3,7 +3,6 @@ mod acme;
 mod app;
 mod appstore;
 mod backup;
-mod plugin;
 mod cred;
 mod cron;
 mod docker;
@@ -19,6 +18,7 @@ mod nginx;
 mod php;
 mod php_ext;
 mod platform;
+mod plugin;
 mod process;
 mod resource;
 mod service;
@@ -104,12 +104,16 @@ pub async fn dispatch(req: Request) -> Response {
             ssh_user_key::public_get(linux_user, name).await
         }
         Request::SshUserKeyList { linux_user } => ssh_user_key::list(linux_user).await,
-        Request::FileList { path, as_user, skip_owner_check } => {
-            file::list(path, as_user, skip_owner_check).await
-        }
-        Request::FileRead { path, as_user, skip_owner_check } => {
-            file::read(path, as_user, skip_owner_check).await
-        }
+        Request::FileList {
+            path,
+            as_user,
+            skip_owner_check,
+        } => file::list(path, as_user, skip_owner_check).await,
+        Request::FileRead {
+            path,
+            as_user,
+            skip_owner_check,
+        } => file::read(path, as_user, skip_owner_check).await,
         Request::FileWrite {
             path,
             content,
@@ -132,9 +136,11 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
         } => file::rename(path, new_path, as_user, skip_owner_check).await,
-        Request::FileDownload { path, as_user, skip_owner_check } => {
-            file::download(path, as_user, skip_owner_check).await
-        }
+        Request::FileDownload {
+            path,
+            as_user,
+            skip_owner_check,
+        } => file::download(path, as_user, skip_owner_check).await,
         Request::FileUpload {
             path,
             name,
@@ -142,12 +148,16 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
         } => file::upload(path, name, tmp, as_user, skip_owner_check).await,
-        Request::FileInfo { path, as_user, skip_owner_check } => {
-            file::info(path, as_user, skip_owner_check).await
-        }
-        Request::DirSize { path, as_user, skip_owner_check } => {
-            file::dir_size(path, as_user, skip_owner_check).await
-        }
+        Request::FileInfo {
+            path,
+            as_user,
+            skip_owner_check,
+        } => file::info(path, as_user, skip_owner_check).await,
+        Request::DirSize {
+            path,
+            as_user,
+            skip_owner_check,
+        } => file::dir_size(path, as_user, skip_owner_check).await,
         Request::FileChmod {
             path,
             mode,
@@ -323,36 +333,26 @@ pub async fn dispatch(req: Request) -> Response {
             source,
             src,
             force,
-        } => {
-            plugin::plugin_install(actor, home, name, source, src, force).await
+        } => plugin::plugin_install(actor, home, name, source, src, force).await,
+        Request::PluginUninstall { name, actor, home } => {
+            plugin::plugin_uninstall(actor, home, name).await
         }
-        Request::PluginUninstall {
-            name,
-            actor,
-            home,
-        } => plugin::plugin_uninstall(actor, home, name).await,
         Request::PluginUi {
             name,
             actor,
             home,
             lang,
         } => plugin::plugin_ui(actor, home, name, lang).await,
-        Request::PluginConfigGet {
-            name,
-            actor,
-            home,
-        } => plugin::plugin_config_get(actor, home, name).await,
+        Request::PluginConfigGet { name, actor, home } => {
+            plugin::plugin_config_get(actor, home, name).await
+        }
         Request::PluginConfigSet {
             name,
             actor,
             home,
             config,
         } => plugin::plugin_config_set(actor, home, name, config).await,
-        Request::PluginTest {
-            name,
-            actor,
-            home,
-        } => plugin::plugin_test(actor, home, name).await,
+        Request::PluginTest { name, actor, home } => plugin::plugin_test(actor, home, name).await,
         Request::AppstoreInstanceAction {
             pkg_path,
             instance,
@@ -723,7 +723,19 @@ pub async fn dispatch(req: Request) -> Response {
             backup_root,
             exclude,
             exclude_file,
-        } => backup::dir(name, paths, dest_dir, as_user, skip_owner_check, backup_root, exclude, exclude_file).await,
+        } => {
+            backup::dir(
+                name,
+                paths,
+                dest_dir,
+                as_user,
+                skip_owner_check,
+                backup_root,
+                exclude,
+                exclude_file,
+            )
+            .await
+        }
         Request::BackupDb {
             name,
             engine,
@@ -736,20 +748,22 @@ pub async fn dispatch(req: Request) -> Response {
             dest_dir,
             db_path,
             backup_root,
-        } => backup::db(
-            name,
-            engine,
-            db_name,
-            user,
-            password,
-            host,
-            port,
-            socket,
-            dest_dir,
-            db_path,
-            backup_root,
-        )
-        .await,
+        } => {
+            backup::db(
+                name,
+                engine,
+                db_name,
+                user,
+                password,
+                host,
+                port,
+                socket,
+                dest_dir,
+                db_path,
+                backup_root,
+            )
+            .await
+        }
         Request::BackupDelete { path, backup_root } => backup::delete(path, backup_root).await,
         Request::BackupRestoreDir {
             path,
@@ -758,15 +772,17 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
             backup_root,
-        } => backup::restore_dir(
-            path,
-            target_dir,
-            to_original,
-            as_user,
-            skip_owner_check,
-            backup_root,
-        )
-        .await,
+        } => {
+            backup::restore_dir(
+                path,
+                target_dir,
+                to_original,
+                as_user,
+                skip_owner_check,
+                backup_root,
+            )
+            .await
+        }
         Request::BackupRestoreDb {
             path,
             engine,
@@ -777,18 +793,20 @@ pub async fn dispatch(req: Request) -> Response {
             port,
             db_path,
             backup_root,
-        } => backup::restore_db(
-            path,
-            engine,
-            db_name,
-            user,
-            password,
-            host,
-            port,
-            db_path,
-            backup_root,
-        )
-        .await,
+        } => {
+            backup::restore_db(
+                path,
+                engine,
+                db_name,
+                user,
+                password,
+                host,
+                port,
+                db_path,
+                backup_root,
+            )
+            .await
+        }
         Request::BackupDisk { dir } => backup::disk(dir).await,
     }
 }

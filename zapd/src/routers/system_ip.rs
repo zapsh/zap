@@ -100,10 +100,8 @@ pub async fn ip_list(claims: ValidatedClaims) -> ZapJsonResult {
         sqlx::query_as("SELECT id, username, nickname FROM user")
             .fetch_all(pool)
             .await?;
-    let owner_map: std::collections::HashMap<i64, (String, String)> = owners
-        .into_iter()
-        .map(|(id, u, n)| (id, (u, n)))
-        .collect();
+    let owner_map: std::collections::HashMap<i64, (String, String)> =
+        owners.into_iter().map(|(id, u, n)| (id, (u, n))).collect();
 
     let (mut v4, mut v6, mut shared, mut dedicated, mut reserved) =
         (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -348,8 +346,10 @@ pub async fn ip_update(
             .await?;
     }
 
-    let exists: Option<(i64,)> =
-        sqlx::query_as("SELECT id FROM ip_pool WHERE id = ?").bind(payload.id).fetch_optional(pool).await?;
+    let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM ip_pool WHERE id = ?")
+        .bind(payload.id)
+        .fetch_optional(pool)
+        .await?;
     if exists.is_none() {
         return Err(ZapError::New(-1, "IP 不存在".to_string()));
     }

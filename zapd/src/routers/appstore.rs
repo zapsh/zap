@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use tracing::info;
 
+use crate::routers::plugins::load_user_home;
 use crate::{
     routers::system_env,
     zap::{
@@ -21,7 +22,6 @@ use crate::{
     },
     zapexec,
 };
-use crate::routers::plugins::load_user_home;
 use zap_proto::Request;
 
 /// 运行身份门禁：声明 `run_as: user`（或 `scope: site`）的包必须是 `webapps` 分类。
@@ -98,9 +98,13 @@ pub(crate) async fn load_provision(
 }
 
 /// 从脚本登记的 info.yaml 还原站点 / 数据库字段（不含密码）。
-async fn provision_from_info(pkg_path: &str, instance: Option<&str>) -> Option<BTreeMap<String, String>> {
-    let content =
-        tokio::fs::read_to_string(slot_dir_of(pkg_path, instance).join("info.yaml")).await.ok()?;
+async fn provision_from_info(
+    pkg_path: &str,
+    instance: Option<&str>,
+) -> Option<BTreeMap<String, String>> {
+    let content = tokio::fs::read_to_string(slot_dir_of(pkg_path, instance).join("info.yaml"))
+        .await
+        .ok()?;
     let v: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     for (key, dst) in [
@@ -453,7 +457,11 @@ pub async fn repo_update(
 pub async fn packages(claims: ValidatedClaims) -> ZapJsonResult {
     let is_admin = crate::zap::jwt::is_admin(&claims);
     // 非 admin 只看自己名下的站点应用「已安装」状态；admin 看全部
-    let owner = if is_admin { None } else { Some(claims.sub.clone()) };
+    let owner = if is_admin {
+        None
+    } else {
+        Some(claims.sub.clone())
+    };
     let pkgs = ast::scan_packages().await;
     let installed = ast::scan_installed(owner).await;
     // 插件安装态（仅系统级）并入 installed_map：让商店标记「已安装」；
@@ -469,7 +477,11 @@ pub async fn packages(claims: ValidatedClaims) -> ZapJsonResult {
     // 按 pkg_path 去重：插件已被 scan_installed 计入时，跳过 scan_plugin_installs 的重复记录
     let mut seen: std::collections::HashSet<String> = installed_all
         .iter()
-        .filter_map(|i| i.get("pkg_path").and_then(|p| p.as_str()).map(|s| s.to_string()))
+        .filter_map(|i| {
+            i.get("pkg_path")
+                .and_then(|p| p.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
     for p in ast::scan_plugin_installs(&home) {
         match p.get("pkg_path").and_then(|x| x.as_str()) {

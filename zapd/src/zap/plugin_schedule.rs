@@ -299,11 +299,10 @@ pub async fn run_item(item: &ScheduleItem) -> Result<(), ZapError> {
 
 async fn roles_of(uid: i64) -> Result<String, ZapError> {
     let pool = crate::db::get_db_pool().await;
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT roles FROM user WHERE id = ?")
-            .bind(uid)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT roles FROM user WHERE id = ?")
+        .bind(uid)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.map(|r| r.0).unwrap_or_default())
 }
 

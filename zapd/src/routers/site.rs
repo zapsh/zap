@@ -18,7 +18,9 @@ use crate::{
         server_env,
     },
 };
-use zap_proto::{LOC_DIRECTIVES, LocDirective, LocationSpec, Request, SiteSecuritySpec, UpstreamSpec};
+use zap_proto::{
+    LOC_DIRECTIVES, LocDirective, LocationSpec, Request, SiteSecuritySpec, UpstreamSpec,
+};
 
 use super::system_basic::{K_IPV4 as K_DEFAULT_IPV4, K_IPV6 as K_DEFAULT_IPV6};
 use super::user::USER_KIND_MEMBER;
@@ -858,18 +860,7 @@ pub(crate) async fn load_profile(site_id: i64) -> ProfileRow {
     .ok()
     .flatten();
     row.map(|(t, wc, u, l, ssl, fh, pr, ci, pp, h2)| {
-        (
-            t,
-            wc != 0,
-            u,
-            l,
-            ssl,
-            fh != 0,
-            pr,
-            ci,
-            pp != 0,
-            h2 != 0,
-        )
+        (t, wc != 0, u, l, ssl, fh != 0, pr, ci, pp != 0, h2 != 0)
     })
     .unwrap_or_else(|| {
         (
@@ -1150,8 +1141,7 @@ pub(crate) async fn ensure_app_static_location(
         configure_static_alias(l, output_dir, &mode);
         let ups: Vec<UpstreamSpec> = parse_specs(&prof.2);
         save_profile(
-            site_id, &prof.0, prof.1, &ups, &locs, prof.4, prof.5, &prof.6, &prof.7, prof.8,
-            prof.9,
+            site_id, &prof.0, prof.1, &ups, &locs, prof.4, prof.5, &prof.6, &prof.7, prof.8, prof.9,
         )
         .await?;
         return Ok(path);
@@ -1502,7 +1492,8 @@ async fn validate_advanced_inputs(
     if !upstreams.is_empty() && !g_proxy {
         return Err(ZapError::New(
             -1,
-            "upstream 后端组未对当前账号开放，请联系管理员在「系统 → 套餐」中开启「反向代理」".to_string(),
+            "upstream 后端组未对当前账号开放，请联系管理员在「系统 → 套餐」中开启「反向代理」"
+                .to_string(),
         ));
     }
     if t == "proxy" && locations.is_empty() {
@@ -1835,18 +1826,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
         for (sid, t, wc, u, l, ssl, fh, pr, ci, pp, h2) in pq2.fetch_all(pool).await? {
             pf_map.insert(
                 sid,
-                (
-                    t,
-                    wc != 0,
-                    u,
-                    l,
-                    ssl,
-                    fh != 0,
-                    pr,
-                    ci,
-                    pp != 0,
-                    h2 != 0,
-                ),
+                (t, wc != 0, u, l, ssl, fh != 0, pr, ci, pp != 0, h2 != 0),
             );
         }
         // 归属用户的 Linux 系统账号（system 模式下 PHP pool 按此账号隔离）
@@ -3194,8 +3174,9 @@ pub(crate) async fn resume_user_services(user_id: i64) {
         .bind(user_id)
         .execute(pool)
         .await;
-    let prev: std::collections::HashMap<i64, String> =
-        raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let prev: std::collections::HashMap<i64, String> = raw
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     let now = chrono::Local::now().timestamp();
     for (id, state) in prev {
         let state = normalize_run_state(&state).unwrap_or(RUN_RUNNING);
@@ -3385,15 +3366,14 @@ async fn sync_one_site_inner(
 
     // 站点独立绑定 IP（来自 IP 池、按归属分配）：非空时 vhost 仅监听这些 IP，
     // 不再使用上面的共享主机 IPv4/IPv6（多用户多 IP 隔离的关键）
-    let site_ips: Vec<String> = sqlx::query_as::<_, (String,)>(
-        "SELECT ip FROM site_ip WHERE site_id = ? ORDER BY id",
-    )
-    .bind(id)
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|r| r.0)
-    .collect();
+    let site_ips: Vec<String> =
+        sqlx::query_as::<_, (String,)>("SELECT ip FROM site_ip WHERE site_id = ? ORDER BY id")
+            .bind(id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
 
     // 站点安全配置（WAF / 限速 / 限并发）：渲染进 vhost 的 server 上下文
     let security = Some(sec_to_proto(load_site_sec(id).await));
@@ -4001,12 +3981,12 @@ pub(crate) async fn provision_site(
         .map(|r| r.trim().to_ascii_lowercase())
         .filter(|r| !r.is_empty() && r != "none")
         .and_then(|r| match r.as_str() {
-            "thinkphp" => Some(
-                "if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php?s=$1 last;\n}",
-            ),
-            "codeigniter" => Some(
-                "if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php/$1 last;\n}",
-            ),
+            "thinkphp" => {
+                Some("if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php?s=$1 last;\n}")
+            }
+            "codeigniter" => {
+                Some("if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php/$1 last;\n}")
+            }
             "laravel" | "wordpress" | "drupal" | "typecho" => {
                 Some("try_files $uri $uri/ /index.php?$query_string;")
             }

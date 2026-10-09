@@ -29,9 +29,9 @@ use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
 use crate::zap::audit;
 use crate::zap::cache_clean;
-use crate::zap::security_check;
 use crate::zap::jwt::ValidatedClaims;
 use crate::zap::jwt::is_admin;
+use crate::zap::security_check;
 
 // ── 证书来源持久化（{data}/server_env.yaml 的 conf 区，避免塞进 zap.yaml）──
 
@@ -87,8 +87,12 @@ async fn cert_options() -> Vec<CertOption> {
 
 /// 读取证书 / 私钥文件，解析出页面上展示的证书信息。
 async fn inspect_ssl(cert_file: &str, key_file: &str) -> serde_json::Value {
-    let cert_pem = tokio::fs::read_to_string(cert_file).await.unwrap_or_default();
-    let key_pem = tokio::fs::read_to_string(key_file).await.unwrap_or_default();
+    let cert_pem = tokio::fs::read_to_string(cert_file)
+        .await
+        .unwrap_or_default();
+    let key_pem = tokio::fs::read_to_string(key_file)
+        .await
+        .unwrap_or_default();
     let exists = !cert_pem.trim().is_empty() && !key_pem.trim().is_empty();
 
     let mut info = json!({
@@ -355,8 +359,12 @@ async fn resolve_ssl(
             if !crate::zap::certmgr::ensure_certs(&cert_file, &key_file) {
                 return Err("自签证书生成失败，请检查目标目录是否可写".to_string());
             }
-            let cert = tokio::fs::read_to_string(&cert_file).await.unwrap_or_default();
-            let key = tokio::fs::read_to_string(&key_file).await.unwrap_or_default();
+            let cert = tokio::fs::read_to_string(&cert_file)
+                .await
+                .unwrap_or_default();
+            let key = tokio::fs::read_to_string(&key_file)
+                .await
+                .unwrap_or_default();
             if cert.trim().is_empty() || key.trim().is_empty() {
                 return Err("自签证书生成后仍读取不到内容，请检查文件权限".to_string());
             }
@@ -442,8 +450,12 @@ pub async fn zap_save(
     if let Some(s) = &payload.ssl {
         let (cert_file, key_file, cert, key, source, cert_id) =
             resolve_ssl(s).await.map_err(|e| ZapError::New(-1, e))?;
-        write_pem(&cert_file, &cert, false).await.map_err(|e| ZapError::New(-1, e))?;
-        write_pem(&key_file, &key, true).await.map_err(|e| ZapError::New(-1, e))?;
+        write_pem(&cert_file, &cert, false)
+            .await
+            .map_err(|e| ZapError::New(-1, e))?;
+        write_pem(&key_file, &key, true)
+            .await
+            .map_err(|e| ZapError::New(-1, e))?;
         crate::config::mutate_config(|c| {
             c.server.cert_file = cert_file.clone();
             c.server.key_file = key_file.clone();

@@ -33,8 +33,8 @@ use std::collections::HashMap;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use hmac::{Hmac, Mac};
@@ -59,7 +59,8 @@ static PLUGIN_RES_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 
 fn is_plugin_name(s: &str) -> bool {
     !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         && !s.contains("..")
 }
 
@@ -156,12 +157,7 @@ pub(crate) fn write_install_meta(
 ///
 /// install.sh 每次整目录 `cp` 都会覆盖 manifest，所以必须在脚本 success 后补写（install /
 /// upgrade / 重跑 各路径都调它）。非 `plugins` 类包不走插件引擎，直接跳过。
-pub(crate) fn write_appstore_plugin_source(
-    cat: &str,
-    name: &str,
-    pkg_path: &str,
-    base: &Path,
-) {
+pub(crate) fn write_appstore_plugin_source(cat: &str, name: &str, pkg_path: &str, base: &Path) {
     if cat != "plugins" {
         return;
     }
@@ -169,12 +165,7 @@ pub(crate) fn write_appstore_plugin_source(
     if !dir.is_dir() {
         return;
     }
-    if let Err(e) = write_install_meta(
-        &dir,
-        "appstore",
-        pkg_path,
-        chrono::Utc::now().timestamp(),
-    ) {
+    if let Err(e) = write_install_meta(&dir, "appstore", pkg_path, chrono::Utc::now().timestamp()) {
         warn!("AppStore 插件 {name} 写回安装来源失败: {e}");
     }
 }
@@ -187,10 +178,7 @@ fn manifest_str<'a>(m: &'a serde_yaml::Value, key: &str) -> Option<&'a str> {
 ///
 /// 只在 zapd 把 roles 传过来时才拦：自检 / CLI 调用这些没有面板角色的场合返回 false。
 fn is_readonly_roles(roles: Option<&str>) -> bool {
-    roles
-        .unwrap_or("")
-        .split(',')
-        .any(|r| r.trim() == "demo")
+    roles.unwrap_or("").split(',').any(|r| r.trim() == "demo")
 }
 
 /// manifest 里 `ui.placement` 挂哪些位置。
@@ -324,7 +312,9 @@ fn i18n_str<'a>(t: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
 
 /// 把翻译表盖到 `describe()` 的结果上（只覆盖翻译表里真的给了的键）。
 fn apply_i18n(info: &mut Value, table: &serde_yaml::Mapping) {
-    let Some(obj) = info.as_object_mut() else { return };
+    let Some(obj) = info.as_object_mut() else {
+        return;
+    };
     for key in ["title", "description", "label", "tab"] {
         if let Some(s) = i18n_str(table, key) {
             obj.insert(key.to_string(), Value::String(s.to_string()));
@@ -376,12 +366,16 @@ fn apply_i18n(info: &mut Value, table: &serde_yaml::Mapping) {
         if let Some(base) = obj.get_mut("options").and_then(|v| v.as_array_mut()) {
             for ov in opts {
                 let Some(om) = ov.as_mapping() else { continue };
-                let Some(name) = i18n_str(om, "name") else { continue };
+                let Some(name) = i18n_str(om, "name") else {
+                    continue;
+                };
                 for bo in base.iter_mut() {
                     if bo.get("name").and_then(|n| n.as_str()) != Some(name) {
                         continue;
                     }
-                    let Some(bo) = bo.as_object_mut() else { continue };
+                    let Some(bo) = bo.as_object_mut() else {
+                        continue;
+                    };
                     for key in ["label", "desc", "placeholder"] {
                         if let Some(s) = i18n_str(om, key) {
                             bo.insert(key.to_string(), Value::String(s.to_string()));
@@ -413,10 +407,7 @@ fn describe_lang(dir: &Path, name: &str, lang: Option<&str>) -> Result<Value, St
     let install_yaml = m.get("zap_install");
     let meta_json = read_install_meta(dir);
     let meta_str = |k: &str| -> String {
-        if let Some(s) = install_yaml
-            .and_then(|v| v.get(k))
-            .and_then(|v| v.as_str())
-        {
+        if let Some(s) = install_yaml.and_then(|v| v.get(k)).and_then(|v| v.as_str()) {
             return s.to_string();
         }
         if let Some(s) = meta_json
@@ -431,11 +422,7 @@ fn describe_lang(dir: &Path, name: &str, lang: Option<&str>) -> Result<Value, St
     // json! 的对象语法不收块表达式，label 的回落值先算出来
     let label = {
         let s = ui_str("label");
-        if s.is_empty() {
-            name.to_string()
-        } else {
-            s
-        }
+        if s.is_empty() { name.to_string() } else { s }
     };
     let mut info = json!({
         "name": name,
@@ -584,7 +571,10 @@ fn inject_uikit(
             if !matches!(json.as_str(), "null" | "{}") {
                 // `</` 会提前闭合 script 标签；`<\/` 在 JSON 里等价于 `/`，安全
                 let safe = json.replace("</", "<\\/");
-                out.insert_str(0, &format!("<script>window.__ZAP_I18N__={safe};</script>\n"));
+                out.insert_str(
+                    0,
+                    &format!("<script>window.__ZAP_I18N__={safe};</script>\n"),
+                );
             }
         }
     }
@@ -662,10 +652,7 @@ fn write_config_store(path: &Path, store: &serde_yaml::Mapping) -> Result<(), St
     let tmp = path.with_extension("yaml.tmp");
     std::fs::write(&tmp, txt).map_err(|e| format!("写插件配置失败: {e}"))?;
     #[cfg(unix)]
-    let _ = std::fs::set_permissions(
-        &tmp,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
-    );
+    let _ = std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     std::fs::rename(&tmp, path).map_err(|e| format!("插件配置落盘失败: {e}"))
 }
 
@@ -716,10 +703,7 @@ pub async fn plugin_config_set(
         if v.len() > 8192 {
             return Response::err(-1, format!("配置项 {k} 超过 8KB 上限"));
         }
-        entry.insert(
-            serde_yaml::Value::String(k),
-            serde_yaml::Value::String(v),
-        );
+        entry.insert(serde_yaml::Value::String(k), serde_yaml::Value::String(v));
     }
     store.insert(user_key, serde_yaml::Value::Mapping(entry));
     match write_config_store(&path, &store) {
@@ -896,8 +880,8 @@ fn hmac_hex(data: &str) -> Result<String, String> {
     let key = zap_crypto::SECRET_KEY
         .as_ref()
         .map_err(|e| format!("读取主密钥失败: {e}"))?;
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
-        .map_err(|e| format!("初始化签名器失败: {e}"))?;
+    let mut mac =
+        <Hmac<Sha256> as Mac>::new_from_slice(key).map_err(|e| format!("初始化签名器失败: {e}"))?;
     mac.update(data.as_bytes());
     Ok(format!("{:x}", mac.finalize().into_bytes()))
 }
@@ -915,9 +899,7 @@ fn verify_signature(root: &Path) -> Result<(), String> {
     };
     let got = sign_plugin_root(root)?;
     if got != want.trim() {
-        return Err(
-            "插件签名校验失败：文件被改动过或与签名不匹配（重新打包再安装）".to_string(),
-        );
+        return Err("插件签名校验失败：文件被改动过或与签名不匹配（重新打包再安装）".to_string());
     }
     Ok(())
 }
@@ -966,9 +948,10 @@ pub async fn plugin_install(
         // 校验 scope 取值，避免未知值被静默当成 root 执行
         let scope_decl = manifest_str(&m, "scope").unwrap_or("system");
         if scope_decl != "site" && scope_decl != "user" && scope_decl != "system" {
-            return Err(
-                format!("manifest 的 scope 非法: {scope_decl}（应为 site / user / system）").into(),
-            );
+            return Err(format!(
+                "manifest 的 scope 非法: {scope_decl}（应为 site / user / system）"
+            )
+            .into());
         }
         if !root.join("main.lua").is_file() {
             return Err("插件目录缺少 main.lua".into());
@@ -991,7 +974,9 @@ pub async fn plugin_install(
         };
         if let Some(n) = manifest_str(&m, "name") {
             if n != effective {
-                return Err(format!("manifest 里的 name（{n}）与插件名（{effective}）不一致"));
+                return Err(format!(
+                    "manifest 里的 name（{n}）与插件名（{effective}）不一致"
+                ));
             }
         }
 
@@ -1019,12 +1004,7 @@ pub async fn plugin_install(
 
         // 把安装来源 / 时间写回 manifest.yaml 的顶层 `zap_install:`（列表读取时直接解析，
         // 不再单独维护 Meta 文件）。失败不阻断安装，仅告警。
-        if let Err(e) = write_install_meta(
-            &target,
-            &source,
-            &src,
-            chrono::Utc::now().timestamp(),
-        ) {
+        if let Err(e) = write_install_meta(&target, &source, &src, chrono::Utc::now().timestamp()) {
             warn!("写入插件安装信息失败（已忽略）: {e}");
         }
 
@@ -1055,11 +1035,7 @@ pub async fn plugin_install(
 }
 
 /// 卸载插件：删除 `<base>/<name>` 整个目录。
-pub async fn plugin_uninstall(
-    _actor: String,
-    _home: String,
-    name: String,
-) -> Response {
+pub async fn plugin_uninstall(_actor: String, _home: String, name: String) -> Response {
     if !is_plugin_name(&name) {
         return Response::err(-1, "非法插件名");
     }
@@ -1144,10 +1120,7 @@ fn extract_tar(file: &Path, dest: &Path, gz: bool) -> Result<(), String> {
 }
 
 fn unpack_tar<R: std::io::Read>(ar: &mut tar::Archive<R>, dest: &Path) -> Result<(), String> {
-    for entry in ar
-        .entries()
-        .map_err(|e| format!("解析 tar 失败: {e}"))?
-    {
+    for entry in ar.entries().map_err(|e| format!("解析 tar 失败: {e}"))? {
         let mut entry = entry.map_err(|e| format!("读取 tar 条目失败: {e}"))?;
         let path = entry
             .path()
@@ -1254,12 +1227,15 @@ pub async fn plugin_run(
         "user" => match user.clone() {
             Some(u) => (Some(u), None),
             None => {
-                return Response::err(-1, "user 作用域插件需要调用方 Linux 账号（user 字段为空）")
+                return Response::err(-1, "user 作用域插件需要调用方 Linux 账号（user 字段为空）");
             }
         },
         "system" => (None, None),
         other => {
-            return Response::err(-1, format!("未知 scope: {other}（应为 site / user / system）"))
+            return Response::err(
+                -1,
+                format!("未知 scope: {other}（应为 site / user / system）"),
+            );
         }
     };
     // manifest 把某个 action 标了 `dangerous: true` 时，只读演示账号到此为止。
@@ -1302,22 +1278,24 @@ pub async fn plugin_run(
         let cancel_flag = cancel.clone();
         let child_pid_w = child_pid.clone();
         let cancel_path_w = cancel_path.clone();
-        std::thread::spawn(move || loop {
-            if cancel_path_w.exists() || cancel_flag.load(Ordering::SeqCst) {
-                cancel_flag.store(true, Ordering::SeqCst);
-                if let Some((pid, session_leader)) = child_pid_w.lock().unwrap().take() {
-                    unsafe {
-                        // session_leader（setsid 过）= 杀整个进程组；否则只杀单进程，避免误伤 zapexec
-                        if session_leader {
-                            libc::kill(-(pid as i32), libc::SIGKILL);
-                        } else {
-                            libc::kill(pid as i32, libc::SIGKILL);
+        std::thread::spawn(move || {
+            loop {
+                if cancel_path_w.exists() || cancel_flag.load(Ordering::SeqCst) {
+                    cancel_flag.store(true, Ordering::SeqCst);
+                    if let Some((pid, session_leader)) = child_pid_w.lock().unwrap().take() {
+                        unsafe {
+                            // session_leader（setsid 过）= 杀整个进程组；否则只杀单进程，避免误伤 zapexec
+                            if session_leader {
+                                libc::kill(-(pid as i32), libc::SIGKILL);
+                            } else {
+                                libc::kill(pid as i32, libc::SIGKILL);
+                            }
                         }
                     }
+                    break;
                 }
-                break;
+                std::thread::sleep(Duration::from_millis(200));
             }
-            std::thread::sleep(Duration::from_millis(200));
         });
         let ctx = RunCtx {
             scope: scope.clone(),
@@ -1380,20 +1358,22 @@ pub async fn plugin_run(
     let child_pid = Arc::new(std::sync::Mutex::new(None::<(u32, bool)>));
     let cancel_w = cancel.clone();
     let child_pid_w = child_pid.clone();
-    std::thread::spawn(move || loop {
-        if cancel_w.load(Ordering::SeqCst) {
-            if let Some((pid, session_leader)) = child_pid_w.lock().unwrap().take() {
-                unsafe {
-                    if session_leader {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
-                    } else {
-                        libc::kill(pid as i32, libc::SIGKILL);
+    std::thread::spawn(move || {
+        loop {
+            if cancel_w.load(Ordering::SeqCst) {
+                if let Some((pid, session_leader)) = child_pid_w.lock().unwrap().take() {
+                    unsafe {
+                        if session_leader {
+                            libc::kill(-(pid as i32), libc::SIGKILL);
+                        } else {
+                            libc::kill(pid as i32, libc::SIGKILL);
+                        }
                     }
                 }
+                break;
             }
-            break;
+            std::thread::sleep(Duration::from_millis(200));
         }
-        std::thread::sleep(Duration::from_millis(200));
     });
     let cancel_run = cancel.clone();
     let child_pid_run = child_pid.clone();
@@ -1503,7 +1483,9 @@ pub async fn plugin_test(_actor: String, home: String, name: String) -> Response
         Ok(v) => v,
         Err(e) => return Response::err(-1, format!("tests.yaml 解析失败: {e}")),
     };
-    let scope_str = manifest_str(&manifest, "scope").unwrap_or("system").to_string();
+    let scope_str = manifest_str(&manifest, "scope")
+        .unwrap_or("system")
+        .to_string();
     let code = match std::fs::read_to_string(dir.join("main.lua")) {
         Ok(c) => c,
         Err(e) => return Response::err(-1, format!("读取插件脚本失败: {e}")),
@@ -1570,11 +1552,10 @@ pub async fn plugin_test(_actor: String, home: String, name: String) -> Response
         let cancel = Arc::new(AtomicBool::new(false));
         let child_pid = Arc::new(std::sync::Mutex::new(None::<(u32, bool)>));
         let code_each = code.clone();
-        let res = tokio::task::spawn_blocking(move || {
-            run_lua(&code_each, &ctx, None, cancel, child_pid)
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("测试线程崩溃: {e}")));
+        let res =
+            tokio::task::spawn_blocking(move || run_lua(&code_each, &ctx, None, cancel, child_pid))
+                .await
+                .unwrap_or_else(|e| Err(format!("测试线程崩溃: {e}")));
         let expect = case.expect.unwrap_or_default();
         match res {
             Err(e) => results.push(json!({
@@ -1628,10 +1609,7 @@ fn sandbox_libs() -> mlua::StdLib {
 /// 自动加载的公共函数库目录（按此顺序，后者可覆盖前者）：
 /// 系统级 → 插件自带的 `lib/`。
 fn shared_lib_dirs(_home: &str, plugin_dir: &Path) -> Vec<PathBuf> {
-    vec![
-        zap_path().join("data/plugins/_lib"),
-        plugin_dir.join("lib"),
-    ]
+    vec![zap_path().join("data/plugins/_lib"), plugin_dir.join("lib")]
 }
 
 /// 在 mlua 沙箱里执行插件主体并调用 on_run。
@@ -1727,50 +1705,60 @@ fn run_lua(
 
         let scope_run = ctx.scope.clone();
         let run_user_run = ctx.run_user.clone();
-        let f_user = lua.create_function(move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| match &run_user
-        {
-            Some(u) => {
-                let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
-                run_capture(
-                    Some(u),
-                    &prog,
-                    &table_to_vec(&args),
-                    None,
-                    logf_user.clone(),
-                    cancel_user.clone(),
-                    child_pid_user.clone(),
-                    cwd,
-                )
-                .map_err(mlua::Error::RuntimeError)
-            }
-            None => Err(mlua::Error::RuntimeError("site 作用域插件未提供运行账号".into())),
-        });
+        let f_user = lua.create_function(
+            move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| match &run_user {
+                Some(u) => {
+                    let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
+                    run_capture(
+                        Some(u),
+                        &prog,
+                        &table_to_vec(&args),
+                        None,
+                        logf_user.clone(),
+                        cancel_user.clone(),
+                        child_pid_user.clone(),
+                        cwd,
+                    )
+                    .map_err(mlua::Error::RuntimeError)
+                }
+                None => Err(mlua::Error::RuntimeError(
+                    "site 作用域插件未提供运行账号".into(),
+                )),
+            },
+        );
         zap_tbl
-            .set("exec_as_user", f_user.map_err(|e| format!("exec_as_user 注册失败: {e}"))?)
+            .set(
+                "exec_as_user",
+                f_user.map_err(|e| format!("exec_as_user 注册失败: {e}"))?,
+            )
             .map_err(|e| format!("{e}"))?;
 
         // zap.run：按 scope 自动选 root / 站点账号，插件不必自己判断作用域
-        let f_run = lua.create_function(move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| {
-            let user = match scope_run.as_str() {
-                "site" | "user" => run_user_run.clone(),
-                _ => None,
-            };
-            if (scope_run == "site" || scope_run == "user") && user.is_none() {
-                return Err(mlua::Error::RuntimeError("该作用域插件未提供运行账号".into()));
-            }
-            let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
-            run_capture(
-                user.as_deref(),
-                &prog,
-                &table_to_vec(&args),
-                None,
-                logf_run.clone(),
-                cancel_run.clone(),
-                child_pid_run.clone(),
-                cwd,
-            )
-            .map_err(mlua::Error::RuntimeError)
-        });
+        let f_run = lua.create_function(
+            move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| {
+                let user = match scope_run.as_str() {
+                    "site" | "user" => run_user_run.clone(),
+                    _ => None,
+                };
+                if (scope_run == "site" || scope_run == "user") && user.is_none() {
+                    return Err(mlua::Error::RuntimeError(
+                        "该作用域插件未提供运行账号".into(),
+                    ));
+                }
+                let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
+                run_capture(
+                    user.as_deref(),
+                    &prog,
+                    &table_to_vec(&args),
+                    None,
+                    logf_run.clone(),
+                    cancel_run.clone(),
+                    child_pid_run.clone(),
+                    cwd,
+                )
+                .map_err(mlua::Error::RuntimeError)
+            },
+        );
         zap_tbl
             .set("run", f_run.map_err(|e| format!("run 注册失败: {e}"))?)
             .map_err(|e| format!("{e}"))?;
@@ -1781,65 +1769,78 @@ fn run_lua(
         let logf_try = logf.clone();
         let cancel_try = cancel.clone();
         let child_pid_try = child_pid.clone();
-        let f_try = lua.create_function(move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| {
-            let user = match scope_try.as_str() {
-                "site" | "user" => run_user_try.clone(),
-                _ => None,
-            };
-            let argv = table_to_vec(&args);
-            let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
-            match run_capture(
-                user.as_deref(),
-                &prog,
-                &argv,
-                None,
-                logf_try.clone(),
-                cancel_try.clone(),
-                child_pid_try.clone(),
-                cwd,
-            ) {
-                Ok(s) => Ok((true, s)),
-                Err(s) => Ok((false, s)),
-            }
-        });
+        let f_try = lua.create_function(
+            move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| {
+                let user = match scope_try.as_str() {
+                    "site" | "user" => run_user_try.clone(),
+                    _ => None,
+                };
+                let argv = table_to_vec(&args);
+                let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
+                match run_capture(
+                    user.as_deref(),
+                    &prog,
+                    &argv,
+                    None,
+                    logf_try.clone(),
+                    cancel_try.clone(),
+                    child_pid_try.clone(),
+                    cwd,
+                ) {
+                    Ok(s) => Ok((true, s)),
+                    Err(s) => Ok((false, s)),
+                }
+            },
+        );
         zap_tbl
-            .set("try_run", f_try.map_err(|e| format!("try_run 注册失败: {e}"))?)
+            .set(
+                "try_run",
+                f_try.map_err(|e| format!("try_run 注册失败: {e}"))?,
+            )
             .map_err(|e| format!("{e}"))?;
     }
     // zap.read_file / zap.write_file / zap.append_file（按 scope 降权的子进程实现）
     {
         let scope = ctx.scope.clone();
         let run_user = ctx.run_user.clone();
-        for (name, redirect) in [("read_file", "<"), ("write_file", ">"), ("append_file", ">>")] {
+        for (name, redirect) in [
+            ("read_file", "<"),
+            ("write_file", ">"),
+            ("append_file", ">>"),
+        ] {
             let scope = scope.clone();
             let run_user = run_user.clone();
-            let f = lua.create_function(
-                move |_, (path, content): (String, Option<String>)| {
-                    let script = format!("cat {} \"$1\"", redirect);
-                    let stdin = if redirect == "<" { None } else { Some(content.unwrap_or_default()) };
-                    let user = match scope.as_str() {
-                        "site" | "user" => run_user.clone(),
-                        _ => None,
-                    };
-                    if (scope == "site" || scope == "user") && user.is_none() {
-                        return Err(mlua::Error::RuntimeError("该作用域插件未提供运行账号".into()));
-                    }
-                    if path.trim().is_empty() {
-                        return Err(mlua::Error::RuntimeError("路径不能为空".into()));
-                    }
-                    run_capture(
-                        user.as_deref(),
-                        "sh",
-                        &["-c".to_string(), script, "sh".to_string(), path],
-                        stdin,
-                        None,
-                        Arc::new(AtomicBool::new(false)),
-                        Arc::new(std::sync::Mutex::new(None)),
-                        None,
-                    )
-                    .map_err(mlua::Error::RuntimeError)
-                },
-            );
+            let f = lua.create_function(move |_, (path, content): (String, Option<String>)| {
+                let script = format!("cat {} \"$1\"", redirect);
+                let stdin = if redirect == "<" {
+                    None
+                } else {
+                    Some(content.unwrap_or_default())
+                };
+                let user = match scope.as_str() {
+                    "site" | "user" => run_user.clone(),
+                    _ => None,
+                };
+                if (scope == "site" || scope == "user") && user.is_none() {
+                    return Err(mlua::Error::RuntimeError(
+                        "该作用域插件未提供运行账号".into(),
+                    ));
+                }
+                if path.trim().is_empty() {
+                    return Err(mlua::Error::RuntimeError("路径不能为空".into()));
+                }
+                run_capture(
+                    user.as_deref(),
+                    "sh",
+                    &["-c".to_string(), script, "sh".to_string(), path],
+                    stdin,
+                    None,
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(std::sync::Mutex::new(None)),
+                    None,
+                )
+                .map_err(mlua::Error::RuntimeError)
+            });
             zap_tbl
                 .set(name, f.map_err(|e| format!("{name} 注册失败: {e}"))?)
                 .map_err(|e| format!("{e}"))?;
@@ -1882,7 +1883,10 @@ fn run_lua(
             .map_err(|e| format!("{e}"))?;
         let f_home = lua.create_function(move |_, ()| Ok(home_dir.clone()));
         zap_tbl
-            .set("home_dir", f_home.map_err(|e| format!("home_dir 注册失败: {e}"))?)
+            .set(
+                "home_dir",
+                f_home.map_err(|e| format!("home_dir 注册失败: {e}"))?,
+            )
             .map_err(|e| format!("{e}"))?;
         let f_dir = lua.create_function(move |_, ()| Ok(plugin_dir.clone()));
         zap_tbl
@@ -1982,7 +1986,10 @@ fn run_lua(
     {
         let f_env = lua.create_function(move |_, key: String| {
             let allowed = key.starts_with("ZAP_")
-                || matches!(key.as_str(), "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "TMPDIR");
+                || matches!(
+                    key.as_str(),
+                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "TMPDIR"
+                );
             if !allowed {
                 return Ok(String::new());
             }
@@ -2037,8 +2044,12 @@ fn run_lua(
             .map_err(|e| format!("插件未定义 on_run / on_{}: {e}", ctx.action))?,
     };
     let ctx_tbl = lua.create_table().map_err(|e| format!("{e}"))?;
-    ctx_tbl.set("action", ctx.action.clone()).map_err(|e| format!("{e}"))?;
-    ctx_tbl.set("scope", ctx.scope.clone()).map_err(|e| format!("{e}"))?;
+    ctx_tbl
+        .set("action", ctx.action.clone())
+        .map_err(|e| format!("{e}"))?;
+    ctx_tbl
+        .set("scope", ctx.scope.clone())
+        .map_err(|e| format!("{e}"))?;
     on_run
         .call::<_, ()>(ctx_tbl)
         .map_err(|e| format!("on_run 执行失败: {e}"))?;
@@ -2058,8 +2069,8 @@ fn load_lua_dir(lua: &mlua::Lua, dir: &Path) -> Result<(), String> {
         .collect();
     files.sort();
     for p in files {
-        let code = std::fs::read_to_string(&p)
-            .map_err(|e| format!("读取 {} 失败: {e}", p.display()))?;
+        let code =
+            std::fs::read_to_string(&p).map_err(|e| format!("读取 {} 失败: {e}", p.display()))?;
         lua.load(&code)
             .set_name(p.display().to_string())
             .exec()
@@ -2252,11 +2263,10 @@ fn run_capture(
     };
 
     // 两个线程分别把 stdout / stderr 拷进缓冲区，并（异步时）实时落盘
-    let copy =
-        |r: Option<Box<dyn std::io::Read + Send>>,
-         logf: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>>,
-         cancel: Arc<AtomicBool>|
-         -> String {
+    let copy = |r: Option<Box<dyn std::io::Read + Send>>,
+                logf: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>>,
+                cancel: Arc<AtomicBool>|
+     -> String {
         let mut s = String::new();
         if let Some(mut r) = r {
             let mut buf = [0u8; 4096];
@@ -2282,10 +2292,14 @@ fn run_capture(
     };
     let logf_out = logf.clone();
     let cancel_out = cancel.clone();
-    let stdout: Option<Box<dyn std::io::Read + Send>> =
-        child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>);
-    let stderr: Option<Box<dyn std::io::Read + Send>> =
-        child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>);
+    let stdout: Option<Box<dyn std::io::Read + Send>> = child
+        .stdout
+        .take()
+        .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>);
+    let stderr: Option<Box<dyn std::io::Read + Send>> = child
+        .stderr
+        .take()
+        .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>);
     let t_out = std::thread::spawn(move || copy(stdout, logf_out, cancel_out));
     let t_err = std::thread::spawn(move || copy(stderr, logf.clone(), cancel.clone()));
 
@@ -2395,8 +2409,14 @@ mod tests {
 
         let html = "<html><head><title>t</title></head><body><p>hi</p></body></html>";
         let out = inject_uikit(html, &dir, None, None);
-        assert!(out.contains("<style>") && out.contains("--x:1"), "样式没注入: {out}");
-        assert!(out.contains("<script>") && out.contains("window.zap"), "脚本没注入: {out}");
+        assert!(
+            out.contains("<style>") && out.contains("--x:1"),
+            "样式没注入: {out}"
+        );
+        assert!(
+            out.contains("<script>") && out.contains("window.zap"),
+            "脚本没注入: {out}"
+        );
         // 位置：style 在 </head> 前，script 在 </body> 前
         assert!(out.find("</style>").unwrap() < out.to_lowercase().find("</head>").unwrap());
         assert!(out.find("</script>").unwrap() < out.to_lowercase().find("</body>").unwrap());
@@ -2409,7 +2429,10 @@ mod tests {
         // 没有 head / body 的片段也要能注入，不能静默丢掉脚本
         let frag = "<div>x</div>";
         let out2 = inject_uikit(frag, &dir, None, None);
-        assert!(out2.contains("--x:1") && out2.contains("window.zap"), "{out2}");
+        assert!(
+            out2.contains("--x:1") && out2.contains("window.zap"),
+            "{out2}"
+        );
 
         // 面板语言要先于 UIKit 注入：插件 UI 才能跟着 Element Plus 切中英
         let out3 = inject_uikit(html, &dir, Some("en-US"), None);
@@ -2555,8 +2578,14 @@ mod tests {
         assert!(out.contains("join=/a/b/c"), "公共库 zap.path 不可用: {out}");
         assert!(out.contains("count=3"), "公共库 zap.tbl 不可用: {out}");
         assert!(out.contains("quote='a b'"), "公共库 zap.q 不可用: {out}");
-        assert!(out.contains("within=true"), "zap.path.within 行为不对: {out}");
-        assert!(out.contains("site=/tmp/sub"), "zap.path.site 行为不对: {out}");
+        assert!(
+            out.contains("within=true"),
+            "zap.path.within 行为不对: {out}"
+        );
+        assert!(
+            out.contains("site=/tmp/sub"),
+            "zap.path.site 行为不对: {out}"
+        );
     }
 
     /// manifest 的 `i18n` 表按面板语言覆盖文案；只有部分翻译时其余键回落基准值。
@@ -2717,17 +2746,18 @@ actions:
             .and_then(|v| v.as_mapping())
             .unwrap();
         assert_eq!(alice.len(), 2, "合并后应保留两个键");
-        assert!(store
-            .get(&serde_yaml::Value::String("bob".into()))
-            .is_none());
+        assert!(
+            store
+                .get(&serde_yaml::Value::String("bob".into()))
+                .is_none()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 依赖声明：manifest 声明的命令缺失时拒装。
     #[test]
     fn requires_commands_are_validated() {
-        let m: serde_yaml::Value =
-            serde_yaml::from_str("requires:\n  commands: [git]\n").unwrap();
+        let m: serde_yaml::Value = serde_yaml::from_str("requires:\n  commands: [git]\n").unwrap();
         // git 在 CI / 开发机上基本都有；没有就用 shell 的 builtin 兜一个必定存在的
         let ok: serde_yaml::Value = serde_yaml::from_str("requires:\n  commands: [sh]\n").unwrap();
         assert!(check_required_commands(&ok).is_ok());

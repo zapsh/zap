@@ -147,7 +147,10 @@ struct Actor {
 
 /// `as_user`：Some(linux 账号) = 以该账号名义操作；None = root。
 /// `skip_owner_check`：true = 管理员（内容归属自己，但不校验属主）。
-fn resolve_actor(as_user: &Option<String>, skip_owner_check: bool) -> Result<Option<Actor>, String> {
+fn resolve_actor(
+    as_user: &Option<String>,
+    skip_owner_check: bool,
+) -> Result<Option<Actor>, String> {
     match as_user {
         None => Ok(None),
         Some(name) => match user_lookup(name) {
@@ -293,10 +296,7 @@ fn actor_roots(name: &str) -> Vec<(PathBuf, Option<PathBuf>)> {
         .unwrap_or_else(|_| PathBuf::from(format!("/home/{name}")));
     let mut roots: Vec<(PathBuf, Option<PathBuf>)> = vec![
         (home.clone(), home.canonicalize().ok()),
-        (
-            PathBuf::from(format!("/tmp/zap-{name}")),
-            None,
-        ),
+        (PathBuf::from(format!("/tmp/zap-{name}")), None),
         (
             super::users_root().join(name),
             super::users_root().join(name).canonicalize().ok(),
@@ -764,11 +764,7 @@ pub async fn info(path: String, as_user: Option<String>, skip_owner_check: bool)
 ///   不跟随，避免软链成环导致无限递归，也不重复统计指向的子树。
 /// - 单个文件：直接返回其 `len()`（语义上「大小」同样成立）。
 /// - 无权限读取的子目录 / 子项跳过，不阻断整棵统计；读不到路径信息时同样跳过。
-pub async fn dir_size(
-    path: String,
-    as_user: Option<String>,
-    skip_owner_check: bool,
-) -> Response {
+pub async fn dir_size(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
     tokio::task::spawn_blocking(move || {
         let resolved = resolve_path(&path);
         if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
@@ -1202,329 +1198,314 @@ pub async fn archive(
     })
     .await
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
-    }
+}
 
-    /// 压缩包后缀 -> 解压格式标识（小写比对，避免大小写漏判）
-    fn archive_format(path: &Path) -> Option<&'static str> {
+/// 压缩包后缀 -> 解压格式标识（小写比对，避免大小写漏判）
+fn archive_format(path: &Path) -> Option<&'static str> {
     let name = path
-    .file_name()
-    .and_then(|n| n.to_str())
-    .unwrap_or("")
-    .to_ascii_lowercase();
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if name.ends_with(".tar.gz") {
-    Some("tar.gz")
+        Some("tar.gz")
     } else if name.ends_with(".tgz") {
-    Some("tgz")
+        Some("tgz")
     } else if name.ends_with(".tar.bz2") {
-    Some("tar.bz2")
+        Some("tar.bz2")
     } else if name.ends_with(".tar.xz") {
-    Some("tar.xz")
+        Some("tar.xz")
     } else if name.ends_with(".tar") {
-    Some("tar")
+        Some("tar")
     } else if name.ends_with(".zip") {
-    Some("zip")
+        Some("zip")
     } else if name.ends_with(".7z") {
-    Some("7z")
+        Some("7z")
     } else if name.ends_with(".gz") {
-    Some("gz")
+        Some("gz")
     } else {
-    None
+        None
     }
-    }
+}
 
-    /// 把压缩包内的条目名安全映射到 `dest` 之内，过滤 `..` 等路径穿越。
-    /// 返回 None 表示条目名非法（试图逃出目标目录），调用方应跳过该条目。
-    fn safe_entry_path(dest: &Path, name: &str) -> Option<PathBuf> {
+/// 把压缩包内的条目名安全映射到 `dest` 之内，过滤 `..` 等路径穿越。
+/// 返回 None 表示条目名非法（试图逃出目标目录），调用方应跳过该条目。
+fn safe_entry_path(dest: &Path, name: &str) -> Option<PathBuf> {
     let rel = sanitize_relative(name)?;
     let target = dest.join(&rel);
     if within_prefix(&target, dest) {
-    Some(target)
+        Some(target)
     } else {
-    None
+        None
     }
-    }
+}
 
-    /// 压缩包成员列表的解析方式（用于 zip-slip 校验与逐个改属主）。
-    enum ListingKind {
-        Tar,
-        SevenZ,
-    }
+/// 压缩包成员列表的解析方式（用于 zip-slip 校验与逐个改属主）。
+enum ListingKind {
+    Tar,
+    SevenZ,
+}
 
-    /// 解析 `tar -tf` / `7z l -slt` 的输出，得到成员相对路径列表。
-    fn parse_members(listing: &str, kind: ListingKind) -> Vec<String> {
-        match kind {
-            ListingKind::Tar => listing
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect(),
-            ListingKind::SevenZ => listing
-                .lines()
-                .filter_map(|l| l.trim().strip_prefix("Path = "))
-                .map(|p| p.trim().to_string())
-                .filter(|p| !p.is_empty())
-                .collect(),
-        }
+/// 解析 `tar -tf` / `7z l -slt` 的输出，得到成员相对路径列表。
+fn parse_members(listing: &str, kind: ListingKind) -> Vec<String> {
+    match kind {
+        ListingKind::Tar => listing
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        ListingKind::SevenZ => listing
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("Path = "))
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect(),
     }
+}
 
-    /// 遍历压缩包成员：先校验每个成员都落在 `dest` 内（防 zip-slip），
-    /// 校验通过后对每个目标路径调用 `f`（如改属主）。
-    fn each_member<F: FnMut(&Path)>(
-        listing: &str,
-        dest: &Path,
-        kind: ListingKind,
-        mut f: F,
-    ) -> Result<(), String> {
-        for name in parse_members(listing, kind) {
-            let rel = match sanitize_relative(&name) {
-                Some(r) => r,
-                None => continue,
-            };
-            let target = dest.join(&rel);
-            if !within_prefix(&target, dest) {
-                return Err("压缩包含非法路径（试图逃出目标目录），已拒绝解压".to_string());
-            }
-            f(&target);
-        }
-        Ok(())
-    }
-
-    /// 用系统 `tar` 解压 tar.*（自动识别 bz2 / xz / gz 压缩），并归操作者所有。
-    ///
-    /// 先做 zip-slip 校验：列出全部成员，任何试图逃出 `dest` 的路径都直接拒绝整包；
-    /// 校验通过后再真正解压，最后逐条目把属主改回操作者（系统 tar 以 root 身份跑，
-    /// 落地的文件默认是 root 拥有）。
-    fn extract_tar_cli(
-        archive: &Path,
-        dest: &Path,
-        actor: Option<Actor>,
-    ) -> Result<(), String> {
-        let archive_s = archive.to_string_lossy().to_string();
-        let dest_s = dest.to_string_lossy().to_string();
-        let out = std::process::Command::new("tar")
-            .arg("-tf")
-            .arg(&archive_s)
-            .output()
-            .map_err(|e| format!("执行 tar 失败（请确认系统已安装 tar）: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "不是合法的 tar 压缩包: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        let listing = String::from_utf8_lossy(&out.stdout).into_owned();
-        each_member(&listing, dest, ListingKind::Tar, |_| {})?;
-        let out = std::process::Command::new("tar")
-            .arg("-xf")
-            .arg(&archive_s)
-            .arg("-C")
-            .arg(&dest_s)
-            .output()
-            .map_err(|e| format!("执行 tar 失败: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "解压失败: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        each_member(&listing, dest, ListingKind::Tar, |p| {
-            let _ = apply_owner(actor, p);
-        })?;
-        Ok(())
-    }
-
-    /// 用系统 `7z` 解压 .7z，并归操作者所有。
-    ///
-    /// 同样先做 zip-slip 校验（`7z l -slt` 列出成员），再解压，最后逐条目改属主。
-    /// 系统需安装 p7zip（`7z` / `7za` / `7zr` 任一即可）。
-    fn extract_7z_cli(
-        archive: &Path,
-        dest: &Path,
-        actor: Option<Actor>,
-    ) -> Result<(), String> {
-        let archive_s = archive.to_string_lossy().to_string();
-        let dest_s = dest.to_string_lossy().to_string();
-        let bin = ["7z", "7za", "7zr"]
-            .iter()
-            .copied()
-            .find(|b| {
-                std::process::Command::new(b)
-                    .arg("i")
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
-            });
-        let bin = match bin {
-            Some(b) => b,
-            None => return Err("系统未安装 7z（p7zip），无法解压 .7z 压缩包".to_string()),
+/// 遍历压缩包成员：先校验每个成员都落在 `dest` 内（防 zip-slip），
+/// 校验通过后对每个目标路径调用 `f`（如改属主）。
+fn each_member<F: FnMut(&Path)>(
+    listing: &str,
+    dest: &Path,
+    kind: ListingKind,
+    mut f: F,
+) -> Result<(), String> {
+    for name in parse_members(listing, kind) {
+        let rel = match sanitize_relative(&name) {
+            Some(r) => r,
+            None => continue,
         };
-        let out = std::process::Command::new(bin)
-            .arg("l")
-            .arg("-slt")
-            .arg(&archive_s)
-            .output()
-            .map_err(|e| format!("执行 7z 失败: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "不是合法的 7z 压缩包: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        let listing = String::from_utf8_lossy(&out.stdout).into_owned();
-        each_member(&listing, dest, ListingKind::SevenZ, |_| {})?;
-        let out = std::process::Command::new(bin)
-            .arg("x")
-            .arg("-y")
-            .arg(format!("-o{dest_s}"))
-            .arg(&archive_s)
-            .output()
-            .map_err(|e| format!("执行 7z 失败: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "解压失败: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        each_member(&listing, dest, ListingKind::SevenZ, |p| {
-            let _ = apply_owner(actor, p);
-        })?;
-        Ok(())
-    }
-
-    /// 解压单个 .gz（gzip 单文件流），落地为去掉 .gz 后缀的同名文件，并归操作者所有。
-    fn extract_gz(
-        archive: &Path,
-        dest: &Path,
-        overwrite: bool,
-        actor: Option<Actor>,
-    ) -> Result<(), String> {
-        create_dirs_owned(actor, dest)?;
-        let file = std::fs::File::open(archive).map_err(|e| format!("打开压缩包失败: {e}"))?;
-        let mut decoder = flate2::read::GzDecoder::new(file);
-        let mut buf = Vec::new();
-        decoder
-            .read_to_end(&mut buf)
-            .map_err(|e| format!("读取 gzip 流失败: {e}"))?;
-        let base = archive
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .trim_end_matches(".gz")
-            .trim_end_matches(".GZ");
-        let out_name = if base.is_empty() { "file" } else { base };
-        let target = dest.join(out_name);
+        let target = dest.join(&rel);
         if !within_prefix(&target, dest) {
-            return Err("压缩包含非法路径，已拒绝解压".to_string());
+            return Err("压缩包含非法路径（试图逃出目标目录），已拒绝解压".to_string());
         }
-        if target.exists() && !overwrite {
-            return Ok(());
-        }
-        std::fs::write(&target, &buf)
-            .map_err(|e| format!("写入 {} 失败: {e}", target.display()))?;
-        apply_owner(actor, &target)?;
-        Ok(())
+        f(&target);
     }
+    Ok(())
+}
 
-    /// 解压 zip（zip crate），逐条目落盘并归操作者所有。
-    fn extract_zip(
+/// 用系统 `tar` 解压 tar.*（自动识别 bz2 / xz / gz 压缩），并归操作者所有。
+///
+/// 先做 zip-slip 校验：列出全部成员，任何试图逃出 `dest` 的路径都直接拒绝整包；
+/// 校验通过后再真正解压，最后逐条目把属主改回操作者（系统 tar 以 root 身份跑，
+/// 落地的文件默认是 root 拥有）。
+fn extract_tar_cli(archive: &Path, dest: &Path, actor: Option<Actor>) -> Result<(), String> {
+    let archive_s = archive.to_string_lossy().to_string();
+    let dest_s = dest.to_string_lossy().to_string();
+    let out = std::process::Command::new("tar")
+        .arg("-tf")
+        .arg(&archive_s)
+        .output()
+        .map_err(|e| format!("执行 tar 失败（请确认系统已安装 tar）: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "不是合法的 tar 压缩包: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let listing = String::from_utf8_lossy(&out.stdout).into_owned();
+    each_member(&listing, dest, ListingKind::Tar, |_| {})?;
+    let out = std::process::Command::new("tar")
+        .arg("-xf")
+        .arg(&archive_s)
+        .arg("-C")
+        .arg(&dest_s)
+        .output()
+        .map_err(|e| format!("执行 tar 失败: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "解压失败: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    each_member(&listing, dest, ListingKind::Tar, |p| {
+        let _ = apply_owner(actor, p);
+    })?;
+    Ok(())
+}
+
+/// 用系统 `7z` 解压 .7z，并归操作者所有。
+///
+/// 同样先做 zip-slip 校验（`7z l -slt` 列出成员），再解压，最后逐条目改属主。
+/// 系统需安装 p7zip（`7z` / `7za` / `7zr` 任一即可）。
+fn extract_7z_cli(archive: &Path, dest: &Path, actor: Option<Actor>) -> Result<(), String> {
+    let archive_s = archive.to_string_lossy().to_string();
+    let dest_s = dest.to_string_lossy().to_string();
+    let bin = ["7z", "7za", "7zr"].iter().copied().find(|b| {
+        std::process::Command::new(b)
+            .arg("i")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    });
+    let bin = match bin {
+        Some(b) => b,
+        None => return Err("系统未安装 7z（p7zip），无法解压 .7z 压缩包".to_string()),
+    };
+    let out = std::process::Command::new(bin)
+        .arg("l")
+        .arg("-slt")
+        .arg(&archive_s)
+        .output()
+        .map_err(|e| format!("执行 7z 失败: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "不是合法的 7z 压缩包: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let listing = String::from_utf8_lossy(&out.stdout).into_owned();
+    each_member(&listing, dest, ListingKind::SevenZ, |_| {})?;
+    let out = std::process::Command::new(bin)
+        .arg("x")
+        .arg("-y")
+        .arg(format!("-o{dest_s}"))
+        .arg(&archive_s)
+        .output()
+        .map_err(|e| format!("执行 7z 失败: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "解压失败: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    each_member(&listing, dest, ListingKind::SevenZ, |p| {
+        let _ = apply_owner(actor, p);
+    })?;
+    Ok(())
+}
+
+/// 解压单个 .gz（gzip 单文件流），落地为去掉 .gz 后缀的同名文件，并归操作者所有。
+fn extract_gz(
     archive: &Path,
     dest: &Path,
     overwrite: bool,
     actor: Option<Actor>,
-    ) -> Result<(), String> {
+) -> Result<(), String> {
     create_dirs_owned(actor, dest)?;
     let file = std::fs::File::open(archive).map_err(|e| format!("打开压缩包失败: {e}"))?;
-    let mut zip =
-    zip::ZipArchive::new(file).map_err(|e| format!("不是合法的 zip 压缩包: {e}"))?;
-    for i in 0..zip.len() {
-    let mut entry = zip
-        .by_index(i)
-        .map_err(|e| format!("读取压缩包条目失败: {e}"))?;
-    let name = entry.name().to_string();
-    let Some(target) = safe_entry_path(dest, &name) else {
-        continue; // 跳过试图穿越的恶意条目
-    };
-    if entry.is_dir() {
-        create_dirs_owned(actor, &target)?;
-        continue;
+    let mut decoder = flate2::read::GzDecoder::new(file);
+    let mut buf = Vec::new();
+    decoder
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("读取 gzip 流失败: {e}"))?;
+    let base = archive
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .trim_end_matches(".gz")
+        .trim_end_matches(".GZ");
+    let out_name = if base.is_empty() { "file" } else { base };
+    let target = dest.join(out_name);
+    if !within_prefix(&target, dest) {
+        return Err("压缩包含非法路径，已拒绝解压".to_string());
     }
     if target.exists() && !overwrite {
-        continue; // 不覆盖已存在文件
+        return Ok(());
     }
-    if let Some(parent) = target.parent() {
-        create_dirs_owned(actor, parent)?;
-    }
-    let mut buf = Vec::with_capacity(entry.size() as usize);
-    entry
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("读取条目内容失败: {e}"))?;
-    std::fs::write(&target, &buf)
-        .map_err(|e| format!("写入 {} 失败: {e}", target.display()))?;
+    std::fs::write(&target, &buf).map_err(|e| format!("写入 {} 失败: {e}", target.display()))?;
     apply_owner(actor, &target)?;
+    Ok(())
+}
+
+/// 解压 zip（zip crate），逐条目落盘并归操作者所有。
+fn extract_zip(
+    archive: &Path,
+    dest: &Path,
+    overwrite: bool,
+    actor: Option<Actor>,
+) -> Result<(), String> {
+    create_dirs_owned(actor, dest)?;
+    let file = std::fs::File::open(archive).map_err(|e| format!("打开压缩包失败: {e}"))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("不是合法的 zip 压缩包: {e}"))?;
+    for i in 0..zip.len() {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| format!("读取压缩包条目失败: {e}"))?;
+        let name = entry.name().to_string();
+        let Some(target) = safe_entry_path(dest, &name) else {
+            continue; // 跳过试图穿越的恶意条目
+        };
+        if entry.is_dir() {
+            create_dirs_owned(actor, &target)?;
+            continue;
+        }
+        if target.exists() && !overwrite {
+            continue; // 不覆盖已存在文件
+        }
+        if let Some(parent) = target.parent() {
+            create_dirs_owned(actor, parent)?;
+        }
+        let mut buf = Vec::with_capacity(entry.size() as usize);
+        entry
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("读取条目内容失败: {e}"))?;
+        std::fs::write(&target, &buf)
+            .map_err(|e| format!("写入 {} 失败: {e}", target.display()))?;
+        apply_owner(actor, &target)?;
     }
     Ok(())
-    }
+}
 
-    /// 解压 tar（裸 tar / tar.gz），逐条目落盘并归操作者所有。
-    fn extract_tar<R: Read>(
+/// 解压 tar（裸 tar / tar.gz），逐条目落盘并归操作者所有。
+fn extract_tar<R: Read>(
     reader: R,
     dest: &Path,
     overwrite: bool,
     actor: Option<Actor>,
-    ) -> Result<(), String> {
+) -> Result<(), String> {
     create_dirs_owned(actor, dest)?;
     let mut ar = tar::Archive::new(reader);
-    let entries = ar
-    .entries()
-    .map_err(|e| format!("读取 tar 失败: {e}"))?;
+    let entries = ar.entries().map_err(|e| format!("读取 tar 失败: {e}"))?;
     for entry in entries {
-    let mut entry = entry.map_err(|e| format!("读取压缩包条目失败: {e}"))?;
-    let path = entry
-        .path()
-        .map_err(|e| format!("条目路径无效: {e}"))?
-        .to_string_lossy()
-        .to_string();
-    let Some(target) = safe_entry_path(dest, &path) else {
-        continue;
-    };
-    let et = entry.header().entry_type();
-    if et.is_dir() {
-        create_dirs_owned(actor, &target)?;
-        continue;
-    }
-    if !et.is_file() {
-        continue; // 跳过符号链接 / 设备等特殊条目
-    }
-    if target.exists() && !overwrite {
-        continue;
-    }
-    if let Some(parent) = target.parent() {
-        create_dirs_owned(actor, parent)?;
-    }
-    let mut buf = Vec::new();
-    entry
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("读取条目内容失败: {e}"))?;
-    std::fs::write(&target, &buf)
-        .map_err(|e| format!("写入 {} 失败: {e}", target.display()))?;
-    apply_owner(actor, &target)?;
+        let mut entry = entry.map_err(|e| format!("读取压缩包条目失败: {e}"))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("条目路径无效: {e}"))?
+            .to_string_lossy()
+            .to_string();
+        let Some(target) = safe_entry_path(dest, &path) else {
+            continue;
+        };
+        let et = entry.header().entry_type();
+        if et.is_dir() {
+            create_dirs_owned(actor, &target)?;
+            continue;
+        }
+        if !et.is_file() {
+            continue; // 跳过符号链接 / 设备等特殊条目
+        }
+        if target.exists() && !overwrite {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            create_dirs_owned(actor, parent)?;
+        }
+        let mut buf = Vec::new();
+        entry
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("读取条目内容失败: {e}"))?;
+        std::fs::write(&target, &buf)
+            .map_err(|e| format!("写入 {} 失败: {e}", target.display()))?;
+        apply_owner(actor, &target)?;
     }
     Ok(())
-    }
+}
 
-    /// 解压压缩包：`path` 为压缩包路径，`dest_dir` 为解压目标目录。
-    ///
-    /// 支持 zip / tar / tar.gz / tgz / tar.bz2 / tar.xz / 7z / gz。
-    /// 其中 tar.bz2 / tar.xz / 7z 走系统 `tar` / `7z` 命令（需对应程序已安装）。
-    /// `overwrite` 为 false 时跳过已存在文件；解压出来的内容归当前操作者所有，
-    /// 目标目录不存在时按操作者身份创建。
-    pub async fn extract(
+/// 解压压缩包：`path` 为压缩包路径，`dest_dir` 为解压目标目录。
+///
+/// 支持 zip / tar / tar.gz / tgz / tar.bz2 / tar.xz / 7z / gz。
+/// 其中 tar.bz2 / tar.xz / 7z 走系统 `tar` / `7z` 命令（需对应程序已安装）。
+/// `overwrite` 为 false 时跳过已存在文件；解压出来的内容归当前操作者所有，
+/// 目标目录不存在时按操作者身份创建。
+pub async fn extract(
     path: String,
     dest_dir: String,
     overwrite: bool,
     as_user: Option<String>,
     skip_owner_check: bool,
-    ) -> Response {
+) -> Response {
     tokio::task::spawn_blocking(move || {
     let actor = match resolve_actor(&as_user, skip_owner_check) {
         Ok(a) => a,
@@ -1573,10 +1554,10 @@ pub async fn archive(
     })
     .await
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
-    }
+}
 
-    #[cfg(test)]
-    mod tests {
+#[cfg(test)]
+mod tests {
     use super::*;
 
     /// 上传把 zapd 落好的临时文件搬到目标位置：内容一致、临时文件清掉，

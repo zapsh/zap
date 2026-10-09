@@ -653,7 +653,10 @@ mod tests {
         let old = dir.join("modsec_audit.log-20200101.gz");
         std::fs::write(&old, b"old").unwrap();
 
-        assert!(rotate_one_audit_log(&log, 30).is_none(), "空日志应返回 None");
+        assert!(
+            rotate_one_audit_log(&log, 30).is_none(),
+            "空日志应返回 None"
+        );
         assert!(!old.exists(), "空日志仍应清理过期归档");
         // 原文件保持为空（不应被创建归档）
         assert!(std::fs::read_dir(&dir).unwrap().count() == 1);

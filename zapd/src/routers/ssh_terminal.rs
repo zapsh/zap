@@ -318,8 +318,8 @@ pub async fn create_connection(
     let now = chrono::Utc::now().timestamp();
 
     // 密码加密后入库，杜绝明文存储（加密失败直接报错，不落明文）
-    let encrypted_password = crypto::encrypt_password(&payload.password)
-        .map_err(|e| ZapError::New(-1, e))?;
+    let encrypted_password =
+        crypto::encrypt_password(&payload.password).map_err(|e| ZapError::New(-1, e))?;
 
     sqlx::query(
         "INSERT INTO ssh_connections (user_id, name, host, port, username, auth_type, password, ssh_key_name, remark, status, sort_order, created_at, updated_at)
@@ -406,8 +406,7 @@ pub async fn update_connection(
     }
     if let Some(v) = payload.password {
         // 密码加密后入库（加密失败直接报错，不落明文）
-        let encrypted = crypto::encrypt_password(&v)
-            .map_err(|e| ZapError::New(-1, e))?;
+        let encrypted = crypto::encrypt_password(&v).map_err(|e| ZapError::New(-1, e))?;
         sqlx::query("UPDATE ssh_connections SET password = ?, updated_at = ? WHERE id = ?")
             .bind(encrypted)
             .bind(now)

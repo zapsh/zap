@@ -285,8 +285,7 @@ pub async fn collect_disk_usage() {
                 .await;
                 // 磁盘空间不足预警：配额 > 0 且用量达 90% 时触发（带冷却）
                 if quota_mb > 0 {
-                    let used_pct =
-                        (bytes as i64 * 100) / (quota_mb * 1024 * 1024);
+                    let used_pct = (bytes as i64 * 100) / (quota_mb * 1024 * 1024);
                     if used_pct >= 90 {
                         crate::zap::notify::disk_low(id, owner_id, used_pct as i32).await;
                     }

@@ -49,7 +49,10 @@ fn tokenize(cmd: &str) -> Vec<Token> {
     for c in cmd.chars() {
         if is_sep(c) {
             if !cur.is_empty() {
-                out.push(Token { text: std::mem::take(&mut cur), after_redirect });
+                out.push(Token {
+                    text: std::mem::take(&mut cur),
+                    after_redirect,
+                });
                 after_redirect = false;
             }
             // `>` 既是分隔符，也是重定向标记：下一个词标记为重定向目标。
@@ -67,7 +70,10 @@ fn tokenize(cmd: &str) -> Vec<Token> {
         cur.push(c);
     }
     if !cur.is_empty() {
-        out.push(Token { text: cur, after_redirect });
+        out.push(Token {
+            text: cur,
+            after_redirect,
+        });
     }
     out
 }
@@ -171,7 +177,14 @@ mod tests {
 
     #[test]
     fn blocks_privilege_escalation() {
-        for c in ["sudo ls", "su -", "pkexec x", "doas y", "runuser -u root", "sudoedit f"] {
+        for c in [
+            "sudo ls",
+            "su -",
+            "pkexec x",
+            "doas y",
+            "runuser -u root",
+            "sudoedit f",
+        ] {
             assert!(check(c, HOME).is_err(), "应拒绝: {c}");
         }
         // 路径里恰巧含同名片段不应误伤（在自家目录内）

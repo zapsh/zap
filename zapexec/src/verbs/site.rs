@@ -1001,9 +1001,9 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         // PHP 站点：raw location / 替换默认根
         s_type == "php" && k == "raw"
     });
-    let root_augment = locations.iter().find(|l| {
-        l.path.trim() == "/" && l.kind.trim().to_lowercase() == "raw"
-    });
+    let root_augment = locations
+        .iter()
+        .find(|l| l.path.trim() == "/" && l.kind.trim().to_lowercase() == "raw");
     let merge_root_raw = root_augment.is_some() && !root_replace && s_type != "proxy";
     // ACME HTTP-01：所有站点一律带上验证路径（含反代站点），
     // 面板随时可签发证书，不必先建 CA 无关的临时站点
@@ -2002,9 +2002,7 @@ fn valid_domain(d: &str) -> bool {
         if i == 0 && lab == "*" {
             continue;
         }
-        if !lab
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        if !lab.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
             || lab.starts_with('-')
             || lab.ends_with('-')
         {
@@ -2129,8 +2127,26 @@ fn validate_vhost_cfg(
                     c.is_ascii_alphanumeric()
                         || matches!(
                             c,
-                            '/' | '_' | '.' | '-' | '~' | '%' | '@' | ':' | '=' | '&' | '+' | '*'
-                                | '?' | '(' | ')' | '[' | ']' | '|' | '$' | '^' | '\\'
+                            '/' | '_'
+                                | '.'
+                                | '-'
+                                | '~'
+                                | '%'
+                                | '@'
+                                | ':'
+                                | '='
+                                | '&'
+                                | '+'
+                                | '*'
+                                | '?'
+                                | '('
+                                | ')'
+                                | '['
+                                | ']'
+                                | '|'
+                                | '$'
+                                | '^'
+                                | '\\'
                         )
                 })
             {
@@ -3506,7 +3522,11 @@ mod tests {
             listen_ipv4: "",
             listen_ipv6: "",
         });
-        assert_eq!(s.matches("location / {").count(), 1, "只能出现一个 location /");
+        assert_eq!(
+            s.matches("location / {").count(),
+            1,
+            "只能出现一个 location /"
+        );
         assert!(
             !s.contains("try_files $uri $uri/ =404;"),
             "默认 try_files 应被替换"
@@ -3515,7 +3535,10 @@ mod tests {
             s.contains("try_files $uri $uri/ /index.php?$query_string;"),
             "用户 raw 应成为 location / 内容"
         );
-        assert!(s.contains("root /home/u/www/aug-7;"), "server 级 root 必须保留");
+        assert!(
+            s.contains("root /home/u/www/aug-7;"),
+            "server 级 root 必须保留"
+        );
     }
 
     #[test]
@@ -3813,10 +3836,10 @@ mod tests {
             "www.example.com",
             "sub.domain.co.uk",
             "x-n.example.com",
-            "example.com.", // FQDN 尾点
-            "*.example.com", // 最左整段通配
-            "*.a.com",      // 通配子域
-            "localhost",     // 单标签
+            "example.com.",               // FQDN 尾点
+            "*.example.com",              // 最左整段通配
+            "*.a.com",                    // 通配子域
+            "localhost",                  // 单标签
             "xn--fsqu00a.xn--3lr804guic", // punycode
         ] {
             assert!(valid_domain(ok), "应为合法域名：{ok}");

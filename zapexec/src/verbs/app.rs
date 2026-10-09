@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use zap_proto::{Response, app_type_supported};
 
-use super::env::uv_bin;
 use super::env::UV_PYTHON_INSTALL_DIR;
+use super::env::uv_bin;
 use super::log_line;
 use super::root_cmd;
 
@@ -191,11 +191,11 @@ pub async fn runtimes() -> Response {
         py.dedup();
         py.reverse();
         let data = json!({
-            "python": py,
-            "nodejs": scan_node_versions(),
-            "go": toolchain_installed("go"),
-            "rust": toolchain_installed("rust"),
-            });
+        "python": py,
+        "nodejs": scan_node_versions(),
+        "go": toolchain_installed("go"),
+        "rust": toolchain_installed("rust"),
+        });
         Ok(Response::ok("运行时版本探测完成", Some(data)))
     })
     .await
@@ -264,9 +264,7 @@ fn ensure_owner_matches(
     }
     match requester.as_deref() {
         Some(r) if r == owner_user => Ok(()),
-        _ => Err(
-            "应用必须以请求方本人的站点用户部署（owner_user 与请求用户不一致）".to_string(),
-        ),
+        _ => Err("应用必须以请求方本人的站点用户部署（owner_user 与请求用户不一致）".to_string()),
     }
 }
 
@@ -326,7 +324,10 @@ fn clip(s: &str) -> String {
         return s.to_string();
     }
     let skip = n - MAX;
-    format!("…（前 {skip} 字符已省略）\n{}", s.chars().skip(skip).collect::<String>())
+    format!(
+        "…（前 {skip} 字符已省略）\n{}",
+        s.chars().skip(skip).collect::<String>()
+    )
 }
 
 /// 部署被取消时 `app_deploy_stop` 写下的哨兵文案：所有步骤失败/返回时据此判断是否已取消。
@@ -359,7 +360,8 @@ fn prepare_task_log(log: &str) {
             if let Ok(meta) = std::fs::metadata(&p) {
                 let mode = meta.permissions().mode();
                 if mode & 0o001 == 0 {
-                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode | 0o001));
+                    let _ =
+                        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode | 0o001));
                 }
             }
             if !p.pop() {
@@ -420,14 +422,10 @@ fn run_as_stream(
             Ok(())
         });
     }
-    let mut child = c
-        .spawn()
-        .map_err(|e| format!("启动命令失败: {e}"))?;
+    let mut child = c.spawn().map_err(|e| format!("启动命令失败: {e}"))?;
     // 记录当前步骤的进程组 leader pid，供取消逻辑整组终止
     let _ = std::fs::write(pid_path, child.id().to_string());
-    let out = child
-        .wait()
-        .map_err(|e| format!("等待命令失败: {e}"))?;
+    let out = child.wait().map_err(|e| format!("等待命令失败: {e}"))?;
     if !out.success() && !deploy_canceled(log) {
         // 失败时把退出码落进日志：上游只报"git 拉取失败"这类笼统信息，
         // 退出码（如 127=命令不存在、128=git 致命错误）是关键排查线索。
@@ -741,9 +739,7 @@ fn build_install_scripts_hint(content: &str) -> String {
     );
     let entries: Vec<String> = pkgs.iter().map(|p| format!("\"{p}\": true")).collect();
     msg.push_str(&entries.join(", "));
-    msg.push_str(
-        " }\n或运行：npm install-scripts approve <包名>\n",
-    );
+    msg.push_str(" }\n或运行：npm install-scripts approve <包名>\n");
     msg
 }
 
@@ -863,10 +859,14 @@ fn default_command(
             let bin = entry.trim();
             if bin.is_empty() {
                 return Err(
-                    "未找到入口：请填写编译产物路径（如 bin/应用名），或在「启动命令」里自定义".to_string(),
+                    "未找到入口：请填写编译产物路径（如 bin/应用名），或在「启动命令」里自定义"
+                        .to_string(),
                 );
             }
-            Ok(format!("./{}", bin.trim_start_matches('/').trim_start_matches('.')))
+            Ok(format!(
+                "./{}",
+                bin.trim_start_matches('/').trim_start_matches('.')
+            ))
         }
         "rust" => {
             let bin = entry.trim();
@@ -876,11 +876,12 @@ fn default_command(
                         .to_string(),
                 );
             }
-            Ok(format!("./{}", bin.trim_start_matches('/').trim_start_matches('.')))
+            Ok(format!(
+                "./{}",
+                bin.trim_start_matches('/').trim_start_matches('.')
+            ))
         }
-        "generic" => Err(
-            "通用部署必须填写启动命令（如 java -jar app.jar）".to_string(),
-        ),
+        "generic" => Err("通用部署必须填写启动命令（如 java -jar app.jar）".to_string()),
         _ => Err(format!("不支持的应用类型：{app_type}")),
     }
 }
@@ -954,7 +955,9 @@ where
 
 /// 分支 / 提交 / 子目录：只允许字母数字与 `/ - _ .`，杜绝 git 参数注入
 fn git_token_ok(s: &str) -> bool {
-    s.is_empty() || s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+    s.is_empty()
+        || s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
 }
 
 /// 仓库地址：限 http(s)/git 协议，不得含空白或 `--`（防参数注入）
@@ -988,14 +991,26 @@ fn git_clone(
     let ok = if dest.join(".git").exists() {
         // 已克隆：fetch 后用 reset --hard 对齐到远程分支，不依赖本地分支的 tracking 配置
         // （否则 git pull 会因 "no tracking information" 失败，例如首次部署超时打断后残留的仓库）。
-        let _ = run_as_stream(log, owner, dest, "git fetch --progress --all --tags", pid_path)?;
+        let _ = run_as_stream(
+            log,
+            owner,
+            dest,
+            "git fetch --progress --all --tags",
+            pid_path,
+        )?;
         let target = if !branch.is_empty() {
             format!("origin/{branch}")
         } else {
             // 未指定分支：对齐到 FETCH_HEAD（即远程默认分支）
             "FETCH_HEAD".to_string()
         };
-        run_as_stream(log, owner, dest, &format!("git reset --hard {target}"), pid_path)?
+        run_as_stream(
+            log,
+            owner,
+            dest,
+            &format!("git reset --hard {target}"),
+            pid_path,
+        )?
     } else {
         let mut cmd = String::from("git clone --progress");
         if git_depth > 0 {
@@ -1014,7 +1029,13 @@ fn git_clone(
         return Err("git 拉取失败（详见部署日志）".to_string());
     }
     if !git_ref.is_empty() {
-        if !run_as_stream(log, owner, dest, &format!("git checkout {git_ref}"), pid_path)? {
+        if !run_as_stream(
+            log,
+            owner,
+            dest,
+            &format!("git checkout {git_ref}"),
+            pid_path,
+        )? {
             if deploy_canceled(log) {
                 return Err(DEPLOY_CANCELED.to_string());
             }
@@ -1195,17 +1216,20 @@ pub async fn deploy(
         if deploy_canceled(&task_log) {
             return Ok(Response::err(-130, DEPLOY_CANCELED));
         }
-        log_line(&task_log, &prepare_deps(
+        log_line(
             &task_log,
-            &app_type,
-            &runtime_version,
-            create_venv,
-            &wd,
-            &owner_user,
-            install_deps,
-            &entry,
-            &pid_path,
-        )?);
+            &prepare_deps(
+                &task_log,
+                &app_type,
+                &runtime_version,
+                create_venv,
+                &wd,
+                &owner_user,
+                install_deps,
+                &entry,
+                &pid_path,
+            )?,
+        );
 
         if deploy_canceled(&task_log) {
             return Ok(Response::err(-130, DEPLOY_CANCELED));
@@ -1304,7 +1328,10 @@ pub async fn deploy(
         if !ok {
             return Err(format!("启动失败：{out}"));
         }
-        log_line(&task_log, &format!("== 启动 ==\n{}\n已部署并启动", clip(&out)));
+        log_line(
+            &task_log,
+            &format!("== 启动 ==\n{}\n已部署并启动", clip(&out)),
+        );
         Ok(Response::ok(
             "部署完成",
             Some(json!({
@@ -1337,7 +1364,9 @@ pub async fn app_deploy_stop(log_path: String) -> Response {
             alive = unsafe { libc::kill(-pid, 0) } == 0;
         }
         if alive {
-            unsafe { libc::kill(-pid, libc::SIGKILL); }
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
         }
         Ok::<_, String>(Response::ok("已发送停止信号", None))
     })

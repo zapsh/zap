@@ -306,11 +306,8 @@ pub async fn dir(
         Ok(o) => {
             return Response::err(
                 -1,
-                format!(
-                    "打包失败: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ),
-            )
+                format!("打包失败: {}", String::from_utf8_lossy(&o.stderr).trim()),
+            );
         }
         Err(e) => return Response::err(-1, format!("执行 tar 失败: {e}")),
     }
@@ -363,10 +360,7 @@ pub async fn db(
     let engine = engine.to_lowercase();
     // 预估所需空间：sqlite 用源库文件大小；mysql 无法精确预估，保守按 1GiB 预留
     let needed = if engine == "sqlite" {
-        let p = db_path
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("");
+        let p = db_path.as_deref().filter(|s| !s.is_empty()).unwrap_or("");
         std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)
     } else {
         1u64 << 30
@@ -388,7 +382,9 @@ pub async fn db(
         // gzip -dc 的反向：sqlite3 $1 .dump | gzip > $2
         let script = "sqlite3 \"$1\" .dump | gzip > \"$2\"";
         let mut c = root_shell(script);
-        c.arg("x").arg(&db_path).arg(archive.to_str().unwrap_or_default());
+        c.arg("x")
+            .arg(&db_path)
+            .arg(archive.to_str().unwrap_or_default());
         run_status(c, "sqlite 导出失败")
     } else {
         // mysql / mariadb

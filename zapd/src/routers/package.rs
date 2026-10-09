@@ -161,9 +161,17 @@ fn enforce_reseller_subpackage(parent: &PackageRow, v: &ResellerSubVals) -> Resu
     cap("磁盘配额(MB)", v.disk_quota_mb, parent.disk_quota_mb)?;
     cap("最大站点数", v.max_sites, parent.max_sites)?;
     cap("单站点最大域名数", v.max_domains, parent.max_domains)?;
-    cap("月流量上限(MB)", v.max_bandwidth_mb, parent.max_bandwidth_mb)?;
+    cap(
+        "月流量上限(MB)",
+        v.max_bandwidth_mb,
+        parent.max_bandwidth_mb,
+    )?;
     cap("MySQL 数据库数量", v.max_mysql_dbs, parent.max_mysql_dbs)?;
-    cap("PostgreSQL 数据库数量", v.max_pgsql_dbs, parent.max_pgsql_dbs)?;
+    cap(
+        "PostgreSQL 数据库数量",
+        v.max_pgsql_dbs,
+        parent.max_pgsql_dbs,
+    )?;
     cap("FTP 账号数量", v.max_ftp_users, parent.max_ftp_users)?;
     cap("每用户应用总数", v.app_max_total, parent.app_max_total)?;
     cap("每站点应用数", v.max_apps, parent.max_apps)?;
@@ -664,7 +672,9 @@ pub async fn package_update(
                 allow_docker: i32::from(payload.allow_docker.unwrap_or(current.allow_docker == 1)),
                 allow_waf: i32::from(payload.allow_waf.unwrap_or(current.allow_waf == 1)),
                 allow_apps: i32::from(payload.allow_apps.unwrap_or(current.allow_apps == 1)),
-                app_types: payload.app_types.clone()
+                app_types: payload
+                    .app_types
+                    .clone()
                     .map(|s| package_app_types_normalized(&s))
                     .unwrap_or_else(|| current.app_types.clone()),
             };

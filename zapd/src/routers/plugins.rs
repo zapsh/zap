@@ -12,10 +12,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
-use axum::Router;
 use futures_util::stream;
 use serde::Deserialize;
 use serde_json::json;
@@ -23,11 +23,11 @@ use sqlx;
 use zap_proto::Request;
 
 use crate::db;
-use crate::zap::ZapError;
-use crate::zap::audit;
-use crate::zap::jwt::{decode_verified, is_admin, ValidatedClaims};
 use crate::routers::site;
+use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
+use crate::zap::audit;
+use crate::zap::jwt::{ValidatedClaims, decode_verified, is_admin};
 
 /// 上传插件包的大小上限（插件就是几个 Lua / YAML 文件，64 MB 绰绰有余）。
 const PLUGIN_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
@@ -101,7 +101,9 @@ pub async fn plugin_config_get(
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 /// 写插件对当前用户的持久化配置（合并语义）。
@@ -120,7 +122,9 @@ pub async fn plugin_config_set(
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 /// 跑插件自带的冒烟测试（`tests.yaml`）。
@@ -138,7 +142,9 @@ pub async fn plugin_test(
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 // ── 定时任务 / Webhook 触发 ───────────────────────────────
@@ -198,13 +204,9 @@ pub async fn plugin_schedule_create(
         last_ok: None,
         created_at: 0,
     };
-    let saved = crate::zap::plugin_schedule::upsert(
-        &claims.sub,
-        claims.id as i64,
-        is_admin(&claims),
-        item,
-    )
-    .await?;
+    let saved =
+        crate::zap::plugin_schedule::upsert(&claims.sub, claims.id as i64, is_admin(&claims), item)
+            .await?;
     Ok(Json(
         json!({ "code": 0, "message": "任务已保存", "data": saved }),
     ))
@@ -238,9 +240,13 @@ pub async fn plugin_schedule_update(
         let id = payload.id.clone().unwrap_or_default();
         crate::zap::plugin_schedule::rotate_token(&id, &claims.sub, is_admin(&claims)).await?;
     }
-    let saved =
-        crate::zap::plugin_schedule::upsert(&claims.sub, claims.id as i64, is_admin(&claims), patch)
-            .await?;
+    let saved = crate::zap::plugin_schedule::upsert(
+        &claims.sub,
+        claims.id as i64,
+        is_admin(&claims),
+        patch,
+    )
+    .await?;
     Ok(Json(
         json!({ "code": 0, "message": "任务已更新", "data": saved }),
     ))
@@ -271,10 +277,7 @@ pub async fn plugin_hook(Path(token): Path<String>) -> ZapJsonResult {
 }
 
 /// 读取插件自带的 HTML 界面文件内容（前端塞进沙箱 iframe 渲染）。
-pub async fn plugin_ui(
-    claims: ValidatedClaims,
-    Query(q): Query<PluginUiQuery>,
-) -> ZapJsonResult {
+pub async fn plugin_ui(claims: ValidatedClaims, Query(q): Query<PluginUiQuery>) -> ZapJsonResult {
     let (home, _linux_user) = load_user_home(claims.id as i64).await?;
     let resp = crate::zapexec::call(Request::PluginUi {
         name: q.name.clone(),
@@ -286,7 +289,9 @@ pub async fn plugin_ui(
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 pub async fn plugin_list(
@@ -305,7 +310,9 @@ pub async fn plugin_list(
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 pub async fn plugin_run(
@@ -322,7 +329,11 @@ pub async fn plugin_run(
         }
         None => (None, None),
     };
-    let caller_user = if linux_user.is_empty() { None } else { Some(linux_user) };
+    let caller_user = if linux_user.is_empty() {
+        None
+    } else {
+        Some(linux_user)
+    };
     let resp = crate::zapexec::call(Request::PluginRun {
         name: payload.name,
         actor: claims.sub.clone(),
@@ -340,7 +351,9 @@ pub async fn plugin_run(
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 // ── 安装 / 卸载 ────────────────────────────────────────────
@@ -352,7 +365,9 @@ pub async fn plugin_run(
 /// 子目录即可。依赖安装锁 `system_deps.lock` 已迁到持久化的 `data/state`，
 /// 不在此临时树内，不会被清理误删。
 fn plugin_upload_dir() -> PathBuf {
-    crate::zap::appstore::data_dir().join("tmp").join("plugin_uploads")
+    crate::zap::appstore::data_dir()
+        .join("tmp")
+        .join("plugin_uploads")
 }
 
 /// 系统级插件只有管理员能装 / 卸：它们可以以 root 身份运行。
@@ -463,7 +478,9 @@ pub async fn plugin_install_upload(
         &src,
     )
     .await;
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 /// 卸载插件（删除整个插件目录）。
@@ -495,7 +512,9 @@ pub async fn plugin_uninstall(
         "",
     )
     .await;
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 pub(crate) async fn load_user_home(uid: i64) -> Result<(String, String), ZapError> {
@@ -572,10 +591,7 @@ pub fn routers() -> Router {
         )
         .route("/uninstall", post(plugin_uninstall))
         // 插件级持久化配置（KV，按插件 + 用户维度）
-        .route(
-            "/config",
-            get(plugin_config_get).post(plugin_config_set),
-        )
+        .route("/config", get(plugin_config_get).post(plugin_config_set))
         // 插件自带冒烟测试（tests.yaml）
         .route("/test", post(plugin_test))
         // 定时 / Webhook 触发
@@ -671,8 +687,7 @@ pub async fn plugin_watch(
                             .await;
                         return;
                     }
-                    let payload =
-                        serde_json::json!({ "type": "log", "line": line }).to_string();
+                    let payload = serde_json::json!({ "type": "log", "line": line }).to_string();
                     let _ = tx.send(Ok(Event::default().data(payload))).await;
                 }
                 sent_lines = complete;

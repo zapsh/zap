@@ -407,8 +407,7 @@ fn python_inner(action: &str, version: &str, extra: &str) -> Response {
 fn is_safe_version(v: &str) -> bool {
     !v.is_empty()
         && v.len() <= 32
-        && v
-            .chars()
+        && v.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '+')
 }
 

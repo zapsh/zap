@@ -549,7 +549,11 @@ fn run_id_of(log_path: &str) -> String {
 /// 供取消 / 超时按进程组 `kill(-pid)` 终止。
 fn spawn_install_child(run_id: &str, log: &str, script: &str) -> Option<Child> {
     let pid_path = crate::verbs::appstore::logs_dir().join(format!("run-{run_id}.pid"));
-    let log_file = match std::fs::OpenOptions::new().create(true).append(true).open(log) {
+    let log_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+    {
         Ok(f) => f,
         Err(e) => {
             super::log_line(log, &format!("打开日志失败: {e}"));
@@ -685,7 +689,9 @@ pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) ->
     std::thread::spawn(move || {
         let code = install_inner(&c, &package, &version, &log_path, pie, pecl, &run_id);
         // 收尾：清理 pid 文件、写完成标记与退出码（.ret 为权威来源）
-        let _ = std::fs::remove_file(crate::verbs::appstore::logs_dir().join(format!("run-{run_id}.pid")));
+        let _ = std::fs::remove_file(
+            crate::verbs::appstore::logs_dir().join(format!("run-{run_id}.pid")),
+        );
         super::finish_log(&log_path, code);
     });
     Response::ok("ok", Some(json!({ "started": true })))

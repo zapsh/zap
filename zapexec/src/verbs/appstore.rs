@@ -1663,7 +1663,10 @@ pub async fn install(
         ));
         // 插件类包：告诉 install.sh 把插件装到系统目录 $ZAP_PATH/plugins（仅系统级）
         if cat == "plugins" {
-            env.push(("PLUGIN_BASE".into(), plugin_base.to_string_lossy().into_owned()));
+            env.push((
+                "PLUGIN_BASE".into(),
+                plugin_base.to_string_lossy().into_owned(),
+            ));
         }
         if let Some(a) = action.as_deref()
             && !a.is_empty()
@@ -1908,7 +1911,10 @@ pub async fn upgrade(
         ));
         // 插件类包：升级（含 uninstall→install 兜底）同样要落到正确的根目录
         if cat == "plugins" {
-            env.push(("PLUGIN_BASE".into(), plugin_base.to_string_lossy().into_owned()));
+            env.push((
+                "PLUGIN_BASE".into(),
+                plugin_base.to_string_lossy().into_owned(),
+            ));
         }
         env.push(("APP_OLD_VERSION".into(), old_version.clone()));
         env.push(("APP_INSTANCE".into(), slot.instance.clone()));
@@ -2136,7 +2142,10 @@ pub async fn run_retry(run_id: String, new_run_id: String) -> Response {
         push_provision_env(&mut env, provision.as_ref());
         // 插件类包：重跑时按首次记录的级别把插件装到对应根目录
         if cat == "plugins" {
-            env.push(("PLUGIN_BASE".into(), plugin_base.to_string_lossy().into_owned()));
+            env.push((
+                "PLUGIN_BASE".into(),
+                plugin_base.to_string_lossy().into_owned(),
+            ));
         }
         let build = build_dir(&new_run_id);
         if let RunAs::User(u) = &run_as {

@@ -243,8 +243,7 @@ fn load_config() -> (ZapConfig, Option<String>) {
                     default_conf.server.port = cnf.server.port;
                     default_conf.server.cert_file = cnf.server.cert_file;
                     default_conf.server.key_file = cnf.server.key_file;
-                    default_conf.server.url_prefix =
-                        normalize_url_prefix(&cnf.server.url_prefix);
+                    default_conf.server.url_prefix = normalize_url_prefix(&cnf.server.url_prefix);
                     default_conf.exec = cnf.exec;
 
                     // Rotate JWT secret if still using default
@@ -289,9 +288,7 @@ pub fn get_config() -> &'static RwLock<ZapConfig> {
     GLOBAL_ZAP_CONFIG.get_or_init(|| {
         let (conf, write_err) = load_config();
         if let Some(e) = write_err {
-            warn!(
-                "配置文件写入失败（JWT 密钥可能无法持久化，重启后会话失效）: {e}"
-            );
+            warn!("配置文件写入失败（JWT 密钥可能无法持久化，重启后会话失效）: {e}");
         }
         RwLock::new(conf)
     })

@@ -22,9 +22,9 @@ use serde::Serialize;
 use tracing::warn;
 use zap_proto::Request;
 
+use crate::zap::ZapError;
 use crate::zap::appstore;
 use crate::zap::user_cron;
-use crate::zap::ZapError;
 
 /// 可清理目标标识（前端按 id 勾选；新增类型在此登记）。
 pub const TARGET_APPSTORE_LOGS: &str = "appstore_logs";
@@ -71,12 +71,11 @@ pub struct CleanResult {
 /// 取当前"正在运行 / 排队"的任务号集合：这些 run_id 对应的日志与运行现场必须保留。
 async fn protected_run_ids() -> HashSet<String> {
     let pool = crate::db::get_db_pool().await;
-    let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT task_id FROM task_queue WHERE status IN ('pending','running')",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT task_id FROM task_queue WHERE status IN ('pending','running')")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
     ids.into_iter().collect()
 }
 
@@ -316,7 +315,11 @@ fn analyze_runs(dir: &Path, protected: &HashSet<String>) -> TargetStat {
             if !p.is_dir() {
                 continue;
             }
-            let id = p.file_name().expect("dir entry has a name").to_string_lossy().to_string();
+            let id = p
+                .file_name()
+                .expect("dir entry has a name")
+                .to_string_lossy()
+                .to_string();
             if protected.contains(&id) {
                 protected_count += 1;
                 continue;
@@ -345,7 +348,11 @@ async fn clean_runs(dir: &Path, protected: &HashSet<String>) -> CleanResult {
             if !p.is_dir() {
                 continue;
             }
-            let id = p.file_name().expect("dir entry has a name").to_string_lossy().to_string();
+            let id = p
+                .file_name()
+                .expect("dir entry has a name")
+                .to_string_lossy()
+                .to_string();
             if protected.contains(&id) {
                 skipped += 1;
                 continue;
@@ -453,12 +460,8 @@ pub async fn clean(targets: &[String]) -> Result<Vec<CleanResult>, ZapError> {
     let mut out = Vec::new();
     for t in targets {
         match t.as_str() {
-            TARGET_APPSTORE_LOGS => {
-                out.push(clean_logs(&appstore::logs_dir(), &protected).await)
-            }
-            TARGET_APPSTORE_RUNS => {
-                out.push(clean_runs(&root.join("runs"), &protected).await)
-            }
+            TARGET_APPSTORE_LOGS => out.push(clean_logs(&appstore::logs_dir(), &protected).await),
+            TARGET_APPSTORE_RUNS => out.push(clean_runs(&root.join("runs"), &protected).await),
             TARGET_APPSTORE_CACHE => {
                 out.push(clean_whole_dir(TARGET_APPSTORE_CACHE, &root.join("cache")).await)
             }
@@ -476,22 +479,18 @@ pub async fn clean(targets: &[String]) -> Result<Vec<CleanResult>, ZapError> {
                 )
                 .await,
             ),
-            TARGET_USER_CRON_LOGS => {
-                out.push(
-                    clean_user_logs(TARGET_USER_CRON_LOGS, &users, "cron-logs", &protected).await,
+            TARGET_USER_CRON_LOGS => out.push(
+                clean_user_logs(TARGET_USER_CRON_LOGS, &users, "cron-logs", &protected).await,
+            ),
+            TARGET_USER_DOCKER_LOGS => out.push(
+                clean_user_logs(
+                    TARGET_USER_DOCKER_LOGS,
+                    &users,
+                    "docker-build-logs",
+                    &protected,
                 )
-            }
-            TARGET_USER_DOCKER_LOGS => {
-                out.push(
-                    clean_user_logs(
-                        TARGET_USER_DOCKER_LOGS,
-                        &users,
-                        "docker-build-logs",
-                        &protected,
-                    )
-                    .await,
-                )
-            }
+                .await,
+            ),
             _ => {}
         }
     }

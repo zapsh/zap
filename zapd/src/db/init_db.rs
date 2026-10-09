@@ -125,8 +125,6 @@ async fn init_backup_policy_table() {
     let _ = get_db_pool().await.execute(sql).await;
 }
 
-
-
 /// 额外备份目录：客户在策略一下为站点追加的目录、或策略二下为用户追加的家目录外路径
 /// （如 Docker 卷挂载点）。`owner_type` 区分归属维度，读取入口统一。
 async fn init_backup_paths_table() {
@@ -668,8 +666,14 @@ async fn sync_seed_menus() {
     // 应用市场仅非 admin），且 `feature` 也同步（如「数据库」挂上 mysql 环境门禁，
     // 没装 MySQL 或 zapadm 凭据没配好就不显示）。否则新建库有门禁、老库没有，
     // 行为会不一致。只针对系统核心菜单，不动管理员自建 / 改过的其它菜单（幂等）。
-    const CORE_SYNC_MENUS: &[&str] =
-        &["appstore", "appstore-index", "installed", "system", "database", "database-index"];
+    const CORE_SYNC_MENUS: &[&str] = &[
+        "appstore",
+        "appstore-index",
+        "installed",
+        "system",
+        "database",
+        "database-index",
+    ];
     for seed in menu_seed::all_seeds() {
         if !CORE_SYNC_MENUS.contains(&seed.name) {
             continue;

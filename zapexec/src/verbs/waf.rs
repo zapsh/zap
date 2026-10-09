@@ -806,8 +806,7 @@ pub async fn audit_by_unique_id(uid: &str) -> Response {
 fn is_safe_uid(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
-        && s
-            .chars()
+        && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
 }
 
@@ -912,7 +911,12 @@ fn extract_audit(log: &Path, uid: &str) -> Result<Value, String> {
 fn parse_message_line(line: &str) -> Option<Value> {
     let body = line.strip_prefix("ModSecurity: ")?;
     // action：到 ". Matched" 为止（拦截行是 "Access denied with code 403 (phase 2). Matched …"）
-    let action = body.split(". Matched").next().unwrap_or(body).trim().to_string();
+    let action = body
+        .split(". Matched")
+        .next()
+        .unwrap_or(body)
+        .trim()
+        .to_string();
     let grab = |key: &str| -> String {
         let tag = format!("[{key} \"");
         line.find(&tag)

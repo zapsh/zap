@@ -4,16 +4,16 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use serde_json::json;
+use thiserror::Error;
 
 pub mod acme;
 pub mod admin_bootstrap;
 pub mod appstore;
 pub mod audit;
-pub mod cache_clean;
 pub mod auto_update;
 pub mod backup_scheduler;
+pub mod cache_clean;
 pub mod certmgr;
 pub mod cloud;
 pub mod crypto;
@@ -119,7 +119,9 @@ pub fn api_ok_msg(message: impl Into<String>) -> ZapJsonResult {
 
 /// 统一成功响应（自定义 message + data）：`{ code: 0, message, data }`。
 pub fn api_ok_data(message: impl Into<String>, data: impl Serialize) -> ZapJsonResult {
-    Ok(Json(json!({ "code": 0, "message": message.into(), "data": data })))
+    Ok(Json(
+        json!({ "code": 0, "message": message.into(), "data": data }),
+    ))
 }
 
 /// 统一错误响应：`{ code, message }`（等价于 `ZapError::new`，便于与 `api_ok` 配对）。

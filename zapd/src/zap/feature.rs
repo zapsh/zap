@@ -32,8 +32,8 @@ use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
-use zap_proto::Request;
 use zap_crypto;
+use zap_proto::Request;
 
 use crate::zapexec;
 

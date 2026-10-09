@@ -118,9 +118,7 @@ async fn parse_mycnf(path: &std::path::Path, out: &mut MysqlConf, depth: usize) 
         {
             let arg = arg.trim().trim_matches('\'').trim_matches('"');
             match directive.trim() {
-                "include" => {
-                    Box::pin(parse_mycnf(std::path::Path::new(arg), out, depth + 1)).await
-                }
+                "include" => Box::pin(parse_mycnf(std::path::Path::new(arg), out, depth + 1)).await,
                 "includedir" => {
                     if let Ok(mut rd) = tokio::fs::read_dir(arg).await {
                         let mut files: Vec<_> = Vec::new();
@@ -180,7 +178,13 @@ async fn socket_candidates() -> Vec<String> {
 /// 候选端口（配置端口优先，最后兜默认端口）
 async fn port_candidates() -> Vec<u16> {
     let mut out: Vec<u16> = Vec::new();
-    for p in mysql_conf().await.ports.iter().copied().chain([DEFAULT_PORT]) {
+    for p in mysql_conf()
+        .await
+        .ports
+        .iter()
+        .copied()
+        .chain([DEFAULT_PORT])
+    {
         if !out.contains(&p) {
             out.push(p);
         }
@@ -669,7 +673,6 @@ pub struct RemoteGrantReq {
     #[serde(default)]
     pub password: Option<String>,
 }
-
 
 // ── handlers ────────────────────────────────────────────────
 

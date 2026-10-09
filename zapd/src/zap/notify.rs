@@ -162,14 +162,13 @@ fn render(template: &str, params: &HashMap<&str, String>) -> String {
 /// 读取用户元信息（邮箱 / 归属 reseller / 偏好 JSON）。
 async fn load_user_meta(user_id: i64) -> Option<(String, i64, Value)> {
     let pool = db::get_db_pool().await;
-    let row: Option<(String, i64, Option<String>)> = sqlx::query_as(
-        "SELECT email, owner_id, prefs FROM user WHERE id = ?",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
+    let row: Option<(String, i64, Option<String>)> =
+        sqlx::query_as("SELECT email, owner_id, prefs FROM user WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
     let (email, owner_id, prefs_raw) = row?;
     let prefs: Value = prefs_raw
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -203,7 +202,11 @@ pub async fn resolve_template(event: &str, owner_id: i64) -> ResolvedTemplate {
     };
     let pool = db::get_db_pool().await;
     // 先查 reseller 自身覆盖，再回退全局；owner_id=0 时只查全局
-    let owners: Vec<i64> = if owner_id == 0 { vec![0] } else { vec![owner_id, 0] };
+    let owners: Vec<i64> = if owner_id == 0 {
+        vec![0]
+    } else {
+        vec![owner_id, 0]
+    };
     for oid in owners {
         let row: Option<(String, String, String, i64, String)> = sqlx::query_as(
             "SELECT subject, body_text, body_html, is_html, COALESCE(template_id, '') \
@@ -262,8 +265,10 @@ async fn email_user(user_id: i64, event: &str, params: &HashMap<&str, String>) {
     } else {
         Some(rt.template_id.trim())
     };
-    let template_data: HashMap<String, String> =
-        params.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect();
+    let template_data: HashMap<String, String> = params
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect();
     if let Err(e) = mail::send(
         &email,
         &subject,

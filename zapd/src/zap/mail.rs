@@ -17,7 +17,7 @@ use base64::Engine;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use tracing::error;
 
 use crate::zap::crypto;
@@ -161,20 +161,15 @@ pub fn load_config() -> Option<MailConfig> {
 
     // 各渠道必备字段校验；不齐则视为未配置
     let ready = match cfg.provider {
-        MailProvider::Smtp => {
-            !cfg.smtp_host.is_empty() && !cfg.smtp_password.is_empty()
-        }
+        MailProvider::Smtp => !cfg.smtp_host.is_empty() && !cfg.smtp_password.is_empty(),
         MailProvider::SendGrid => !cfg.sg_api_key.is_empty(),
         MailProvider::Aliyun => {
-            !cfg.aliyun_access_key.is_empty()
-                && !cfg.aliyun_access_secret.is_empty()
+            !cfg.aliyun_access_key.is_empty() && !cfg.aliyun_access_secret.is_empty()
         }
         MailProvider::Tencent => {
             !cfg.tencent_secret_id.is_empty() && !cfg.tencent_secret_key.is_empty()
         }
-        MailProvider::Mailgun => {
-            !cfg.mailgun_api_key.is_empty() && !cfg.mailgun_domain.is_empty()
-        }
+        MailProvider::Mailgun => !cfg.mailgun_api_key.is_empty() && !cfg.mailgun_domain.is_empty(),
     };
     if !ready {
         return None;
@@ -257,7 +252,10 @@ async fn smtp_send(
         .map_err(|e| format!("发件人地址非法: {e}"))?;
     let to_mbox: Mailbox = to.parse().map_err(|e| format!("收件人地址非法: {e}"))?;
 
-    let msg = match (html.filter(|h| !h.is_empty()), text.filter(|t| !t.is_empty())) {
+    let msg = match (
+        html.filter(|h| !h.is_empty()),
+        text.filter(|t| !t.is_empty()),
+    ) {
         (Some(h), Some(t)) => Message::builder()
             .from(from)
             .to(to_mbox)
@@ -407,11 +405,7 @@ async fn aliyun_send(
         .map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))
         .collect::<Vec<_>>()
         .join("&");
-    let string_to_sign = format!(
-        "GET&{}&{}",
-        percent_encode("/"),
-        percent_encode(&canonical)
-    );
+    let string_to_sign = format!("GET&{}&{}", percent_encode("/"), percent_encode(&canonical));
 
     // HMAC-SHA1，密钥 = AccessKeySecret + "&"
     type HmacSha1 = Hmac<Sha1>;
@@ -473,14 +467,12 @@ async fn tencent_request(cfg: &MailConfig, payload: serde_json::Value) -> Result
         action.to_lowercase()
     );
     let signed_headers = "content-type;host;x-tc-action";
-    let canonical_request = format!(
-        "POST\n/\n\n{canonical_headers}\n{signed_headers}\n{hashed_payload}"
-    );
+    let canonical_request =
+        format!("POST\n/\n\n{canonical_headers}\n{signed_headers}\n{hashed_payload}");
     let credential_scope = format!("{date}/{service}/tc3_request");
     let canonical_hash = hex_sha256(canonical_request.as_bytes());
-    let string_to_sign = format!(
-        "TC3-HMAC-SHA256\n{timestamp}\n{credential_scope}\n{canonical_hash}"
-    );
+    let string_to_sign =
+        format!("TC3-HMAC-SHA256\n{timestamp}\n{credential_scope}\n{canonical_hash}");
 
     // 派生签名密钥
     let secret_date = hmac_sha256(format!("TC3{secret_key}").as_bytes(), date.as_bytes());
@@ -589,7 +581,11 @@ async fn mailgun_send(
     html: Option<&str>,
     text: Option<&str>,
 ) -> Result<(), String> {
-    let url = format!("{}/v3/{}/messages", mailgun_base(&cfg.mailgun_region), cfg.mailgun_domain);
+    let url = format!(
+        "{}/v3/{}/messages",
+        mailgun_base(&cfg.mailgun_region),
+        cfg.mailgun_domain
+    );
     let client = reqwest::Client::new();
     let mut params: Vec<(String, String)> = vec![
         ("from".into(), cfg.from.clone()),
@@ -624,7 +620,11 @@ async fn mailgun_send_template(
     template_id: &str,
     data: Option<&HashMap<String, String>>,
 ) -> Result<(), String> {
-    let url = format!("{}/v3/{}/messages", mailgun_base(&cfg.mailgun_region), cfg.mailgun_domain);
+    let url = format!(
+        "{}/v3/{}/messages",
+        mailgun_base(&cfg.mailgun_region),
+        cfg.mailgun_domain
+    );
     let vars = data
         .map(|d| serde_json::to_string(d).unwrap_or_else(|_| "{}".to_string()))
         .unwrap_or_else(|| "{}".to_string());

@@ -20,8 +20,9 @@ use tracing::info;
 use crate::{
     db,
     zap::{
-        ZapError, ZapJsonResult, audit, task,
+        ZapError, ZapJsonResult, audit,
         jwt::{self, ValidatedClaims},
+        task,
     },
 };
 use zap_proto::{APP_TYPES, LocationSpec, Request};
@@ -669,9 +670,7 @@ pub async fn app_deploy(
     }
 
     // 通用部署（generic）不编译、不准备依赖：必须用户提供启动命令
-    if app_type == "generic"
-        && payload.command.as_deref().unwrap_or("").trim().is_empty()
-    {
+    if app_type == "generic" && payload.command.as_deref().unwrap_or("").trim().is_empty() {
         return Err(ZapError::New(
             -1,
             "通用部署必须填写启动命令（如 java -jar app.jar）".to_string(),
@@ -873,15 +872,8 @@ pub async fn app_deploy(
     // 非静态型：先把反代挂载建好并同步（很快，不依赖构建结果）；
     // 静态型由后台任务在构建出产物目录后再改写 web_root。
     if !is_static {
-        let _ = site::ensure_app_location(
-            site_id,
-            &name,
-            port,
-            &mount,
-            &match_mode,
-            strip_prefix,
-        )
-        .await;
+        let _ = site::ensure_app_location(site_id, &name, port, &mount, &match_mode, strip_prefix)
+            .await;
         let _ = site::sync_one_site(site_id).await;
     }
 
@@ -1095,14 +1087,13 @@ pub async fn app_git_update(
     let (requester, skip_owner_check) = if jwt::is_admin(&claims) {
         (None, true)
     } else {
-        let lu: Option<String> =
-            sqlx::query_scalar("SELECT linux_user FROM user WHERE id = ?")
-                .bind(claims.id as i64)
-                .fetch_optional(pool)
-                .await
-                .ok()
-                .flatten()
-                .filter(|u: &String| !u.trim().is_empty());
+        let lu: Option<String> = sqlx::query_scalar("SELECT linux_user FROM user WHERE id = ?")
+            .bind(claims.id as i64)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .filter(|u: &String| !u.trim().is_empty());
         (lu, false)
     };
 
@@ -1587,18 +1578,15 @@ async fn persist_app(
 /// 单独更新部署状态（部署失败时调用，记录仍保留）。
 async fn set_app_deploy_status(site_id: i64, name: &str, status: &str) {
     let pool = db::get_db_pool().await;
-    if let Err(e) = sqlx::query(
-        "UPDATE site_apps SET deploy_status = ? WHERE site_id = ? AND name = ?",
-    )
-    .bind(status)
-    .bind(site_id)
-    .bind(name)
-    .execute(pool)
-    .await
+    if let Err(e) =
+        sqlx::query("UPDATE site_apps SET deploy_status = ? WHERE site_id = ? AND name = ?")
+            .bind(status)
+            .bind(site_id)
+            .bind(name)
+            .execute(pool)
+            .await
     {
-        info!(
-            "set_app_deploy_status 失败: site={site_id} name={name} status={status} err={e}"
-        );
+        info!("set_app_deploy_status 失败: site={site_id} name={name} status={status} err={e}");
     }
 }
 
@@ -1636,17 +1624,87 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
             return;
         }
     };
-    let (site_id, name, app_type, runtime_version, build_cmd, create_venv, workdir, entry,
-        command, port, env, autostart, install_deps, owner_user, log_dir, requester,
-        skip_owner_check, repo_url, branch, git_ref, git_subdir, git_depth, build_output,
-        mount_path, log_path) = match req {
-        Request::AppDeploy { site_id, name, app_type, runtime_version, build_cmd, create_venv,
-        workdir, entry, command, port, env, autostart, install_deps, owner_user, log_dir,
-        requester, skip_owner_check, repo_url, branch, git_ref, git_subdir, git_depth,
-        build_output, mount_path, log_path, .. } => (site_id, name, app_type, runtime_version, build_cmd, create_venv,
-        workdir, entry, command, port, env, autostart, install_deps, owner_user, log_dir,
-        requester, skip_owner_check, repo_url, branch, git_ref, git_subdir, git_depth,
-        build_output, mount_path, log_path),
+    let (
+        site_id,
+        name,
+        app_type,
+        runtime_version,
+        build_cmd,
+        create_venv,
+        workdir,
+        entry,
+        command,
+        port,
+        env,
+        autostart,
+        install_deps,
+        owner_user,
+        log_dir,
+        requester,
+        skip_owner_check,
+        repo_url,
+        branch,
+        git_ref,
+        git_subdir,
+        git_depth,
+        build_output,
+        mount_path,
+        log_path,
+    ) = match req {
+        Request::AppDeploy {
+            site_id,
+            name,
+            app_type,
+            runtime_version,
+            build_cmd,
+            create_venv,
+            workdir,
+            entry,
+            command,
+            port,
+            env,
+            autostart,
+            install_deps,
+            owner_user,
+            log_dir,
+            requester,
+            skip_owner_check,
+            repo_url,
+            branch,
+            git_ref,
+            git_subdir,
+            git_depth,
+            build_output,
+            mount_path,
+            log_path,
+            ..
+        } => (
+            site_id,
+            name,
+            app_type,
+            runtime_version,
+            build_cmd,
+            create_venv,
+            workdir,
+            entry,
+            command,
+            port,
+            env,
+            autostart,
+            install_deps,
+            owner_user,
+            log_dir,
+            requester,
+            skip_owner_check,
+            repo_url,
+            branch,
+            git_ref,
+            git_subdir,
+            git_depth,
+            build_output,
+            mount_path,
+            log_path,
+        ),
         _ => {
             let _ = task::finish(&task_id, task::STATUS_FAILED, -1).await;
             return;
@@ -1654,16 +1712,36 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
     };
 
     let resp = match crate::zapexec::call(Request::AppDeploy {
-        site_id, name: name.clone(), app_type: app_type.clone(), runtime_version: runtime_version.clone(),
-        build_cmd: build_cmd.clone(), create_venv, workdir: workdir.clone(), entry: entry.clone(),
-        command: command.clone(), port, env: env.clone(), autostart, install_deps,
-        owner_user: owner_user.clone(), log_dir: log_dir.clone(), log_path: log_path.clone(), requester, skip_owner_check,
-        repo_url: repo_url.clone(), branch: branch.clone(), git_ref: git_ref.clone(),
-        git_subdir: git_subdir.clone(), git_depth, build_output: build_output.clone(),
-        mount_path: mount_path.clone(), match_mode: String::new(),
+        site_id,
+        name: name.clone(),
+        app_type: app_type.clone(),
+        runtime_version: runtime_version.clone(),
+        build_cmd: build_cmd.clone(),
+        create_venv,
+        workdir: workdir.clone(),
+        entry: entry.clone(),
+        command: command.clone(),
+        port,
+        env: env.clone(),
+        autostart,
+        install_deps,
+        owner_user: owner_user.clone(),
+        log_dir: log_dir.clone(),
+        log_path: log_path.clone(),
+        requester,
+        skip_owner_check,
+        repo_url: repo_url.clone(),
+        branch: branch.clone(),
+        git_ref: git_ref.clone(),
+        git_subdir: git_subdir.clone(),
+        git_depth,
+        build_output: build_output.clone(),
+        mount_path: mount_path.clone(),
+        match_mode: String::new(),
         strip_prefix: false,
     })
-    .await {
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
             let _ = append_task_log(&log_path, &format!("调用执行端失败：{e}"));
@@ -1684,11 +1762,7 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
             let _ = append_task_log(&log_path, &format!("部署失败：{}", resp.message));
             let _ = append_task_log(&log_path, &format!("{} {}", task::DONE_MARKER, resp.code));
         }
-        let _ = set_app_deploy_status(
-            site_id,
-            &name,
-            if canceled { "canceled" } else { "failed" },
-        );
+        let _ = set_app_deploy_status(site_id, &name, if canceled { "canceled" } else { "failed" });
         let _ = task::finish(
             &task_id,
             if canceled {
@@ -1702,21 +1776,49 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
         return;
     }
 
-    let git_commit = resp.data.as_ref()
+    let git_commit = resp
+        .data
+        .as_ref()
         .and_then(|d| d.get("git_commit"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let output_dir = resp.data.as_ref()
+    let output_dir = resp
+        .data
+        .as_ref()
         .and_then(|d| d.get("output_dir"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
     // 落库（应用配置 + 最新 commit / 产物目录；主键冲突则更新）
-    if let Err(e) = persist_app(site_id, &name, &app_type, &runtime_version, &build_cmd, &workdir,
-        &entry, &command, port, &env, autostart, install_deps, &repo_url, &branch, &git_ref,
-        &git_subdir, git_depth, &build_output, &mount_path, &git_commit,
-        output_dir.as_deref().unwrap_or(""), 1, "success", &task_id).await {
+    if let Err(e) = persist_app(
+        site_id,
+        &name,
+        &app_type,
+        &runtime_version,
+        &build_cmd,
+        &workdir,
+        &entry,
+        &command,
+        port,
+        &env,
+        autostart,
+        install_deps,
+        &repo_url,
+        &branch,
+        &git_ref,
+        &git_subdir,
+        git_depth,
+        &build_output,
+        &mount_path,
+        &git_commit,
+        output_dir.as_deref().unwrap_or(""),
+        1,
+        "success",
+        &task_id,
+    )
+    .await
+    {
         let _ = append_task_log(&log_path, &format!("保存应用配置失败：{e}"));
         let _ = append_task_log(&log_path, &format!("{} -1", task::DONE_MARKER));
         let _ = set_app_deploy_status(site_id, &name, "failed");
@@ -1733,9 +1835,7 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
             if !mount.is_empty() && mount != "/" {
                 // 子目录挂载：在站点下加一条 alias location 服务构建产物，
                 // 不覆盖站点原 web_root（域名根仍由原站点内容提供）。
-                let _ = site::ensure_app_static_location(
-                    site_id, &name, od, mount, "",
-                ).await;
+                let _ = site::ensure_app_static_location(site_id, &name, od, mount, "").await;
             } else {
                 // 站点根：沿用原逻辑，把 web_root 改写为构建产物目录
                 let _ = update_site_web_root(site_id, od).await;
@@ -1748,7 +1848,10 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
     }
 
     // 重量级步骤（git / 依赖 / 构建 / 启动）已由 zapexec 实时写入日志；这里只补面板侧结果。
-    let _ = append_task_log(&log_path, &format!("部署完成（commit={git_commit}）\nsync={sync_ok}"));
+    let _ = append_task_log(
+        &log_path,
+        &format!("部署完成（commit={git_commit}）\nsync={sync_ok}"),
+    );
     let _ = append_task_log(&log_path, &format!("{} 0", task::DONE_MARKER));
     let _ = task::finish(&task_id, task::STATUS_SUCCESS, 0).await;
 }
@@ -1816,8 +1919,9 @@ pub(crate) async fn resume_user_apps(user_id: i64) {
         .bind(user_id)
         .execute(pool)
         .await;
-    let list: Vec<serde_json::Value> =
-        raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let list: Vec<serde_json::Value> = raw
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     for item in list {
         let sid = item.get("site_id").and_then(|v| v.as_i64()).unwrap_or(0);
         let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");

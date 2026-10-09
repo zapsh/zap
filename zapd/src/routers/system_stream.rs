@@ -1308,8 +1308,8 @@ async fn write_cert_files(rows: &[StreamRow]) -> Result<(), String> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = tokio::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-                .await;
+            let _ =
+                tokio::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).await;
         }
     }
     // 规则删掉 / 关掉之后别把私钥留在盘上
