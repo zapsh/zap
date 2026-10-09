@@ -14,13 +14,13 @@ jobs:
     name: Rust (fmt / clippy / test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@v5
 
       # zapd 通过 rust-embed 内嵌 ../web/dist/，因此必须先构建前端产物，
       # 再执行 fmt / clippy / build / test，否则 zapd 编译（含 clippy、测试）会失败。
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -37,7 +37,7 @@ jobs:
         working-directory: web
 
       - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
