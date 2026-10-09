@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! 套餐（Packages）管理 —— 对齐 cPanel/WHM 的 Packages：
-//! 由管理员 / 经销商预先定义一组资源限制，创建客户（用户）时选择，
+//! 套餐（Packages）管理 ：
+//! Admin / Reseller Resource / Capability Management，
 //! 客户即继承该套餐的配额与能力开关。
 //!
 //! 限制项：
@@ -19,7 +19,11 @@
 //!                       （默认关闭，且仍要求全局 ModSecurity 已安装并启用）
 //! - `allow_docker`      是否允许该套餐的用户使用容器功能（默认关闭），
 //!                       且**仅当容器运行时为 Podman 时**才对非管理员生效
-//!   「自定义目录」不再作为套餐能力：home 目录内任意目录已全量开放。
+//! - `allow_apps`        是否允许部署应用（默认关闭）
+//! - `app_types`         允许部署的应用类型（逗号分隔，如 `python,nodejs`）；空 = 不限
+//! - `max_apps`          每个站点可部署的应用数量上限（0 = 不限）
+//! - `app_port_span`     每个用户分到的端口个数（0 = 不限）：端口段由「基准 + 用户ID × N」自动算出
+//! - `app_max_total`     该用户全部站点合计可部署的应用数量上限（0 = 不限）
 //!
 //! 归属：`owner_id = 0` 为全局套餐（admin 维护，所有人可用）；
 //! `owner_id` 为某 admin / reseller 自身 id 时，为仅该账号可见的私有套餐
