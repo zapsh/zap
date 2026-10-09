@@ -36,6 +36,15 @@ jobs:
         run: npm run build:prod
         working-directory: web
 
+      # zapd/zapexec 在编译期通过 include_str! 内嵌 data/appstore/repos/appstore 下的文件
+      # （如 zapexec 的 plugins/git/manifest.yaml），因此必须在 cargo 编译前把内置 AppStore
+      # 源 clone 到位。地址与分支同 build.sh / data/appstore/repos.yaml 保持一致。
+      - name: Clone builtin appstore repo
+        run: |
+          mkdir -p data/appstore/repos
+          rm -rf data/appstore/repos/appstore
+          git clone --depth 1 --branch main https://github.com/zapsh/appstore.git data/appstore/repos/appstore
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
