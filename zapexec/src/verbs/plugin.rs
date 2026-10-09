@@ -1678,16 +1678,16 @@ fn run_lua(
                 ));
             }
             let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
-            run_capture(
-                None,
-                &prog,
-                &table_to_vec(&args),
-                None,
-                logf_exec.clone(),
-                cancel_exec.clone(),
-                child_pid_exec.clone(),
+            run_capture(RunCaptureOpts {
+                user: None,
+                program: &prog,
+                args: &table_to_vec(&args),
+                stdin: None,
+                logf: logf_exec.clone(),
+                cancel: cancel_exec.clone(),
+                child_pid: child_pid_exec.clone(),
                 cwd,
-            )
+            })
             .map_err(mlua::Error::RuntimeError)
         });
         zap_tbl
@@ -1700,16 +1700,16 @@ fn run_lua(
             move |_, (prog, args, opts): (String, mlua::Table, mlua::Value)| match &run_user {
                 Some(u) => {
                     let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
-                    run_capture(
-                        Some(u),
-                        &prog,
-                        &table_to_vec(&args),
-                        None,
-                        logf_user.clone(),
-                        cancel_user.clone(),
-                        child_pid_user.clone(),
+                    run_capture(RunCaptureOpts {
+                        user: Some(u),
+                        program: &prog,
+                        args: &table_to_vec(&args),
+                        stdin: None,
+                        logf: logf_user.clone(),
+                        cancel: cancel_user.clone(),
+                        child_pid: child_pid_user.clone(),
                         cwd,
-                    )
+                    })
                     .map_err(mlua::Error::RuntimeError)
                 }
                 None => Err(mlua::Error::RuntimeError(
@@ -1737,16 +1737,16 @@ fn run_lua(
                     ));
                 }
                 let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
-                run_capture(
-                    user.as_deref(),
-                    &prog,
-                    &table_to_vec(&args),
-                    None,
-                    logf_run.clone(),
-                    cancel_run.clone(),
-                    child_pid_run.clone(),
+                run_capture(RunCaptureOpts {
+                    user: user.as_deref(),
+                    program: &prog,
+                    args: &table_to_vec(&args),
+                    stdin: None,
+                    logf: logf_run.clone(),
+                    cancel: cancel_run.clone(),
+                    child_pid: child_pid_run.clone(),
                     cwd,
-                )
+                })
                 .map_err(mlua::Error::RuntimeError)
             },
         );
@@ -1768,16 +1768,16 @@ fn run_lua(
                 };
                 let argv = table_to_vec(&args);
                 let cwd = extract_cwd(&opts).map_err(mlua::Error::RuntimeError)?;
-                match run_capture(
-                    user.as_deref(),
-                    &prog,
-                    &argv,
-                    None,
-                    logf_try.clone(),
-                    cancel_try.clone(),
-                    child_pid_try.clone(),
+                match run_capture(RunCaptureOpts {
+                    user: user.as_deref(),
+                    program: &prog,
+                    args: &argv,
+                    stdin: None,
+                    logf: logf_try.clone(),
+                    cancel: cancel_try.clone(),
+                    child_pid: child_pid_try.clone(),
                     cwd,
-                ) {
+                }) {
                     Ok(s) => Ok((true, s)),
                     Err(s) => Ok((false, s)),
                 }
@@ -1820,16 +1820,16 @@ fn run_lua(
                 if path.trim().is_empty() {
                     return Err(mlua::Error::RuntimeError("路径不能为空".into()));
                 }
-                run_capture(
-                    user.as_deref(),
-                    "sh",
-                    &["-c".to_string(), script, "sh".to_string(), path],
+                run_capture(RunCaptureOpts {
+                    user: user.as_deref(),
+                    program: "sh",
+                    args: &["-c".to_string(), script, "sh".to_string(), path],
                     stdin,
-                    None,
-                    Arc::new(AtomicBool::new(false)),
-                    Arc::new(std::sync::Mutex::new(None)),
-                    None,
-                )
+                    logf: None,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    child_pid: Arc::new(std::sync::Mutex::new(None)),
+                    cwd: None,
+                })
                 .map_err(mlua::Error::RuntimeError)
             });
             zap_tbl
@@ -2185,16 +2185,28 @@ fn extract_cwd(opts: &mlua::Value) -> Result<Option<PathBuf>, String> {
 /// `cwd` 非空时切换到该目录执行（插件用于「在指定目录里跑命令」，如 git）。
 /// `cancel` / `child_pid` 用于异步插件的运行中取消：被取消时看门狗会杀掉本进程（组），
 /// 这里检测标志后提前结束拷贝循环。
-fn run_capture(
-    user: Option<&str>,
-    program: &str,
-    args: &[String],
+struct RunCaptureOpts<'a> {
+    user: Option<&'a str>,
+    program: &'a str,
+    args: &'a [String],
     stdin: Option<String>,
     logf: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>>,
-    cancel: Arc<AtomicBool>,
-    child_pid: Arc<std::sync::Mutex<Option<(u32, bool)>>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    child_pid: std::sync::Arc<std::sync::Mutex<Option<(u32, bool)>>>,
     cwd: Option<PathBuf>,
-) -> Result<String, String> {
+}
+
+fn run_capture(o: RunCaptureOpts) -> Result<String, String> {
+    let RunCaptureOpts {
+        user,
+        program,
+        args,
+        stdin,
+        logf,
+        cancel,
+        child_pid,
+        cwd,
+    } = o;
     use std::io::{Read, Write};
     let session_leader = user.is_some(); // exec_as_user 走 setsid，pid 即进程组号
     // 资源笼子：降权命令（站点账号 / 面板用户）套一份，防 fork 炸弹 / 写满盘 / 吃满 CPU。
