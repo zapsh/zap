@@ -1756,7 +1756,7 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
         Err(e) => {
             let _ = append_task_log(&log_path, &format!("调用执行端失败：{e}"));
             let _ = append_task_log(&log_path, &format!("{} -1", task::DONE_MARKER));
-            let _ = set_app_deploy_status(site_id, &name, "failed");
+            set_app_deploy_status(site_id, &name, "failed").await;
             let _ = task::finish(&task_id, task::STATUS_FAILED, -1).await;
             return;
         }
@@ -1772,7 +1772,7 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
             let _ = append_task_log(&log_path, &format!("部署失败：{}", resp.message));
             let _ = append_task_log(&log_path, &format!("{} {}", task::DONE_MARKER, resp.code));
         }
-        let _ = set_app_deploy_status(site_id, &name, if canceled { "canceled" } else { "failed" });
+        set_app_deploy_status(site_id, &name, if canceled { "canceled" } else { "failed" }).await;
         let _ = task::finish(
             &task_id,
             if canceled {
@@ -1831,7 +1831,7 @@ pub async fn run_app_deploy_task(task_id: String, log_path: String, payload: Str
     {
         let _ = append_task_log(&log_path, &format!("保存应用配置失败：{e}"));
         let _ = append_task_log(&log_path, &format!("{} -1", task::DONE_MARKER));
-        let _ = set_app_deploy_status(site_id, &name, "failed");
+        set_app_deploy_status(site_id, &name, "failed").await;
         let _ = task::finish(&task_id, task::STATUS_FAILED, -1).await;
         return;
     }

@@ -107,13 +107,14 @@ pub async fn env_uv_install(
     if resp.code != 0 {
         return Err(ZapError::New(-1, resp.message));
     }
-    let _ = audit::log(
+    audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "env_uv_install",
         "",
         "",
-    );
+    )
+    .await;
     let _ = refresh_snapshot_now().await;
     Ok(Json(
         json!({ "code": 0, "message": resp.message, "data": resp.data }),
@@ -144,13 +145,14 @@ pub async fn env_python_index(
     if resp.code != 0 {
         return Err(ZapError::New(-1, resp.message));
     }
-    let _ = audit::log(
+    audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "env_python_index",
         &format!("url={url}"),
         "",
-    );
+    )
+    .await;
     let _ = refresh_snapshot_now().await;
     Ok(Json(
         json!({ "code": 0, "message": resp.message, "data": resp.data }),
@@ -176,13 +178,14 @@ pub async fn env_fnm_install(
     if resp.code != 0 {
         return Err(ZapError::New(-1, resp.message));
     }
-    let _ = audit::log(
+    audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "env_fnm_install",
         &format!("mirror={mirror}"),
         "",
-    );
+    )
+    .await;
     let _ = refresh_snapshot_now().await;
     Ok(Json(
         json!({ "code": 0, "message": resp.message, "data": resp.data }),
@@ -216,13 +219,14 @@ pub async fn env_nodejs_action(
     if resp.code != 0 {
         return Err(ZapError::New(-1, resp.message));
     }
-    let _ = audit::log(
+    audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "env_nodejs_action",
         &format!("action={action} version={version} mirror={mirror}"),
         "",
-    );
+    )
+    .await;
     let _ = refresh_snapshot_now().await;
     Ok(Json(
         json!({ "code": 0, "message": resp.message, "data": resp.data }),
@@ -251,13 +255,14 @@ pub async fn env_python_install(
     if resp.code != 0 {
         return Err(ZapError::New(-1, resp.message));
     }
-    let _ = audit::log(
+    audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "env_python_install",
         &format!("version={version}"),
         "",
-    );
+    )
+    .await;
     let _ = refresh_snapshot_now().await;
     Ok(Json(
         json!({ "code": 0, "message": resp.message, "data": resp.data }),
@@ -286,13 +291,14 @@ pub async fn env_python_remove(
     if resp.code != 0 {
         return Err(ZapError::New(-1, resp.message));
     }
-    let _ = audit::log(
+    audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "env_python_remove",
         &format!("version={version}"),
         "",
-    );
+    )
+    .await;
     let _ = refresh_snapshot_now().await;
     Ok(Json(
         json!({ "code": 0, "message": resp.message, "data": resp.data }),
@@ -322,13 +328,14 @@ pub async fn env_node_registry(
     if resp.code != 0 {
         return Err(ZapError::New(-1, resp.message));
     }
-    let _ = audit::log(
+    audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
         "env_node_registry",
         &format!("registry={registry}"),
         "",
-    );
+    )
+    .await;
     let _ = refresh_snapshot_now().await;
     Ok(Json(
         json!({ "code": 0, "message": resp.message, "data": resp.data }),
