@@ -301,11 +301,10 @@ pub async fn ensure_initial_admin() -> bool {
 ///   已对全部用户开放（home 目录内任意目录可选）
 /// - 数值 0 表示「不限」
 async fn init_packages_table() {
-    if table_exists("packages").await {
-        return;
-    }
-    let sql = r#"
-    CREATE TABLE packages (
+    let pool = get_db_pool().await;
+    let _ = pool
+        .execute(r#"
+    CREATE TABLE IF NOT EXISTS packages (
         id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
         name VARCHAR(64) UNIQUE NOT NULL,
         remark TEXT NOT NULL DEFAULT '',
@@ -313,38 +312,69 @@ async fn init_packages_table() {
         max_sites INTEGER NOT NULL DEFAULT 0,
         max_domains INTEGER NOT NULL DEFAULT 0,
         max_bandwidth_mb INTEGER NOT NULL DEFAULT 0,
-        -- Maximum number of mysql database (0 = unlimited)
         max_mysql_dbs INTEGER NOT NULL DEFAULT 0,
-        -- -- Maximum number of  postgresql database (0 = unlimited)
         max_pgsql_dbs INTEGER NOT NULL DEFAULT 0,
-        -- -- Maximum number of ftpusers (0 = unlimited)
         max_ftp_users INTEGER NOT NULL DEFAULT 0,
         fpm_spec_ref TEXT NOT NULL DEFAULT '',
         allow_ssh INTEGER NOT NULL DEFAULT 0,
         allow_proxy INTEGER NOT NULL DEFAULT 0,
-        -- feature : allow php
         allow_php INTEGER NOT NULL DEFAULT 1,
-        -- feature : allow docker (only effective when podman is running)
         allow_docker INTEGER NOT NULL DEFAULT 0,
-        -- feature : allow waf (web application firewall)
         allow_waf INTEGER NOT NULL DEFAULT 0,
-        -- feature : allow apps (python/nodejs)
         allow_apps INTEGER NOT NULL DEFAULT 0,
-        -- feature : allow apps types (split by ',' python,nodejs), empty string means all types are allowed
         app_types TEXT NOT NULL DEFAULT '',
-        -- max apps per site (0 = unlimited)
         max_apps INTEGER NOT NULL DEFAULT 0,
-        -- per user port span , start port =10000 + user id * N (0 = unlimited)
         app_port_span INTEGER NOT NULL DEFAULT 0,
-        -- max apps per user (0 = unlimited)
         app_max_total INTEGER NOT NULL DEFAULT 0,
         owner_id INTEGER NOT NULL DEFAULT 0,
         status INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER,
         updated_at INTEGER
-    );
-    "#;
-    let _ = get_db_pool().await.execute(sql).await;
+    );"#)
+        .await;
+
+    // 默认套餐：全局（owner_id=0）启用（status=1），资源全「不限」(0)。
+    // 列对齐 + 每个能力开关单独成行并带注释，方便增改与开关功能；
+    // 末尾 WHERE 保证幂等：仅当库里还没有「默认套餐」时才插入（重复启动不报错/不重复）。
+    let seed = r#"
+    INSERT INTO packages (
+        name, remark,
+        -- ── resources quota (0 = unlimited) ──
+        disk_quota_mb, max_sites, max_domains, max_bandwidth_mb,
+        max_mysql_dbs, max_pgsql_dbs, max_ftp_users,
+        fpm_spec_ref,
+        -- ── feature ( 0 = deny / 1 = allow)──
+        allow_ssh,
+        allow_proxy,
+        allow_php,
+        allow_docker,          -- beta: only run when podman is available
+        allow_waf,
+        allow_apps,
+        -- ── App Types ( empty = unlimited ; number 0 = unlimited ) ──
+        app_types, max_apps, app_port_span, app_max_total,
+        -- ── owner_id / status ──
+        owner_id, status, created_at, updated_at
+    )
+    SELECT
+        'Default Package',
+        'unlimited disk, unlimited sites, unlimited domains, unlimited databases and FTP accounts, allow SSH terminal, PHP sites and site WAF (reverse proxy, container default disabled, can be enabled in "edit package"); custom directories are fully open',
+        0, 0, 0, 0,            -- disk_quota_mb / max_sites / max_domains / max_bandwidth_mb
+        0, 0, 0,               -- max_mysql_dbs / max_pgsql_dbs / max_ftp_users
+        '',                    -- fpm_spec_ref   : default
+        1,                     -- allow_ssh      : SSH Terminal
+        0,                     -- allow_proxy    : reverse proxy (upstream / location)
+        1,                     -- allow_php      : PHP sites
+        0,                     -- allow_docker   : containers
+        1,                     -- allow_waf      : site WAF / rate limiting / concurrent limiting
+        0,                     -- allow_apps     : application hosting
+        '', 0, 0, 0,           -- app_types / max_apps / app_port_span / app_max_total
+        0, 1,                  -- owner_id=0 Global Package;status=1 Enabled
+        strftime('%s','now'), strftime('%s','now')
+    WHERE NOT EXISTS (SELECT 1 FROM packages WHERE name = 'Default Package');
+   "#;
+    if let Err(e) = sqlx::query(seed).execute(pool).await {
+        eprintln!("播种默认套餐失败（可忽略，重复启动会触发唯一约束）: {e}");
+    }
 }
 
 // ── nginx_stream（四层转发）────────────────────────────────
