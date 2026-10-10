@@ -4082,6 +4082,12 @@ pub(crate) async fn provision_site(
         .map(|r| r.trim().to_ascii_lowercase())
         .filter(|r| !r.is_empty() && r != "none")
         .and_then(|r| match r.as_str() {
+            "generic" => {
+                Some("try_files $uri $uri/ /index.php$is_args$args;")
+            }
+            "yii" => {
+                Some("try_files $uri $uri/ /index.php?$args;")
+            }
             "thinkphp" => {
                 Some("if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php?s=$1 last;\n}")
             }

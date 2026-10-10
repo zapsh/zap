@@ -882,7 +882,61 @@ interface LocPreset {
   build: () => LocationSpec
 }
 const locPresets: LocPreset[] = [
-  // PHP 伪静态（主流框架）：生成 location / raw，执行端会用它替换默认根 try_files
+  {
+    key: 'generic',
+    cat: 'pseudo',
+    labelKey: 'site.presetGeneric',
+    build: () => {
+      const l = blankLocation('/')
+      l.kind = 'raw'
+      l.raw = 'try_files $uri $uri/ /index.php$is_args$args;'
+      return l
+    },
+  },
+  {
+    key: 'laravel',
+    cat: 'pseudo',
+    labelKey: 'site.presetLaravel',
+    build: () => {
+      const l = blankLocation('/')
+      l.kind = 'raw'
+      l.raw = 'try_files $uri $uri/ /index.php$is_args$args;'
+      return l
+    },
+  },
+  {
+    key: 'symfony',
+    cat: 'pseudo',
+    labelKey: 'site.presetSymfony',
+    build: () => {
+      const l = blankLocation('/')
+      l.kind = 'raw'
+      l.raw = 'try_files $uri $uri/ /index.php$is_args$args;'
+      return l
+    },
+  },
+  {
+    key: 'yii',
+    cat: 'pseudo',
+    labelKey: 'site.presetYii',
+    build: () => {
+      const l = blankLocation('/')
+      l.kind = 'raw'
+      l.raw = 'try_files $uri $uri/ /index.php$is_args$args;'
+      return l
+    },
+  },
+  {
+    key: 'wordpress',
+    cat: 'pseudo',
+    labelKey: 'site.presetWordpress',
+    build: () => {
+      const l = blankLocation('/')
+      l.kind = 'raw'
+      l.raw = 'try_files $uri $uri/ /index.php?$query_string;'
+      return l
+    },
+  },
   {
     key: 'thinkphp',
     cat: 'pseudo',
@@ -905,28 +959,7 @@ const locPresets: LocPreset[] = [
       return l
     },
   },
-  {
-    key: 'laravel',
-    cat: 'pseudo',
-    labelKey: 'site.presetLaravel',
-    build: () => {
-      const l = blankLocation('/')
-      l.kind = 'raw'
-      l.raw = 'try_files $uri $uri/ /index.php?$query_string;'
-      return l
-    },
-  },
-  {
-    key: 'wordpress',
-    cat: 'pseudo',
-    labelKey: 'site.presetWordpress',
-    build: () => {
-      const l = blankLocation('/')
-      l.kind = 'raw'
-      l.raw = 'try_files $uri $uri/ /index.php?$query_string;'
-      return l
-    },
-  },
+  
   // 常用 Location 规则：直接生成对应 location 条目
   {
     key: 'staticCache',

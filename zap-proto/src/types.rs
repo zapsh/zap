@@ -17,8 +17,7 @@ fn default_log_lines() -> usize {
     200
 }
 
-/// ACME HTTP-01 的一条验证材料：`token` 决定验证文件名，
-/// `key_auth` 是 validation 服务端期望的响应体内容。
+/// ACME HTTP-01 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AcmeChallengeEntry {
     /// 挑战 token（文件名固定为该值）
@@ -1461,11 +1460,7 @@ pub enum Request {
     },
     /// 写入 ACME HTTP-01 验证文件（root 特权，供 Let's Encrypt 自动验证）。
     ///
-    /// 落盘到面板自管的验证根
     /// `{ZAP_PATH}/data/www/_zap/acme/.well-known/acme-challenge/{token}`；
-    /// 站点 vhost 里固定渲染了
-    /// `location ^~ /.well-known/acme-challenge/ { alias <验证根>/.well-known/acme-challenge/; }`，
-    /// 因此无需重启 / 重载 nginx 即可生效。
     /// token 仅允许 `[A-Za-z0-9_-]`（防路径穿越），文件 0644、目录 0755。
     #[serde(rename = "acme.http_write")]
     AcmeHttpWrite { entries: Vec<AcmeChallengeEntry> },
@@ -1553,7 +1548,7 @@ pub enum Request {
     /// `owner_home` / `owner_user` 非空时，create 建的是 bind mount 卷：
     /// 数据落在 `{owner_home}/volumes/{name}`，并归 `owner_user` 这个 Linux 账号所有 ——
     /// 多用户环境下卷数据要进用户自己的配额、也能跟着 home 一起备份，
-    /// 而不是闷在 `/var/lib/docker/volumes` 里（那里只有 root 看得到）。
+    ///  `/var/lib/docker/volumes` only for root
     /// 两者为空（旧客户端）或 remove / prune 时，退回 daemon 默认位置。
     #[serde(rename = "docker.volume_action")]
     DockerVolumeAction {
