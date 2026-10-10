@@ -1415,6 +1415,7 @@ async fn init_ssl_acme_order_table() {
         cert_id INTEGER NOT NULL DEFAULT 0,
         -- 证书名（签发后写入 ssl_cert.name）
         name TEXT NOT NULL DEFAULT '',
+        remark TEXT NOT NULL DEFAULT '',
         domains TEXT NOT NULL DEFAULT '',
         -- let's encrypt 环境同 account.directory
         directory TEXT NOT NULL DEFAULT 'letsencrypt',
@@ -1441,6 +1442,8 @@ async fn init_ssl_acme_order_table() {
     CREATE INDEX IF NOT EXISTS idx_ssl_acme_order_status ON ssl_acme_order(status);
     "#;
     let _ = get_db_pool().await.execute(sql).await;
+    // 升级旧库：已部署实例的表可能缺 remark 列（建表 SQL 后来补了，需 ALTER 补齐）
+    ensure_column("ssl_acme_order", "remark", "TEXT NOT NULL DEFAULT ''").await;
 }
 
 /// ssl_acme_dns_provider：DNS 服务商 API 凭据（DNS-01 自动验证用）。

@@ -150,7 +150,53 @@ pub async fn cert_list(claims: ValidatedClaims) -> ZapJsonResult {
         .fetch_all(pool)
         .await?
     };
+    let rows = backfill_cert_validity(rows).await;
     Ok(Json(json!({ "code": 0, "message": "OK", "data": rows })))
+}
+
+/// 老库自愈：早期入库的证书可能没解析出有效期（not_after=0，如仅以 CSR 入库），
+/// 列表加载时按证书内容重新解析并回填一次（幂等，仅处理 broken 行）。
+async fn backfill_cert_validity(mut rows: Vec<CertListRow>) -> Vec<CertListRow> {
+    let ids: Vec<i64> = rows
+        .iter()
+        .filter(|r| r.not_after <= 0)
+        .map(|r| r.id)
+        .collect();
+    if ids.is_empty() {
+        return rows;
+    }
+    let pool = db::get_db_pool().await;
+    let sql = format!(
+        "SELECT id, cert_content FROM ssl_cert WHERE id IN ({})",
+        ids.iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let list: Vec<(i64, String)> =
+        match sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await {
+            Ok(v) => v,
+            Err(_) => return rows,
+        };
+    for (id, cert_pem) in list {
+        let Some(p) = parse_pem_info(&cert_pem) else {
+            continue;
+        };
+        if p.not_after <= 0 {
+            continue;
+        }
+        let _ = sqlx::query("UPDATE ssl_cert SET not_before = ?, not_after = ? WHERE id = ?")
+            .bind(p.not_before)
+            .bind(p.not_after)
+            .bind(id)
+            .execute(pool)
+            .await;
+        for r in rows.iter_mut().filter(|r| r.id == id) {
+            r.not_before = p.not_before;
+            r.not_after = p.not_after;
+        }
+    }
+    rows
 }
 
 #[derive(Debug, Deserialize)]
@@ -548,10 +594,32 @@ fn push_uniq(v: &mut Vec<String>, s: String) {
     }
 }
 
+/// 修复 END 标记与前一行 base64 粘连的 PEM（历史版本 split_leaf_chain 落库的数据）。
+/// 正常 PEM 原样通过（额外补的换行对解析无害）。
+fn normalize_pem(pem: &str) -> String {
+    const END: &str = "-----END CERTIFICATE-----";
+    let parts: Vec<&str> = pem.split(END).collect();
+    if parts.len() == 1 {
+        return pem.to_string();
+    }
+    let mut out = String::with_capacity(pem.len() + 16);
+    for (i, part) in parts.iter().enumerate() {
+        out.push_str(part.trim_end_matches(['\r', '\n']));
+        if i + 1 < parts.len() {
+            // 该段后面原本跟着 END：确保换行后再接 END
+            out.push('\n');
+            out.push_str(END);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// 从 PEM 中取出第一张证书（fullchain 时即叶子证书），并统计证书总数量。
 fn first_cert_der(pem: &str) -> Option<(Vec<u8>, usize)> {
     use x509_parser::pem::Pem;
 
+    let pem = normalize_pem(pem);
     let mut count = 0usize;
     let mut first: Option<Vec<u8>> = None;
     for item in Pem::iter_from_buffer(pem.as_bytes()) {
@@ -779,6 +847,7 @@ fn spki_bits(spki_der: &[u8]) -> Result<Vec<u8>, String> {
 fn cert_pubkey_bits(pem: &str) -> Result<Vec<u8>, String> {
     use x509_parser::prelude::FromDer;
 
+    let pem = normalize_pem(pem);
     for item in x509_parser::pem::Pem::iter_from_buffer(pem.as_bytes()) {
         let Ok(block) = item else { continue };
         let label = block.label.trim().to_ascii_uppercase();
@@ -810,9 +879,70 @@ fn cert_pubkey_bits(pem: &str) -> Result<Vec<u8>, String> {
 
 /// 解析私钥并导出它的裸公钥位串（与证书侧同格式，便于直接比对）。
 fn private_key_pubkey_bits(key_pem: &str) -> Result<Vec<u8>, String> {
+    // rcgen 只认 PKCS#8（BEGIN PRIVATE KEY）/ PKCS#1（BEGIN RSA PRIVATE KEY）；
+    // 传统 SEC1 格式（BEGIN EC PRIVATE KEY，ECC 私钥最常见，acme.sh / openssl ecparam 默认输出）
+    // 不被支持，这里单独解析公钥位。
+    if key_pem.contains("BEGIN EC PRIVATE KEY") {
+        return ec_sec1_pubkey_bits(key_pem);
+    }
     let pair = rcgen::KeyPair::from_pem(key_pem)
         .map_err(|_| "私钥无法解析：请粘贴 PEM 格式私钥（暂不支持带密码的私钥）".to_string())?;
     spki_bits(&pair.public_key_der())
+}
+
+/// 读一个 DER TLV，返回 (tag, content, 剩余字节)。仅用于结构固定的 SEC1 私钥，带长度边界检查。
+fn der_tlv(buf: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+    if buf.len() < 2 {
+        return None;
+    }
+    let tag = buf[0];
+    let first = buf[1] & 0x7f;
+    let (len, header) = if first < 0x80 {
+        (first as usize, 2usize)
+    } else if first == 0x80 || first > 4 || buf.len() < 2 + first as usize {
+        return None;
+    } else {
+        let n = first as usize;
+        let mut len = 0usize;
+        for &b in &buf[2..2 + n] {
+            len = (len << 8) | b as usize;
+        }
+        (len, 2 + n)
+    };
+    let end = header.checked_add(len)?;
+    if buf.len() < end {
+        return None;
+    }
+    Some((tag, &buf[header..end], &buf[end..]))
+}
+
+/// 从 SEC1（RFC 5915）EC 私钥 DER 中取 `[1] publicKey` 的裸位串（未压缩 EC 点），
+/// 与证书 `SubjectPublicKeyInfo.subject_public_key` 同格式，可直接比对。
+///
+/// ECPrivateKey ::= SEQUENCE { version INTEGER, privateKey OCTET STRING,
+///                             parameters [0] OPTIONAL, publicKey [1] BIT STRING OPTIONAL }
+fn ec_sec1_pubkey_bits(pem: &str) -> Result<Vec<u8>, String> {
+    const ERR: &str =
+        "EC 私钥无法解析：请粘贴 PEM 格式私钥（BEGIN EC PRIVATE KEY / BEGIN PRIVATE KEY）";
+    let der = first_pem_der(pem).ok_or(ERR)?;
+    let (tag, content, rest) = der_tlv(&der).ok_or(ERR)?;
+    if tag != 0x30 || !rest.is_empty() {
+        return Err(ERR.into());
+    }
+    let mut cur = content;
+    while !cur.is_empty() {
+        let (tag, inner, rest) = der_tlv(cur).ok_or(ERR)?;
+        if tag == 0xA1 {
+            let (btag, bcontent, brest) = der_tlv(inner).ok_or(ERR)?;
+            if btag != 0x03 || !brest.is_empty() || bcontent.is_empty() || bcontent[0] != 0 {
+                return Err(ERR.into());
+            }
+            // BIT STRING 首字节是未用位数，EC 点恒为 0
+            return Ok(bcontent[1..].to_vec());
+        }
+        cur = rest;
+    }
+    Err("EC 私钥缺少 publicKey 字段，无法与证书比对".to_string())
 }
 
 /// 保存前的配对校验：证书（或 CSR）与私钥同时提供时必须能配上，
@@ -1445,7 +1575,9 @@ pub(crate) fn split_leaf_chain(pem: &str) -> (String, String) {
         if let Some(pos) = part.find("-----BEGIN CERTIFICATE-----") {
             let seg = part[pos..].trim();
             if !seg.is_empty() {
-                blocks.push(format!("{seg}{END}"));
+                // seg 尾部的换行已被 trim 掉，必须补回，否则 base64 会与 END 标记粘连成
+                // "…base64-----END CERTIFICATE-----"，x509-parser 无法解析
+                blocks.push(format!("{seg}\n{END}\n"));
             }
         }
     }
@@ -1513,5 +1645,85 @@ mod tests {
 
         // 私钥内容非法时应给出可读错误而不是 panic
         assert!(key_matches(&cert_pem, "not a key").is_err());
+    }
+
+    /// SEC1（BEGIN EC PRIVATE KEY）格式的 ECC 私钥：rcgen 不支持该格式，
+    /// 必须能解析出公钥并与证书正确配对（acme.sh / openssl ecparam 默认输出此格式）。
+    #[test]
+    fn ecc_sec1_key_matches() {
+        const CERT: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBojCCAUigAwIBAgIUGM1qyQM6CVwHv3A/Priza8RXrGUwCgYIKoZIzj0EAwIw\n\
+GTEXMBUGA1UEAwwOZWMuZXhhbXBsZS5jb20wHhcNMjYxMDEwMTUyODI3WhcNMjYx\n\
+MTA5MTUyODI3WjAZMRcwFQYDVQQDDA5lYy5leGFtcGxlLmNvbTBZMBMGByqGSM49\n\
+AgEGCCqGSM49AwEHA0IABNqIZ4d9fpetOHjkCdzO/qrs+zXV+np6MZczTtQ0UZzh\n\
+Ve2dsvuKKe7WEASz1+Bc5AfMGL+xbw0kwRVFtQkghEejbjBsMB0GA1UdDgQWBBSp\n\
+IjJtoFtARIVS51WCpL3Dw3Um9DAfBgNVHSMEGDAWgBSpIjJtoFtARIVS51WCpL3D\n\
+w3Um9DAPBgNVHRMBAf8EBTADAQH/MBkGA1UdEQQSMBCCDmVjLmV4YW1wbGUuY29t\n\
+MAoGCCqGSM49BAMCA0gAMEUCIBbxgj4olQ3hOpNXxleiN+y8xIM6415WX/5XFrlz\n\
+hZa+AiEAzJpBEVRdYvrdlUlzaVEvmZy0DmhQUfg2VMZqxDGoXbs=\n\
+-----END CERTIFICATE-----\n";
+        const KEY1: &str = "-----BEGIN EC PRIVATE KEY-----\n\
+MHcCAQEEIENP8l/gUPkr8Fn4k7SGldaeiRDe+2rkEpxCo0BjRqsUoAoGCCqGSM49\n\
+AwEHoUQDQgAE2ohnh31+l604eOQJ3M7+quz7NdX6enoxlzNO1DRRnOFV7Z2y+4op\n\
+7tYQBLPX4FzkB8wYv7FvDSTBFUW1CSCERw==\n\
+-----END EC PRIVATE KEY-----\n";
+        const KEY2: &str = "-----BEGIN EC PRIVATE KEY-----\n\
+MHcCAQEEIInnJ//joAsqJlGjx89gkCsHYO92IRnWusNc9+iZyfkXoAoGCCqGSM49\n\
+AwEHoUQDQgAEmonPjd298TWQw9eVSHG7MwN/RrQdFVR+YWhrpIzZj3LXa4oIp3JX\n\
+acQuEXL3ubBpKFoeTVJ7Rg+uFI8C1aMF0A==\n\
+-----END EC PRIVATE KEY-----\n";
+
+        // ECC 叶子证书本身要能解析出域名与有效期
+        let info = parse_pem_info(CERT).expect("ECC 证书解析失败");
+        assert_eq!(info.domains, vec!["ec.example.com"]);
+        assert!(info.not_after > 0);
+
+        // SEC1 私钥与证书配对：配套 true，另一把 false
+        assert_eq!(key_matches(CERT, KEY1), Ok(true));
+        assert_eq!(key_matches(CERT, KEY2), Ok(false));
+    }
+
+    /// 复现 ACME 签发落库路径：fullchain（叶子 + 中间链）经 split_leaf_chain 拆出叶子后，
+    /// 必须能从叶子证书解析出有效期（ECC 证书也要能解析）。
+    #[test]
+    fn acme_chain_leaf_dates() {
+        const END_MARK: &str = "-----END CERTIFICATE-----";
+        const CHAIN: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBdDCCARqgAwIBAgIUZfHsIl7/4MCk7trM4Uh2mDbRHJ8wCgYIKoZIzj0EAwIw\n\
+FzEVMBMGA1UEAwwMVGVzdCBFQyBSb290MB4XDTI2MTAxMDE1MzkzOFoXDTI2MTEw\n\
+OTE1MzkzOFowGTEXMBUGA1UEAwwOZWMuZXhhbXBsZS5jb20wWTATBgcqhkjOPQIB\n\
+BggqhkjOPQMBBwNCAATdjNdsfH8dgi3Gi8Q2HYtcQBIo395jlExeDIXxbuVskW9A\n\
+WZU75qDX/3QGZrsBRIVU2bVpqWGTbrJNoZ2i0RcUo0IwQDAdBgNVHQ4EFgQUkZuT\n\
+hClRlkv0eSxK1QfS+GWeRd4wHwYDVR0jBBgwFoAU8o1FtLjcg52tilWXPczj2chd\n\
+d4owCgYIKoZIzj0EAwIDSAAwRQIgDEdb5lj0tRDGcueYLinIPGYXyHEIReEZ+xuU\n\
+3a9aHh4CIQCeK0gTUfzABCui2tHcj0yAadqh7PQghdB7jk3Lm6onRw==\n\
+-----END CERTIFICATE-----\n\
+-----BEGIN CERTIFICATE-----\n\
+MIIBgzCCASmgAwIBAgIUeFkW2Yr2Qdek3ZxOrR4EQB/CzvcwCgYIKoZIzj0EAwIw\n\
+FzEVMBMGA1UEAwwMVGVzdCBFQyBSb290MB4XDTI2MTAxMDE1MzkzOFoXDTM2MTAw\n\
+NzE1MzkzOFowFzEVMBMGA1UEAwwMVGVzdCBFQyBSb290MFkwEwYHKoZIzj0CAQYI\n\
+KoZIzj0DAQcDQgAEaSOvn/BofLosJGHi7G6u09wEXmdQ0y9ty3BhofX47+HJ9eLT\n\
+7+WyB/Dm7xkiF7IR0c5n0H4mjthAZW9EqaX2+aNTMFEwHQYDVR0OBBYEFPKNRbS4\n\
+3IOdrYpVlz3M49nIXXeKMB8GA1UdIwQYMBaAFPKNRbS43IOdrYpVlz3M49nIXXeK\n\
+MA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgURbweSYkTwtkBtZT\n\
+LfP4VK83QRP7bYZPNzwKMmaryPsCIQDSnnizn9z5zaveqJmI7SZ87gXy7ASsYDeo\n\
+6lqoJFwSnQ==\n\
+-----END CERTIFICATE-----\n";
+        let (leaf, ca) = split_leaf_chain(CHAIN);
+        // 拆分后各段必须是完整 PEM：END 标记独立成行，不能与 base64 粘连
+        assert_eq!(leaf.matches(END_MARK).count(), 1);
+        assert!(leaf.ends_with(&format!("{END_MARK}\n")));
+        assert!(!leaf.contains(&format!("={END_MARK}")), "END 前必须有换行");
+        assert!(ca.contains(END_MARK));
+        // 叶子证书必须能解析出有效期（ACME 落库的关键）
+        let info = parse_certificate(&leaf).expect("ECC 叶子证书解析失败");
+        assert!(info.not_after > 0, "签发后必须能解析出有效期");
+        assert_eq!(info.domains, vec!["ec.example.com"]);
+
+        // 历史坏数据（END 与 base64 粘连）也能被 normalize_pem 拯救
+        let glued = CHAIN.replace(&format!("\n{END_MARK}"), END_MARK);
+        assert!(glued.contains(&format!("={END_MARK}")), "构造粘连数据失败");
+        let info = parse_certificate(&glued).expect("粘连 PEM 应能被归一化后解析");
+        assert!(info.not_after > 0);
     }
 }

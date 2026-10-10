@@ -3844,6 +3844,7 @@ export default {
     leManualAlert:
       '多条域名需要各自添加一条 _acme-challenge 记录（前缀相同但记录值不同时请并列添加，不要互相覆盖）；添加完成后等待解析生效（通常几十秒到几分钟），再点击下方按钮继续。',
     leVerifyBtn: '我已添加解析，开始验证',
+    leVerifySubmitted: '已提交验证，等待 CA 校验中（一般 1~2 分钟，请勿关闭弹窗）…',
     leDoneOk: '证书签发成功，已保存到证书列表',
     leViewCert: '查看该证书',
     leRetry: '重新申请',

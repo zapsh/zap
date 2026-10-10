@@ -3873,6 +3873,8 @@ const enUS: Messages = {
     leManualAlert:
       'Each domain needs its own _acme-challenge record (add them side by side, do not overwrite one with another). Wait for propagation (seconds to a few minutes) and then press the button below to continue.',
     leVerifyBtn: 'Records added, start validation',
+    leVerifySubmitted:
+      'Validation submitted, waiting for the CA (usually 1–2 minutes, keep this dialog open)…',
     leDoneOk: 'Certificate issued and saved to the certificate list',
     leViewCert: 'View certificate',
     leRetry: 'Retry',

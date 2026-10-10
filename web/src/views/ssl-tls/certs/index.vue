@@ -1308,6 +1308,7 @@ async function submitVerify() {
     const res = await verifyAcmeOrder(leOrder.value.id)
     leOrder.value = res.data
     startPoll(res.data.id)
+    ElMessage.success(t('sslCerts.leVerifySubmitted'))
   } catch {
     /* handled */
   } finally {

@@ -624,11 +624,17 @@ pub async fn trigger(order_id: i64) -> Result<OrderView, String> {
     if row.status == "issued" {
         return Ok(view_of(&row));
     }
-    if row.challenge_type == "dns-01"
-        && row.dns_mode == "manual"
-        && let Err(e) = refresh_propagation(&row).await
-    {
-        warn!(id = order_id, error = %e, "DNS 传播检测失败（不影响继续验证）");
+    // DNS 手动模式：传播检测仅用于前端即时反馈，不能阻塞 HTTP 响应
+    // （否则单域名就可能逼近前端 15s 超时阈值而误报「请求超时」）。放进后台与签发并行。
+    if row.challenge_type == "dns-01" && row.dns_mode == "manual" {
+        let oid = order_id;
+        tokio::spawn(async move {
+            if let Ok(r) = load_row(oid).await {
+                if let Err(e) = refresh_propagation(&r).await {
+                    warn!(id = oid, error = %e, "DNS 传播检测失败（不影响继续验证）");
+                }
+            }
+        });
     }
     tokio::spawn(process_order(order_id));
     view(order_id).await
