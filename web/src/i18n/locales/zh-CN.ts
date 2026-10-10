@@ -1732,7 +1732,7 @@ export default {
     directiveKeyPlaceholder: '如 disable_functions / session.save_path',
     addDirective: '添加指令',
     phpAdminValueHelp:
-      '形如 disable_functions、error_log 的 PHP ini 指令；值里可用 {home} 指代用户家目录（渲染时替换为实际路径）。默认已含 session.save_path / upload_tmp_dir / error_log = {home}/tmp。',
+      '形如 disable_functions、error_log 的 PHP ini 指令；值里可用 {home} 指代用户家目录、{user} 指代 Linux 账号（渲染时替换）。默认已含 session.save_path / upload_tmp_dir（= {home}/tmp）、高危函数禁用 disable_functions；全局默认 error_log 在 /var/log/zap/php/{user}-error.log，新建规格模板默认 {home}/logs/php-error.log。',
     phpAdminFlagHelp: '布尔型指令（开 / 关），如 log_errors、display_startup_errors；默认已含 log_errors = on、display_startup_errors = off。',
 
     defaultsTitle: '全局默认配置',

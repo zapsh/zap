@@ -201,7 +201,11 @@ async function loadSpecs() {
   }
 }
 
-/** 默认新建模板的参考规格（与全局默认同字段集） */
+/** 默认禁用的高危 PHP 函数（与 zapexec DEFAULT_DISABLE_FUNCTIONS 保持一致） */
+const DEFAULT_DISABLE_FUNCTIONS =
+  'exec,passthru,shell_exec,system,proc_open,popen,pcntl_exec,eval,assert,create_function,show_source,phpinfo,chmod,chown,chgrp,symlink,link'
+
+/** 默认新建模板的参考规格（与全局默认同字段集；error_log 落在用户家目录 logs） */
 const DEFAULT_TEMPLATE_SPEC = {
   pm: 'dynamic',
   max_children: 16,
@@ -214,6 +218,12 @@ const DEFAULT_TEMPLATE_SPEC = {
   memory_limit: '512M',
   post_max_size: '128M',
   upload_max_filesize: '128M',
+  php_admin_value: {
+    // 用户级日志：随账号隔离，落到家目录 logs（全局默认则集中到 /var/log/zap/php/{user}.log）
+    error_log: '{home}/logs/php-error.log',
+    // 高危函数默认禁用（命令执行 / 代码执行与信息泄露 / 文件提权三类）
+    disable_functions: DEFAULT_DISABLE_FUNCTIONS,
+  },
 }
 
 // ── 表格式规格编辑器 ───────────────────────────────────────

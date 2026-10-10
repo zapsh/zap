@@ -1723,7 +1723,7 @@ const enUS: Messages = {
     directiveKeyPlaceholder: 'e.g. disable_functions / session.save_path',
     addDirective: 'Add directive',
     phpAdminValueHelp:
-      'PHP ini directives such as disable_functions / error_log. Use {home} in the value to mean the user home dir (replaced at render time). Defaults already include session.save_path / upload_tmp_dir / error_log = {home}/tmp.',
+      'PHP ini directives such as disable_functions / error_log. Use {home} for the user home dir and {user} for the Linux account (replaced at render time). Defaults include session.save_path / upload_tmp_dir (= {home}/tmp) and dangerous-function blocking via disable_functions; the global default error_log is /var/log/zap/php/{user}-error.log, while a new spec template defaults to {home}/logs/php-error.log.',
     phpAdminFlagHelp:
       'Boolean directives (on / off), e.g. log_errors, display_startup_errors. Defaults already include log_errors = on and display_startup_errors = off.',
 

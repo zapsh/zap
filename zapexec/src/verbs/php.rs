@@ -233,6 +233,75 @@ fn default_spec() -> BTreeMap<String, String> {
     .collect()
 }
 
+/// 默认禁用的高危 PHP 函数（`disable_functions`，逗号分隔、不留空格）。
+///
+/// 三类：
+/// - 命令执行：exec / passthru / shell_exec / system / proc_open / popen / pcntl_exec
+/// - 代码执行与信息泄露：eval / assert / create_function / show_source / phpinfo
+///   （eval 是语言构造、disable_functions 实际管不住，列出仅显式表达意图）
+/// - 文件提权：chmod / chown / chgrp / symlink / link
+///
+/// 业务需要调用外部程序（如 FFmpeg）时在规格里覆盖同名键；上线前先在测试环境验证。
+pub const DEFAULT_DISABLE_FUNCTIONS: &str = "exec,passthru,shell_exec,system,proc_open,popen,\
+     pcntl_exec,eval,assert,create_function,show_source,phpinfo,chmod,chown,chgrp,symlink,link";
+
+/// 让渲染结果里的 `php_admin_value[error_log]` 落点可用：
+/// - 家目录内（兜底 `{home}/logs/php-error.log`）：logs 目录默认 770 www:www（nginx 日志用），
+///   pool 用户进不去 —— 放开 others 的 x 位，并预建归属 pool 用户的日志文件；
+/// - 家目录外（全局默认 `/var/log/zap/php/{user}-error.log`）：以 root 建父目录，
+///   预建文件并 chown 给 pool 用户（{user} 占位符保证每个 pool 各写各的文件，互不冲突）。
+fn ensure_error_log_target(
+    content: &str,
+    linux_user: &str,
+    run_group: &str,
+    home_dir: &str,
+) -> Result<(), String> {
+    const PREFIX: &str = "php_admin_value[error_log] = ";
+    let Some(path) = content.lines().find_map(|l| l.strip_prefix(PREFIX)) else {
+        return Ok(());
+    };
+    let path = path.trim();
+    if path.is_empty() {
+        return Ok(());
+    }
+    if path.starts_with(home_dir) {
+        let logs = format!("{home_dir}/logs");
+        run_root(&format!("chmod o+x {}", sh_quote(&logs)))?;
+    }
+    if Path::new(path).exists() {
+        return Ok(());
+    }
+    if let Some(parent) = Path::new(path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建 PHP 日志目录 {} 失败: {e}", parent.display()))?;
+    }
+    std::fs::write(path, b"").map_err(|e| format!("创建 PHP 错误日志 {path} 失败: {e}"))?;
+    run_root(&format!(
+        "chown {}:{} {}",
+        sh_quote(linux_user),
+        sh_quote(run_group),
+        sh_quote(path)
+    ))
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// 以 root 跑一条 shell 命令，失败时带 stderr 报错
+fn run_root(script: &str) -> Result<(), String> {
+    let out = root_cmd(super::platform::SHELL)
+        .args(["-c"])
+        .arg(script)
+        .output()
+        .map_err(|e| format!("执行命令失败: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(cmd_err(&out, "未知错误"))
+    }
+}
+
 /// 渲染单用户 pool 配置文件（纯函数，单测覆盖）。
 /// `run_group` 为账号实际主组（同名组被系统占用时可能为 `zap_<user>`）。
 ///
@@ -302,25 +371,47 @@ fn render_pool_conf(
         get("request_terminate_timeout", "300")
     ));
     out.push_str("catch_workers_output = yes\n");
-    out.push_str(&format!(
-        "php_admin_value[open_basedir] = {home_dir}:/tmp\n"
-    ));
 
     // ── php_admin_value：默认安全项 + 用户自定义（后者可覆盖 / 追加） ──
-    // 默认把会话 / 上传 / 错误日志都引到用户独立 tmp，避免和系统等混在一起。
-    // 用户传入的 `admin_value` 在其后追加，同名键覆盖默认；value 里的 `{home}`
-    // 占位符会被替换成 home_dir（方便写 homedir/tmp 这类路径）。
+    // 默认把会话 / 上传引到用户独立 tmp；错误日志兜底写进家目录 logs
+    // （全局默认规格会用 {user} 占位符把 error_log 集中到 /var/log/zap/php/ 下，
+    //   每个 pool 一个文件、互不抢写）。用户传入的 `admin_value` 在其后追加，
+    // 同名键覆盖默认；value 里的 `{home}` / `{user}` 占位符渲染时替换。
     let mut admin_value: BTreeMap<String, String> = BTreeMap::from([
         ("session.save_path".to_string(), format!("{home_dir}/tmp")),
         ("upload_tmp_dir".to_string(), format!("{home_dir}/tmp")),
-        ("error_log".to_string(), format!("{home_dir}/tmp/php-error.log")),
+        // 用户级兜底：错误日志写进用户家目录 logs
+        ("error_log".to_string(), format!("{home_dir}/logs/php-error.log")),
+        // 高危函数默认禁用（见 DEFAULT_DISABLE_FUNCTIONS 注释）
+        (
+            "disable_functions".to_string(),
+            DEFAULT_DISABLE_FUNCTIONS.to_string(),
+        ),
     ]);
     for (_k, v) in admin_value.iter_mut() {
-        *v = v.replace("{home}", home_dir);
+        *v = v.replace("{home}", home_dir).replace("{user}", linux_user);
     }
     for (k, v) in admin_value_user {
-        admin_value.insert(k.clone(), v.replace("{home}", home_dir));
+        admin_value.insert(
+            k.clone(),
+            v.replace("{home}", home_dir).replace("{user}", linux_user),
+        );
     }
+
+    // open_basedir 白名单：家目录 + /tmp + 错误日志所在目录
+    // （error_log 可能被全局规格指到 /var/log/zap/php/，不放开则日志写不进去）
+    let log_dir = admin_value
+        .get("error_log")
+        .and_then(|p| Path::new(p).parent())
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut basedir = format!("{home_dir}:/tmp");
+    if !log_dir.is_empty() && !basedir.contains(&log_dir) {
+        basedir.push(':');
+        basedir.push_str(&log_dir);
+    }
+    out.push_str(&format!("php_admin_value[open_basedir] = {basedir}\n"));
+
     for (k, v) in &admin_value {
         out.push_str(&format!("php_admin_value[{k}] = {v}\n"));
     }
@@ -497,6 +588,9 @@ pub async fn pool_sync(
         // 会话/上传临时目录（open_basedir 白名单指向这里）
         let tmp = format!("{home_dir}/tmp");
         std::fs::create_dir_all(&tmp).map_err(|e| format!("创建用户 tmp 目录失败: {e}"))?;
+        // PHP 错误日志目录（error_log 兜底指向 {home}/logs；全局规格则落 /var/log/zap/php/）
+        let logs = format!("{home_dir}/logs");
+        std::fs::create_dir_all(&logs).map_err(|e| format!("创建用户 logs 目录失败: {e}"))?;
         let (flat, admin_value, admin_flag) = parse_spec(spec);
         let ver = php_version(php_instance);
         // pool 的 group 取账号实际主组（同名组被系统占用时落在 zap_<user> 专属组）
@@ -512,6 +606,8 @@ pub async fn pool_sync(
         );
         let pool_file = pool_dir.join(format!("{linux_user}.conf"));
         std::fs::write(&pool_file, &content).map_err(|e| format!("写入 pool 配置失败: {e}"))?;
+        // 错误日志落点就绪：家目录 logs 放行 pool 用户进入；全局路径建目录并预建归属文件
+        ensure_error_log_target(&content, linux_user, &run_group, home_dir)?;
         // 校验：失败即回滚，绝不带着坏配置 reload
         let test = root_cmd(super::platform::SHELL)
             .args(["-c"])
@@ -681,7 +777,13 @@ mod tests {
         );
         assert!(s.contains("php_admin_value[session.save_path] = /home/zap/tmp"));
         assert!(s.contains("php_admin_value[upload_tmp_dir] = /home/zap/tmp"));
-        assert!(s.contains("php_admin_value[error_log] = /home/zap/tmp/php-error.log"));
+        // 用户级兜底：错误日志进家目录 logs，open_basedir 自动放行该目录
+        assert!(s.contains("php_admin_value[error_log] = /home/zap/logs/php-error.log"));
+        assert!(s.contains("php_admin_value[open_basedir] = /home/zap:/tmp:/home/zap/logs"));
+        // 默认禁用高危函数
+        assert!(s.contains(&format!(
+            "php_admin_value[disable_functions] = {DEFAULT_DISABLE_FUNCTIONS}"
+        )));
         assert!(s.contains("php_admin_flag[log_errors] = on"));
         assert!(s.contains("php_admin_flag[display_startup_errors] = off"));
     }
@@ -704,6 +806,29 @@ mod tests {
         assert!(s.contains("php_admin_flag[display_startup_errors] = on"));
         // 默认 log_errors 仍在
         assert!(s.contains("php_admin_flag[log_errors] = on"));
+    }
+
+    /// {user} 占位符替换为 Linux 账号（全局规格给每个 pool 单独日志文件时用）
+    #[test]
+    fn render_user_placeholder() {
+        let spec = default_spec();
+        let mut values = BTreeMap::new();
+        values.insert(
+            "error_log".into(),
+            "/var/log/zap/php/{user}-error.log".into(),
+        );
+        let s = render_pool_conf(
+            "alice",
+            "alice",
+            "/home/alice",
+            "8.3",
+            &spec,
+            &values,
+            &BTreeMap::new(),
+        );
+        assert!(s.contains("php_admin_value[error_log] = /var/log/zap/php/alice-error.log"));
+        // open_basedir 自动放行日志所在目录
+        assert!(s.contains("php_admin_value[open_basedir] = /home/alice:/tmp:/var/log/zap/php"));
     }
 
     /// spec JSON 里的 php_admin_value / php_admin_flag 能被正确解析

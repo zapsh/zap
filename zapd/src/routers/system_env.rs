@@ -382,7 +382,7 @@ fn load_conf() -> HashMap<String, String> {
 /// PHP 版本常驻若干空闲 worker。按需模式下空闲即回收、有请求才拉起，省下的是常驻内存。
 /// 真正的热点站点由管理员单独改用 dynamic/static 的规格模板。
 pub fn default_fpm_spec() -> serde_json::Map<String, Value> {
-    [
+    let mut spec: serde_json::Map<String, Value> = [
         ("pm", "ondemand"),
         ("max_children", "10"),
         // start_servers / min_spare_servers / max_spare_servers 是 dynamic 专属，
@@ -396,7 +396,26 @@ pub fn default_fpm_spec() -> serde_json::Map<String, Value> {
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
-    .collect()
+    .collect();
+    // 全局错误日志：集中到 /var/log/zap/php/ 下，`{user}` 占位符渲染时替换为
+    // pool 的 Linux 账号 —— 每个 pool 一个文件，避免多用户抢写同一文件。
+    // 单用户规格模板默认走 {home}/logs/php-error.log（随账号隔离）；
+    // zapexec 会自动建目录、预建文件并 chown 给 pool 用户，open_basedir 也同步放行。
+    // disable_functions 默认禁用高危函数（命令执行 / 代码执行与信息泄露 / 文件提权三类）；
+    // 放进全局默认配置后，可在「全局默认配置」对话框里直接查看 / 覆盖。
+    spec.insert(
+        "php_admin_value".to_string(),
+        Value::Object(
+            serde_json::json!({
+                "error_log": "/var/log/zap/php/{user}-error.log",
+                "disable_functions": "exec,passthru,shell_exec,system,proc_open,popen,pcntl_exec,eval,assert,create_function,show_source,phpinfo,chmod,chown,chgrp,symlink,link"
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        ),
+    );
+    spec
 }
 
 fn default_fpm_spec_json() -> String {
