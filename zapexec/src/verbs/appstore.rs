@@ -1129,7 +1129,7 @@ fn spawn_background(
         let mut log = log_file;
         let _ = writeln!(
             log,
-            "── Queued, automatically runs after the previous task completes ──"
+            "── Queued (auto-runs after previous task ──"
         );
         // 全局串行闸门：install/uninstall/upgrade/script_run 一次只执行一个
         let _queue_token = QueueToken::new();
