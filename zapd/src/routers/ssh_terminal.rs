@@ -871,7 +871,11 @@ async fn handle_terminal(
         }
         Ok(Err(e)) => {
             error!("SSH authentication failed: {}", e);
-            note_ssh_auth_failure(user_id, conn_id);
+            // 只有凭据类失败才计数：TOFU 不匹配 / 跳板机配置错重试也不会对，
+            // 不能因为它们把用户锁在限流门外
+            if is_credential_failure(&e) {
+                note_ssh_auth_failure(user_id, conn_id);
+            }
             let _ = ws_tx.send(error_frame(&format!("认证失败: {e}"))).await;
             let _ = ws_tx.close().await;
             return;
@@ -1178,6 +1182,14 @@ fn ssh_auth_blocked(user_id: i64, conn_id: i64) -> Option<u64> {
     Some(SSH_FAIL_WINDOW.as_secs().saturating_sub(elapsed.as_secs()))
 }
 
+/// 该错误是否属于「凭据不对」：只有这类失败才计入爆破限流。
+///
+/// 主机密钥不匹配（TOFU）、跳板机配置错误、私钥解析失败等
+/// 不是凭据问题，反复重试也刷不出密码，不该把用户锁在门外。
+fn is_credential_failure(msg: &str) -> bool {
+    msg.starts_with("密码认证失败") || msg.starts_with("密钥认证失败")
+}
+
 /// 记一次认证失败（窗口已过期则重新从 1 开始）。
 fn note_ssh_auth_failure(user_id: i64, conn_id: i64) {
     let mut fails = SSH_AUTH_FAILS.lock().unwrap();
@@ -1356,6 +1368,41 @@ where
     Ok(handle)
 }
 
+/// keyboard-interactive 认证：服务端禁用 `password` 方式时的兜底。
+///
+/// 按 PAM 的提问逐轮作答（一般只有一条「Password:」，全部用密码回答）；
+/// 轮次设上限，避免配合不良的服务器把流程拖成死循环。
+/// 双因素（第二个提问不是密码）暂不支持，答错会走正常的失败路径。
+async fn auth_keyboard_interactive(
+    handle: &mut client::Handle<SshClient>,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    use russh::client::KeyboardInteractiveAuthResponse as Kbd;
+    let mut res = handle
+        .authenticate_keyboard_interactive_start(username, None)
+        .await
+        .map_err(|e| format!("密码认证失败: {e}"))?;
+    for _ in 0..10 {
+        match res {
+            Kbd::Success => {
+                info!("SSH keyboard-interactive auth succeeded (user {username})");
+                return Ok(());
+            }
+            Kbd::Failure { .. } => {
+                return Err("密码认证失败：用户名或密码错误".to_string());
+            }
+            Kbd::InfoRequest { .. } => {
+                res = handle
+                    .authenticate_keyboard_interactive_respond(vec![password.to_string()])
+                    .await
+                    .map_err(|e| format!("密码认证失败: {e}"))?;
+            }
+        }
+    }
+    Err("密码认证失败：服务器认证提问轮次过多，已中止".to_string())
+}
+
 /// 在已建立的连接上完成认证（密码 / 私钥）并处理 TOFU 落库。
 ///
 /// 直连与跳板机共用：两者只是「流从哪来」不同，
@@ -1373,7 +1420,22 @@ async fn ssh_authenticate(
                 .await
                 .map_err(|e| format!("密码认证失败: {}", e))?;
             if !res.success() {
-                return Err("密码认证失败：用户名或密码错误".to_string());
+                // 密码方式被拒 ≠ 密码错：不少服务器（云镜像尤其常见，
+                // `PasswordAuthentication no` / `PermitRootLogin prohibit-password`）
+                // 只留 keyboard-interactive，由 PAM 出提问。服务端明确宣告
+                // 还提供 keyboard-interactive 时按提问补答，别急着判死。
+                let kbd_allowed = match &res {
+                    russh::client::AuthResult::Failure {
+                        remaining_methods, ..
+                    } => remaining_methods
+                        .iter()
+                        .any(|k| <&str>::from(k) == "keyboard-interactive"),
+                    _ => false,
+                };
+                if !kbd_allowed {
+                    return Err("密码认证失败：用户名或密码错误".to_string());
+                }
+                auth_keyboard_interactive(handle, &info.username, &info.password).await?;
             }
         }
         "key" => {
@@ -1712,7 +1774,9 @@ pub async fn test_connection(
             ))
         }
         Err(e) => {
-            note_ssh_auth_failure(user_id, params.id);
+            if is_credential_failure(&e) {
+                note_ssh_auth_failure(user_id, params.id);
+            }
             Ok(Json(json!({ "code": 0, "success": false, "message": e })))
         }
     }
