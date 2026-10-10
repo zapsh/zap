@@ -4299,6 +4299,8 @@ export default {
     formJump: '跳板机',
     jumpNone: '直连（不经过跳板机）',
     jumpTip: '经跳板机连接：先登录跳板机，再由它转发到目标主机（等同 ssh -J）；跳板机需允许 TCP 转发',
+    jumpNoPwd:
+      '跳板机「{name}」没有保存密码，经它连接会认证失败：请先编辑该连接、填入密码并保存',
     jumpBadge: '跳板',
     jumpBadgeTitle: '经跳板机连接',
     recTitle: '会话录制',

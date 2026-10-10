@@ -294,6 +294,10 @@
               :value="c.id"
             />
           </el-select>
+          <!-- 选中了没保存密码的跳板机：提前预警，别等连接时对着「密码错误」发懵 -->
+          <div v-if="jumpNoCred" class="key-tip jump-warn">
+            {{ t('terminal.jumpNoPwd', { name: jumpSelectedName }) }}
+          </div>
           <div class="key-tip">{{ t('terminal.jumpTip') }}</div>
         </el-form-item>
         <el-form-item :label="t('terminal.formRemark')">
@@ -753,6 +757,18 @@ const form = ref({
 const jumpCandidates = computed(() =>
   connections.value.filter((c) => c.id !== editingConn.value?.id && c.status === 1),
 )
+
+/** 当前选中的跳板机连接 */
+const jumpSelected = computed(() =>
+  connections.value.find((c) => c.id === form.value.jump_conn_id),
+)
+const jumpSelectedName = computed(() => jumpSelected.value?.name || '')
+
+/** 跳板机是密码认证但没存密码：经它中转必然认证失败，提前预警 */
+const jumpNoCred = computed(() => {
+  const j = jumpSelected.value
+  return !!j && j.auth_type === 'password' && !j.has_password
+})
 
 function jumpLabel(c: SshConnection) {
   return `${c.name}（${c.username}@${c.host}:${c.port}）`
@@ -1793,6 +1809,12 @@ export default { name: 'Terminal' }
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+/* 跳板机缺密码的预警：暖色，跟普通提示区分开 */
+.jump-warn {
+  color: var(--el-color-warning);
+  display: block;
 }
 
 /* ── 右侧终端区 ─────────────────────────── */

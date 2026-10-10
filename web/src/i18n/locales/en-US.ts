@@ -4354,6 +4354,8 @@ const enUS: Messages = {
     jumpNone: 'Direct (no jump host)',
     jumpTip:
       'Connect through a jump host: log into it first, then forward to the target (same as ssh -J); the jump host must allow TCP forwarding',
+    jumpNoPwd:
+      'Jump host "{name}" has no saved password; connecting through it will fail. Edit that connection, enter the password and save first',
     jumpBadge: 'jump',
     jumpBadgeTitle: 'Connected via jump host',
     recTitle: 'Recordings',

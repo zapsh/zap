@@ -861,15 +861,28 @@ async fn handle_terminal(
     if let Some(pwd) = temporary_password {
         auth_info.password = pwd;
     }
-    // 整段超时：不可达主机不能一直挂到 OS 层 TCP 超时（分钟级），
-    // 也不让一个 WebSocket + tokio 任务无限期占着
-    let handle = match tokio::time::timeout(SSH_CONNECT_TIMEOUT, ssh_connect(&auth_info)).await {
-        Ok(Ok(h)) => {
+    // 审计要用的目标信息（auth_info 马上要搬进独立任务）
+    let (target_user, target_host, target_port) = (
+        auth_info.username.clone(),
+        auth_info.host.clone(),
+        auth_info.port,
+    );
+
+    // 建连放在独立任务里跑：底层库一旦 panic，以往整个任务静默消失、
+    // 终端只看到「连接已断开」却没有任何原因。独立任务能把 panic 从
+    // JoinError 里捞出来，照样回显成红字（panic 详情同时进服务日志）。
+    let connect_task = tokio::spawn(async move {
+        // 整段超时：不可达主机不能一直挂到 OS 层 TCP 超时（分钟级），
+        // 也不让一个 WebSocket + tokio 任务无限期占着
+        tokio::time::timeout(SSH_CONNECT_TIMEOUT, ssh_connect(&auth_info)).await
+    });
+    let handle = match connect_task.await {
+        Ok(Ok(Ok(h))) => {
             // 认证成功，清掉这条连接的失败计数
             clear_ssh_auth_failures(user_id, conn_id);
             h
         }
-        Ok(Err(e)) => {
+        Ok(Ok(Err(e))) => {
             error!("SSH authentication failed: {}", e);
             // 只有凭据类失败才计数：TOFU 不匹配 / 跳板机配置错重试也不会对，
             // 不能因为它们把用户锁在限流门外
@@ -880,7 +893,7 @@ async fn handle_terminal(
             let _ = ws_tx.close().await;
             return;
         }
-        Err(_) => {
+        Ok(Err(_)) => {
             // 连不上（主机不可达）不算凭据问题，不记入失败计数
             error!(
                 "SSH connect timed out after {}s (connection {})",
@@ -891,10 +904,23 @@ async fn handle_terminal(
                 .send(error_frame(&format!(
                     "建连超时：{} 秒内没能连上 {}:{}",
                     SSH_CONNECT_TIMEOUT.as_secs(),
-                    auth_info.host,
-                    auth_info.port
+                    target_host,
+                    target_port
                 )))
                 .await;
+            let _ = ws_tx.close().await;
+            return;
+        }
+        Err(je) => {
+            let detail = if let Some(p) = je.try_into_panic().ok() {
+                let msg = panic_message(p);
+                error!("SSH connect panicked (connection {}): {}", conn_id, msg);
+                format!("连接过程发生内部错误（已记录日志）: {msg}")
+            } else {
+                error!("SSH connect task aborted (connection {})", conn_id);
+                "连接任务异常退出，请重试".to_string()
+            };
+            let _ = ws_tx.send(error_frame(&detail)).await;
             let _ = ws_tx.close().await;
             return;
         }
@@ -945,10 +971,7 @@ async fn handle_terminal(
         Some(&claims),
         None,
         "ssh_session_start",
-        &format!(
-            "{}@{}:{}",
-            auth_info.username, auth_info.host, auth_info.port
-        ),
+        &format!("{}@{}:{}", target_user, target_host, target_port),
         &format!("SSH 终端会话开启（连接 #{conn_id}）"),
     )
     .await;
@@ -1190,6 +1213,17 @@ fn is_credential_failure(msg: &str) -> bool {
     msg.starts_with("密码认证失败") || msg.starts_with("密钥认证失败")
 }
 
+/// 从 panic payload 提取可读信息（`&str` / `String` 之外按未知处理）
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 /// 记一次认证失败（窗口已过期则重新从 1 开始）。
 fn note_ssh_auth_failure(user_id: i64, conn_id: i64) {
     let mut fails = SSH_AUTH_FAILS.lock().unwrap();
@@ -1303,6 +1337,22 @@ async fn ssh_connect_via_jump(info: &ConnectionInfo, depth: u32) -> Result<SshCo
     }
     if jump.owner_id != info.owner_id {
         return Err("跳板机连接不属于同一用户".to_string());
+    }
+    // 跳板机凭据可用性预检：没有凭据的跳板机连自己都登不上去，
+    // 提前给出可操作的报错，而不是等认证失败后让用户对着一句
+    // 「用户名或密码错误」猜（密码填的是目标的，跟跳板机毫无关系）。
+    if jump.auth_type == "password" && jump.password.is_empty() {
+        return Err(format!(
+            "跳板机「{}」（{}@{}:{}）没有保存密码：请先编辑该连接、填入密码并保存，再把它设为跳板机",
+            if jump.name.is_empty() {
+                format!("#{}", jump.id)
+            } else {
+                jump.name.clone()
+            },
+            jump.username,
+            jump.host,
+            jump.port
+        ));
     }
     // 跳板自己也可以再挂跳板
     let jump_conn = if jump.jump_conn_id > 0 {
@@ -1513,6 +1563,8 @@ async fn ssh_connect_direct(info: &ConnectionInfo) -> Result<SshConn, String> {
 pub(crate) struct ConnectionInfo {
     /// 连接 id；`0` = 临时连接（如「推送公钥」表单，尚未入库），TOFU 指纹无处落库
     id: i64,
+    /// 连接名（报错时指名道姓，如「跳板机『xxx』没有保存密码」）
+    name: String,
     /// 归属用户 id：跳板机必须与之同归属，否则等于借别人的连接做中转
     owner_id: i64,
     /// 跳板机连接 id（`0` = 直连）：指向另一条已保存的连接
@@ -1558,7 +1610,7 @@ struct AuthMsg {
 pub(crate) async fn load_connection_info(id: i64) -> Result<ConnectionInfo, ZapError> {
     let pool = db::get_db_pool().await;
     let row = sqlx::query(
-        "SELECT s.id, s.jump_conn_id, s.host, s.port, s.username, s.auth_type, s.password, \
+        "SELECT s.id, s.name, s.jump_conn_id, s.host, s.port, s.username, s.auth_type, s.password, \
                 s.ssh_key_name, s.host_key_fingerprint, s.user_id AS owner_id, \
                 u.linux_user AS linux_user \
          FROM ssh_connections s LEFT JOIN user u ON u.id = s.user_id \
@@ -1576,6 +1628,7 @@ pub(crate) async fn load_connection_info(id: i64) -> Result<ConnectionInfo, ZapE
             let linux_user: String = r.try_get("linux_user").unwrap_or_default();
             let mut info = ConnectionInfo {
                 id: r.get("id"),
+                name: r.try_get("name").unwrap_or_default(),
                 owner_id: r.try_get("owner_id").unwrap_or(0),
                 // 存量行可能还没这一列（升级前插入的），取不到就当直连
                 jump_conn_id: r.try_get("jump_conn_id").unwrap_or(0),
@@ -1923,6 +1976,7 @@ async fn push_key_core(
     let info = ConnectionInfo {
         // 临时连接：尚未入库，没有可写入指纹的行
         id: 0,
+        name: String::new(),
         owner_id: 0,
         // 表单直推不经跳板机
         jump_conn_id: 0,
