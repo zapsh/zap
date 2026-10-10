@@ -1809,8 +1809,10 @@ pub async fn test_connection(
     if let Some(wait) = ssh_auth_blocked(user_id, params.id) {
         return Ok(Json(json!({
             "code": 0,
-            "success": false,
-            "message": format!("认证失败次数过多（{SSH_FAIL_LIMIT} 次），请 {wait} 秒后再试")
+            "data": {
+                "success": false,
+                "message": format!("认证失败次数过多（{SSH_FAIL_LIMIT} 次），请 {wait} 秒后再试")
+            }
         })));
     }
     let conn_info = load_connection_info(params.id).await?;
@@ -1822,15 +1824,19 @@ pub async fn test_connection(
             let _ = handle
                 .disconnect(Disconnect::ByApplication, "", "English")
                 .await;
-            Ok(Json(
-                json!({ "code": 0, "success": true, "message": "连接成功" }),
-            ))
+            Ok(Json(json!({
+                "code": 0,
+                "data": { "success": true, "message": "连接成功" }
+            })))
         }
         Err(e) => {
             if is_credential_failure(&e) {
                 note_ssh_auth_failure(user_id, params.id);
             }
-            Ok(Json(json!({ "code": 0, "success": false, "message": e })))
+            Ok(Json(json!({
+                "code": 0,
+                "data": { "success": false, "message": e }
+            })))
         }
     }
 }
