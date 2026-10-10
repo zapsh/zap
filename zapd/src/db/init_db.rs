@@ -42,6 +42,8 @@ pub async fn init_schema() {
     init_login_history_table().await;
     init_hourly_stats_tables().await;
     crate::routers::ssh_terminal::init_table().await;
+    // 终端会话录制（依赖 ssh_connections 的归属规则，紧随其后）
+    crate::routers::ssh_record::init_table().await;
     // 通用任务队列（应用商店安装 / Docker 构建 / 备份 / 升级 / 计划任务都登记在这里）
     init_task_queue_table().await;
     // 老数据订正：脚本运行以前登记成 appstore（见函数注释）

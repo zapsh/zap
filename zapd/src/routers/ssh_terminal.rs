@@ -36,7 +36,7 @@ use crate::zap::{ZapError, ZapJsonResult};
 ///
 /// 主机不可达时不能让请求干等到 OS 层 TCP 超时（分钟级），
 /// 那样会白白占着一个 WebSocket 和一个 tokio 任务。
-const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 空闲自动断开：输入/输出都没有这么久就结束会话。
 ///
@@ -95,6 +95,9 @@ pub async fn init_table() {
             -- host_key_fingerprint：主机密钥指纹（TOFU，见 ssh_connect）。
             -- 空 = 还没信任过该主机的密钥，首次连成后写入；非空则后续连接必须匹配
             host_key_fingerprint VARCHAR(128) DEFAULT '',
+            -- jump_conn_id：跳板机（ProxyJump）连接 id，0 = 直连。
+            -- 指向本表另一行；该连接会先被连上，再转发到本连接的目标主机
+            jump_conn_id INTEGER NOT NULL DEFAULT 0,
             remark TEXT DEFAULT '',
             status INTEGER DEFAULT 1,
             sort_order INTEGER DEFAULT 0,
@@ -118,6 +121,11 @@ pub async fn init_table() {
         .execute(
             "ALTER TABLE ssh_connections ADD COLUMN host_key_fingerprint VARCHAR(128) DEFAULT ''",
         )
+        .await;
+    // 跳板机连接 id：存量库补列（幂等）
+    let _ = db::get_db_pool()
+        .await
+        .execute("ALTER TABLE ssh_connections ADD COLUMN jump_conn_id INTEGER NOT NULL DEFAULT 0")
         .await;
     let _ = db::get_db_pool()
         .await
@@ -206,6 +214,8 @@ pub struct SshConnection {
     pub port: i32,
     pub username: String,
     pub auth_type: String,
+    /// 跳板机连接 id：`0` = 直连，否则经该连接做 TCP 转发（ProxyJump）
+    pub jump_conn_id: i64,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub password: String,
     /// 是否已保存密码（空密码 = 未设置，连接时由前端弹窗临时输入，不落库）
@@ -229,6 +239,7 @@ fn row_to_conn(row: &sqlx::sqlite::SqliteRow) -> SshConnection {
         port: row.get("port"),
         username: row.get("username"),
         auth_type: row.get("auth_type"),
+        jump_conn_id: row.try_get("jump_conn_id").unwrap_or(0),
         password: String::new(), // 一律不回传密文
         has_password: !stored_password.is_empty(),
         ssh_key_name: row.try_get("ssh_key_name").unwrap_or_default(),
@@ -244,7 +255,7 @@ fn row_to_conn(row: &sqlx::sqlite::SqliteRow) -> SshConnection {
 
 /// SSH 连接严格按归属隔离（为安全起见，admin / reseller / 普通用户一律只看自己的连接）：
 /// 仅 owner = 当前登录用户时可访问；历史/无主连接（user_id=0）已在启动迁移中划归 admin。
-async fn connection_in_scope(claims: &Claims, conn_id: i64) -> Result<i64, ZapError> {
+pub(crate) async fn connection_in_scope(claims: &Claims, conn_id: i64) -> Result<i64, ZapError> {
     let pool = db::get_db_pool().await;
     let row: Option<(i64,)> = sqlx::query_as("SELECT user_id FROM ssh_connections WHERE id = ?")
         .bind(conn_id)
@@ -262,6 +273,53 @@ async fn connection_in_scope(claims: &Claims, conn_id: i64) -> Result<i64, ZapEr
     Ok(owner_id)
 }
 
+/// 校验跳板机设置（`jump_conn_id = 0` 表示直连，直接放行）：
+/// 跳板机必须是自己名下、启用中的连接，不能是自己，也不能沿链绕回自己（成环）。
+///
+/// `conn_id = 0` 表示新建（还没有 id），此时只校验链本身是否合法。
+/// 成环在保存时就拦掉，比等到连接时靠层级上限报错更友好。
+async fn validate_jump_conn(user_id: i64, conn_id: i64, jump_conn_id: i64) -> Result<(), ZapError> {
+    if jump_conn_id <= 0 {
+        return Ok(());
+    }
+    if jump_conn_id == conn_id {
+        return Err(ZapError::New(-1, "跳板机不能是连接自己".to_string()));
+    }
+    let pool = db::get_db_pool().await;
+    let mut cur = jump_conn_id;
+    for _ in 0..MAX_JUMP_DEPTH {
+        if cur == conn_id {
+            return Err(ZapError::New(
+                -1,
+                "跳板机配置成环了：请检查这些连接互相的跳板机设置".to_string(),
+            ));
+        }
+        let row: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT user_id, jump_conn_id FROM ssh_connections WHERE id = ? AND status = 1",
+        )
+        .bind(cur)
+        .fetch_optional(pool)
+        .await?;
+        let Some((owner, next)) = row else {
+            return Err(ZapError::New(-1, "跳板机连接不存在或已禁用".to_string()));
+        };
+        if owner != user_id {
+            return Err(ZapError::New(
+                -1,
+                "无权访问该连接：连接归属其他用户".to_string(),
+            ));
+        }
+        if next <= 0 {
+            return Ok(());
+        }
+        cur = next;
+    }
+    Err(ZapError::New(
+        -1,
+        format!("跳板机层级最多 {MAX_JUMP_DEPTH} 层"),
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateConnectionPayload {
     pub name: String,
@@ -276,6 +334,9 @@ pub struct CreateConnectionPayload {
     pub password: String,
     #[serde(default)]
     pub ssh_key_name: String,
+    /// 跳板机连接 id（`0` = 直连）
+    #[serde(default)]
+    pub jump_conn_id: i64,
     #[serde(default)]
     pub remark: String,
 }
@@ -289,6 +350,8 @@ pub struct UpdateConnectionPayload {
     pub auth_type: Option<String>,
     pub password: Option<String>,
     pub ssh_key_name: Option<String>,
+    /// 跳板机连接 id（`Some(0)` = 改为直连）
+    pub jump_conn_id: Option<i64>,
     pub remark: Option<String>,
     pub status: Option<i32>,
     pub sort_order: Option<i32>,
@@ -310,7 +373,7 @@ fn default_auth_type() -> String {
 // ── CRUD handlers ──────────────────────────────────────────
 
 const CONN_SEL_COLS: &str = "s.id, s.name, s.host, s.port, s.username, s.auth_type, s.password, \
-                             s.ssh_key_name, s.remark, s.status, s.sort_order, s.created_at, s.updated_at, \
+                             s.ssh_key_name, s.jump_conn_id, s.remark, s.status, s.sort_order, s.created_at, s.updated_at, \
                              s.user_id AS owner_id";
 
 /// 列表严格隔离：仅列出当前登录用户（含 admin / reseller）自己创建的连接。
@@ -377,13 +440,15 @@ pub async fn create_connection(
     let pool = db::get_db_pool().await;
     let now = chrono::Utc::now().timestamp();
 
+    validate_jump_conn(claims.id as i64, 0, payload.jump_conn_id).await?;
+
     // 密码加密后入库，杜绝明文存储（加密失败直接报错，不落明文）
     let encrypted_password =
         crypto::encrypt_password(&payload.password).map_err(|e| ZapError::New(-1, e))?;
 
     sqlx::query(
-        "INSERT INTO ssh_connections (user_id, name, host, port, username, auth_type, password, ssh_key_name, remark, status, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)"
+        "INSERT INTO ssh_connections (user_id, name, host, port, username, auth_type, password, ssh_key_name, jump_conn_id, remark, status, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)"
     )
     .bind(claims.id as i64)
     .bind(payload.name.trim())
@@ -393,6 +458,7 @@ pub async fn create_connection(
     .bind(&payload.auth_type)
     .bind(encrypted_password)
     .bind(&payload.ssh_key_name)
+    .bind(payload.jump_conn_id)
     .bind(&payload.remark)
     .bind(now)
     .bind(now)
@@ -421,6 +487,10 @@ pub async fn update_connection(
     let pool = db::get_db_pool().await;
     // 归属校验：仅本人 / reseller 名下客户 / admin 可编辑
     connection_in_scope(&claims, id).await?;
+
+    if let Some(v) = payload.jump_conn_id {
+        validate_jump_conn(claims.id as i64, id, v).await?;
+    }
 
     let now = chrono::Utc::now().timestamp();
 
@@ -484,6 +554,15 @@ pub async fn update_connection(
     }
     if let Some(v) = payload.ssh_key_name {
         sqlx::query("UPDATE ssh_connections SET ssh_key_name = ?, updated_at = ? WHERE id = ?")
+            .bind(v)
+            .bind(now)
+            .bind(id)
+            .execute(pool)
+            .await?;
+    }
+    if let Some(v) = payload.jump_conn_id {
+        // 换的是中转路径，目标主机没变 → 主机密钥指纹不受影响
+        sqlx::query("UPDATE ssh_connections SET jump_conn_id = ?, updated_at = ? WHERE id = ?")
             .bind(v)
             .bind(now)
             .bind(id)
@@ -554,6 +633,12 @@ pub async fn delete_connection(
         return Err(ZapError::New(-1, "连接不存在".to_string()));
     }
 
+    // 把这条连接当作跳板机的其他连接清成直连，避免留下悬空引用（连上去只会报「连接不存在」）
+    sqlx::query("UPDATE ssh_connections SET jump_conn_id = 0 WHERE jump_conn_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
     audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
@@ -568,6 +653,50 @@ pub async fn delete_connection(
 }
 
 // ── WebSocket SSH terminal ─────────────────────────────────
+
+/// 终端 / SFTP 共用准入：演示账号 → 套餐开关 → 连接归属隔离。
+///
+/// 两者都等于「把这台主机的操作权交给登录者」，准入规则必须一致，
+/// 否则会出现「终端不让用、SFTP 却能传文件」这类绕过。
+/// 返回 `Err((状态码, 提示))`，调用方直接转成 HTTP 响应或业务错误。
+pub(crate) async fn check_terminal_access(
+    claims: &Claims,
+    conn_id: i64,
+) -> Result<(), (StatusCode, String)> {
+    // 演示账号仅支持浏览，禁止执行 / 传文件
+    if crate::zap::jwt::is_demo(claims) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "演示账号仅支持浏览，不能使用终端".to_string(),
+        ));
+    }
+    // 套餐限制：已绑定套餐且未开启 SSH 终端时禁止使用（未绑定套餐不限制）
+    if let Some(pkg) = crate::routers::package::package_of_user(claims.id as i64).await
+        && pkg.allow_ssh != 1
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "当前套餐「{}」未开启 SSH 终端，请联系服务商变更套餐",
+                pkg.name
+            ),
+        ));
+    }
+    // 归属隔离：任何角色（含 admin/reseller）仅能访问自己创建的连接
+    if let Err(e) = connection_in_scope(claims, conn_id).await {
+        let msg = match &e {
+            ZapError::New(_, m) => m.clone(),
+            other => other.to_string(),
+        };
+        let status = if msg.contains("连接不存在") {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::FORBIDDEN
+        };
+        return Err((status, msg));
+    }
+    Ok(())
+}
 
 pub async fn ws_terminal(
     ws: WebSocketUpgrade,
@@ -601,37 +730,8 @@ pub async fn ws_terminal(
             ))
             .unwrap();
     }
-    // 演示账号仅支持浏览，禁止通过终端执行命令
-    if crate::zap::jwt::is_demo(&claims) {
-        return axum::response::Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .body(axum::body::Body::from("演示账号仅支持浏览，不能使用终端"))
-            .unwrap();
-    }
-    // 套餐限制：已绑定套餐且未开启 SSH 终端时禁止使用（未绑定套餐不限制）
-    if let Some(pkg) = crate::routers::package::package_of_user(claims.id as i64).await
-        && pkg.allow_ssh != 1
-    {
-        return axum::response::Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .body(axum::body::Body::from(format!(
-                "当前套餐「{}」未开启 SSH 终端，请联系服务商变更套餐",
-                pkg.name
-            )))
-            .unwrap();
-    }
-
-    // 连接归属校验：严格隔离——任何角色（含 admin/reseller）仅能对自己创建的连接建立终端会话
-    if let Err(e) = connection_in_scope(&claims, id).await {
-        let msg = match &e {
-            ZapError::New(_, m) => m.clone(),
-            other => other.to_string(),
-        };
-        let status = if msg.contains("连接不存在") {
-            StatusCode::NOT_FOUND
-        } else {
-            StatusCode::FORBIDDEN
-        };
+    // 演示账号 / 套餐开关 / 连接归属：与 SFTP 共用同一套准入
+    if let Err((status, msg)) = check_terminal_access(&claims, id).await {
         return axum::response::Response::builder()
             .status(status)
             .body(axum::body::Body::from(msg))
@@ -646,11 +746,21 @@ pub async fn ws_terminal(
         .get("cols")
         .and_then(|v| v.parse().ok())
         .unwrap_or(80);
+    // 会话录制开关：`record=0` 关闭，缺省 / 其他值一律开启。
+    // 录制内容可能含敏感输出，所以开关放在建连参数上，由前端按用户意愿决定。
+    let record = params.get("record").map(|v| v != "0").unwrap_or(true);
 
-    ws.on_upgrade(move |socket| handle_terminal(socket, id, rows, cols, claims))
+    ws.on_upgrade(move |socket| handle_terminal(socket, id, rows, cols, claims, record))
 }
 
-async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32, claims: Claims) {
+async fn handle_terminal(
+    socket: WebSocket,
+    conn_id: i64,
+    rows: u32,
+    cols: u32,
+    claims: Claims,
+    record: bool,
+) {
     info!("Terminal WebSocket connected for connection {}", conn_id);
 
     // 并发会话配额：满了就不要再往下建 SSH 连接了。
@@ -786,13 +896,18 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32, 
         }
     };
 
+    // 会话录制：录远端输出（不录键盘输入），asciinema cast，按用户隔离落盘
+    let mut recorder = if record {
+        crate::routers::ssh_record::Recorder::start(user_id, conn_id, cols, rows)
+    } else {
+        None
+    };
+
     let mut channel = match handle.channel_open_session().await {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to open SSH channel: {}", e);
-            let _ = ws_tx
-                .send(error_frame(&format!("打开通道失败: {e}")))
-                .await;
+            let _ = ws_tx.send(error_frame(&format!("打开通道失败: {e}"))).await;
             let _ = ws_tx.close().await;
             return;
         }
@@ -803,7 +918,9 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32, 
         .await
     {
         error!("Failed to request PTY: {}", e);
-        let _ = ws_tx.send(error_frame(&format!("请求 PTY 失败: {e}"))).await;
+        let _ = ws_tx
+            .send(error_frame(&format!("请求 PTY 失败: {e}")))
+            .await;
         let _ = ws_tx.close().await;
         return;
     }
@@ -850,6 +967,9 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32, 
                 match msg {
                     ChannelMsg::Data { data } => {
                         last_active = tokio::time::Instant::now();
+                        if let Some(r) = recorder.as_mut() {
+                            r.output(&data);
+                        }
                         if ws_tx.send(Message::Binary(data)).await.is_err() {
                             break;
                         }
@@ -933,10 +1053,19 @@ async fn handle_terminal(socket: WebSocket, conn_id: i64, rows: u32, cols: u32, 
 
         // 应用窗口尺寸变更：此处未持有 channel 的独占借用
         while let Ok((c, r)) = resize_rx.try_recv() {
-            if let Err(e) = channel.window_change(c, r, 0, 0).await {
-                warn!("PTY resize to {}x{} failed: {}", c, r, e);
+            if channel.window_change(c, r, 0, 0).await.is_ok() {
+                if let Some(rec) = recorder.as_mut() {
+                    rec.resize(c, r);
+                }
+            } else {
+                warn!("PTY resize to {}x{} failed", c, r);
             }
         }
+    }
+
+    // 收尾录制：落库 + 清理超量历史
+    if let Some(rec) = recorder.take() {
+        rec.finish(user_id, conn_id).await;
     }
 
     // Cleanup
@@ -960,7 +1089,7 @@ async fn send_error_and_close(socket: WebSocket, msg: &str) {
 ///
 /// 面板只需要「连上去、开终端 / 执行命令」，不消费服务端主动推送的消息，
 /// 因此除 `check_server_key` 外全部使用默认实现。
-struct SshClient {
+pub(crate) struct SshClient {
     /// 已记录的主机密钥指纹（TOFU）：`None` = 首次连接，暂不比对
     expected: Option<String>,
     /// 本次握手实际看到的指纹，回传给 `ssh_connect` 用于落库 / 报清楚错
@@ -1052,7 +1181,9 @@ fn ssh_auth_blocked(user_id: i64, conn_id: i64) -> Option<u64> {
 /// 记一次认证失败（窗口已过期则重新从 1 开始）。
 fn note_ssh_auth_failure(user_id: i64, conn_id: i64) {
     let mut fails = SSH_AUTH_FAILS.lock().unwrap();
-    let entry = fails.entry((user_id, conn_id)).or_insert((0, Instant::now()));
+    let entry = fails
+        .entry((user_id, conn_id))
+        .or_insert((0, Instant::now()));
     if entry.1.elapsed() >= SSH_FAIL_WINDOW {
         *entry = (1, Instant::now());
     } else {
@@ -1065,26 +1196,152 @@ fn clear_ssh_auth_failures(user_id: i64, conn_id: i64) {
     SSH_AUTH_FAILS.lock().unwrap().remove(&(user_id, conn_id));
 }
 
-async fn ssh_connect(info: &ConnectionInfo) -> Result<client::Handle<SshClient>, String> {
-    let addr = format!("{}:{}", info.host, info.port);
-    // 保活：30s 没收到数据就发一次 keepalive，连续 3 次没回应即判定链路已死。
-    // 没有它，NAT 超时 / 网络闪断之后这条连接会一直僵着 ——
-    // 双方都不发数据，谁也不会先断开，会话就这么悬着。
-    let config = Arc::new(client::Config {
+/// 建立 SSH 连接并完成认证；连接配了跳板机时自动走 ProxyJump。
+pub(crate) async fn ssh_connect(info: &ConnectionInfo) -> Result<SshConn, String> {
+    if info.jump_conn_id > 0 {
+        ssh_connect_via_jump(info, 1).await
+    } else {
+        ssh_connect_direct(info).await
+    }
+}
+
+/// 一条已认证的 SSH 连接。
+///
+/// 跳板机（ProxyJump）场景下必须**同时持有跳板会话**：目标连接跑在跳板机的
+/// 转发通道里，跳板会话一断，通道立刻消失、目标连接也就没了。
+/// 这里用 `Deref` 让调用方照旧把它当 `client::Handle` 用，不必感知这一层。
+pub(crate) struct SshConn {
+    inner: client::Handle<SshClient>,
+    /// 跳板机会话（跳板自己也可能挂跳板，故递归持有）
+    _jump: Option<Box<SshConn>>,
+}
+
+impl std::ops::Deref for SshConn {
+    type Target = client::Handle<SshClient>;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+/// 客户端配置：开启保活，避免 NAT / 网络闪断之后连接一直僵着
+/// （双方都不发数据，谁也不会先断开）。
+fn ssh_config() -> Arc<client::Config> {
+    Arc::new(client::Config {
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
         ..Default::default()
-    });
-    // TOFU：库里没记过指纹就先放过去（连成 + 认证成功后由下面落库），记过就必须匹配
+    })
+}
+
+/// 本次连接的 TOFU 状态：库里已记录的期望指纹 + 实际指纹收集槽
+fn tofu_state(info: &ConnectionInfo) -> (Option<String>, Arc<Mutex<Option<String>>>) {
     let expected = if info.host_key_fingerprint.is_empty() {
         None
     } else {
         Some(info.host_key_fingerprint.clone())
     };
-    let observed = Arc::new(Mutex::new(None));
-    let mut handle = match client::connect(
-        config,
-        addr,
+    (expected, Arc::new(Mutex::new(None)))
+}
+
+/// 握手失败的报错：区分「主机密钥变了」和「普通连不上」——
+/// russh 只在握手层抛错，看不出到底是哪一种。
+fn tofu_error(
+    e: russh::Error,
+    expected: &Option<String>,
+    observed: &Arc<Mutex<Option<String>>>,
+) -> String {
+    let seen = observed.lock().unwrap().clone();
+    if expected.is_some()
+        && let Some(actual) = seen.as_ref()
+    {
+        return format!(
+            "SSH 主机密钥指纹不匹配：已记录 {}，实际 {}。\
+             若主机确实重装过 / 换过密钥，请删除并重新添加该连接以重新信任；\
+             否则请警惕中间人攻击",
+            expected.as_deref().unwrap_or_default(),
+            actual
+        );
+    }
+    format!("SSH 连接失败: {e}")
+}
+
+/// 跳板机层级上限：防止连接配成环（A 经 B、B 又经 A）导致无限递归
+const MAX_JUMP_DEPTH: u32 = 3;
+
+/// 经跳板机连接（OpenSSH 的 `-J` / ProxyJump）：
+/// 先连上跳板机，在它上面开一条 `direct-tcpip` 通道到目标，
+/// 再在这条通道里跑完整的 SSH —— 目标看到的是「跳板机连过来」。
+///
+/// 跳板机本身也是一条已保存的连接（还能再挂跳板，所以是递归的），
+/// 且必须与目标同归属：否则等于借别人的连接和凭据做中转。
+async fn ssh_connect_via_jump(info: &ConnectionInfo, depth: u32) -> Result<SshConn, String> {
+    if depth > MAX_JUMP_DEPTH {
+        return Err(format!(
+            "跳板机层级超过 {MAX_JUMP_DEPTH} 层：请检查连接是否配成了环"
+        ));
+    }
+    let jump = load_connection_info(info.jump_conn_id)
+        .await
+        .map_err(|e| match &e {
+            ZapError::New(_, m) => m.clone(),
+            other => other.to_string(),
+        })?;
+    if jump.id == info.id {
+        return Err("跳板机不能是连接自己".to_string());
+    }
+    if jump.owner_id != info.owner_id {
+        return Err("跳板机连接不属于同一用户".to_string());
+    }
+    // 跳板自己也可以再挂跳板
+    let jump_conn = if jump.jump_conn_id > 0 {
+        // async fn 自身递归会让 Future 尺寸无限展开，必须装箱
+        Box::pin(ssh_connect_via_jump(&jump, depth + 1)).await?
+    } else {
+        ssh_connect_direct(&jump).await?
+    };
+    // 在跳板机上开一条到目标的 TCP 转发通道（跳板机需允许 TCP 转发）
+    let ch = match jump_conn
+        .channel_open_direct_tcpip(&info.host, info.port as u32, "127.0.0.1", 0)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = jump_conn
+                .disconnect(Disconnect::ByApplication, "", "English")
+                .await;
+            return Err(format!(
+                "经跳板机转发到 {}:{} 失败（跳板机需允许 TCP 转发）: {e}",
+                info.host, info.port
+            ));
+        }
+    };
+    let handle = match ssh_over_stream(info, ch.into_stream()).await {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = jump_conn
+                .disconnect(Disconnect::ByApplication, "", "English")
+                .await;
+            return Err(e);
+        }
+    };
+    Ok(SshConn {
+        inner: handle,
+        _jump: Some(Box::new(jump_conn)),
+    })
+}
+
+/// 在任意流（直连 TCP，或跳板机的转发通道）上跑 SSH 并完成认证。
+async fn ssh_over_stream<S>(
+    info: &ConnectionInfo,
+    stream: S,
+) -> Result<client::Handle<SshClient>, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (expected, observed) = tofu_state(info);
+    let mut handle = match client::connect_stream(
+        ssh_config(),
+        stream,
         SshClient {
             expected: expected.clone(),
             observed: Arc::clone(&observed),
@@ -1093,25 +1350,22 @@ async fn ssh_connect(info: &ConnectionInfo) -> Result<client::Handle<SshClient>,
     .await
     {
         Ok(h) => h,
-        Err(e) => {
-            // 指纹不匹配时 russh 只在握手层报错、看不出是「主机被换掉」，
-            // 这里补一句能看懂、也说清怎么办的提示
-            let seen = observed.lock().unwrap().clone();
-            if expected.is_some()
-                && let Some(actual) = seen.as_ref()
-            {
-                return Err(format!(
-                    "SSH 主机密钥指纹不匹配：已记录 {}，实际 {}。\
-                     若主机确实重装过 / 换过密钥，请删除并重新添加该连接以重新信任；\
-                     否则请警惕中间人攻击",
-                    expected.as_deref().unwrap_or_default(),
-                    actual
-                ));
-            }
-            return Err(format!("SSH 连接失败: {}", e));
-        }
+        Err(e) => return Err(tofu_error(e, &expected, &observed)),
     };
+    ssh_authenticate(info, &mut handle, &expected, &observed).await?;
+    Ok(handle)
+}
 
+/// 在已建立的连接上完成认证（密码 / 私钥）并处理 TOFU 落库。
+///
+/// 直连与跳板机共用：两者只是「流从哪来」不同，
+/// 认证方式、凭据、主机密钥策略完全一致。
+async fn ssh_authenticate(
+    info: &ConnectionInfo,
+    handle: &mut client::Handle<SshClient>,
+    expected: &Option<String>,
+    observed: &Arc<Mutex<Option<String>>>,
+) -> Result<(), String> {
     match info.auth_type.as_str() {
         "password" => {
             let res = handle
@@ -1155,7 +1409,8 @@ async fn ssh_connect(info: &ConnectionInfo) -> Result<client::Handle<SshClient>,
     // 没通过认证的对端还不配被信任），把本次看到的指纹写回这条连接。
     // id = 0 是临时连接（「推送公钥」表单，尚未入库），无处记录则跳过。
     let seen = observed.lock().unwrap().clone();
-    if expected.is_none() && info.id > 0
+    if expected.is_none()
+        && info.id > 0
         && let Some(fp) = seen.as_ref()
     {
         let pool = db::get_db_pool().await;
@@ -1166,12 +1421,40 @@ async fn ssh_connect(info: &ConnectionInfo) -> Result<client::Handle<SshClient>,
             .await;
         info!("SSH 主机密钥已记录（TOFU）: 连接 {} → {}", info.id, fp);
     }
-    Ok(handle)
+    Ok(())
 }
 
-struct ConnectionInfo {
+async fn ssh_connect_direct(info: &ConnectionInfo) -> Result<SshConn, String> {
+    let addr = format!("{}:{}", info.host, info.port);
+    let (expected, observed) = tofu_state(info);
+    let mut handle = match client::connect(
+        ssh_config(),
+        addr,
+        SshClient {
+            expected: expected.clone(),
+            observed: Arc::clone(&observed),
+        },
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => return Err(tofu_error(e, &expected, &observed)),
+    };
+
+    ssh_authenticate(info, &mut handle, &expected, &observed).await?;
+    Ok(SshConn {
+        inner: handle,
+        _jump: None,
+    })
+}
+
+pub(crate) struct ConnectionInfo {
     /// 连接 id；`0` = 临时连接（如「推送公钥」表单，尚未入库），TOFU 指纹无处落库
     id: i64,
+    /// 归属用户 id：跳板机必须与之同归属，否则等于借别人的连接做中转
+    owner_id: i64,
+    /// 跳板机连接 id（`0` = 直连）：指向另一条已保存的连接
+    jump_conn_id: i64,
     host: String,
     port: i32,
     username: String,
@@ -1210,11 +1493,12 @@ struct AuthMsg {
 }
 
 /// 加载连接信息并预解析密钥（家目录 `~/.ssh/zap_<name>`，经 zapexec 读取）。
-async fn load_connection_info(id: i64) -> Result<ConnectionInfo, ZapError> {
+pub(crate) async fn load_connection_info(id: i64) -> Result<ConnectionInfo, ZapError> {
     let pool = db::get_db_pool().await;
     let row = sqlx::query(
-        "SELECT s.id, s.host, s.port, s.username, s.auth_type, s.password, s.ssh_key_name, \
-                s.host_key_fingerprint, s.user_id AS owner_id, u.linux_user AS linux_user \
+        "SELECT s.id, s.jump_conn_id, s.host, s.port, s.username, s.auth_type, s.password, \
+                s.ssh_key_name, s.host_key_fingerprint, s.user_id AS owner_id, \
+                u.linux_user AS linux_user \
          FROM ssh_connections s LEFT JOIN user u ON u.id = s.user_id \
          WHERE s.id = ? AND s.status = 1",
     )
@@ -1230,6 +1514,9 @@ async fn load_connection_info(id: i64) -> Result<ConnectionInfo, ZapError> {
             let linux_user: String = r.try_get("linux_user").unwrap_or_default();
             let mut info = ConnectionInfo {
                 id: r.get("id"),
+                owner_id: r.try_get("owner_id").unwrap_or(0),
+                // 存量行可能还没这一列（升级前插入的），取不到就当直连
+                jump_conn_id: r.try_get("jump_conn_id").unwrap_or(0),
                 host: r.get("host"),
                 port: r.get("port"),
                 username: r.get("username"),
@@ -1572,6 +1859,9 @@ async fn push_key_core(
     let info = ConnectionInfo {
         // 临时连接：尚未入库，没有可写入指纹的行
         id: 0,
+        owner_id: 0,
+        // 表单直推不经跳板机
+        jump_conn_id: 0,
         host: host.to_string(),
         port,
         username: username.to_string(),

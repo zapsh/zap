@@ -6,24 +6,37 @@
       <div class="sidebar-header">
         <span class="sidebar-title">{{ t('terminal.connManager') }}</span>
         <div class="sidebar-actions">
-          <el-button
-            link
-            type="primary"
-            size="small"
-            :icon="Key"
-            @click="openKeyManager"
-          >
-            {{ t('terminal.myKeys') }}
-          </el-button>
-          <el-button
-            type="primary"
-            size="small"
-            :icon="Plus"
-            :disabled="isReadOnly"
-            @click="showAddDialog = true"
-          >
-            {{ t('common.add') }}
-          </el-button>
+          <!-- 图标按钮：文字说明放进 tooltip，省出侧栏宽度 -->
+          <el-tooltip :content="t('terminal.recTitle')" placement="bottom">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :icon="Play"
+              :aria-label="t('terminal.recTitle')"
+              @click="openAllRecords"
+            />
+          </el-tooltip>
+          <el-tooltip :content="t('terminal.myKeys')" placement="bottom">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :icon="Key"
+              :aria-label="t('terminal.myKeys')"
+              @click="openKeyManager"
+            />
+          </el-tooltip>
+          <el-tooltip :content="t('common.add')" placement="bottom">
+            <el-button
+              type="primary"
+              size="small"
+              :icon="Plus"
+              :disabled="isReadOnly"
+              :aria-label="t('common.add')"
+              @click="startCreate"
+            />
+          </el-tooltip>
         </div>
       </div>
 
@@ -58,6 +71,13 @@
                 :title="t('terminal.pwdBadgeTitle')"
               >
                 {{ t('terminal.pwdBadge') }}
+              </span>
+              <span
+                v-if="conn.jump_conn_id > 0"
+                class="jump-badge"
+                :title="jumpBadgeTitle(conn)"
+              >
+                {{ t('terminal.jumpBadge') }}
               </span>
             </span>
           </div>
@@ -98,6 +118,8 @@
                   <el-dropdown-item :icon="Monitor" command="test">{{
                     t('terminal.testConn')
                   }}</el-dropdown-item>
+                  <el-dropdown-item command="sftp">{{ t('terminal.sftp') }}</el-dropdown-item>
+                  <el-dropdown-item command="records">{{ t('terminal.recTitle') }}</el-dropdown-item>
                   <el-dropdown-item :icon="Delete" command="delete" divided :disabled="isReadOnly">
                     {{ t('common.delete') }}
                   </el-dropdown-item>
@@ -130,6 +152,12 @@
     <div class="terminal-main">
       <!-- 标签栏 -->
       <div class="tabs-bar" v-if="tabs.length > 0">
+        <el-tooltip :content="t('terminal.recSwitchTip')" placement="bottom">
+          <span class="rec-switch">
+            <el-switch v-model="recordEnabled" size="small" @change="onRecordSwitch" />
+            <span class="rec-switch-label">{{ t('terminal.recSwitch') }}</span>
+          </span>
+        </el-tooltip>
         <div
           v-for="tab in tabs"
           :key="tab.id"
@@ -248,6 +276,25 @@
               </el-button>
             </div>
           </div>
+        </el-form-item>
+        <el-form-item :label="t('terminal.formJump')">
+          <el-select
+            v-model="form.jump_conn_id"
+            :placeholder="t('terminal.jumpNone')"
+            clearable
+            filterable
+            style="width: 100%"
+            @clear="form.jump_conn_id = 0"
+          >
+            <el-option :label="t('terminal.jumpNone')" :value="0" />
+            <el-option
+              v-for="c in jumpCandidates"
+              :key="c.id"
+              :label="jumpLabel(c)"
+              :value="c.id"
+            />
+          </el-select>
+          <div class="key-tip">{{ t('terminal.jumpTip') }}</div>
         </el-form-item>
         <el-form-item :label="t('terminal.formRemark')">
           <el-input
@@ -483,13 +530,34 @@
         <el-button type="primary" @click="copyPrivate">{{ t('terminal.copyPrivate') }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- SFTP 文件管理：复用该连接的 SSH 凭据 -->
+    <el-drawer v-model="showSftp" :title="t('terminal.sftpTitle')" size="65%" destroy-on-close>
+      <SftpPanel v-if="showSftp && sftpConnId" :conn-id="sftpConnId" />
+    </el-drawer>
+
+    <!-- 会话录制与回放 -->
+    <el-drawer v-model="showRecords" :title="t('terminal.recTitle')" size="70%" destroy-on-close>
+      <RecordingPanel v-if="showRecords" :conn-id="recordConnId" />
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, onActivated, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Edit, Delete, Link, Monitor, Key, Search, MoreFilled, Close } from '@/icons'
+import {
+  Plus,
+  Edit,
+  Delete,
+  Link,
+  Monitor,
+  Key,
+  Search,
+  MoreFilled,
+  Close,
+  Play,
+} from '@/icons'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -515,6 +583,8 @@ import { getToken } from '@/utils/auth'
 import { wsUrl } from '@/utils/base'
 import { useUserStore } from '@/stores/user'
 import { useI18n } from 'vue-i18n'
+import SftpPanel from './SftpPanel.vue'
+import RecordingPanel from './RecordingPanel.vue'
 
 // ── 状态 ───────────────────────────────────────────────────
 
@@ -566,6 +636,14 @@ function avatarClass(id: number) {
 }
 
 const showAddDialog = ref(false)
+// SFTP 文件管理抽屉：按连接打开，复用该连接的 SSH 凭据
+const showSftp = ref(false)
+const sftpConnId = ref<number | null>(null)
+// 会话录制抽屉：connId 为 null 时列出全部连接的录制
+const showRecords = ref(false)
+const recordConnId = ref<number | null>(null)
+/** 是否录制会话（存本地偏好，随 WebSocket 建连参数一起下发） */
+const recordEnabled = ref(localStorage.getItem('zap_terminal_record') !== '0')
 const editingConn = ref<SshConnection | null>(null)
 const saving = ref(false)
 const testing = ref(false)
@@ -667,8 +745,26 @@ const form = ref({
   auth_type: 'password' as 'password' | 'key',
   password: '',
   ssh_key_name: '',
+  jump_conn_id: 0,
   remark: '',
 })
+
+/** 可作为跳板机的候选连接：排除自己（其余的环 / 层级由后端校验并给出明确报错） */
+const jumpCandidates = computed(() =>
+  connections.value.filter((c) => c.id !== editingConn.value?.id && c.status === 1),
+)
+
+function jumpLabel(c: SshConnection) {
+  return `${c.name}（${c.username}@${c.host}:${c.port}）`
+}
+
+/** 列表角标的悬浮说明：直接点出经过哪台跳板机 */
+function jumpBadgeTitle(c: SshConnection): string {
+  const name = connections.value.find((x) => x.id === c.jump_conn_id)?.name
+  return name
+    ? `${t('terminal.jumpBadgeTitle')}：${name}`
+    : `${t('terminal.jumpBadgeTitle')}：#${c.jump_conn_id}`
+}
 
 // ── 标签管理 ───────────────────────────────────────────────
 
@@ -886,9 +982,16 @@ function resetForm() {
     auth_type: 'password',
     password: '',
     ssh_key_name: '',
+    jump_conn_id: 0,
     remark: '',
   }
   editingConn.value = null
+}
+
+/** 新建：先清空表单，避免残留上一条编辑过的连接（含跳板机设置） */
+function startCreate() {
+  resetForm()
+  showAddDialog.value = true
 }
 
 function editConnection(conn: SshConnection) {
@@ -900,6 +1003,7 @@ function editConnection(conn: SshConnection) {
     auth_type: conn.auth_type,
     password: '',
     ssh_key_name: conn.ssh_key_name,
+    jump_conn_id: conn.jump_conn_id || 0,
     remark: conn.remark,
   }
   editingConn.value = conn
@@ -928,6 +1032,7 @@ async function handleSave() {
         auth_type: f.auth_type,
         password: f.password || undefined,
         ssh_key_name: f.ssh_key_name,
+        jump_conn_id: f.jump_conn_id,
         remark: f.remark,
       })
       ElMessage.success(t('common.updateSuccess'))
@@ -940,6 +1045,7 @@ async function handleSave() {
         auth_type: f.auth_type,
         password: f.password,
         ssh_key_name: f.ssh_key_name,
+        jump_conn_id: f.jump_conn_id,
         remark: f.remark,
       })
       ElMessage.success(t('common.createSuccess'))
@@ -1001,6 +1107,14 @@ function handleRowAction(conn: SshConnection, cmd: string) {
     case 'test':
       handleTest(conn.id)
       break
+    case 'sftp':
+      sftpConnId.value = conn.id
+      showSftp.value = true
+      break
+    case 'records':
+      recordConnId.value = conn.id
+      showRecords.value = true
+      break
     case 'delete':
       ElMessageBox.confirm(t('terminal.delConnConfirm'), t('common.tip'), {
         type: 'warning',
@@ -1042,7 +1156,19 @@ function fitTerminal(tab: TerminalTab) {
 
 function getWsUrl(connId: number): string {
   const token = getToken()
-  return wsUrl(`/api/terminal/ws/${connId}?token=${token}&rows=24&cols=80`)
+  // record=0 关掉录制（后端缺省开启）；偏好存本地，下一条会话生效
+  const rec = recordEnabled.value ? '' : '&record=0'
+  return wsUrl(`/api/terminal/ws/${connId}?token=${token}&rows=24&cols=80${rec}`)
+}
+
+function onRecordSwitch(val: boolean) {
+  localStorage.setItem('zap_terminal_record', val ? '1' : '0')
+}
+
+/** 侧栏入口：不按连接过滤，看全部录制 */
+function openAllRecords() {
+  recordConnId.value = null
+  showRecords.value = true
 }
 
 async function openTerminal(conn: SshConnection) {
@@ -1404,6 +1530,15 @@ export default { name: 'Terminal' }
   gap: 4px;
 }
 
+/* 图标按钮不带文字，收一点间距并保证 hover 区域好点 */
+.sidebar-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.sidebar-actions :deep(.el-button.is-disabled) {
+  opacity: 0.55;
+}
+
 .keymgr-toolbar {
   display: flex;
   align-items: center;
@@ -1567,6 +1702,19 @@ export default { name: 'Terminal' }
   font-family: inherit;
 }
 
+/* 跳板机角标：与「未保存密码」区分开颜色，一眼看出这条连接是中转出去的 */
+.jump-badge {
+  flex-shrink: 0;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 15px;
+  color: #4a7dbd;
+  background: rgba(90, 141, 200, 0.14);
+  border: 1px solid rgba(74, 125, 189, 0.45);
+  border-radius: 3px;
+  font-family: inherit;
+}
+
 .status-dot {
   width: 6px;
   height: 6px;
@@ -1665,6 +1813,22 @@ export default { name: 'Terminal' }
   overflow-x: auto;
   overflow-y: hidden;
   flex-shrink: 0;
+}
+
+/* 录制开关：常驻标签栏左侧，跟着标签栏横滚会跑掉，所以单独固定 */
+.rec-switch {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--el-border-color-light);
+}
+
+.rec-switch-label {
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+  white-space: nowrap;
 }
 
 .tabs-bar::-webkit-scrollbar {

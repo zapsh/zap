@@ -153,7 +153,16 @@
         { "method": "GET", "path": "/terminal/connections/test", "summary": "测试连接连通性" },
         { "method": "POST", "path": "/terminal/connections/{id}/push-key", "summary": "推送本机公钥到目标主机" },
         { "method": "POST", "path": "/terminal/push-key", "summary": "按表单参数直推公钥（连接无需先保存）" },
-        { "method": "WS", "path": "/terminal/ws/{id}", "summary": "WebSocket 终端通道（使用 query 携带 JWT）" }
+        { "method": "WS", "path": "/terminal/ws/{id}", "summary": "WebSocket 终端通道（使用 query 携带 JWT；record=0 可关闭会话录制）" },
+        { "method": "GET", "path": "/terminal/sftp/list", "summary": "SFTP 列目录（复用终端连接）" },
+        { "method": "GET", "path": "/terminal/sftp/download", "summary": "SFTP 下载文件（base64）" },
+        { "method": "POST", "path": "/terminal/sftp/upload", "summary": "SFTP 上传文件（base64）" },
+        { "method": "POST", "path": "/terminal/sftp/mkdir", "summary": "SFTP 新建目录" },
+        { "method": "POST", "path": "/terminal/sftp/remove", "summary": "SFTP 删除文件/目录" },
+        { "method": "POST", "path": "/terminal/sftp/rename", "summary": "SFTP 重命名/移动" },
+        { "method": "GET", "path": "/terminal/recordings", "summary": "会话录制列表（按用户隔离）" },
+        { "method": "GET", "path": "/terminal/recordings/{id}", "summary": "取回一条录制（asciinema cast 文本，供回放）" },
+        { "method": "POST", "path": "/terminal/recordings/{id}/delete", "summary": "删除一条会话录制" }
       ]
     },
     {

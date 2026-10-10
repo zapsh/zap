@@ -56,6 +56,8 @@ pub mod notice;
 pub mod package;
 pub mod plugins;
 pub mod site;
+pub mod ssh_record;
+pub mod ssh_sftp;
 pub mod ssh_terminal;
 pub mod ssh_user_keys;
 pub mod ssl;
@@ -712,6 +714,20 @@ fn api_routers() -> Router {
         )
         .route("/terminal/push-key", post(ssh_terminal::push_key_direct))
         .route("/terminal/ws/{id}", get(ssh_terminal::ws_terminal))
+        // SFTP 文件管理（复用终端连接与同一套准入）
+        .route("/terminal/sftp/list", get(ssh_sftp::list_dir))
+        .route("/terminal/sftp/download", get(ssh_sftp::download))
+        .route("/terminal/sftp/upload", post(ssh_sftp::upload))
+        .route("/terminal/sftp/mkdir", post(ssh_sftp::mkdir))
+        .route("/terminal/sftp/remove", post(ssh_sftp::remove))
+        .route("/terminal/sftp/rename", post(ssh_sftp::rename))
+        // 会话录制与回放（asciinema cast，按用户隔离）
+        .route("/terminal/recordings", get(ssh_record::list_recordings))
+        .route("/terminal/recordings/{id}", get(ssh_record::get_recording))
+        .route(
+            "/terminal/recordings/{id}/delete",
+            post(ssh_record::delete_recording),
+        )
         // 「我的 SSH 密钥」（面板用户自管密钥，存家目录 ~/.ssh；admin 列表额外含系统级密钥）
         .route("/terminal/keys", get(ssh_user_keys::list_keys))
         .route("/terminal/keys/public", get(ssh_user_keys::public_key))
