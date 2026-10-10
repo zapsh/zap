@@ -64,7 +64,6 @@ export const ALIVE_CANDIDATES: readonly AliveCandidate[] = [
   { path: '/system/automation', component: 'AutomationScripts', labelKey: 'prefs.pages.automation' },
   { path: '/system/access', component: 'SystemAccess', labelKey: 'prefs.pages.access' },
   { path: '/system/zap-config', component: 'ZapConfig', labelKey: 'prefs.pages.zapConfig' },
-  { path: '/system/about', component: 'SystemAbout', labelKey: 'prefs.pages.about' },
   { path: '/dev/app-script-guide', component: 'DevAppScriptGuide', labelKey: 'prefs.pages.appScriptGuide' },
 ]
 
