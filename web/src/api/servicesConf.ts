@@ -230,7 +230,6 @@ export function togglePhpExt(service: string, name: string, enable: boolean) {
 /** 安装 / 卸载是长任务（要编译），返回 run_id 供日志抽屉流式查看 */
 export interface PhpExtTaskResult {
   task_id: string
-  run_id: string
   queued: boolean
   position?: number
 }

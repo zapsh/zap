@@ -861,8 +861,8 @@ async function doInstallWaf() {
   wafInstalling.value = true
   try {
     const res = await installWaf()
-    if (res.data?.run_id) {
-      watchWafTask(res.data.run_id)
+    if (res.data?.task_id) {
+      watchWafTask(res.data.task_id)
     } else {
       await loadWaf()
     }

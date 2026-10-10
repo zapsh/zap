@@ -106,7 +106,7 @@ export interface AppPackage {
 }
 
 export interface RunItem {
-  run_id: string
+  task_id: string
   action: string
   pkg: string
   username: string

@@ -107,7 +107,7 @@ pub async fn install(
     Ok(Json(json!({
         "code": 0,
         "message": "ok",
-        "data": { "task_id": task_id, "run_id": task_id, "queued": queued, "position": position },
+        "data": { "task_id": task_id, "queued": queued, "position": position },
     })))
 }
 

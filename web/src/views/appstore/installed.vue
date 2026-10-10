@@ -206,7 +206,7 @@
             fmtTime(current.installed_at)
           }}</el-descriptions-item>
           <el-descriptions-item :label="t('appstoreInstalled.lastRun')">{{
-            current.run_id || '-'
+            current.task_id || '-'
           }}</el-descriptions-item>
         </el-descriptions>
 
@@ -608,7 +608,7 @@ async function handleUninstall(app: InstalledApp) {
     const resp = await uninstallPackage({ pkg_path: app.pkg_path, instance: app.instance })
     ElMessage.success(t('appstoreInstalled.uninstallOk'))
     // 外层（商店页）会拿 run_id 打开日志抽屉；独立路由页则忽略
-    if (resp.data?.run_id) emit('task', resp.data.run_id, `${t('appstoreInstalled.actUninstall')} ${label}`)
+    if (resp.data?.task_id) emit('task', resp.data.task_id, `${t('appstoreInstalled.actUninstall')} ${label}`)
     await load()
   } catch (e: any) {
     ElMessage.error(e.message || t('appstore.uninstallFailed'))

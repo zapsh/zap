@@ -28,8 +28,6 @@ export type TaskKind =
 
 export interface TaskItem {
   task_id: string
-  /** 兼容字段：与 task_id 同值，老接口（/appstore/runs）沿用 */
-  run_id: string
   kind: string
   action: string
   /** 任务对象：包名 / 镜像名 / 脚本路径 / 备份目标 */

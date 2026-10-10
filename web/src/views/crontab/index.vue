@@ -439,7 +439,7 @@ async function handleRunNow(row: CronJob) {
   try {
     const resp = await runCrontabNow(row.id)
     ElMessage.success(t('crontab.runTriggered'))
-    row.last_run_id = resp.data.run_id
+    row.last_run_id = resp.data.task_id
     row.last_run_at = Math.floor(Date.now() / 1000)
     row.last_status = 'running'
     openLog(row)
@@ -520,7 +520,7 @@ function openHistory(row: CronJob) {
 }
 
 function handleViewRun(row: CrontabRunItem) {
-  openLogByRunId(row.run_id)
+  openLogByRunId(row.task_id)
 }
 
 /** 清理「开始登记运行记录之前」遗留的、无法归属到任务的日志 */

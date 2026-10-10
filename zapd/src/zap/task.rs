@@ -93,11 +93,10 @@ pub struct Task {
 }
 
 impl Task {
-    /// 对外 JSON：老接口沿用 `run_id` 字段名，前端不必跟着改。
+    /// 对外 JSON：统一使用 `task_id`（DB 列名）；不再保留 `run_id` 兼容别名。
     pub fn to_json(&self) -> serde_json::Value {
         json!({
             "task_id": self.task_id,
-            "run_id": self.task_id,
             "kind": self.kind,
             "action": self.action,
             "pkg": self.pkg,

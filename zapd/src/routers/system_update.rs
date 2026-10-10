@@ -165,7 +165,7 @@ pub async fn apply(
         "code": 0,
         "message": "升级已启动",
         "data": {
-            "run_id": info.run_id,
+            "task_id": info.run_id,
             "log_path": info.log_path,
             "latest": info.latest
         }
@@ -204,7 +204,7 @@ pub async fn log(
         "code": 0,
         "message": "OK",
         "data": {
-            "run_id": run_id,
+            "task_id": run_id,
             "log": text,
             "offset": q.offset.unwrap_or(0) + text.len() as u64,
             "done": done,

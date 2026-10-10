@@ -238,7 +238,7 @@ export interface DockerImageBuildPayload {
 }
 
 export interface DockerImageBuildResult {
-  run_id: string
+  task_id: string
   tags: string[]
   log: string
   context_dir: string

@@ -249,10 +249,10 @@ async function start() {
     const finalTags: string[] = resp.data?.tags || []
     visible.value = false
     logDrawerRef.value?.openDrawer(
-      resp.data?.run_id || '',
+      resp.data?.task_id || '',
       `${t('docker.build.logTitle')}${finalTags.length ? ' · ' + finalTags[0] : ''}`,
     )
-    trackRun(resp.data?.run_id || '')
+    trackRun(resp.data?.task_id || '')
   } catch (e: any) {
     ElMessage.error(e?.message || t('docker.build.failed'))
   } finally {
@@ -269,7 +269,7 @@ function trackRun(runId: string) {
   pollTimer.value = window.setInterval(async () => {
     try {
       const resp = await getRuns({ page: 1, page_size: 50 })
-      const item: RunItem | undefined = (resp.data?.items || []).find((r: RunItem) => r.run_id === runId)
+      const item: RunItem | undefined = (resp.data?.items || []).find((r: RunItem) => r.task_id === runId)
       if (!item || item.status === 'running') return
       if (pollTimer.value !== null) {
         window.clearInterval(pollTimer.value)

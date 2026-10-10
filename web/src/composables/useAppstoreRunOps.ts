@@ -56,7 +56,7 @@ export function useAppstoreRunOps(
       } else {
         ElMessage.success(t('task.retryStarted'))
         drawerRef.value?.openDrawer(
-          resp.data?.run_id,
+          resp.data?.task_id,
           `${row.title || row.pkg || row.action}${t('task.retrySuffix')}`,
         )
       }

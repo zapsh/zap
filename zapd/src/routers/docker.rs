@@ -513,7 +513,7 @@ pub async fn image_build(
         "code": 0,
         "message": "镜像构建已开始",
         "data": {
-            "run_id": run_id,
+            "task_id": run_id,
             "tags": tags,
             "log": log,
             "context_dir": paths.context.to_string_lossy(),

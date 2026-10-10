@@ -113,10 +113,10 @@ async function startInstall() {
   installOk.value = false
   installOffset = 0
   try {
-    const res = await http.post<{ code: number; data: { run_id: string } }>(
+    const res = await http.post<{ code: number; data: { task_id: string } }>(
       '/system/config/ssh/install',
     )
-    const runId = res.data.run_id
+    const runId = res.data.task_id
     installDialog.value = true
     pollInstallLog(runId)
   } catch {

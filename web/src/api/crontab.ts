@@ -62,7 +62,7 @@ export function toggleCrontab(id: string, enabled: boolean) {
 }
 
 export function runCrontabNow(id: string) {
-  return http.post<{ code: number; message: string; data: { run_id: string } }>(
+  return http.post<{ code: number; message: string; data: { task_id: string } }>(
     '/terminal/crontab/run_now',
     { id },
   )
@@ -79,7 +79,7 @@ export function readCrontabLog(run_id: string, username?: string) {
 /** 一次运行的记录（对应后端 appstore_runs 表） */
 export interface CrontabRunItem {
   id: number
-  run_id: string
+  task_id: string
   action: string
   pkg: string
   username: string

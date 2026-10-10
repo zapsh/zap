@@ -1460,7 +1460,7 @@ const enUS: Messages = {
   },
   automationGroups: {
     hintScripts: 'Write and keep script files; run them instantly and read the output log',
-    hintCron: 'Give a script a cron schedule and let it run as root automatically',
+    hintCron: 'Set up scheduled tasks (cron jobs) to run scripts or commands at specific times',
   },
 
   serverTime: {

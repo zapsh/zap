@@ -429,7 +429,7 @@ export function logoutAllDevices() {
 
 export interface HomeBackupData {
   /** 后台任务 id，用 `/appstore/runs` 轮询成败 */
-  run_id: string
+  task_id: string
   username: string
   /** 产出压缩包路径：`{home}/backups/home_backup_<时间戳>.tar.gz` */
   path: string

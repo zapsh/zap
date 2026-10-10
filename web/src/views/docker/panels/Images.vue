@@ -351,7 +351,7 @@ async function backupMyHome() {
   try {
     const res = await backupHome()
     ElMessage.success(t('docker.image.backupStarted'))
-    trackRun(res.data.run_id, res.data.path)
+    trackRun(res.data.task_id, res.data.path)
   } catch (e: any) {
     ElMessage.error(e?.message || t('docker.common.actionFailed'))
   } finally {
@@ -368,7 +368,7 @@ function trackRun(runId: string, path: string) {
     try {
       const resp = await getRuns({ page: 1, page_size: 50 })
       const item: RunItem | undefined = (resp.data?.items || []).find(
-        (r: RunItem) => r.run_id === runId,
+        (r: RunItem) => r.task_id === runId,
       )
       if (!item || item.status === 'running') return
       window.clearInterval(timer)

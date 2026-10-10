@@ -368,7 +368,7 @@ pub async fn repo_add(
     Ok(Json(json!({
         "code": 0,
         "message": "添加源已启动",
-        "data": { "run_id": run_id, "log": log_path }
+        "data": { "task_id": run_id, "log": log_path }
     })))
 }
 
@@ -448,7 +448,7 @@ pub async fn repo_update(
     Ok(Json(json!({
         "code": 0,
         "message": "更新源已启动",
-        "data": { "run_id": run_id, "log": log_path }
+        "data": { "task_id": run_id, "log": log_path }
     })))
 }
 
@@ -711,7 +711,7 @@ pub async fn install(
         "code": 0,
         "message": "安装已启动",
         "data": {
-            "run_id": run_id,
+            "task_id": run_id,
             "log": log_path,
             "status": run.status,
             "queued": run.status == task::STATUS_PENDING,
@@ -791,7 +791,7 @@ pub async fn uninstall(
     Ok(Json(json!({
         "code": 0,
         "message": "卸载已启动",
-        "data": { "run_id": run_id, "log": log_path }
+        "data": { "task_id": run_id, "log": log_path }
     })))
 }
 
@@ -878,7 +878,7 @@ pub async fn upgrade(
         "code": 0,
         "message": "升级已启动",
         "data": {
-            "run_id": run_id,
+            "task_id": run_id,
             "log": log_path,
             "status": run.status,
             "queued": run.status == task::STATUS_PENDING,
@@ -1090,7 +1090,7 @@ pub async fn script_run(
     Ok(Json(json!({
         "code": 0,
         "message": "脚本已启动",
-        "data": { "run_id": run_id, "log": log_path }
+        "data": { "task_id": run_id, "log": log_path }
     })))
 }
 
@@ -1280,7 +1280,7 @@ pub async fn run_retry(
         "code": 0,
         "message": "重跑已启动",
         "data": {
-            "run_id": new_run_id,
+            "task_id": new_run_id,
             "log": log_path,
             "original_run_id": payload.run_id,
             "queued": queued,

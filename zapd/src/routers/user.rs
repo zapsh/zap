@@ -1878,6 +1878,6 @@ pub async fn backup_home(
     Ok(Json(json!({
         "code": 0,
         "message": "家目录备份已开始",
-        "data": { "run_id": run_id, "username": target, "path": dest, "log": log }
+        "data": { "task_id": run_id, "username": target, "path": dest, "log": log }
     })))
 }

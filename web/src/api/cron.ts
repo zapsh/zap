@@ -43,13 +43,13 @@ export function toggleCronJob(id: string, enabled: boolean) {
 }
 
 export function runCronJobNow(id: string) {
-  return http.post<{ code: number; message: string; data: { run_id: string } }>('/system/cron/run_now', { id })
+  return http.post<{ code: number; message: string; data: { task_id: string } }>('/system/cron/run_now', { id })
 }
 
 /** 一次运行的记录（对应后端 appstore_runs 表） */
 export interface CronRunItem {
   id: number
-  run_id: string
+  task_id: string
   action: string
   pkg: string
   username: string

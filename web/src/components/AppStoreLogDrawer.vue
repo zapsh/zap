@@ -485,13 +485,13 @@ async function handleRetry() {
     // 重跑安装/升级要等编译槽位：此时还没有新日志，留在原日志上提示即可
     if (resp.data?.queued) {
       ElMessage.success(t('task.retryQueued', { n: resp.data.position ?? 1 }))
-      emit('retried', resp.data?.run_id || '')
+      emit('retried', resp.data?.task_id || '')
       return
     }
     ElMessage.success(t('runLogDrawer.retryStarted'))
     // 切换到新运行日志
     closeWs()
-    runId.value = resp.data?.run_id
+    runId.value = resp.data?.task_id
     editorVisible.value = false
     currentPath.value = ''
     fileContent.value = ''

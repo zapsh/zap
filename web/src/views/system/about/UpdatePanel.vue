@@ -287,7 +287,7 @@ async function load() {
     applyConfigFromServer()
     // 若存在进行中的升级（本页打开前触发），接续展示日志
     if (res.data.current_run && res.data.current_run.status === 'running') {
-      startPoll(res.data.current_run.run_id, res.data.current_run.log_path || '')
+      startPoll(res.data.current_run.task_id, res.data.current_run.log_path || '')
     }
   } catch {
     // 拦截器已提示
@@ -370,7 +370,7 @@ async function onApply() {
     const res = await applyUpdate()
     status.upgrading = true
     ElMessage.success(t('sysUpdate.applyStarted', { version: res.data.latest }))
-    startPoll(res.data.run_id, res.data.log_path)
+    startPoll(res.data.task_id, res.data.log_path)
   } catch (e: any) {
     checkMsg.value = {
       type: 'error',
@@ -436,7 +436,7 @@ async function openHistoryLog(row: UpdateRunInfo) {
   historyVisible.value = true
   historyLog.value = ''
   try {
-    const res = await getUpdateLog(row.run_id, 0)
+    const res = await getUpdateLog(row.task_id, 0)
     historyLog.value = res.data.log || t('sysUpdate.logCleared')
   } catch {
     historyLog.value = t('sysUpdate.logReadFailed')

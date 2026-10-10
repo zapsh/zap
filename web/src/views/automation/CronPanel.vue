@@ -336,10 +336,10 @@ async function handleRunNow(row: CronJob) {
   try {
     const resp = await runCronJobNow(row.id)
     ElMessage.success(t('automationCron.runTriggered'))
-    row.last_run_id = resp.data.run_id
+    row.last_run_id = resp.data.task_id
     row.last_run_at = Math.floor(Date.now() / 1000)
     logDrawerRef.value?.openDrawer(
-      resp.data.run_id,
+      resp.data.task_id,
       t('automationCron.runLogTitle', { name: row.name }),
     )
   } catch (e: any) {
@@ -388,7 +388,7 @@ function openHistory(row: CronJob) {
 
 function handleViewRun(row: CronRunItem) {
   logDrawerRef.value?.openDrawer(
-    row.run_id,
+  row.task_id,
     t('automationCron.runLogTitle', { name: historyJobName.value }),
   )
 }

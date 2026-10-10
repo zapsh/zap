@@ -219,7 +219,7 @@ async function handleRun() {
     const resp = await runScript({ path: currentPath.value })
     ElMessage.success(t('automationScripts.started'))
     const name = currentPath.value.split('/').pop() || t('automationScripts.fallbackName')
-    logDrawerRef.value?.openDrawer(resp.data.run_id, t('automationScripts.runLogTitle', { name }))
+    logDrawerRef.value?.openDrawer(resp.data.task_id, t('automationScripts.runLogTitle', { name }))
   } catch (e: any) {
     ElMessage.error(e.message || t('automationScripts.runFailed'))
   } finally {

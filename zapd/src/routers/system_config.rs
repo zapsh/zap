@@ -226,7 +226,7 @@ pub async fn ssh_install(
     Ok(Json(json!({
         "code": 0,
         "message": "安装已启动",
-        "data": { "run_id": run_id, "log": log_path }
+        "data": { "task_id": run_id, "log": log_path }
     })))
 }
 

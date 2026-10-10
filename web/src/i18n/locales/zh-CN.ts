@@ -1474,7 +1474,7 @@ export default {
   },
   automationGroups: {
     hintScripts: '编写与维护脚本文件，可即时运行并查看输出日志',
-    hintCron: '给脚本配 cron 频率，到点自动以 root 执行',
+    hintCron: '配置自动运行脚本的计划任务，支持 cron 表达式',
   },
 
   serverTime: {

@@ -615,7 +615,7 @@ async function doInstall() {
     const res = await installPhpExt(props.inst.svc, pkg, installForm.value.version.trim())
     installVisible.value = false
     const data = res.data
-    if (!data?.run_id) {
+    if (!data?.task_id) {
       ElMessage.success(res.message || t('servicesCommon.opSuccess'))
       await loadExts()
       return
@@ -623,7 +623,7 @@ async function doInstall() {
     if (data.queued) {
       ElMessage.success(t('servicesPhpExt.queued', { n: data.position ?? 1 }))
     }
-    watchTask(data.run_id, `${t('servicesPhpExt.install')} ${pkg}`)
+    watchTask(data.task_id, `${t('servicesPhpExt.install')} ${pkg}`)
   } catch {
     /* interceptor 已提示 */
   } finally {
@@ -644,8 +644,8 @@ async function removeExt(row: PhpExtItem) {
   extRemoving.value = row.name
   try {
     const res = await removePhpExt(props.inst.svc, row.name)
-    if (res.data?.run_id) {
-      watchTask(res.data.run_id, `${t('servicesPhpExt.remove')} ${row.name}`)
+    if (res.data?.task_id) {
+      watchTask(res.data.task_id, `${t('servicesPhpExt.remove')} ${row.name}`)
     } else {
       await loadExts()
     }

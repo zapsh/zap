@@ -15,7 +15,7 @@ export interface UpdateConfig {
 /** 一次系统升级运行记录（后端 appstore_runs，action=zap_update） */
 export interface UpdateRunInfo {
   id?: number
-  run_id: string
+  task_id: string
   action?: string
   pkg?: string
   username?: string
@@ -42,13 +42,13 @@ export interface CheckResult {
 }
 
 export interface ApplyResult {
-  run_id: string
+  task_id: string
   log_path: string
   latest: string
 }
 
 export interface UpdateLogData {
-  run_id: string
+  task_id: string
   log: string
   offset: number
   done: boolean
