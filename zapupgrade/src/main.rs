@@ -59,7 +59,6 @@ fn align_owner(path: &Path, data_dir: &Path) {
     }
 }
 
-
 /// 默认更新渠道（与 zapd `zap::update_config::DEFAULT_CHANNEL` 保持一致）。
 const DEFAULT_CHANNEL: &str = "https://mirrors.zap.cn/zap/releases";
 
@@ -658,10 +657,11 @@ fn edition_id(pro: bool, community: bool, dir: &Path) -> &'static str {
 /// 不读外部文件 —— 二进制编译期特性就是发行线，新系统无需兼容旧版标记文件；
 /// 二进制缺失 / 不可执行时回退社区版。
 fn query_installed_edition(dir: &Path) -> String {
-    match std::process::Command::new(dir.join("zapd")).arg("--edition").output() {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        }
+    match std::process::Command::new(dir.join("zapd"))
+        .arg("--edition")
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         _ => String::new(),
     }
 }

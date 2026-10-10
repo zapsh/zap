@@ -117,7 +117,14 @@ async fn main() {
         return;
     }
     if cli.edition {
-        println!("{}", if cfg!(feature = "commercial") { "pro" } else { "community" });
+        println!(
+            "{}",
+            if cfg!(feature = "commercial") {
+                "pro"
+            } else {
+                "community"
+            }
+        );
         return;
     }
 
@@ -245,6 +252,8 @@ async fn main() {
     zap::auto_update::start();
     // 插件定时任务（cron）调度：Webhook 触发不走这里，由请求直接命中
     zap::plugin_schedule::start();
+    // 回收上次运行遗留的僵死 ACME 订单（重启会丢掉内存里的签发任务）
+    zap::acme::recover_stale_orders().await;
     // SSL 证书自动续期：扫描临近到期的 ACME 证书 → 自动续签 → 部署到站点 → 通知结果
     zap::cert_renew::start();
 

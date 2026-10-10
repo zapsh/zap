@@ -190,11 +190,13 @@ async fn backfill_cert_validity(mut rows: Vec<CertListRow>) -> Vec<CertListRow> 
             .collect::<Vec<_>>()
             .join(",")
     );
-    let list: Vec<(i64, String)> =
-        match sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await {
-            Ok(v) => v,
-            Err(_) => return rows,
-        };
+    let list: Vec<(i64, String)> = match sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .fetch_all(pool)
+        .await
+    {
+        Ok(v) => v,
+        Err(_) => return rows,
+    };
     for (id, cert_pem) in list {
         let Some(p) = parse_pem_info(&cert_pem) else {
             continue;
@@ -613,7 +615,7 @@ fn push_uniq(v: &mut Vec<String>, s: String) {
 
 /// 修复 END 标记与前一行 base64 粘连的 PEM（历史版本 split_leaf_chain 落库的数据）。
 /// 正常 PEM 原样通过（额外补的换行对解析无害）。
-fn normalize_pem(pem: &str) -> String {
+pub(crate) fn normalize_pem(pem: &str) -> String {
     const END: &str = "-----END CERTIFICATE-----";
     let parts: Vec<&str> = pem.split(END).collect();
     if parts.len() == 1 {
@@ -1389,7 +1391,8 @@ pub async fn cert_auto_renew(
     if on && !matches!(cert_type.as_str(), "letsencrypt" | "letsencrypt-staging") {
         return Err(ZapError::New(
             -1,
-            "仅 Let's Encrypt 签发的证书支持自动续期（自签 / 手动上传的证书请手动更新）".to_string(),
+            "仅 Let's Encrypt 签发的证书支持自动续期（自签 / 手动上传的证书请手动更新）"
+                .to_string(),
         ));
     }
 
@@ -1405,7 +1408,8 @@ pub async fn cert_auto_renew(
     if on && challenge == "dns-01" && dns_mode != "auto" {
         return Err(ZapError::New(
             -1,
-            "DNS-01 手动模式需人工添加解析记录，无法自动续期：请改用 HTTP 验证或自动 DNS".to_string(),
+            "DNS-01 手动模式需人工添加解析记录，无法自动续期：请改用 HTTP 验证或自动 DNS"
+                .to_string(),
         ));
     }
     if on && challenge == "dns-01" && dns_mode == "auto" && dns_provider_id <= 0 {
@@ -1435,7 +1439,10 @@ pub async fn cert_auto_renew(
         Some(client_addr.ip().to_string().as_str()),
         "ssl_cert_auto_renew",
         &payload.id.to_string(),
-        &format!("auto_renew={} challenge={challenge} dns_mode={dns_mode}", if on { 1 } else { 0 }),
+        &format!(
+            "auto_renew={} challenge={challenge} dns_mode={dns_mode}",
+            if on { 1 } else { 0 }
+        ),
     )
     .await;
     Ok(Json(json!({ "code": 0, "message": "OK" })))
@@ -1916,6 +1923,59 @@ LfP4VK83QRP7bYZPNzwKMmaryPsCIQDSnnizn9z5zaveqJmI7SZ87gXy7ASsYDeo\n\
         let glued = CHAIN.replace(&format!("\n{END_MARK}"), END_MARK);
         assert!(glued.contains(&format!("={END_MARK}")), "构造粘连数据失败");
         let info = parse_certificate(&glued).expect("粘连 PEM 应能被归一化后解析");
+        assert!(info.not_after > 0);
+    }
+
+    /// 部署落盘前必须归一化：站点同步写出的 fullchain.pem 会被 `nginx -t` 加载，
+    /// 粘连的 END 标记会让 OpenSSL 解析失败。这里模拟 sync_one_site 的拼装逻辑。
+    #[test]
+    fn deploy_chain_is_normalized() {
+        const END_MARK: &str = "-----END CERTIFICATE-----";
+        const LEAF: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBdDCCARqgAwIBAgIUZfHsIl7/4MCk7trM4Uh2mDbRHJ8wCgYIKoZIzj0EAwIw\n\
+FzEVMBMGA1UEAwwMVGVzdCBFQyBSb290MB4XDTI2MTAxMDE1MzkzOFoXDTI2MTEw\n\
+OTE1MzkzOFowGTEXMBUGA1UEAwwOZWMuZXhhbXBsZS5jb20wWTATBgcqhkjOPQIB\n\
+BggqhkjOPQMBBwNCAATdjNdsfH8dgi3Gi8Q2HYtcQBIo395jlExeDIXxbuVskW9A\n\
+WZU75qDX/3QGZrsBRIVU2bVpqWGTbrJNoZ2i0RcUo0IwQDAdBgNVHQ4EFgQUkZuT\n\
+hClRlkv0eSxK1QfS+GWeRd4wHwYDVR0jBBgwFoAU8o1FtLjcg52tilWXPczj2chd\n\
+d4owCgYIKoZIzj0EAwIDSAAwRQIgDEdb5lj0tRDGcueYLinIPGYXyHEIReEZ+xuU\n\
+3a9aHh4CIQCeK0gTUfzABCui2tHcj0yAadqh7PQghdB7jk3Lm6onRw==\n\
+-----END CERTIFICATE-----\n";
+        const CA: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBgzCCASmgAwIBAgIUeFkW2Yr2Qdek3ZxOrR4EQB/CzvcwCgYIKoZIzj0EAwIw\n\
+FzEVMBMGA1UEAwwMVGVzdCBFQyBSb290MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcD\n\
+QgAEaSOvn/BofLosJGHi7G6u09wEXmdQ0y9ty3BhofX47+HJ9eLT7+WyB/Dm7xki\n\
+F7IR0c5n0H4mjthAZW9EqaX2+A==\n\
+-----END CERTIFICATE-----\n";
+
+        // 模拟历史坏数据：两段 PEM 的 END 都与 base64 粘连
+        let bad_leaf = LEAF.replace(&format!("\n{END_MARK}"), END_MARK);
+        let bad_ca = CA.replace(&format!("\n{END_MARK}"), END_MARK);
+
+        // 复刻 sync_one_site 的拼装：叶子 + 归一化、换行、中间链 + 归一化
+        let mut chain = normalize_pem(bad_leaf.trim());
+        let ca = bad_ca.trim();
+        if !ca.is_empty() {
+            if !chain.ends_with('\n') {
+                chain.push('\n');
+            }
+            chain.push_str(&normalize_pem(ca));
+        }
+
+        // 关键断言：写盘内容里每个 END 都必须独立成行
+        assert!(
+            !chain.contains(&format!("={END_MARK}")),
+            "落盘内容仍存在粘连"
+        );
+        assert_eq!(chain.matches(END_MARK).count(), 2, "叶子 + 中间链共两段");
+        for line in chain.lines() {
+            if line.contains(END_MARK) {
+                assert_eq!(line.trim(), END_MARK, "END 标记必须独立成行: {line:?}");
+            }
+        }
+        // 归一化后的整链仍可直接解析出叶子有效期
+        let info = parse_certificate(&chain).expect("归一化后的整链应能解析");
+        assert_eq!(info.cert_count, 2);
         assert!(info.not_after > 0);
     }
 }

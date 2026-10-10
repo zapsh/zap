@@ -21,14 +21,6 @@ fn zap_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"))
 }
 
-/// 合法 run_id / systemd unit 名：仅 ASCII 字母数字与 `-`/`_`，长度 1..=48。
-fn valid_token(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 48
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-}
-
 /// 校验 `p` 位于 `root` 之下（不含 root 自身）。
 fn within(root: &Path, p: &Path) -> bool {
     match p.strip_prefix(root) {
@@ -52,7 +44,7 @@ pub async fn info() -> Response {
 /// 用 `systemd-run --no-block` 把 zapupgrade 放入独立 unit 中异步执行并立即返回。
 /// 没有 systemd 时（开发机/容器）退化为直接 spawn 子进程，语义相同。
 pub async fn run(run_id: String, stage_dir: String, log_path: String) -> Response {
-    if !valid_token(&run_id) {
+    if !super::valid_token(&run_id) {
         return Response::err(-1, format!("run_id 非法: {run_id}"));
     }
     let zap = zap_path();

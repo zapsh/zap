@@ -303,7 +303,8 @@ pub async fn ensure_initial_admin() -> bool {
 async fn init_packages_table() {
     let pool = get_db_pool().await;
     let _ = pool
-        .execute(r#"
+        .execute(
+            r#"
     CREATE TABLE IF NOT EXISTS packages (
         id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
         name VARCHAR(64) UNIQUE NOT NULL,
@@ -330,7 +331,8 @@ async fn init_packages_table() {
         status INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER,
         updated_at INTEGER
-    );"#)
+    );"#,
+        )
         .await;
 
     // 默认套餐：全局（owner_id=0）启用（status=1），资源全「不限」(0)。
@@ -1405,7 +1407,12 @@ async fn init_ssl_cert_table() {
     ] {
         ensure_column("ssl_cert", col, ddl).await;
     }
-    ensure_column("ssl_acme_order", "renew_cert_id", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column(
+        "ssl_acme_order",
+        "renew_cert_id",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await;
 }
 
 // ── SSL/TLS：ACME（Let's Encrypt）配套表 ──────────────────────

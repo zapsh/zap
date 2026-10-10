@@ -198,7 +198,11 @@ fn normalize_stage(stage: &Path) {
 /// 覆盖回去。以本二进制的编译期特性（`commercial` feature）为准 —— 二进制本身就是
 /// 发行线的唯一真相源，不需要外部文件记录。
 fn pkg_suffix() -> &'static str {
-    if cfg!(feature = "commercial") { "-pro" } else { "" }
+    if cfg!(feature = "commercial") {
+        "-pro"
+    } else {
+        ""
+    }
 }
 
 /// 下载发行包 → sha256 校验 → 解包 → 规整到 `stage/{run_id}/`（含 version 文件）。

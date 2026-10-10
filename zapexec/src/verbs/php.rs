@@ -381,7 +381,10 @@ fn render_pool_conf(
         ("session.save_path".to_string(), format!("{home_dir}/tmp")),
         ("upload_tmp_dir".to_string(), format!("{home_dir}/tmp")),
         // 用户级兜底：错误日志写进用户家目录 logs
-        ("error_log".to_string(), format!("{home_dir}/logs/php-error.log")),
+        (
+            "error_log".to_string(),
+            format!("{home_dir}/logs/php-error.log"),
+        ),
         // 高危函数默认禁用（见 DEFAULT_DISABLE_FUNCTIONS 注释）
         (
             "disable_functions".to_string(),
@@ -704,7 +707,15 @@ mod tests {
     #[test]
     fn render_basic_pool() {
         let spec = default_spec();
-        let s = render_pool_conf("zap", "zap", "/home/zap", "8.3", &spec, &Default::default(), &Default::default());
+        let s = render_pool_conf(
+            "zap",
+            "zap",
+            "/home/zap",
+            "8.3",
+            &spec,
+            &Default::default(),
+            &Default::default(),
+        );
         assert!(s.contains("[zap]"));
         assert!(s.contains("user = zap"));
         assert!(s.contains("group = zap"));
@@ -724,7 +735,15 @@ mod tests {
     #[test]
     fn render_pool_uses_resolved_run_group() {
         let spec = default_spec();
-        let s = render_pool_conf("admin", "zap_admin", "/home/admin", "8.3", &spec, &Default::default(), &Default::default());
+        let s = render_pool_conf(
+            "admin",
+            "zap_admin",
+            "/home/admin",
+            "8.3",
+            &spec,
+            &Default::default(),
+            &Default::default(),
+        );
         assert!(s.contains("[admin]"));
         assert!(s.contains("user = admin"));
         assert!(s.contains("group = zap_admin"));
@@ -736,7 +755,15 @@ mod tests {
         let mut spec = default_spec();
         spec.insert("pm".into(), "static".into());
         spec.insert("max_children".into(), "4".into());
-        let s = render_pool_conf("zap", "zap", "/home/zap", "8.1", &spec, &Default::default(), &Default::default());
+        let s = render_pool_conf(
+            "zap",
+            "zap",
+            "/home/zap",
+            "8.1",
+            &spec,
+            &Default::default(),
+            &Default::default(),
+        );
         assert!(s.contains("pm = static"));
         assert!(s.contains("pm.max_children = 4"));
         assert!(!s.contains("start_servers"));
@@ -747,7 +774,15 @@ mod tests {
     fn invalid_pm_falls_back() {
         let mut spec = default_spec();
         spec.insert("pm".into(), "bogus".into());
-        let s = render_pool_conf("zap", "zap", "/home/zap", "8.2", &spec, &Default::default(), &Default::default());
+        let s = render_pool_conf(
+            "zap",
+            "zap",
+            "/home/zap",
+            "8.2",
+            &spec,
+            &Default::default(),
+            &Default::default(),
+        );
         assert!(s.contains("pm = ondemand"));
     }
 
@@ -841,7 +876,10 @@ mod tests {
         );
         assert_eq!(flat.get("pm").map(String::as_str), Some("dynamic"));
         assert_eq!(flat.get("memory_limit").map(String::as_str), Some("512M"));
-        assert_eq!(values.get("disable_functions").map(String::as_str), Some("exec,system"));
+        assert_eq!(
+            values.get("disable_functions").map(String::as_str),
+            Some("exec,system")
+        );
         assert_eq!(flags.get("log_errors").copied(), Some(true));
         // 默认资源字段不受影响
         assert_eq!(flat.get("max_children").map(String::as_str), Some("10"));

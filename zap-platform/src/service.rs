@@ -24,7 +24,11 @@ pub trait ServiceManager {
 
 // ── 纯函数：命令构建（便于单测，不真正执行） ──
 pub fn systemd_args(action: &str, name: &str) -> Vec<String> {
-    vec!["systemctl".to_string(), action.to_string(), name.to_string()]
+    vec![
+        "systemctl".to_string(),
+        action.to_string(),
+        name.to_string(),
+    ]
 }
 pub fn sv_args(action: &str, name: &str) -> Vec<String> {
     vec!["sv".to_string(), action.to_string(), name.to_string()]
@@ -97,7 +101,10 @@ impl ServiceManager for UnixService {
                 self.run(&script_args(&format!("/etc/init.d/{}", name), "start"))
             }
             InitSystem::BsdRc => self.run(&script_args(&format!("/etc/rc.d/{}", name), "start")),
-            _ => Err(PlatformError::NotSupported(format!("start 未实现：{:?}", self.init))),
+            _ => Err(PlatformError::NotSupported(format!(
+                "start 未实现：{:?}",
+                self.init
+            ))),
         }
     }
     fn stop(&self, name: &str) -> Result<()> {
@@ -108,7 +115,10 @@ impl ServiceManager for UnixService {
                 self.run(&script_args(&format!("/etc/init.d/{}", name), "stop"))
             }
             InitSystem::BsdRc => self.run(&script_args(&format!("/etc/rc.d/{}", name), "stop")),
-            _ => Err(PlatformError::NotSupported(format!("stop 未实现：{:?}", self.init))),
+            _ => Err(PlatformError::NotSupported(format!(
+                "stop 未实现：{:?}",
+                self.init
+            ))),
         }
     }
     fn restart(&self, name: &str) -> Result<()> {
@@ -119,7 +129,10 @@ impl ServiceManager for UnixService {
                 self.run(&script_args(&format!("/etc/init.d/{}", name), "restart"))
             }
             InitSystem::BsdRc => self.run(&script_args(&format!("/etc/rc.d/{}", name), "restart")),
-            _ => Err(PlatformError::NotSupported(format!("restart 未实现：{:?}", self.init))),
+            _ => Err(PlatformError::NotSupported(format!(
+                "restart 未实现：{:?}",
+                self.init
+            ))),
         }
     }
     fn reload(&self, name: &str) -> Result<()> {
@@ -130,7 +143,10 @@ impl ServiceManager for UnixService {
                 self.run(&script_args(&format!("/etc/init.d/{}", name), "reload"))
             }
             InitSystem::BsdRc => self.run(&script_args(&format!("/etc/rc.d/{}", name), "reload")),
-            _ => Err(PlatformError::NotSupported(format!("reload 未实现：{:?}", self.init))),
+            _ => Err(PlatformError::NotSupported(format!(
+                "reload 未实现：{:?}",
+                self.init
+            ))),
         }
     }
     fn enable(&self, name: &str) -> Result<()> {
@@ -139,7 +155,10 @@ impl ServiceManager for UnixService {
             InitSystem::BsdRc => Err(PlatformError::NotSupported(
                 "BSD 需手动在 rc.conf 设置 `<name>_enable=YES`".into(),
             )),
-            _ => Err(PlatformError::NotSupported(format!("enable 未实现：{:?}", self.init))),
+            _ => Err(PlatformError::NotSupported(format!(
+                "enable 未实现：{:?}",
+                self.init
+            ))),
         }
     }
     fn disable(&self, name: &str) -> Result<()> {
@@ -148,7 +167,10 @@ impl ServiceManager for UnixService {
             InitSystem::BsdRc => Err(PlatformError::NotSupported(
                 "BSD 需手动在 rc.conf 注释 `<name>_enable`".into(),
             )),
-            _ => Err(PlatformError::NotSupported(format!("disable 未实现：{:?}", self.init))),
+            _ => Err(PlatformError::NotSupported(format!(
+                "disable 未实现：{:?}",
+                self.init
+            ))),
         }
     }
     fn status(&self, name: &str) -> Result<ServiceStatus> {
@@ -161,13 +183,20 @@ impl ServiceManager for UnixService {
                     _ => format!("/etc/init.d/{}", name),
                 };
                 match Command::new(&script).arg("status").output() {
-                    Ok(o) => (o.status.success(), String::from_utf8_lossy(&o.stdout).into_owned()),
+                    Ok(o) => (
+                        o.status.success(),
+                        String::from_utf8_lossy(&o.stdout).into_owned(),
+                    ),
                     Err(_) => (false, String::new()),
                 }
             }
         };
         let enabled = self.is_enabled(name)?;
-        Ok(ServiceStatus { active, enabled, raw })
+        Ok(ServiceStatus {
+            active,
+            enabled,
+            raw,
+        })
     }
     fn is_enabled(&self, name: &str) -> Result<bool> {
         match self.init {
@@ -178,7 +207,10 @@ impl ServiceManager for UnixService {
                     .unwrap_or_default();
                 Ok(bsd_rc_enabled(&rc, name))
             }
-            _ => Err(PlatformError::NotSupported(format!("is_enabled 未实现：{:?}", self.init))),
+            _ => Err(PlatformError::NotSupported(format!(
+                "is_enabled 未实现：{:?}",
+                self.init
+            ))),
         }
     }
 }
@@ -188,7 +220,10 @@ mod tests {
     use super::*;
     #[test]
     fn systemd_cmd() {
-        assert_eq!(systemd_args("start", "nginx"), vec!["systemctl", "start", "nginx"]);
+        assert_eq!(
+            systemd_args("start", "nginx"),
+            vec!["systemctl", "start", "nginx"]
+        );
     }
     #[test]
     fn bsd_rc_parse() {

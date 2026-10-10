@@ -861,6 +861,54 @@ pub(crate) fn bash_bin() -> String {
     "bash".to_string()
 }
 
+/// 合法 run_id / systemd unit 名：仅 ASCII 字母数字与 `-`/`_`，长度 1..=48。
+///
+/// 任何会被拼进文件路径（`run-{id}.log`）或 systemd unit 名的运行标识都必须过这一层，
+/// 挡掉 `../`、`/` 与 shell 元字符导致的路径穿越。原先只在 upgrade 里有，
+/// ssh / appstore / php_ext 各自的运行标识是漏网的，这里统一收口。
+pub(crate) fn valid_token(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 48
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+/// shell 单引号包裹：`it's` → `'it'\''s'`。
+///
+/// 任何要拼进 `sh -c` 字符串的值都必须过这一层，否则含空格或被构造的
+/// 内容会被 shell 解释成命令（命令注入）。
+pub(crate) fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// 长任务日志路径校验：绝对路径、无 `..`、`.log` 结尾、不含 shell 元字符。
+///
+/// 刻意比 `cron::safe_log_path` 宽松——**不强求落在 `data/users` 之下**：zapd 侧
+/// `task::logs_dir()` 是 `{data}/task-logs`，与各处历史约定不同，硬套会把正常
+/// 长任务拦掉。这里只挡住两类风险：拼进 shell 会被解释的字符，以及以 root
+/// 身份向任意路径追加写。真正的注入防线是 [`sh_quote`]，这是纵深防御的第二层。
+pub(crate) fn safe_task_log_path(path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        return Err("日志路径必须是绝对路径".into());
+    }
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("日志路径不合法".into());
+    }
+    if p.extension().and_then(|e| e.to_str()) != Some("log") {
+        return Err("日志文件必须以 .log 结尾".into());
+    }
+    if path
+        .chars()
+        .any(|c| matches!(c, '\'' | '"' | '`' | '$' | ';' | '&' | '|' | '\n' | '\r'))
+    {
+        return Err("日志路径含非法字符".into());
+    }
+    Ok(())
+}
+
 /// 长任务日志：追加一行（PHP 扩展编译、WAF 安装等分钟级任务共用）。
 ///
 /// 每一步都即时落盘，前端 WebSocket 才能边跑边看；任务收尾靠 [`finish_log`]。
@@ -881,10 +929,13 @@ pub(crate) fn log_line(path: &str, text: &str) {
 /// 之外的失败路径也能拿到真实结果。日志与命令输出都走 `>>`，不进内存。
 pub(crate) fn run_step(log: &str, title: &str, script: &str) -> i32 {
     log_line(log, &format!("── {title} ──"));
+    // 日志路径来自请求参数，会被拼进 shell 字符串：必须单引号包裹，
+    // 否则含空格或被刻意构造的路径会被 shell 解释成额外命令。
     let out = root_cmd(crate::verbs::platform::SHELL)
         .args(["-c"])
         .arg(format!(
-            "{{ {script}; }} >> {log} 2>&1; echo \"__ZAP_STEP__$?\""
+            "{{ {script}; }} >> {} 2>&1; echo \"__ZAP_STEP__$?\"",
+            sh_quote(log)
         ))
         .output();
     match out {
@@ -1150,5 +1201,78 @@ mod tests {
     #[test]
     fn bash_bin_is_bin_bash_on_linux() {
         assert_eq!(bash_bin(), "/bin/bash");
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::{safe_task_log_path, sh_quote, valid_token};
+
+    /// shell 引号：单引号要转义，空格与元字符整体包住，杜绝命令注入。
+    #[test]
+    fn sh_quote_escapes() {
+        assert_eq!(sh_quote("/tmp/a.log"), "'/tmp/a.log'");
+        assert_eq!(sh_quote("/tmp/a b.log"), "'/tmp/a b.log'");
+        assert_eq!(sh_quote("it's"), r#"'it'\''s'"#);
+        // 注入载荷被整体包进单引号，shell 不会解释
+        assert_eq!(sh_quote("x; rm -rf /"), "'x; rm -rf /'");
+        assert_eq!(sh_quote("$(id)"), "'$(id)'");
+        assert_eq!(sh_quote("`id`"), "'`id`'");
+    }
+
+    /// 运行标识白名单：放行字母数字与 -/_，挡掉路径穿越与 shell 元字符。
+    #[test]
+    fn valid_token_rejects_traversal() {
+        assert!(valid_token("run-123"));
+        assert!(valid_token("abcDEF_012"));
+        assert!(valid_token("65f1ec225effe0c0"));
+
+        assert!(!valid_token(""));
+        assert!(!valid_token("../../etc/passwd"));
+        assert!(!valid_token("a/b"));
+        assert!(!valid_token("a/../b"));
+        assert!(!valid_token("a b"));
+        assert!(!valid_token("a;rm"));
+        assert!(!valid_token("$(id)"));
+        // 超长（>48）也要拒
+        assert!(!valid_token(&"a".repeat(49)));
+    }
+
+    /// 长任务日志路径校验：必须是 data 目录下的 .log 绝对路径。
+    ///
+    /// 注意刻意不强制 `data/users` 前缀——zapd 的 `task::logs_dir()` 是
+    /// `{data}/task-logs`，硬套会把正常长任务拦掉（这里只挡注入与任意文件写）。
+    #[test]
+    fn safe_task_log_path_checks() {
+        let base = std::env::var("ZAP_PATH").unwrap_or_else(|_| "/usr/local/zap".into());
+        let ok = format!("{base}/data/task-logs/run-abc.log");
+        assert!(safe_task_log_path(&ok).is_ok(), "正常任务日志应放行");
+
+        assert!(
+            safe_task_log_path("relative/x.log").is_err(),
+            "相对路径应拒绝"
+        );
+        assert!(
+            safe_task_log_path(&format!("{base}/data/task-logs/../x.log")).is_err(),
+            "含 .. 应拒绝"
+        );
+        assert!(
+            safe_task_log_path(&format!("{base}/data/task-logs/x.txt")).is_err(),
+            "非 .log 后缀应拒绝"
+        );
+        for bad in [
+            format!("{base}/data/task-logs/a'b.log"),
+            format!("{base}/data/task-logs/a\".log"),
+            format!("{base}/data/task-logs/a$.log"),
+            format!("{base}/data/task-logs/a;.log"),
+            format!("{base}/data/task-logs/a&.log"),
+            format!("{base}/data/task-logs/a|.log"),
+            format!("{base}/data/task-logs/a`.log"),
+        ] {
+            assert!(
+                safe_task_log_path(&bad).is_err(),
+                "shell 元字符应拒绝: {bad}"
+            );
+        }
     }
 }

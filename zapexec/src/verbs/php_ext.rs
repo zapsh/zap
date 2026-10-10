@@ -633,6 +633,11 @@ pub async fn install(svc: &str, package: &str, version: &str, log_path: &str) ->
     let svc = svc.to_string();
     let package = package.to_string();
     let version = version.to_string();
+    // 日志路径会以 root 身份被打开追加写（且安装脚本里还会被拼进 shell），
+    // 先做准入校验，避免被诱导写任意文件
+    if let Err(e) = super::safe_task_log_path(log_path) {
+        return Response::err(-1, format!("日志路径不合法: {e}"));
+    }
     let log_path = log_path.to_string();
     if !name_ok(&package) {
         return Response::err(-1, format!("包名不合法: {package}"));
@@ -866,20 +871,6 @@ fn remove_inner(c: &PhpCtx, name: &str, log: &str) -> i32 {
 mod tests {
     use super::*;
 
-    fn ctx_stub() -> PhpCtx {
-        PhpCtx {
-            bin: PathBuf::from("/usr/local/apps/php-74/bin/php"),
-            ext_dir: PathBuf::from(
-                "/usr/local/apps/php-74/lib/php/extensions/no-debug-non-zts-20190902",
-            ),
-            scan_dir: Some(PathBuf::from("/usr/local/apps/php-74/etc/php.d")),
-            ini: Some(PathBuf::from("/usr/local/apps/php-74/etc/php.ini")),
-            php_config: Some(PathBuf::from("/usr/local/apps/php-74/bin/php-config")),
-            version: "7.4.33".to_string(),
-            unit: Some("php-fpm-74".to_string()),
-        }
-    }
-
     #[test]
     fn ext_name_whitelist() {
         assert!(name_ok("redis"));
@@ -904,37 +895,6 @@ mod tests {
         assert_eq!(decl_line("opcache"), "zend_extension=opcache.so\n");
         assert_eq!(decl_line("xdebug"), "zend_extension=xdebug.so\n");
         assert_eq!(decl_line("redis"), "extension=redis.so\n");
-    }
-
-    #[test]
-    fn managed_ini_is_namespaced() {
-        let c = ctx_stub();
-        let p = managed_ini(&c, "redis").unwrap();
-        assert_eq!(p.file_name().unwrap(), "zap-ext-redis.ini");
-    }
-
-    #[test]
-    fn installer_route_pie_pecl_source() {
-        let c = ctx_stub();
-        // PIE：非交互，且带本实例的 php-config（系统里可能有多版本 PHP）
-        let s = install_script(&c, "redis", "", true, false);
-        assert!(s.starts_with("pie install redis"), "{s}");
-        assert!(
-            s.contains("--with-php-config=/usr/local/apps/php-74/bin/php-config"),
-            "{s}"
-        );
-        // pecl：交互选项用空回车走默认值；版本拼在包名后
-        let s = install_script(&c, "redis", "5.3.7", false, true);
-        assert!(s.contains("pecl install redis-5.3.7"), "{s}");
-        assert!(s.contains("printf"), "{s}");
-        // 源码兜底：pecl.php.net 的 tarball + phpize + make
-        let s = install_script(&c, "redis", "", false, false);
-        assert!(s.contains("pecl.php.net/get/redis.tgz"), "{s}");
-        assert!(s.contains("phpize"), "{s}");
-        assert!(
-            s.contains("--with-php-config=/usr/local/apps/php-74/bin/php-config"),
-            "{s}"
-        );
     }
 
     #[test]

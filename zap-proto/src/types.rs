@@ -17,7 +17,7 @@ fn default_log_lines() -> usize {
     200
 }
 
-/// ACME HTTP-01 
+/// ACME HTTP-01
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AcmeChallengeEntry {
     /// 挑战 token（文件名固定为该值）

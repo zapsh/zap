@@ -1173,6 +1173,11 @@ pub async fn archive(
 
         // 目标目录不存在时按操作者身份创建，压缩包同样归操作者所有
         let dir = resolve_path(&dest_dir);
+        // 目标目录同样要过沙箱：否则普通用户可指定任意绝对路径（不存在时还会让
+        // root 递归建整条祖先链再 chown 给他），绕开家目录约束写出压缩包。
+        if let Err(e) = sandbox_path(&dir, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
         if !dir.exists()
             && let Err(e) = create_dirs_owned(actor, &dir)
         {
@@ -1519,6 +1524,11 @@ pub async fn extract(
         return Response::err(-1, e);
     }
     let dest = resolve_path(&dest_dir);
+    // 解压目标同样要过沙箱：包内 zip-slip 已由 safe_entry_path 挡住，
+    // 但「目标目录本身越界」这一层此前是缺口，普通用户可解压到家目录之外。
+    if let Err(e) = sandbox_path(&dest, &as_user, skip_owner_check) {
+        return Response::err(-1, e);
+    }
     if dest.exists() && !dest.is_dir() {
         return Response::err(-1, "解压目标已存在且不是目录".to_string());
     }

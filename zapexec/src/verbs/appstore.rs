@@ -1104,6 +1104,10 @@ fn spawn_background(
     steps: Vec<ScriptStep>,
     on_done: Box<dyn FnOnce(i32) + Send>,
 ) -> Result<PathBuf, String> {
+    // run_id 会被拼进 `run-{id}.log/.pid/.ret`：过白名单挡掉 `../` 之类的路径穿越
+    if !super::valid_token(run_id) {
+        return Err(format!("run_id 非法: {run_id}"));
+    }
     std::fs::create_dir_all(logs_dir()).map_err(|e| e.to_string())?;
     let log_path = logs_dir().join(format!("run-{run_id}.log"));
     let pid_path = logs_dir().join(format!("run-{run_id}.pid"));
@@ -1127,10 +1131,7 @@ fn spawn_background(
     std::thread::spawn(move || {
         use std::io::Write;
         let mut log = log_file;
-        let _ = writeln!(
-            log,
-            "── Queued (auto-runs after previous task ──"
-        );
+        let _ = writeln!(log, "── Queued (auto-runs after previous task ──");
         // 全局串行闸门：install/uninstall/upgrade/script_run 一次只执行一个
         let _queue_token = QueueToken::new();
         let _ = writeln!(log, "── Task Started ──");
@@ -1428,6 +1429,10 @@ fn spawn_repo_task(
     op: impl FnOnce() -> Result<String, String> + Send + 'static,
     title: String,
 ) -> Response {
+    // run_id 会被拼进 `run-{id}.log`：过白名单挡掉 `../` 之类的路径穿越
+    if !super::valid_token(&run_id) {
+        return Response::err(-1, format!("run_id 非法: {run_id}"));
+    }
     let log_path = logs_dir().join(format!("run-{run_id}.log"));
     let ret_log = log_path.clone();
     // 同步创建日志文件，确保接口返回时文件已存在（WebSocket 立即读日志不会 ENOENT）

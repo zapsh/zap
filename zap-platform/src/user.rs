@@ -31,8 +31,8 @@ pub struct UnixUser;
 
 impl UnixUser {
     fn lookup_user_inner(name: &str) -> Result<User> {
-        let cname = CString::new(name)
-            .map_err(|_| PlatformError::Other("用户名含非法字节".into()))?;
+        let cname =
+            CString::new(name).map_err(|_| PlatformError::Other("用户名含非法字节".into()))?;
         unsafe {
             let mut pwd: libc::passwd = std::mem::zeroed();
             let mut result: *mut libc::passwd = std::ptr::null_mut();
@@ -61,8 +61,8 @@ impl UnixUser {
     }
 
     fn lookup_group_inner(name: &str) -> Result<Group> {
-        let cname = CString::new(name)
-            .map_err(|_| PlatformError::Other("组名含非法字节".into()))?;
+        let cname =
+            CString::new(name).map_err(|_| PlatformError::Other("组名含非法字节".into()))?;
         unsafe {
             let mut gr: libc::group = std::mem::zeroed();
             let mut result: *mut libc::group = std::ptr::null_mut();

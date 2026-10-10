@@ -171,7 +171,7 @@ async fn tick() {
 
     let pool = get_db_pool().await;
     // 只看 ACME 签发的证书：自签 / 上传的证书没有 ACME 账户，无法自动续签
-    let rows: Vec<(i64, i64, String, String, i64, String, String, i64, i64)> = sqlx::query_as(
+    let rows: Vec<ScanCertRow> = sqlx::query_as(
         "SELECT id, user_id, name, domains, auto_renew, challenge_type, dns_mode,
                 not_after, last_renew_at
          FROM ssl_cert
@@ -185,9 +185,18 @@ async fn tick() {
     // 本轮待续期的证书：先进队列，再由单个工作线程串行处理（见 run_queue）
     let mut jobs: Vec<RenewJob> = Vec::new();
 
-    for (id, user_id, name, domains, auto_renew, challenge_type, dns_mode, not_after, last_renew_at) in
-        rows
-    {
+    for row in rows {
+        let ScanCertRow {
+            id,
+            user_id,
+            name,
+            domains,
+            auto_renew,
+            challenge_type,
+            dns_mode,
+            not_after,
+            last_renew_at,
+        } = row;
         let days = (not_after - now) / 86400;
 
         // 1) 到期提醒：无论是否开启自动续期都要提醒（含已过期，days ≤ 0）
@@ -222,6 +231,20 @@ async fn tick() {
         info!(count = jobs.len(), "本轮续期队列开始处理（串行）");
         tokio::spawn(run_queue(jobs));
     }
+}
+
+/// 扫描阶段用到的证书行（`ssl_cert` 一行的子集）。
+#[derive(sqlx::FromRow)]
+struct ScanCertRow {
+    id: i64,
+    user_id: i64,
+    name: String,
+    domains: String,
+    auto_renew: i64,
+    challenge_type: String,
+    dns_mode: String,
+    not_after: i64,
+    last_renew_at: i64,
 }
 
 /// 一条待续期任务。
@@ -262,9 +285,7 @@ async fn run_queue(jobs: Vec<RenewJob>) {
         let outcome = run_renew(job.cert_id, job.user_id, job.name, job.domains).await;
         if matches!(outcome, RenewOutcome::RateLimited) {
             let left = total - i - 1;
-            warn!(
-                "命中 Let's Encrypt 频率限制，本轮剩余 {left} 张证书顺延到下一轮再续",
-            );
+            warn!("命中 Let's Encrypt 频率限制，本轮剩余 {left} 张证书顺延到下一轮再续",);
             break;
         }
     }
@@ -337,12 +358,7 @@ async fn expire_of(cert_id: i64) -> i64 {
 }
 
 /// 单次续期全流程：创建订单 → 等签发 → 部署 → 通知。
-async fn run_renew(
-    cert_id: i64,
-    user_id: i64,
-    name: String,
-    domains: String,
-) -> RenewOutcome {
+async fn run_renew(cert_id: i64, user_id: i64, name: String, domains: String) -> RenewOutcome {
     let now = now_secs().await;
 
     // 1) 创建续期订单（签发成功后会就地更新原证书，站点绑定不变）

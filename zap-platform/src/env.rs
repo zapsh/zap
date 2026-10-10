@@ -174,7 +174,10 @@ mod tests {
     #[test]
     fn parse_os_release_basic() {
         let s = "NAME=\"Debian\"\nID=debian\nVERSION_ID=\"12\"\n";
-        assert_eq!(parse_os_release(s), ("debian".to_string(), "12".to_string()));
+        assert_eq!(
+            parse_os_release(s),
+            ("debian".to_string(), "12".to_string())
+        );
     }
     #[test]
     fn classify_prefers_systemd() {

@@ -117,6 +117,10 @@ pub async fn status() -> Response {
 
 /// 安装 openssh-server：后台线程执行，日志写 run-{id}.log，结束写 `__ZAP_DONE__ <code>`。
 pub async fn install(run_id: String) -> Response {
+    // run_id 会被拼进 `run-{id}.log`：必须过白名单，挡掉 `../` 之类的路径穿越
+    if !super::valid_token(&run_id) {
+        return Response::err(-1, format!("run_id 非法: {run_id}"));
+    }
     let log_path = logs_dir().join(format!("run-{run_id}.log"));
     // 同步创建日志文件，确保接口返回时文件已存在
     if let Err(e) = std::fs::create_dir_all(logs_dir()).and_then(|_| {

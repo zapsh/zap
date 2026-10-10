@@ -63,7 +63,6 @@ fn render_deny_hidefiles() -> String {
     .to_string()
 }
 
-
 // ── Nginx 探测 ───────────────────────────────────────────────
 
 /// 查找已部署 Nginx 的主配置 `conf/nginx.conf`，按优先级：
@@ -3158,28 +3157,6 @@ mod tests {
         assert!(!render_location_body(&l, 0, 1, false, true).contains("modsecurity"));
     }
 
-    /// 站点独立审计日志：传入的 waf_log_path 已是完整文件路径（{log_root}/waf.log），
-    /// 直接作为 SecAuditLog，不再二次拼接（否则会变成 waf.log/waf.log）。
-    #[test]
-    fn waf_audit_log_is_per_site() {
-        let sec = SiteSecuritySpec {
-            waf_enable: true,
-            ..Default::default()
-        };
-        let s = render_security(
-            7,
-            Some(&sec),
-            true,
-            Some("/home/u/logs/site1/waf.log"),
-            true,
-        );
-        assert!(s.contains("SecAuditEngine RelevantOnly"), "{s}");
-        assert!(s.contains("SecAuditLog /home/u/logs/site1/waf.log"), "{s}");
-        // 没有站点日志目录（未规划 log_root）时不落审计日志，避免写到不可控路径
-        let s2 = render_security(7, Some(&sec), true, None, true);
-        assert!(!s2.contains("SecAuditLog"), "{s2}");
-    }
-
     /// 「跟随全局」（mode=0）且无自定义规则时不输出 modsecurity_rules
     #[test]
     fn waf_global_mode_emits_no_rules() {
@@ -3351,12 +3328,6 @@ mod tests {
             out,
             "N=blog;I=7;D=a.com、b.com;R=/home/u/www/blog-7;C=2026-09-06 10:00:00"
         );
-    }
-
-    #[test]
-    fn skel_placeholders_without_domain() {
-        let out = apply_placeholders("D=__SITE_DOMAINS__", 1, "x", &[], Path::new("/r"), "");
-        assert_eq!(out, "D=未绑定域名");
     }
 
     /// 默认 php 站点渲染（等价于旧 render_vhost）

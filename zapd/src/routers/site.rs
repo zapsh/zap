@@ -1934,9 +1934,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
         HashMap::new()
     } else {
         let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let isql = format!(
-            "SELECT site_id, index_files FROM site_profile WHERE site_id IN ({ph})"
-        );
+        let isql = format!("SELECT site_id, index_files FROM site_profile WHERE site_id IN ({ph})");
         let mut iq = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(isql.as_str()));
         for id in &ids {
             iq = iq.bind(id);
@@ -3426,11 +3424,15 @@ async fn sync_one_site_inner(
         .await?;
         match cert {
             Some((leaf, key, ca)) if !leaf.trim().is_empty() && !key.trim().is_empty() => {
-                let mut chain = leaf.trim().to_string();
+                // 归一化后再落盘：早期版本签发的证书存在 END 标记与 base64 粘连，
+                // 原样写出会让 `nginx -t` 失败（OpenSSL 要求 END 独立成行）
+                let mut chain = crate::routers::ssl::normalize_pem(leaf.trim());
                 let ca = ca.trim();
                 if !ca.is_empty() {
-                    chain.push('\n');
-                    chain.push_str(ca);
+                    if !chain.ends_with('\n') {
+                        chain.push('\n');
+                    }
+                    chain.push_str(&crate::routers::ssl::normalize_pem(ca));
                 }
                 (Some(chain), Some(key.trim().to_string()))
             }
@@ -4082,12 +4084,8 @@ pub(crate) async fn provision_site(
         .map(|r| r.trim().to_ascii_lowercase())
         .filter(|r| !r.is_empty() && r != "none")
         .and_then(|r| match r.as_str() {
-            "generic" => {
-                Some("try_files $uri $uri/ /index.php$is_args$args;")
-            }
-            "yii" => {
-                Some("try_files $uri $uri/ /index.php?$args;")
-            }
+            "generic" => Some("try_files $uri $uri/ /index.php$is_args$args;"),
+            "yii" => Some("try_files $uri $uri/ /index.php?$args;"),
             "thinkphp" => {
                 Some("if (!-e $request_filename) {\n    rewrite ^(.*)$ /index.php?s=$1 last;\n}")
             }

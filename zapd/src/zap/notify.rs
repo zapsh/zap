@@ -459,9 +459,7 @@ pub async fn cert_renew_ok(
             user_id,
             "cert_renew_ok",
             "SSL 证书续期并部署成功",
-            &format!(
-                "证书「{cert_name}」（{domains}）已自动续期，新有效期至 {expire}。{deploy}"
-            ),
+            &format!("证书「{cert_name}」（{domains}）已自动续期，新有效期至 {expire}。{deploy}"),
         )
         .await;
     }

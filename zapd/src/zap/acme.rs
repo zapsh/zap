@@ -653,32 +653,74 @@ pub async fn view(order_id: i64) -> Result<OrderView, String> {
     Ok(view_of(&load_row(order_id).await?))
 }
 
+/// 回收僵死订单：`process_order` 是内存里的 tokio 任务，**面板重启即丢失**，
+/// 订单行会永久停在 `processing`；而 [`trigger`] 对 processing 订单直接返回当前状态，
+/// 用户无法重新推动，只能手动取消重来。
+///
+/// 因此启动时把「已 processing 超过阈值」的订单标记为 failed 并写明原因，
+/// 让用户可以重新触发验证。阈值取 30 分钟，远大于正常签发耗时（含 DNS 传播）。
+pub async fn recover_stale_orders() {
+    const STALE_SECS: i64 = 30 * 60;
+    let now = now_secs();
+    let r = sqlx::query(
+        "UPDATE ssl_acme_order SET status = 'failed',
+                error = '面板重启导致签发中断，请重新触发验证',
+                updated_at = ?
+         WHERE status = 'processing' AND updated_at < ?",
+    )
+    .bind(now)
+    .bind(now - STALE_SECS)
+    .execute(db::get_db_pool().await)
+    .await;
+    match r {
+        Ok(v) if v.rows_affected() > 0 => {
+            warn!("回收 {} 个因重启中断的 ACME 订单", v.rows_affected());
+        }
+        Ok(_) => {}
+        Err(e) => warn!(error = %e, "回收僵死 ACME 订单失败"),
+    }
+}
+
 /// 自动续期入口：按证书上记录的续期配置重新签发，签发后**就地更新该证书**
 /// （站点仍绑定原 id，重同步即可完成部署，无需改绑定）。
 ///
+/// 续期所需的证书信息（`ssl_cert` 一行的子集）。
+#[derive(sqlx::FromRow)]
+struct RenewCertRow {
+    user_id: i64,
+    name: String,
+    domains: String,
+    acme_email: String,
+    cert_type: String,
+    dns_provider_id: i64,
+    challenge_type: String,
+    dns_mode: String,
+    cert_content: String,
+}
+
 /// 与首次申请的唯一区别：`renew_cert_id` 指向原证书，签发后更新原行而非新增一张。
 pub async fn renew_cert(cert_id: i64) -> Result<OrderView, String> {
     let pool = db::get_db_pool().await;
-    let row: Option<(i64, String, String, String, String, i64, String, String, String)> =
-        sqlx::query_as(
-            "SELECT user_id, name, domains, acme_email, cert_type, dns_provider_id,
+    let row: Option<RenewCertRow> = sqlx::query_as(
+        "SELECT user_id, name, domains, acme_email, cert_type, dns_provider_id,
                 challenge_type, dns_mode, cert_content FROM ssl_cert WHERE id = ?",
-        )
-        .bind(cert_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| format!("读取待续期证书失败: {e}"))?;
-    let (
+    )
+    .bind(cert_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("读取待续期证书失败: {e}"))?;
+    let row = row.ok_or_else(|| format!("证书 {cert_id} 不存在，无法续期"))?;
+    let RenewCertRow {
         user_id,
         name,
         domains,
-        email,
+        acme_email: email,
         cert_type,
         dns_provider_id,
         challenge_type,
         dns_mode,
         cert_content,
-    ) = row.ok_or_else(|| format!("证书 {cert_id} 不存在，无法续期"))?;
+    } = row;
 
     // ARI：带上待续期证书标识，让本单被识别为续期并豁免所有频率限制
     let replaces = ari_cert_id(&cert_content);
@@ -752,10 +794,10 @@ pub async fn trigger(order_id: i64) -> Result<OrderView, String> {
     if row.challenge_type == "dns-01" && row.dns_mode == "manual" {
         let oid = order_id;
         tokio::spawn(async move {
-            if let Ok(r) = load_row(oid).await {
-                if let Err(e) = refresh_propagation(&r).await {
-                    warn!(id = oid, error = %e, "DNS 传播检测失败（不影响继续验证）");
-                }
+            if let Ok(r) = load_row(oid).await
+                && let Err(e) = refresh_propagation(&r).await
+            {
+                warn!(id = oid, error = %e, "DNS 传播检测失败（不影响继续验证）");
             }
         });
     }
@@ -1028,7 +1070,10 @@ async fn store_certificate(row: &AcmeOrderRow, chain: &str, key_pem: &str) -> Re
         .await
         .map_err(|e| format!("续期证书更新失败: {e}"))?;
         if r.rows_affected() == 0 {
-            return Err(format!("续期目标证书 {} 不存在，无法更新", row.renew_cert_id));
+            return Err(format!(
+                "续期目标证书 {} 不存在，无法更新",
+                row.renew_cert_id
+            ));
         }
         info!(id = row.renew_cert_id, "自动续期已更新原证书");
         return Ok(row.renew_cert_id);
@@ -1103,8 +1148,7 @@ d4owCgYIKoZIzj0EAwIDSAAwRQIgDEdb5lj0tRDGcueYLinIPGYXyHEIReEZ+xuU\n\
         let id = ari_cert_id(LEAF).expect("应能从带 AKI 的证书算出 ARI 标识");
         let got = id.to_string();
         assert_eq!(
-            got,
-            "8o1FtLjcg52tilWXPczj2chdd4o.ZfHsIl7_4MCk7trM4Uh2mDbRHJ8",
+            got, "8o1FtLjcg52tilWXPczj2chdd4o.ZfHsIl7_4MCk7trM4Uh2mDbRHJ8",
             "ARI 标识须为 base64url(AKI).base64url(序列号)"
         );
 

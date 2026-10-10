@@ -1084,6 +1084,11 @@ fn crs_candidates() -> Vec<String> {
 
 /// `waf.install`：仅在 status 判定可安装时允许启动，否则一条都跑不了。
 pub async fn install(log_path: &str) -> Response {
+    // 日志路径会以 root 身份被拼进 shell 命令、并被追加写入：先做一次准入校验
+    // （`run_step` 里的单引号包裹是第二层防线），避免被诱导写任意文件。
+    if let Err(e) = super::safe_task_log_path(log_path) {
+        return Response::err(-1, format!("日志路径不合法: {e}"));
+    }
     let log_path = log_path.to_string();
     run_blocking(move || {
         let info = match nginx_info() {
