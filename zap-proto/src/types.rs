@@ -875,6 +875,10 @@ pub enum Request {
         /// None 表示纯静态站点，不生成 PHP location
         #[serde(skip_serializing_if = "Option::is_none")]
         php_socket: Option<String>,
+        /// 默认首页（空格分隔的文件名列表，按序匹配；如 `index.php index.html`）；
+        /// None/空 = 执行端按站点类型取默认（PHP 站 `index.php index.html`，静态站 `index.html`）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index_files: Option<String>,
         /// 站点文档根目录（面板按归属用户家目录规划并入库，如 /home/u/www/blog-1）；
         /// None 时回退 {ZAP_PATH}/data/www/{sanitize(name)}-{site_id}
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2167,6 +2171,7 @@ mod tests {
                 enabled: true,
                 mode: None,
                 php_socket: Some("unix:/var/run/php-fpm-8.3.sock".into()),
+                index_files: None,
                 web_root: None,
                 log_root: None,
                 owner_user: None,
@@ -2219,6 +2224,7 @@ mod tests {
             enabled: true,
             mode: None,
             php_socket: None,
+            index_files: None,
             web_root: Some("/home/zap/www/blog-1".into()),
             log_root: Some("/home/zap/logs/1-blog".into()),
             owner_user: Some("zap".into()),

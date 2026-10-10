@@ -98,6 +98,10 @@ pub struct SiteAddPayload {
     pub status: Option<i32>,
     #[serde(default)]
     pub remark: Option<String>,
+    /// 默认首页（空格/逗号分隔的文件名，按序匹配；空 = 面板默认：
+    /// PHP 站 `index.php index.html`，静态站 `index.html`）
+    #[serde(default)]
+    pub index_files: Option<String>,
     /// PHP 实例标识（appstore 已安装 PHP 应用的 instance，如 php74）；空表示未绑定
     #[serde(default)]
     pub php_instance: Option<String>,
@@ -155,6 +159,9 @@ pub struct SiteUpdatePayload {
     /// 站点安全配置（WAF / 限速 / 限并发）：随站点编辑一起保存；None = 不改动
     #[serde(default)]
     pub sec: Option<SiteSecurity>,
+    /// 默认首页（空格/逗号分隔的文件名）；None = 不改动
+    #[serde(default)]
+    pub index_files: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
     /// None 表示域名保持不变；Some(任意数组，可为空) 表示整体覆盖
@@ -845,6 +852,65 @@ type ProfileRowRaw = (
     i64,
     i64,
 );
+
+/// 归一化「默认首页」：空白/逗号分隔的文件名列表（不含路径分隔符），去重保序。
+/// 空 = 面板默认（PHP 站 `index.php index.html`，静态站 `index.html`）。
+fn normalize_index_files(raw: &str) -> Result<String, ZapError> {
+    let mut out: Vec<String> = Vec::new();
+    for t in raw.split(|c: char| c == ',' || c.is_whitespace()) {
+        let t = t.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t.chars().count() > 128 {
+            return Err(ZapError::New(-1, "默认首页文件名过长".to_string()));
+        }
+        if !t
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        {
+            return Err(ZapError::New(
+                -1,
+                format!("默认首页「{t}」只能是文件名（字母/数字/./_/，-），不能带路径"),
+            ));
+        }
+        if !out.iter().any(|x| x == t) {
+            out.push(t.to_string());
+        }
+        if out.len() > 10 {
+            return Err(ZapError::New(-1, "默认首页最多 10 个".to_string()));
+        }
+    }
+    Ok(out.join(" "))
+}
+
+/// 读站点「默认首页」（空串 = 未自定义，渲染走面板默认）。
+pub(crate) async fn index_files_of(site_id: i64) -> String {
+    let pool = db::get_db_pool().await;
+    sqlx::query_scalar("SELECT index_files FROM site_profile WHERE site_id = ?")
+        .bind(site_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// 写站点「默认首页」（无档案行时补一行仅含该项的默认档案；不触碰其它列）。
+async fn set_index_files(site_id: i64, index_files: &str) -> Result<(), ZapError> {
+    let pool = db::get_db_pool().await;
+    sqlx::query(
+        "INSERT INTO site_profile (site_id, index_files, updated_at) \
+         VALUES (?, ?, strftime('%s','now')) \
+         ON CONFLICT(site_id) DO UPDATE SET \
+           index_files = excluded.index_files, updated_at = excluded.updated_at",
+    )
+    .bind(site_id)
+    .bind(index_files)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
 
 /// 读取站点扩展档案；老站点（无档案行）返回默认值
 pub(crate) async fn load_profile(site_id: i64) -> ProfileRow {
@@ -1863,6 +1929,21 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
         }
     }
 
+    // 默认首页（编辑回填用；档案行缺失 = 空串，渲染走面板默认）
+    let idx_map: HashMap<i64, String> = if ids.is_empty() {
+        HashMap::new()
+    } else {
+        let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let isql = format!(
+            "SELECT site_id, index_files FROM site_profile WHERE site_id IN ({ph})"
+        );
+        let mut iq = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(isql.as_str()));
+        for id in &ids {
+            iq = iq.bind(id);
+        }
+        iq.fetch_all(pool).await?.into_iter().collect()
+    };
+
     let mut recs: Vec<SiteRowExt> = rows
         .into_iter()
         .map(|r| {
@@ -1943,6 +2024,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
                 "ssl_prefer_server_ciphers": pf_map.get(&r.0).map(|p| p.8).unwrap_or(true),
                 "ssl_http2": pf_map.get(&r.0).map(|p| p.9).unwrap_or(true),
                 "ssl_cert_name": pf_map.get(&r.0).and_then(|p| ssl_name_map.get(&p.4)).cloned().unwrap_or_default(),
+                "index_files": idx_map.get(&r.0).cloned().unwrap_or_default(),
                 "remark": r.4,
                 "created_at": r.5,
                 "updated_at": r.6,
@@ -2239,6 +2321,7 @@ pub async fn site_add(
         run_state = RUN_STOPPED;
     }
     let remark = payload.remark.unwrap_or_default().trim().to_string();
+    let index_files = normalize_index_files(payload.index_files.as_deref().unwrap_or(""))?;
     // 归一到脚本登记的 instance（php74 / php83）：下拉里选的可能是槽位名（default / 74）
     let php_instance = crate::zap::appstore::canonical_php_instance(
         payload.php_instance.unwrap_or_default().trim(),
@@ -2386,6 +2469,10 @@ pub async fn site_add(
     .await
     {
         warn!("save site_profile failed (id={}): {}", id, e);
+    }
+    // 默认首页随建站落库（空串 = 面板默认）
+    if let Err(e) = set_index_files(id, &index_files).await {
+        warn!("save site index_files failed (id={}): {}", id, e);
     }
 
     // 安全配置随建站落库：随后的 vhost 同步（前端建站后调用的 /site/sync）会读它渲染
@@ -2736,6 +2823,13 @@ pub async fn site_update(
     .await
     {
         warn!("save site_profile failed (id={}): {}", payload.id, e);
+    }
+    // 默认首页：传了才覆盖（None = 保持不变）
+    if let Some(raw) = &payload.index_files {
+        let index_files = normalize_index_files(raw)?;
+        if let Err(e) = set_index_files(payload.id, &index_files).await {
+            warn!("save site index_files failed (id={}): {}", payload.id, e);
+        }
     }
 
     audit::log(
@@ -3378,6 +3472,11 @@ async fn sync_one_site_inner(
     // 站点安全配置（WAF / 限速 / 限并发）：渲染进 vhost 的 server 上下文
     let security = Some(sec_to_proto(load_site_sec(id).await));
 
+    // 默认首页：档案里自定义了才传（空 = 执行端按站点类型取默认）
+    let index_files_opt = {
+        let f = index_files_of(id).await;
+        (!f.is_empty()).then_some(f)
+    };
     let resp = crate::zapexec::call(Request::SiteVhostSync {
         site_id: id,
         name: name.clone(),
@@ -3385,6 +3484,7 @@ async fn sync_one_site_inner(
         enabled: status == 1,
         mode: Some(run_state.to_string()),
         php_socket,
+        index_files: index_files_opt,
         web_root: web_root_opt,
         log_root: log_root_opt,
         owner_user,

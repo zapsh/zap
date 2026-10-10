@@ -4858,6 +4858,11 @@ const enUS: Messages = {
     proxyGated:
       '(Reverse proxy is not enabled for your account; ask an administrator to enable it under System → Plans)',
     formSiteName: 'Site Name',
+    formIndexFiles: 'Default Index',
+    formIndexFilesTip: 'Space/comma separated, matched in order; leave empty for the panel default',
+    indexFilesPhPhp: 'Empty = default: index.php index.html',
+    indexFilesPhStatic: 'Empty = default: index.html',
+    indexFilesPhProxy: 'Not applicable to reverse proxy sites',
     siteNamePlaceholder: 'Leave empty to use the first domain by default',
     formDomains: 'Domains',
     domainsPlaceholder: 'Type a domain and press Enter to add; multiple allowed',

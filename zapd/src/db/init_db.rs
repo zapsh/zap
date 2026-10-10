@@ -1311,10 +1311,14 @@ async fn init_site_profile_table() {
         ssl_prefer_server_ciphers INTEGER NOT NULL DEFAULT 1,
         ssl_protocols TEXT NOT NULL DEFAULT '',
         ssl_ciphers TEXT NOT NULL DEFAULT '',
+        -- 默认首页（空格分隔的文件名列表；空 = 面板默认：PHP 站 index.php index.html，静态站 index.html）
+        index_files TEXT NOT NULL DEFAULT '',
         updated_at INTEGER NOT NULL DEFAULT 0
     );
     "#;
     let _ = get_db_pool().await.execute(sql).await;
+    // 存量库补列（CREATE IF NOT EXISTS 不会给旧表加新列）
+    ensure_column("site_profile", "index_files", "TEXT NOT NULL DEFAULT ''").await;
 }
 
 // ── api_token（API Token 管理）──────────────────────────────

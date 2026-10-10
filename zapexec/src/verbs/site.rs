@@ -617,6 +617,8 @@ struct VhostRenderSpec<'a> {
     /// 文档根（proxy 类型为空串，不渲染 root 指令）
     root: &'a str,
     php_socket: Option<&'a str>,
+    /// 默认首页（空格分隔的文件名列表）；None/空 = 按站点类型取默认
+    index_files: Option<&'a str>,
     access_log: Option<&'a str>,
     error_log: Option<&'a str>,
     /// 站点独立 WAF 审计日志路径（None = 未规划日志目录，不渲染 SecAuditLog）
@@ -907,6 +909,7 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         domains,
         root,
         php_socket,
+        index_files,
         access_log,
         error_log,
         waf_log,
@@ -1017,11 +1020,17 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         if let Some(p) = error_log {
             core.push_str(&format!("    error_log {p};\n"));
         }
-        if php_socket.is_some() {
-            core.push_str("    index index.php index.html;\n");
-        } else {
-            core.push_str("    index index.html;\n");
-        }
+        // 默认首页：站点档案自定义了就用自定义列表（空格分隔、按序匹配）；
+        // 未自定义时 PHP 站 index.php 优先，静态站只有 index.html
+        let idx = index_files
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(if php_socket.is_some() {
+                "index.php index.html"
+            } else {
+                "index.html"
+            });
+        core.push_str(&format!("    index {idx};\n"));
         // 默认 location /：伪静态预设覆盖默认 try_files。
         // 若用户已自定义 `location /`：
         //   - proxy / alias / redirect / deny 视为「整段替换」，跳过默认块（用户完全掌控 root 行为）；
@@ -1671,6 +1680,7 @@ mod loc_extra_tests {
             domains: &domains,
             root: "",
             php_socket: None,
+            index_files: None,
             access_log: None,
             error_log: None,
             waf_log: None,
@@ -1741,6 +1751,7 @@ mod loc_extra_tests {
             domains: &domains,
             root: "",
             php_socket: None,
+            index_files: None,
             access_log: None,
             error_log: None,
             waf_log: None,
@@ -2420,6 +2431,8 @@ pub(super) struct SiteConfig {
     pub(super) enabled: bool,
     pub(super) mode: Option<String>,
     pub(super) php_socket: Option<String>,
+    /// 默认首页（空格分隔的文件名列表）；None/空 = 按站点类型取默认
+    pub(super) index_files: Option<String>,
     pub(super) web_root: Option<String>,
     pub(super) log_root: Option<String>,
     pub(super) owner_user: Option<String>,
@@ -2504,6 +2517,7 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         enabled,
         mode,
         php_socket,
+        index_files,
         web_root,
         log_root,
         owner_user,
@@ -2711,6 +2725,7 @@ fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {
         domains,
         root: &root_s,
         php_socket: php_socket.as_deref(),
+        index_files: index_files.as_deref(),
         access_log: access_log.as_deref(),
         error_log: error_log.as_deref(),
         waf_log: waf_log.as_deref(),
@@ -3219,6 +3234,7 @@ mod tests {
             domains: &domains,
             root: "/home/u/www/shared-11",
             php_socket: None,
+            index_files: None,
             access_log: None,
             error_log: None,
             waf_log: None,
@@ -3249,6 +3265,7 @@ mod tests {
             domains: &domains,
             root: "/home/u/www/default-12",
             php_socket: None,
+            index_files: None,
             access_log: None,
             error_log: None,
             waf_log: None,
@@ -3350,6 +3367,7 @@ mod tests {
             domains,
             root,
             php_socket,
+            index_files: None,
             access_log,
             error_log,
             waf_log: None,
@@ -3398,6 +3416,35 @@ mod tests {
         assert!(s.contains("index index.php index.html;"));
         assert!(s.contains("fastcgi_pass unix:/var/run/php-fpm-8.3.sock;"));
         assert!(s.contains("SCRIPT_FILENAME $document_root$fastcgi_script_name"));
+    }
+
+    /// 默认首页：站点自定义列表覆盖面板默认（PHP 站也按自定义优先）
+    #[test]
+    fn custom_index_files_override_default() {
+        let s = render_vhost_full(VhostRenderSpec {
+            site_ips: &[],
+            security: None,
+            site_id: 20,
+            name: "app",
+            domains: &["app.example.com".into()],
+            root: "/zap/www/app-20",
+            php_socket: Some("unix:/var/run/php-fpm-8.3.sock"),
+            index_files: Some("home.html index.php"),
+            access_log: None,
+            error_log: None,
+            waf_log: None,
+            dry_run_ok: true,
+            site_type: "php",
+            upstreams: &[],
+            locations: &[],
+            ssl_files: None,
+            force_https: false,
+            ssl_tls: None,
+            listen_ipv4: "",
+            listen_ipv6: "",
+        });
+        assert!(s.contains("index home.html index.php;"));
+        assert!(!s.contains("index index.php index.html;"));
     }
 
     #[test]
@@ -3480,6 +3527,7 @@ mod tests {
             domains: &["s.com".into()],
             root: "/home/u/www/s-1",
             php_socket: None,
+            index_files: None,
             access_log: None,
             error_log: None,
             waf_log: None,
@@ -3517,6 +3565,7 @@ mod tests {
             domains: &["aug.com".into()],
             root: "/home/u/www/aug-7",
             php_socket: Some("unix:/run/php.sock"),
+            index_files: None,
             access_log: None,
             error_log: None,
             waf_log: None,
@@ -3590,6 +3639,7 @@ mod tests {
             domains: &["p.com".into()],
             root: "",
             php_socket: None,
+            index_files: None,
             access_log: None,
             error_log: None,
             waf_log: None,
@@ -3672,6 +3722,7 @@ mod tests {
                 domains: &["p.com".into()],
                 root: "",
                 php_socket: None,
+                index_files: None,
                 access_log: None,
                 error_log: None,
                 waf_log: None,
@@ -3922,6 +3973,7 @@ mod tests {
             domains: &["ssl.com".into()],
             root: "/home/u/www/ssl-9",
             php_socket: None,
+            index_files: None,
             access_log: None,
             error_log: None,
             waf_log: None,
@@ -3961,6 +4013,7 @@ mod tests {
             domains: &["old.com".into()],
             root: "/home/u/www/legacy-10",
             php_socket: None,
+            index_files: None,
             access_log: None,
             error_log: None,
             waf_log: None,

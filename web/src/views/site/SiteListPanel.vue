@@ -55,6 +55,8 @@ interface SiteItem {
   /** 运行状态：running / stopped / maintenance */
   run_state: string
   remark: string
+  /** 默认首页（空格分隔的文件名列表；空 = 面板默认） */
+  index_files?: string
   php_instance: string
   vhost_state: string
   /** 最近一次同步失败原因（成功为空） */
@@ -559,6 +561,8 @@ interface SiteForm {
   ips: string[]
   status: number
   remark: string
+  /** 默认首页（空格分隔的文件名，按序匹配；空 = 面板默认） */
+  index_files: string
   php_instance: string
   site_type: SiteType
   web_root_custom: boolean
@@ -589,6 +593,7 @@ const blankForm = (): SiteForm => ({
   ips: [],
   status: 1,
   remark: '',
+  index_files: '',
   php_instance: '',
   site_type: 'static',
   web_root_custom: false,
@@ -603,6 +608,15 @@ const blankForm = (): SiteForm => ({
   ssl_prefer_server_ciphers: true,
   ssl_http2: true,
 })
+
+/** 默认首页占位提示：按站点类型给出面板默认值（反代站点不适用） */
+const indexFilesPlaceholder = computed(() =>
+  form.site_type === 'php'
+    ? t('site.indexFilesPhPhp')
+    : form.site_type === 'static'
+      ? t('site.indexFilesPhStatic')
+      : t('site.indexFilesPhProxy'),
+)
 // ── 站点安全（WAF / 限速 / 限并发）：独立于站点主表单，保存即同步 vhost ──
 const sec = reactive<SiteSecurity>(blankSec())
 const wafReady = ref(false)
@@ -1306,6 +1320,7 @@ function openEdit(row: SiteItem) {
   form.ips = [...(row.ips || [])]
   form.status = row.status
   form.remark = row.remark
+  form.index_files = row.index_files || ''
   form.php_instance = row.php_instance || ''
   form.site_type = (row.site_type as SiteType) || 'php'
   form.web_root = row.web_root || ''
@@ -1514,6 +1529,8 @@ async function submitForm() {
       .filter((s) => s && s !== SITE_IP_DEFAULT),
     status: form.status,
     remark: form.remark.trim(),
+    // 默认首页：留空 = 面板默认（PHP 站 index.php index.html，静态站 index.html）
+    index_files: form.index_files.trim(),
     php_instance: form.site_type === 'php' ? form.php_instance : '',
     site_type: form.site_type,
     web_root_custom: form.web_root_custom,
@@ -2371,6 +2388,16 @@ onMounted(() => {
                     maxlength="120"
                     clearable
                   />
+                </el-form-item>
+                <!-- 默认首页：有面板默认值故收进「更多」；按站点类型给占位提示 -->
+                <el-form-item :label="t('site.formIndexFiles')">
+                  <el-input
+                    v-model="form.index_files"
+                    :placeholder="indexFilesPlaceholder"
+                    :disabled="form.site_type === 'proxy'"
+                    clearable
+                  />
+                  <div class="form-tip">{{ t('site.formIndexFilesTip') }}</div>
                 </el-form-item>
                 <el-form-item :label="t('site.colStatus')">
                   <el-radio-group v-model="form.status">
