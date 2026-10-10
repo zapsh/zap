@@ -235,15 +235,21 @@ fn default_spec() -> BTreeMap<String, String> {
 
 /// 渲染单用户 pool 配置文件（纯函数，单测覆盖）。
 /// `run_group` 为账号实际主组（同名组被系统占用时可能为 `zap_<user>`）。
+///
+/// `admin_value` / `admin_flag` 即 spec 里的 `php_admin_value` / `php_admin_flag`
+/// 两块自定义指令（如 `disable_functions`、`error_log`），其 value 中的占位符
+/// `{home}` 会被替换成 `home_dir`。
 fn render_pool_conf(
     linux_user: &str,
     run_group: &str,
     home_dir: &str,
     ver: &str,
-    spec: &BTreeMap<String, String>,
+    flat: &BTreeMap<String, String>,
+    admin_value_user: &BTreeMap<String, String>,
+    admin_flag_user: &BTreeMap<String, bool>,
 ) -> String {
     let get = |k: &str, d: &str| -> String {
-        spec.get(k)
+        flat.get(k)
             .filter(|s| !s.is_empty())
             .cloned()
             .unwrap_or_else(|| d.to_string())
@@ -299,12 +305,25 @@ fn render_pool_conf(
     out.push_str(&format!(
         "php_admin_value[open_basedir] = {home_dir}:/tmp\n"
     ));
-    out.push_str(&format!(
-        "php_admin_value[session.save_path] = {home_dir}/tmp\n"
-    ));
-    out.push_str(&format!(
-        "php_admin_value[upload_tmp_dir] = {home_dir}/tmp\n"
-    ));
+
+    // ── php_admin_value：默认安全项 + 用户自定义（后者可覆盖 / 追加） ──
+    // 默认把会话 / 上传 / 错误日志都引到用户独立 tmp，避免和系统等混在一起。
+    // 用户传入的 `admin_value` 在其后追加，同名键覆盖默认；value 里的 `{home}`
+    // 占位符会被替换成 home_dir（方便写 homedir/tmp 这类路径）。
+    let mut admin_value: BTreeMap<String, String> = BTreeMap::from([
+        ("session.save_path".to_string(), format!("{home_dir}/tmp")),
+        ("upload_tmp_dir".to_string(), format!("{home_dir}/tmp")),
+        ("error_log".to_string(), format!("{home_dir}/tmp/php-error.log")),
+    ]);
+    for (_k, v) in admin_value.iter_mut() {
+        *v = v.replace("{home}", home_dir);
+    }
+    for (k, v) in admin_value_user {
+        admin_value.insert(k.clone(), v.replace("{home}", home_dir));
+    }
+    for (k, v) in &admin_value {
+        out.push_str(&format!("php_admin_value[{k}] = {v}\n"));
+    }
     out.push_str(&format!(
         "php_admin_value[memory_limit] = {}\n",
         get("memory_limit", "256M")
@@ -321,26 +340,84 @@ fn render_pool_conf(
         "php_admin_value[max_execution_time] = {}\n",
         get("max_execution_time", "300")
     ));
+
+    // ── 用户自定义 php_admin_value（含 disable_functions 等任意指令）已并入上方 ──
+
+    // ── php_admin_flag：默认项 + 用户自定义 ──
+    let mut admin_flag: BTreeMap<String, bool> = BTreeMap::from([
+        ("log_errors".to_string(), true),
+        ("display_startup_errors".to_string(), false),
+    ]);
+    for (k, v) in admin_flag_user {
+        admin_flag.insert(k.clone(), *v);
+    }
+    for (k, v) in &admin_flag {
+        out.push_str(&format!(
+            "php_admin_flag[{k}] = {}\n",
+            if *v { "on" } else { "off" }
+        ));
+    }
+
     out
 }
 
-fn parse_spec(spec_json: &str) -> BTreeMap<String, String> {
-    let mut m = default_spec();
+/// 解析 spec JSON → `(flat 字段, php_admin_value 表, php_admin_flag 表)`。
+///
+/// `php_admin_value` / `php_admin_flag` 两块为对象（如
+/// `{"disable_functions":"exec,system"}`、`{"log_errors":true}`），其余扁平键
+/// 走原资源字段（pm / memory_limit …）逻辑。
+fn parse_spec(
+    spec_json: &str,
+) -> (
+    BTreeMap<String, String>,
+    BTreeMap<String, String>,
+    BTreeMap<String, bool>,
+) {
+    let mut flat = default_spec();
+    let mut values: BTreeMap<String, String> = BTreeMap::new();
+    let mut flags: BTreeMap<String, bool> = BTreeMap::new();
     if spec_json.trim().is_empty() {
-        return m;
+        return (flat, values, flags);
     }
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(spec_json)
         && let Some(obj) = v.as_object()
     {
         for (k, val) in obj {
-            let s = match val {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            m.insert(k.clone(), s);
+            match k.as_str() {
+                "php_admin_value" => {
+                    if let Some(o) = val.as_object() {
+                        for (kk, vv) in o {
+                            values.insert(kk.clone(), json_to_ini_value(vv));
+                        }
+                    }
+                }
+                "php_admin_flag" => {
+                    if let Some(o) = val.as_object() {
+                        for (kk, vv) in o {
+                            flags.insert(kk.clone(), vv.as_bool().unwrap_or(false));
+                        }
+                    }
+                }
+                _ => {
+                    let s = match val {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    flat.insert(k.clone(), s);
+                }
+            }
         }
     }
-    m
+    (flat, values, flags)
+}
+
+/// JSON 标量 → ini 取值字符串（对象/数字原样转字符串）
+fn json_to_ini_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => if *b { "on" } else { "off" }.to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// 重载目标 php-fpm master：优先服务管理器 reload，退化为向 master 发 USR2。
@@ -420,11 +497,19 @@ pub async fn pool_sync(
         // 会话/上传临时目录（open_basedir 白名单指向这里）
         let tmp = format!("{home_dir}/tmp");
         std::fs::create_dir_all(&tmp).map_err(|e| format!("创建用户 tmp 目录失败: {e}"))?;
-        let spec_map = parse_spec(spec);
+        let (flat, admin_value, admin_flag) = parse_spec(spec);
         let ver = php_version(php_instance);
         // pool 的 group 取账号实际主组（同名组被系统占用时落在 zap_<user> 专属组）
         let run_group = super::user::run_group_of(linux_user);
-        let content = render_pool_conf(linux_user, &run_group, home_dir, &ver, &spec_map);
+        let content = render_pool_conf(
+            linux_user,
+            &run_group,
+            home_dir,
+            &ver,
+            &flat,
+            &admin_value,
+            &admin_flag,
+        );
         let pool_file = pool_dir.join(format!("{linux_user}.conf"));
         std::fs::write(&pool_file, &content).map_err(|e| format!("写入 pool 配置失败: {e}"))?;
         // 校验：失败即回滚，绝不带着坏配置 reload
@@ -523,7 +608,7 @@ mod tests {
     #[test]
     fn render_basic_pool() {
         let spec = default_spec();
-        let s = render_pool_conf("zap", "zap", "/home/zap", "8.3", &spec);
+        let s = render_pool_conf("zap", "zap", "/home/zap", "8.3", &spec, &Default::default(), &Default::default());
         assert!(s.contains("[zap]"));
         assert!(s.contains("user = zap"));
         assert!(s.contains("group = zap"));
@@ -543,7 +628,7 @@ mod tests {
     #[test]
     fn render_pool_uses_resolved_run_group() {
         let spec = default_spec();
-        let s = render_pool_conf("admin", "zap_admin", "/home/admin", "8.3", &spec);
+        let s = render_pool_conf("admin", "zap_admin", "/home/admin", "8.3", &spec, &Default::default(), &Default::default());
         assert!(s.contains("[admin]"));
         assert!(s.contains("user = admin"));
         assert!(s.contains("group = zap_admin"));
@@ -555,7 +640,7 @@ mod tests {
         let mut spec = default_spec();
         spec.insert("pm".into(), "static".into());
         spec.insert("max_children".into(), "4".into());
-        let s = render_pool_conf("zap", "zap", "/home/zap", "8.1", &spec);
+        let s = render_pool_conf("zap", "zap", "/home/zap", "8.1", &spec, &Default::default(), &Default::default());
         assert!(s.contains("pm = static"));
         assert!(s.contains("pm.max_children = 4"));
         assert!(!s.contains("start_servers"));
@@ -566,7 +651,7 @@ mod tests {
     fn invalid_pm_falls_back() {
         let mut spec = default_spec();
         spec.insert("pm".into(), "bogus".into());
-        let s = render_pool_conf("zap", "zap", "/home/zap", "8.2", &spec);
+        let s = render_pool_conf("zap", "zap", "/home/zap", "8.2", &spec, &Default::default(), &Default::default());
         assert!(s.contains("pm = ondemand"));
     }
 
@@ -579,5 +664,61 @@ mod tests {
         assert!(!linux_user_ok(""));
         assert!(!linux_user_ok("ab cd"));
         assert!(!linux_user_ok("za:p"));
+    }
+
+    /// 默认 php_admin_value / flag 始终生效
+    #[test]
+    fn render_default_admin_directives() {
+        let spec = default_spec();
+        let s = render_pool_conf(
+            "zap",
+            "zap",
+            "/home/zap",
+            "8.3",
+            &spec,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        assert!(s.contains("php_admin_value[session.save_path] = /home/zap/tmp"));
+        assert!(s.contains("php_admin_value[upload_tmp_dir] = /home/zap/tmp"));
+        assert!(s.contains("php_admin_value[error_log] = /home/zap/tmp/php-error.log"));
+        assert!(s.contains("php_admin_flag[log_errors] = on"));
+        assert!(s.contains("php_admin_flag[display_startup_errors] = off"));
+    }
+
+    /// 用户自定义 php_admin_value / flag 渲染 + 覆盖默认
+    #[test]
+    fn render_custom_admin_directives() {
+        let spec = default_spec();
+        let mut values = BTreeMap::new();
+        values.insert("disable_functions".into(), "exec,system,passthru".into());
+        values.insert("error_log".into(), "{home}/logs/php.err".into());
+        let mut flags = BTreeMap::new();
+        flags.insert("display_startup_errors".into(), true);
+        let s = render_pool_conf("zap", "zap", "/home/zap", "8.3", &spec, &values, &flags);
+        // 自定义指令出现
+        assert!(s.contains("php_admin_value[disable_functions] = exec,system,passthru"));
+        // {home} 占位符被替换
+        assert!(s.contains("php_admin_value[error_log] = /home/zap/logs/php.err"));
+        // 覆盖默认：display_startup_errors 变为 on
+        assert!(s.contains("php_admin_flag[display_startup_errors] = on"));
+        // 默认 log_errors 仍在
+        assert!(s.contains("php_admin_flag[log_errors] = on"));
+    }
+
+    /// spec JSON 里的 php_admin_value / php_admin_flag 能被正确解析
+    #[test]
+    fn parse_spec_extracts_admin_blocks() {
+        let (flat, values, flags) = parse_spec(
+            r#"{"pm":"dynamic","memory_limit":"512M",
+               "php_admin_value":{"disable_functions":"exec,system"},
+               "php_admin_flag":{"log_errors":true}}"#,
+        );
+        assert_eq!(flat.get("pm").map(String::as_str), Some("dynamic"));
+        assert_eq!(flat.get("memory_limit").map(String::as_str), Some("512M"));
+        assert_eq!(values.get("disable_functions").map(String::as_str), Some("exec,system"));
+        assert_eq!(flags.get("log_errors").copied(), Some(true));
+        // 默认资源字段不受影响
+        assert_eq!(flat.get("max_children").map(String::as_str), Some("10"));
     }
 }

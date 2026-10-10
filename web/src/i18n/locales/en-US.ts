@@ -1715,6 +1715,18 @@ const enUS: Messages = {
     deleteSpecConfirm:
       'Delete the spec template "{name}"?\nUsers referencing it will fall back to the global default spec.',
 
+    phpAdminValue: 'php_admin_value directives',
+    phpAdminFlag: 'php_admin_flag directives',
+    directiveKey: 'Directive',
+    directiveValue: 'Value',
+    directiveOn: 'On / Off',
+    directiveKeyPlaceholder: 'e.g. disable_functions / session.save_path',
+    addDirective: 'Add directive',
+    phpAdminValueHelp:
+      'PHP ini directives such as disable_functions / error_log. Use {home} in the value to mean the user home dir (replaced at render time). Defaults already include session.save_path / upload_tmp_dir / error_log = {home}/tmp.',
+    phpAdminFlagHelp:
+      'Boolean directives (on / off), e.g. log_errors, display_startup_errors. Defaults already include log_errors = on and display_startup_errors = off.',
+
     defaultsTitle: 'Global Default Config',
     defaultsSaved: 'Default config saved',
     defaultWebserver: 'Default Web Server',

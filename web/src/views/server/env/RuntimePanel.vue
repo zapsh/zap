@@ -114,6 +114,8 @@ function openDefaultsDialog() {
   form.container_runtime = c?.container_runtime || 'auto'
   // 回填 fpm 默认规格（先重置再覆盖）
   resetFpmForm()
+  defAdminValue.value = []
+  defAdminFlag.value = []
   const raw = c?.fpm_pool_defaults
   if (raw) {
     try {
@@ -128,10 +130,15 @@ function openDefaultsDialog() {
         const v = obj[k]
         if (v !== undefined && v !== null) fpmStr[k as keyof typeof fpmStr] = String(v)
       })
+      const picked = pickAdmin(obj)
+      defAdminValue.value = picked.values
+      defAdminFlag.value = picked.flags
     } catch {
       /* 非法 JSON 忽略，使用默认 */
     }
   }
+  if (defAdminValue.value.length === 0) defAdminValue.value.push({ key: '', value: '' })
+  if (defAdminFlag.value.length === 0) defAdminFlag.value.push({ key: '', value: true })
   dialogVisible.value = true
 }
 
@@ -145,7 +152,11 @@ function resetFpmForm() {
 }
 
 function fpmSpecJson(): string {
-  return JSON.stringify({ ...fpmStr, ...fpmNum })
+  const obj: Record<string, unknown> = { ...fpmStr, ...fpmNum }
+  const admin = packAdmin(defAdminValue.value, defAdminFlag.value)
+  if (admin.php_admin_value) obj.php_admin_value = admin.php_admin_value
+  if (admin.php_admin_flag) obj.php_admin_flag = admin.php_admin_flag
+  return JSON.stringify(obj)
 }
 
 async function saveDefaults() {
@@ -305,6 +316,67 @@ const specRows = ref<SpecRow[]>([])
 const jsonPanel = ref<string[]>([])
 const specJsonRaw = ref('')
 
+/** php_admin_value 自定义指令行（key = 指令名，value = 字符串值，可用 {home} 指代家目录） */
+interface KVRow {
+  key: string
+  value: string
+}
+/** php_admin_flag 自定义指令行（key = 指令名，value = 布尔） */
+interface KVFlagRow {
+  key: string
+  value: boolean
+}
+
+/** 规格对话框里的自定义 php_admin_value / php_admin_flag */
+const specAdminValue = ref<KVRow[]>([])
+const specAdminFlag = ref<KVFlagRow[]>([])
+/** 默认规格对话框里的自定义 php_admin_value / php_admin_flag */
+const defAdminValue = ref<KVRow[]>([])
+const defAdminFlag = ref<KVFlagRow[]>([])
+
+/** 从已解析的对象里取出 php_admin_value / php_admin_flag，过滤掉空 key */
+function pickAdmin(
+  obj: Record<string, unknown>,
+): { values: KVRow[]; flags: KVFlagRow[] } {
+  const values: KVRow[] = []
+  const flags: KVFlagRow[] = []
+  if (obj.php_admin_value && typeof obj.php_admin_value === 'object') {
+    for (const [k, v] of Object.entries(obj.php_admin_value as Record<string, unknown>)) {
+      if (!k) continue
+      values.push({ key: k, value: String(v) })
+    }
+  }
+  if (obj.php_admin_flag && typeof obj.php_admin_flag === 'object') {
+    for (const [k, v] of Object.entries(obj.php_admin_flag as Record<string, unknown>)) {
+      if (!k) continue
+      flags.push({ key: k, value: v === true })
+    }
+  }
+  return { values, flags }
+}
+
+/** 将自定义指令行拼回对象（忽略空 key / 空值） */
+function packAdmin(
+  values: KVRow[],
+  flags: KVFlagRow[],
+): { php_admin_value?: Record<string, string>; php_admin_flag?: Record<string, boolean> } {
+  const out: { php_admin_value?: Record<string, string>; php_admin_flag?: Record<string, boolean> } = {}
+  const vmap: Record<string, string> = {}
+  for (const r of values) {
+    const k = r.key.trim()
+    if (k && r.value.trim() !== '') vmap[k] = r.value
+  }
+  if (Object.keys(vmap).length) out.php_admin_value = vmap
+  const fmap: Record<string, boolean> = {}
+  for (const r of flags) {
+    const k = r.key.trim()
+    if (k) fmap[k] = r.value
+  }
+  if (Object.keys(fmap).length) out.php_admin_flag = fmap
+  return out
+}
+
+
 /** 字段提示（无 meta 返回 null） */
 function fpmMeta(field: string): FpmFieldMeta | null {
   return fpmFields.value[field] ?? null
@@ -318,9 +390,11 @@ const fieldOptions = computed(() =>
   })),
 )
 
-/** JSON 文本 → 表格行（未知/旧字段也保留；解析失败则空表） */
+/** JSON 文本 → 表格行 + 自定义指令（未知/旧字段也保留；解析失败则空表） */
 function specToRows(jsonText: string) {
   const rows: SpecRow[] = []
+  const av: KVRow[] = []
+  const af: KVFlagRow[] = []
   try {
     const obj = JSON.parse(jsonText) as Record<string, unknown>
     const known = Object.keys(fpmFields.value)
@@ -330,17 +404,24 @@ function specToRows(jsonText: string) {
       return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib)
     })
     for (const k of keys) {
+      // 两块自定义指令走专属编辑器，不进入扁平字段表
+      if (k === 'php_admin_value' || k === 'php_admin_flag') continue
       const v = obj[k]
       if (v === null || v === undefined) continue
       rows.push({ field: k, enabled: true, value: String(v) })
     }
+    const picked = pickAdmin(obj)
+    av.push(...picked.values)
+    af.push(...picked.flags)
   } catch {
     /* 非法 JSON：空表由用户自行补充 */
   }
   specRows.value = rows
+  specAdminValue.value = av
+  specAdminFlag.value = af
 }
 
-/** 表格行 → 规范化 JSON（仅收录"启用且已填"的行） */
+/** 表格行 + 自定义指令 → 规范化 JSON（仅收录"启用且已填"的行） */
 function rowsToSpec(): string {
   const obj: Record<string, unknown> = {}
   for (const r of specRows.value) {
@@ -356,6 +437,9 @@ function rowsToSpec(): string {
       obj[f] = v
     }
   }
+  const admin = packAdmin(specAdminValue.value, specAdminFlag.value)
+  if (admin.php_admin_value) obj.php_admin_value = admin.php_admin_value
+  if (admin.php_admin_flag) obj.php_admin_flag = admin.php_admin_flag
   return JSON.stringify(obj, null, 2)
 }
 
@@ -389,6 +473,9 @@ function openSpecDialog(row?: FpmSpecItem) {
     specForm.remark = ''
   }
   specToRows(seed)
+  // 给自定义指令块预置一行，方便直接填
+  if (specAdminValue.value.length === 0) specAdminValue.value.push({ key: '', value: '' })
+  if (specAdminFlag.value.length === 0) specAdminFlag.value.push({ key: '', value: true })
   specJsonRaw.value = prettySpec(seed)
   jsonPanel.value = [] // 原始 JSON 默认折叠
   specDialogVisible.value = true
@@ -400,6 +487,32 @@ function addSpecRow() {
 
 function removeSpecRow(idx: number) {
   specRows.value.splice(idx, 1)
+}
+
+/** 自定义指令新增 / 删除 */
+function addAdminValue() {
+  specAdminValue.value.push({ key: '', value: '' })
+}
+function removeAdminValue(idx: number) {
+  specAdminValue.value.splice(idx, 1)
+}
+function addAdminFlag() {
+  specAdminFlag.value.push({ key: '', value: true })
+}
+function removeAdminFlag(idx: number) {
+  specAdminFlag.value.splice(idx, 1)
+}
+function addDefAdminValue() {
+  defAdminValue.value.push({ key: '', value: '' })
+}
+function removeDefAdminValue(idx: number) {
+  defAdminValue.value.splice(idx, 1)
+}
+function addDefAdminFlag() {
+  defAdminFlag.value.push({ key: '', value: true })
+}
+function removeDefAdminFlag(idx: number) {
+  defAdminFlag.value.splice(idx, 1)
 }
 
 /** 选中字段后给个顺手默认值 */
@@ -865,6 +978,68 @@ onMounted(() => {
             </el-collapse-item>
           </el-collapse>
         </el-form-item>
+
+        <!-- php_admin_value 自定义指令 -->
+        <el-form-item :label="t('serverEnv.phpAdminValue')">
+          <div class="admin-block">
+            <el-table :data="specAdminValue" size="small" border style="width: 100%">
+              <el-table-column :label="t('serverEnv.directiveKey')" min-width="180">
+                <template #default="{ row }">
+                  <el-input v-model="row.key" :placeholder="t('serverEnv.directiveKeyPlaceholder')" />
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('serverEnv.directiveValue')" min-width="220">
+                <template #default="{ row }">
+                  <el-input v-model="row.value" :placeholder="t('serverEnv.valuePlaceholder')" />
+                </template>
+              </el-table-column>
+              <el-table-column label="" width="60" align="center">
+                <template #default="{ $index }">
+                  <el-button link type="danger" size="small" @click="removeAdminValue($index)">
+                    {{ t('serverEnv.removeRow') }}
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="field-toolbar">
+              <el-button size="small" type="primary" plain @click="addAdminValue">
+                {{ t('serverEnv.addDirective') }}
+              </el-button>
+              <span class="form-tip">{{ t('serverEnv.phpAdminValueHelp') }}</span>
+            </div>
+          </div>
+        </el-form-item>
+
+        <!-- php_admin_flag 自定义指令（布尔 on/off） -->
+        <el-form-item :label="t('serverEnv.phpAdminFlag')">
+          <div class="admin-block">
+            <el-table :data="specAdminFlag" size="small" border style="width: 100%">
+              <el-table-column :label="t('serverEnv.directiveKey')" min-width="180">
+                <template #default="{ row }">
+                  <el-input v-model="row.key" :placeholder="t('serverEnv.directiveKeyPlaceholder')" />
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('serverEnv.directiveOn')" width="120" align="center">
+                <template #default="{ row }">
+                  <el-switch v-model="row.value" />
+                </template>
+              </el-table-column>
+              <el-table-column label="" width="60" align="center">
+                <template #default="{ $index }">
+                  <el-button link type="danger" size="small" @click="removeAdminFlag($index)">
+                    {{ t('serverEnv.removeRow') }}
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="field-toolbar">
+              <el-button size="small" type="primary" plain @click="addAdminFlag">
+                {{ t('serverEnv.addDirective') }}
+              </el-button>
+              <span class="form-tip">{{ t('serverEnv.phpAdminFlagHelp') }}</span>
+            </div>
+          </div>
+        </el-form-item>
         <el-form-item :label="t('common.remark')">
           <el-input
             v-model="specForm.remark"
@@ -1058,6 +1233,68 @@ onMounted(() => {
         <el-form-item label=" ">
           <el-button size="small" @click="resetFpmForm">{{ t('serverEnv.resetSpec') }}</el-button>
         </el-form-item>
+
+        <!-- 默认规格的 php_admin_value 自定义指令 -->
+        <el-form-item :label="t('serverEnv.phpAdminValue')">
+          <div class="admin-block">
+            <el-table :data="defAdminValue" size="small" border style="width: 100%">
+              <el-table-column :label="t('serverEnv.directiveKey')" min-width="180">
+                <template #default="{ row }">
+                  <el-input v-model="row.key" :placeholder="t('serverEnv.directiveKeyPlaceholder')" />
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('serverEnv.directiveValue')" min-width="220">
+                <template #default="{ row }">
+                  <el-input v-model="row.value" :placeholder="t('serverEnv.valuePlaceholder')" />
+                </template>
+              </el-table-column>
+              <el-table-column label="" width="60" align="center">
+                <template #default="{ $index }">
+                  <el-button link type="danger" size="small" @click="removeDefAdminValue($index)">
+                    {{ t('serverEnv.removeRow') }}
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="field-toolbar">
+              <el-button size="small" type="primary" plain @click="addDefAdminValue">
+                {{ t('serverEnv.addDirective') }}
+              </el-button>
+              <span class="form-tip">{{ t('serverEnv.phpAdminValueHelp') }}</span>
+            </div>
+          </div>
+        </el-form-item>
+
+        <!-- 默认规格的 php_admin_flag 自定义指令（布尔 on/off） -->
+        <el-form-item :label="t('serverEnv.phpAdminFlag')">
+          <div class="admin-block">
+            <el-table :data="defAdminFlag" size="small" border style="width: 100%">
+              <el-table-column :label="t('serverEnv.directiveKey')" min-width="180">
+                <template #default="{ row }">
+                  <el-input v-model="row.key" :placeholder="t('serverEnv.directiveKeyPlaceholder')" />
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('serverEnv.directiveOn')" width="120" align="center">
+                <template #default="{ row }">
+                  <el-switch v-model="row.value" />
+                </template>
+              </el-table-column>
+              <el-table-column label="" width="60" align="center">
+                <template #default="{ $index }">
+                  <el-button link type="danger" size="small" @click="removeDefAdminFlag($index)">
+                    {{ t('serverEnv.removeRow') }}
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="field-toolbar">
+              <el-button size="small" type="primary" plain @click="addDefAdminFlag">
+                {{ t('serverEnv.addDirective') }}
+              </el-button>
+              <span class="form-tip">{{ t('serverEnv.phpAdminFlagHelp') }}</span>
+            </div>
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
@@ -1133,6 +1370,9 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+.admin-block {
+  width: 100%;
 }
 .json-collapse {
   margin-top: 10px;

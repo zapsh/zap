@@ -313,38 +313,36 @@ async fn init_packages_table() {
         max_sites INTEGER NOT NULL DEFAULT 0,
         max_domains INTEGER NOT NULL DEFAULT 0,
         max_bandwidth_mb INTEGER NOT NULL DEFAULT 0,
-        -- 用户可创建的 MySQL / MariaDB 数据库数量（0 = 不限，建库时硬拦截）
+        -- Maximum number of mysql database (0 = unlimited)
         max_mysql_dbs INTEGER NOT NULL DEFAULT 0,
-        -- 用户可创建的 PostgreSQL 数据库数量（0 = 不限，仅记录与展示）
+        -- -- Maximum number of  postgresql database (0 = unlimited)
         max_pgsql_dbs INTEGER NOT NULL DEFAULT 0,
-        -- 用户可创建的 FTP 账号数量（0 = 不限，仅记录与展示）
+        -- -- Maximum number of ftpusers (0 = unlimited)
         max_ftp_users INTEGER NOT NULL DEFAULT 0,
         fpm_spec_ref TEXT NOT NULL DEFAULT '',
         allow_ssh INTEGER NOT NULL DEFAULT 0,
         allow_proxy INTEGER NOT NULL DEFAULT 0,
-        -- PHP 站点能力：默认开放（普通用户建站的主要形态）
+        -- feature : allow php
         allow_php INTEGER NOT NULL DEFAULT 1,
-        -- 容器能力：默认关闭；且仅在容器运行时为 Podman 时才对普通用户生效
+        -- feature : allow docker (only effective when podman is running)
         allow_docker INTEGER NOT NULL DEFAULT 0,
-        -- WAF 能力：允许该套餐的用户为站点开启 WAF（仍需全局已安装并启用 ModSecurity）
+        -- feature : allow waf (web application firewall)
         allow_waf INTEGER NOT NULL DEFAULT 0,
-        -- 应用管理（Application Manager）总开关：默认关闭
+        -- feature : allow apps (python/nodejs)
         allow_apps INTEGER NOT NULL DEFAULT 0,
-        -- 允许部署的应用类型（逗号分隔，如 `python,nodejs`）；空 = 不限（允许全部已支持类型）
+        -- feature : allow apps types (split by ',' python,nodejs), empty string means all types are allowed
         app_types TEXT NOT NULL DEFAULT '',
-        -- 每个站点可部署的应用数量上限（0 = 不限）
+        -- max apps per site (0 = unlimited)
         max_apps INTEGER NOT NULL DEFAULT 0,
-        -- 每个用户分到的端口个数：端口段 = 10000 + 用户ID × N（0 = 不限）
+        -- per user port span , start port =10000 + user id * N (0 = unlimited)
         app_port_span INTEGER NOT NULL DEFAULT 0,
-        -- 该用户全部站点合计可部署的应用数量上限（0 = 不限）
+        -- max apps per user (0 = unlimited)
         app_max_total INTEGER NOT NULL DEFAULT 0,
         owner_id INTEGER NOT NULL DEFAULT 0,
         status INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER,
         updated_at INTEGER
     );
-    INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, max_mysql_dbs, max_pgsql_dbs, max_ftp_users, fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, allow_apps, app_types, max_apps, app_port_span, app_max_total, owner_id, status, created_at, updated_at)
-    VALUES ('默认套餐', '不限磁盘、不限站点、不限域名、不限数据库与 FTP 账号数，允许 SSH 终端、PHP 站点与站点 WAF（反向代理、容器默认关闭，可在「编辑套餐」中开启；自定义目录已全量开放）', 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 1, 0, 1, 0, '', 0, 0, 0, 0, 1, strftime('%s','now'), strftime('%s','now'));
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }
