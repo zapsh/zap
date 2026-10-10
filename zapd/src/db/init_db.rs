@@ -361,7 +361,7 @@ async fn init_packages_table() {
         0, 0, 0, 0,            -- disk_quota_mb / max_sites / max_domains / max_bandwidth_mb
         0, 0, 0,               -- max_mysql_dbs / max_pgsql_dbs / max_ftp_users
         '',                    -- fpm_spec_ref   : default
-        1,                     -- allow_ssh      : SSH Terminal
+        0,                     -- allow_ssh      : SSH Terminal
         0,                     -- allow_proxy    : reverse proxy (upstream / location)
         1,                     -- allow_php      : PHP sites
         0,                     -- allow_docker   : containers
