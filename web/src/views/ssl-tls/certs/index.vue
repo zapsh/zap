@@ -19,6 +19,9 @@
             <el-button :icon="IconDns" @click="openDnsDrawer">{{
               t('sslCerts.dnsProviderBtn')
             }}</el-button>
+            <el-button :icon="Refresh" @click="openRenewConfig">{{
+              t('sslCerts.renewConfigTitle')
+            }}</el-button>
             <el-badge :value="orders.length" :hidden="!orders.length" type="primary">
               <el-button :icon="Loading" @click="openOrders">{{
                 t('sslCerts.leOrdersBtn')
@@ -80,18 +83,35 @@
             <span v-else>{{ row.not_after ? fmtTime(row.not_after) : '-' }}</span>
           </template>
         </el-table-column>
+        <!-- 自动续期：仅 ACME 证书可开启，自签 / 上传的证书不支持 -->
+        <el-table-column :label="t('sslCerts.colAutoRenew')" width="120">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="isAcmeCert(row)"
+              :content="autoRenewTip(row)"
+              placement="top"
+              :disabled="!row.renew_msg"
+            >
+              <el-tag size="small" :type="autoRenewTagType(row)">{{ autoRenewText(row) }}</el-tag>
+            </el-tooltip>
+            <span v-else class="never">-</span>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('sslCerts.colRemark')" min-width="140" show-overflow-tooltip>
           <template #default="{ row }">{{ row.remark || '-' }}</template>
         </el-table-column>
         <el-table-column :label="t('sslCerts.colUpdatedAt')" width="160">
           <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
         </el-table-column>
-        <el-table-column :label="t('common.operation')" width="180" fixed="right">
+        <el-table-column :label="t('common.operation')" width="240" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link @click="openDetail(row)">{{
               t('sslCerts.detail')
             }}</el-button>
             <el-button type="primary" link @click="openEdit(row)">{{ t('common.edit') }}</el-button>
+            <el-button v-if="isAcmeCert(row)" type="primary" link @click="openAutoRenew(row)">{{
+              t('sslCerts.colAutoRenew')
+            }}</el-button>
             <el-button type="danger" link @click="handleDelete(row)">{{
               t('common.delete')
             }}</el-button>
@@ -259,6 +279,96 @@
       <template #footer>
         <el-button @click="editVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="saving" @click="submitSave">{{
+          t('common.save')
+        }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 自动续期设置（单张证书） -->
+    <el-dialog v-model="autoRenewVisible" :title="t('sslCerts.autoRenewTitle')" width="580px">
+      <el-alert type="info" :closable="false" show-icon :description="t('sslCerts.autoRenewTip')" />
+      <el-form label-width="120px" style="margin-top: 14px" @submit.prevent>
+        <el-form-item :label="t('sslCerts.colName')">
+          <span>{{ autoRenewForm.name }}</span>
+        </el-form-item>
+        <el-form-item :label="t('sslCerts.colAutoRenew')">
+          <el-switch
+            v-model="autoRenewForm.auto_renew"
+            :active-text="t('sslCerts.autoRenewOn')"
+            :inactive-text="t('sslCerts.autoRenewOff')"
+          />
+        </el-form-item>
+        <el-form-item :label="t('sslCerts.autoRenewEmail')">
+          <el-input
+            v-model="autoRenewForm.acme_email"
+            :placeholder="t('sslCerts.autoRenewEmailPh')"
+          />
+        </el-form-item>
+        <el-form-item :label="t('sslCerts.leValidation')">
+          <el-radio-group v-model="autoRenewForm.challenge_type">
+            <el-radio value="http-01">{{ t('sslCerts.leValidationHttp') }}</el-radio>
+            <el-radio value="dns-01">{{ t('sslCerts.leValidationDns') }}</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <template v-if="autoRenewForm.challenge_type === 'dns-01'">
+          <el-form-item :label="t('sslCerts.leDnsMode')">
+            <el-radio-group v-model="autoRenewForm.dns_mode">
+              <el-radio value="auto">{{ t('sslCerts.leDnsAuto') }}</el-radio>
+              <el-radio value="manual">{{ t('sslCerts.leDnsManual') }}</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item
+            v-if="autoRenewForm.dns_mode === 'auto'"
+            :label="t('sslCerts.leDnsProvider')"
+          >
+            <el-select
+              v-model="autoRenewForm.dns_provider_id"
+              :placeholder="t('sslCerts.leDnsProviderPlaceholder')"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="p in dnsProviders"
+                :key="p.id"
+                :label="`${p.name}（${providerLabel(p.provider)}）`"
+                :value="p.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-alert
+            v-else
+            type="warning"
+            :closable="false"
+            show-icon
+            :description="t('sslCerts.autoRenewManualTip')"
+          />
+        </template>
+      </el-form>
+      <template #footer>
+        <el-button @click="autoRenewVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button :loading="renewing" @click="submitRenewNow">{{
+          t('sslCerts.renewNow')
+        }}</el-button>
+        <el-button type="primary" :loading="autoRenewSaving" @click="submitAutoRenew">{{
+          t('common.save')
+        }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 续期策略（全局阈值） -->
+    <el-dialog v-model="renewConfigVisible" :title="t('sslCerts.renewConfigTitle')" width="480px">
+      <el-form label-width="130px" @submit.prevent>
+        <el-form-item :label="t('sslCerts.renewDays')">
+          <el-input-number v-model="renewConfigForm.renew_days" :min="1" :max="89" />
+          <div class="form-hint">{{ t('sslCerts.renewDaysTip') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('sslCerts.warnDays')">
+          <el-input-number v-model="renewConfigForm.warn_days" :min="1" :max="89" />
+          <div class="form-hint">{{ t('sslCerts.warnDaysTip') }}</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="renewConfigVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="renewConfigSaving" @click="submitRenewConfig">{{
           t('common.save')
         }}</el-button>
       </template>
@@ -621,6 +731,7 @@ import {
   CircleCloseFilled,
   WarningFilled,
   Dns as IconDns,
+  Refresh,
 } from '@/icons'
 import DnsProvidersPane from '@/views/ssl-tls/dns-providers/DnsProvidersPane.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -642,6 +753,10 @@ import {
   cancelAcmeOrder,
   getAcmeDnsProviders,
   getAcmeDnsList,
+  setCertAutoRenew,
+  renewCertNow,
+  getRenewConfig,
+  setRenewConfig,
   type SslCertItem,
   type SslCertDetail,
   type SslCertParseResult,
@@ -1180,6 +1295,129 @@ function onDnsDrawerClosed() {
   if (dnsBackToLe.value) {
     dnsBackToLe.value = false
     leVisible.value = true
+  }
+}
+
+// ── 证书自动续期 ─────────────────────────────────────────
+//
+// 调度器按全局阈值自动触发；这里负责「开不开、用什么方式续」以及手动立即续期。
+
+/** 仅 ACME 签发的证书可自动续期（自签 / 上传的没有 ACME 账户与验证方式） */
+const isAcmeCert = (row: SslCertItem) =>
+  row.cert_type === 'letsencrypt' || row.cert_type === 'letsencrypt-staging'
+
+function autoRenewText(row: SslCertItem) {
+  if (row.renew_status === -1) return t('sslCerts.autoRenewFail')
+  if (!row.auto_renew) return t('sslCerts.autoRenewOff')
+  if (row.renew_status === 1) return t('sslCerts.autoRenewOk')
+  return t('sslCerts.autoRenewOn')
+}
+
+function autoRenewTagType(row: SslCertItem): 'success' | 'danger' | 'info' | 'warning' {
+  if (row.renew_status === -1) return 'danger'
+  if (!row.auto_renew) return 'info'
+  if (row.renew_status === 1) return 'success'
+  return 'warning'
+}
+
+/** 悬浮提示：上次续期结果与时间 */
+function autoRenewTip(row: SslCertItem) {
+  const parts: string[] = []
+  if (row.renew_msg) parts.push(row.renew_msg)
+  if (row.last_renew_at) parts.push(`${t('sslCerts.lastRenew')}：${fmtTime(row.last_renew_at)}`)
+  return parts.join('，')
+}
+
+const autoRenewVisible = ref(false)
+const autoRenewSaving = ref(false)
+const renewing = ref(false)
+const autoRenewForm = reactive({
+  id: 0,
+  name: '',
+  auto_renew: false,
+  acme_email: '',
+  challenge_type: 'http-01',
+  dns_mode: 'manual',
+  dns_provider_id: 0,
+})
+
+function openAutoRenew(row: SslCertItem) {
+  autoRenewForm.id = row.id
+  autoRenewForm.name = row.name
+  autoRenewForm.auto_renew = row.auto_renew === 1
+  autoRenewForm.acme_email = row.acme_email || ''
+  autoRenewForm.challenge_type = row.challenge_type || 'http-01'
+  autoRenewForm.dns_mode = row.dns_mode || 'manual'
+  autoRenewForm.dns_provider_id = row.dns_provider_id || dnsProviders.value[0]?.id || 0
+  if (!dnsProviders.value.length) loadDnsProviders()
+  autoRenewVisible.value = true
+}
+
+async function submitAutoRenew() {
+  autoRenewSaving.value = true
+  try {
+    await setCertAutoRenew({
+      id: autoRenewForm.id,
+      auto_renew: autoRenewForm.auto_renew ? 1 : 0,
+      acme_email: autoRenewForm.acme_email.trim(),
+      challenge_type: autoRenewForm.challenge_type,
+      dns_mode: autoRenewForm.dns_mode,
+      dns_provider_id: autoRenewForm.dns_provider_id,
+    })
+    ElMessage.success(t('sslCerts.autoRenewSaved'))
+    autoRenewVisible.value = false
+    loadList()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    autoRenewSaving.value = false
+  }
+}
+
+/** 立即续期：后台签发 + 部署 + 通知，接口立即返回 */
+async function submitRenewNow() {
+  renewing.value = true
+  try {
+    await renewCertNow(autoRenewForm.id)
+    ElMessage.success(t('sslCerts.renewSubmitted'))
+    autoRenewVisible.value = false
+    loadList()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    renewing.value = false
+  }
+}
+
+// ── 续期策略（全局阈值）──────────────────────────────────
+const renewConfigVisible = ref(false)
+const renewConfigSaving = ref(false)
+const renewConfigForm = reactive({ renew_days: 30, warn_days: 20 })
+
+async function openRenewConfig() {
+  try {
+    const res = await getRenewConfig()
+    renewConfigForm.renew_days = res.data?.renew_days ?? 30
+    renewConfigForm.warn_days = res.data?.warn_days ?? 20
+  } catch {
+    /* 读取失败则用默认值 */
+  }
+  renewConfigVisible.value = true
+}
+
+async function submitRenewConfig() {
+  renewConfigSaving.value = true
+  try {
+    await setRenewConfig({
+      renew_days: renewConfigForm.renew_days,
+      warn_days: renewConfigForm.warn_days,
+    })
+    ElMessage.success(t('sslCerts.renewConfigSaved'))
+    renewConfigVisible.value = false
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    renewConfigSaving.value = false
   }
 }
 

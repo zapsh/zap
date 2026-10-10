@@ -2297,6 +2297,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "x509-parser",
 ]
 
 [[package]]
@@ -6312,6 +6313,7 @@ dependencies = [
  "rust-embed",
  "rustls",
  "rustls-pemfile",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_yaml",

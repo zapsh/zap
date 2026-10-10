@@ -41,6 +41,21 @@ struct CertListRow {
     not_after: i64,
     status: i64,
     remark: String,
+    /// 自动续期：1 = 进入续期窗口后自动重新签发并部署
+    auto_renew: i64,
+    /// 续期用的 ACME 邮箱
+    acme_email: String,
+    /// 续期用的验证方式：http-01 / dns-01（空 = 未配置）
+    challenge_type: String,
+    /// dns-01 子模式：manual（无法自动续期）/ auto
+    dns_mode: String,
+    dns_provider_id: i64,
+    /// 上次续期执行时间
+    last_renew_at: i64,
+    /// 上次续期结果：0 未执行 / 未知，1 成功，-1 失败
+    renew_status: i64,
+    /// 上次续期结果说明
+    renew_msg: String,
     created_at: i64,
     updated_at: i64,
 }
@@ -118,7 +133,9 @@ async fn resolve_cert_owner(claims: &jwt::Claims, target: i64) -> Result<(), Zap
 pub async fn cert_list(claims: ValidatedClaims) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
     let cols = "c.id, c.user_id, u.username AS owner_name, c.name, c.domains, c.cert_type, \
-                c.not_before, c.not_after, c.status, c.remark, c.created_at, c.updated_at";
+                c.not_before, c.not_after, c.status, c.remark, \
+                c.auto_renew, c.acme_email, c.challenge_type, c.dns_mode, c.dns_provider_id, \
+                c.last_renew_at, c.renew_status, c.renew_msg, c.created_at, c.updated_at";
     let rows: Vec<CertListRow> = if jwt::is_admin(&claims) {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {cols} FROM ssl_cert c LEFT JOIN user u ON u.id = c.user_id \
@@ -1235,6 +1252,8 @@ pub async fn cert_letsencrypt(
         challenge: kind,
         dns_mode,
         dns_provider_id,
+        renew_cert_id: 0,
+        replaces: None,
     })
     .await
     .map_err(|e| ZapError::New(-1, e))?;
@@ -1313,6 +1332,179 @@ pub async fn letsencrypt_orders(claims: ValidatedClaims) -> ZapJsonResult {
         .await
         .map_err(|e| ZapError::New(-1, e))?;
     Ok(Json(json!({ "code": 0, "message": "OK", "data": orders })))
+}
+
+// ── 证书自动续期 ─────────────────────────────────────────
+//
+// 续期由 `zap::cert_renew` 调度器定时触发；这里提供三个入口：
+//   - 设置某张证书的续期配置（开关 / 邮箱 / 验证方式）
+//   - 立即续期一张证书（不等调度器）
+//   - 读写全局续期阈值（提前多少天续签、提前多少天提醒）
+
+#[derive(Debug, Deserialize)]
+pub struct CertAutoRenewPayload {
+    pub id: i64,
+    /// 1 = 开启自动续期，0 = 关闭
+    #[serde(default)]
+    pub auto_renew: Option<i32>,
+    /// 续期用的 ACME 邮箱（开启时必填）
+    #[serde(default)]
+    pub acme_email: Option<String>,
+    /// http-01 | dns-01
+    #[serde(default)]
+    pub challenge_type: Option<String>,
+    /// 仅 dns-01：manual | auto（manual 无法自动续期）
+    #[serde(default)]
+    pub dns_mode: Option<String>,
+    #[serde(default)]
+    pub dns_provider_id: Option<i64>,
+}
+
+/// 设置证书的自动续期配置。
+pub async fn cert_auto_renew(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<CertAutoRenewPayload>,
+) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    cert_in_scope(&claims, payload.id).await?;
+
+    let on = payload.auto_renew.unwrap_or(0) != 0;
+    let email = payload.acme_email.unwrap_or_default().trim().to_string();
+    let challenge = payload
+        .challenge_type
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    let dns_mode = payload.dns_mode.unwrap_or_default().trim().to_lowercase();
+    let dns_provider_id = payload.dns_provider_id.unwrap_or(0);
+
+    // 只有 ACME 签发的证书带得动自动续期（自签 / 上传的没有 ACME 账户与验证方式）
+    let (cert_type, cur_email): (String, String) =
+        sqlx::query_as("SELECT cert_type, acme_email FROM ssl_cert WHERE id = ?")
+            .bind(payload.id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| ZapError::New(-1, "证书不存在".to_string()))?;
+    if on && !matches!(cert_type.as_str(), "letsencrypt" | "letsencrypt-staging") {
+        return Err(ZapError::New(
+            -1,
+            "仅 Let's Encrypt 签发的证书支持自动续期（自签 / 手动上传的证书请手动更新）".to_string(),
+        ));
+    }
+
+    // 邮箱：未提供时沿用已有值；开启自动续期则必须有邮箱（ACME 下单必填）
+    let email = if email.is_empty() { cur_email } else { email };
+    if on && email.trim().is_empty() {
+        return Err(ZapError::New(
+            -1,
+            "开启自动续期需要填写 ACME 邮箱".to_string(),
+        ));
+    }
+    // 验证方式：dns-01 手动无法自动完成，直接拦住，避免开了开关却永远续不了
+    if on && challenge == "dns-01" && dns_mode != "auto" {
+        return Err(ZapError::New(
+            -1,
+            "DNS-01 手动模式需人工添加解析记录，无法自动续期：请改用 HTTP 验证或自动 DNS".to_string(),
+        ));
+    }
+    if on && challenge == "dns-01" && dns_mode == "auto" && dns_provider_id <= 0 {
+        return Err(ZapError::New(
+            -1,
+            "自动 DNS 续期需要选择 DNS 服务商".to_string(),
+        ));
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "UPDATE ssl_cert SET auto_renew = ?, acme_email = ?, challenge_type = ?, dns_mode = ?,
+                dns_provider_id = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(if on { 1 } else { 0 })
+    .bind(email)
+    .bind(challenge.clone())
+    .bind(dns_mode.clone())
+    .bind(dns_provider_id)
+    .bind(now)
+    .bind(payload.id)
+    .execute(pool)
+    .await?;
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_cert_auto_renew",
+        &payload.id.to_string(),
+        &format!("auto_renew={} challenge={challenge} dns_mode={dns_mode}", if on { 1 } else { 0 }),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK" })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CertRenewNowPayload {
+    pub id: i64,
+}
+
+/// 立即续期一张证书（签发 + 部署 + 通知都在后台跑，接口立即返回）。
+pub async fn cert_renew_now(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<CertRenewNowPayload>,
+) -> ZapJsonResult {
+    cert_in_scope(&claims, payload.id).await?;
+    // 复用调度器的全流程：创建续期订单 → 等签发 → 部署站点 → 通知结果
+    crate::zap::cert_renew::renew_now(payload.id)
+        .await
+        .map_err(|e| ZapError::New(-1, e))?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_cert_renew",
+        &payload.id.to_string(),
+        "手动触发续期",
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK" })))
+}
+
+/// 全局续期阈值：提前多少天自动续签、提前多少天开始提醒。
+#[derive(Debug, Deserialize)]
+pub struct RenewConfigPayload {
+    /// 剩余天数 ≤ 该值即触发自动续期（默认 30）
+    #[serde(default)]
+    pub renew_days: Option<i64>,
+    /// 剩余天数 ≤ 该值即开始到期提醒（默认 20）
+    #[serde(default)]
+    pub warn_days: Option<i64>,
+}
+
+pub async fn renew_config_get(_claims: ValidatedClaims) -> ZapJsonResult {
+    let (renew_days, warn_days) = crate::zap::cert_renew::config().await;
+    Ok(Json(json!({
+        "code": 0, "message": "OK",
+        "data": { "renew_days": renew_days, "warn_days": warn_days },
+    })))
+}
+
+pub async fn renew_config_set(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<RenewConfigPayload>,
+) -> ZapJsonResult {
+    crate::zap::cert_renew::set_config(payload.renew_days, payload.warn_days).await;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_cert_renew_config",
+        "global",
+        &format!(
+            "renew_days={:?} warn_days={:?}",
+            payload.renew_days, payload.warn_days
+        ),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK" })))
 }
 
 // ── ACME 的 DNS 服务商凭据管理 ─────────────────────────────

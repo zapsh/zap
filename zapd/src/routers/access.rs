@@ -303,6 +303,28 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("ssl", "delete")),
     ),
+    // ── 证书自动续期：改配置 / 立即续期 / 全局策略 ────────────
+    // 续期会重新签发并部署到站点，按 update 授权；策略读取按 view、保存按 update
+    (
+        "/ssl/cert/auto-renew",
+        Required::User,
+        Some(Perm::action("ssl", "update")),
+    ),
+    (
+        "/ssl/cert/renew",
+        Required::User,
+        Some(Perm::action("ssl", "update")),
+    ),
+    (
+        "/ssl/cert/renew-config",
+        Required::User,
+        Some(Perm::action("ssl", "view")),
+    ),
+    (
+        "/ssl/cert/renew-config/save",
+        Required::User,
+        Some(Perm::action("ssl", "update")),
+    ),
     // ── Let's Encrypt 订单（异步流程：提交 → 轮询 → 验证 / 取消）──
     // 子路径必须逐条登记：前缀规则是「最长命中」，漏一条就会继承父路径的动作。
     (

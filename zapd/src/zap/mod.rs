@@ -14,6 +14,7 @@ pub mod audit;
 pub mod auto_update;
 pub mod backup_scheduler;
 pub mod cache_clean;
+pub mod cert_renew;
 pub mod certmgr;
 pub mod cloud;
 pub mod crypto;

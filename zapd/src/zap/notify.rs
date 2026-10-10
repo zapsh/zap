@@ -303,6 +303,23 @@ pub fn builtin_template(event: &str) -> (String, String) {
             "【ZAP】磁盘空间不足预警".into(),
             "您的磁盘用量已达 {{pct}}%，即将超过套餐配额。请及时清理文件或联系管理员升级套餐。".into(),
         ),
+        "cert_expiring" => (
+            "【ZAP】SSL 证书即将到期".into(),
+            "您的 SSL 证书「{{cert}}」（域名：{{domains}}）将在 {{days}} 天后到期（{{expire}}），\
+             请及时续期，避免站点 HTTPS 中断。"
+                .into(),
+        ),
+        "cert_renew_ok" => (
+            "【ZAP】SSL 证书续期并部署成功".into(),
+            "证书「{{cert}}」（域名：{{domains}}）已自动续期并部署完成，新有效期至 {{expire}}。\n{{deploy}}"
+                .into(),
+        ),
+        "cert_renew_fail" => (
+            "【ZAP】SSL 证书续期或部署失败".into(),
+            "证书「{{cert}}」（域名：{{domains}}）自动续期/部署失败：{{reason}}\n\
+             请登录面板检查域名解析与验证方式，或手动重新申请。"
+                .into(),
+        ),
         _ => ("【ZAP】系统通知".into(), "您有一条新的系统通知。".into()),
     }
 }
@@ -356,4 +373,125 @@ pub async fn disk_low(user_id: i64, _owner_id: i64, pct: i32) {
         &[(cooldown_key, chrono::Local::now().timestamp().to_string())],
         "磁盘预警冷却",
     );
+}
+
+// ── SSL 证书：到期提醒 / 自动续期结果 ──────────────────────────
+
+/// 时间戳 → 本地时间字符串（与磁盘预警等其它通知保持一致的可读格式）。
+fn fmt_ts(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+/// SSL 证书即将到期提醒。
+///
+/// 带冷却避免每天重复打扰：`days` 越小提醒越频繁——
+/// 剩余 3 天以上每 7 天一次，3 天内每天一次。
+pub async fn cert_expiring(
+    cert_id: i64,
+    user_id: i64,
+    cert_name: &str,
+    domains: &str,
+    days: i64,
+    expire_at: i64,
+) {
+    let cooldown_key = format!("cert_expire_at_{cert_id}");
+    let gap = if days <= 3 { 86400 } else { 7 * 86400 };
+    if let Some(last) = server_env::conf_get(&cooldown_key)
+        && let Ok(ts) = last.parse::<i64>()
+        && chrono::Local::now().timestamp() - ts < gap
+    {
+        return; // 冷却期内不重复提醒
+    }
+    let expire = fmt_ts(expire_at);
+    let channels = prefs_channels(user_id).await;
+    if channels.contains("site") {
+        push(
+            user_id,
+            "cert_expiring",
+            "SSL 证书即将到期",
+            &format!(
+                "证书「{cert_name}」（{domains}）将在 {days} 天后到期（{expire}），\
+                 已开启自动续期的证书会自动续签，否则请及时手动续期。"
+            ),
+        )
+        .await;
+    }
+    if channels.contains("email") {
+        let mut p = HashMap::new();
+        p.insert("cert", cert_name.to_string());
+        p.insert("domains", domains.to_string());
+        p.insert("days", days.to_string());
+        p.insert("expire", expire);
+        email_user(user_id, "cert_expiring", &p).await;
+    }
+    server_env::conf_set_many(
+        &[(cooldown_key, chrono::Local::now().timestamp().to_string())],
+        "证书到期提醒冷却",
+    );
+}
+
+/// 自动续期并部署成功通知。
+///
+/// `deployed` 为成功重载的站点名；为空表示证书未绑定到任何站点（仅续期，无部署动作）。
+/// 只要有站点部署失败，就统一走 [`cert_renew_fail`]，避免成功/失败两条重复通知。
+pub async fn cert_renew_ok(
+    user_id: i64,
+    cert_name: &str,
+    domains: &str,
+    expire_at: i64,
+    deployed: &[String],
+) {
+    let expire = fmt_ts(expire_at);
+    let deploy = if deployed.is_empty() {
+        "该证书当前未绑定到任何站点，无需部署。".to_string()
+    } else {
+        format!("已部署站点：{}。", deployed.join("、"))
+    };
+    let channels = prefs_channels(user_id).await;
+    if channels.contains("site") {
+        push(
+            user_id,
+            "cert_renew_ok",
+            "SSL 证书续期并部署成功",
+            &format!(
+                "证书「{cert_name}」（{domains}）已自动续期，新有效期至 {expire}。{deploy}"
+            ),
+        )
+        .await;
+    }
+    if channels.contains("email") {
+        let mut p = HashMap::new();
+        p.insert("cert", cert_name.to_string());
+        p.insert("domains", domains.to_string());
+        p.insert("expire", expire);
+        p.insert("deploy", deploy);
+        email_user(user_id, "cert_renew_ok", &p).await;
+    }
+}
+
+/// 自动续期或部署失败通知（签发失败 / 部署失败都走这里，`reason` 为具体原因）。
+pub async fn cert_renew_fail(user_id: i64, cert_name: &str, domains: &str, reason: &str) {
+    let channels = prefs_channels(user_id).await;
+    if channels.contains("site") {
+        push(
+            user_id,
+            "cert_renew_fail",
+            "SSL 证书续期或部署失败",
+            &format!("证书「{cert_name}」（{domains}）自动续期/部署失败：{reason}"),
+        )
+        .await;
+    }
+    if channels.contains("email") {
+        let mut p = HashMap::new();
+        p.insert("cert", cert_name.to_string());
+        p.insert("domains", domains.to_string());
+        p.insert("reason", reason.to_string());
+        email_user(user_id, "cert_renew_fail", &p).await;
+    }
 }

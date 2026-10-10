@@ -1368,12 +1368,44 @@ async fn init_ssl_cert_table() {
         not_after INTEGER NOT NULL DEFAULT 0,
         status INTEGER NOT NULL DEFAULT 1,
         remark TEXT NOT NULL DEFAULT '',
+        -- ── 自动续期（仅 ACME 签发的证书可用）──
+        -- auto_renew：1 = 到期自动重新签发并部署到绑定站点
+        auto_renew INTEGER NOT NULL DEFAULT 0,
+        -- 续期用的 ACME 邮箱（ACME 订单必填）
+        acme_email TEXT NOT NULL DEFAULT '',
+        -- 续期用的验证方式：http-01 | dns-01（空 = 沿用首次申请方式，未知则不可自动续期）
+        challenge_type TEXT NOT NULL DEFAULT '',
+        -- 仅 dns-01 有意义：manual | auto。manual 需人工加 TXT，无法自动续期
+        dns_mode TEXT NOT NULL DEFAULT '',
+        dns_provider_id INTEGER NOT NULL DEFAULT 0,
+        -- 续期执行记录
+        last_renew_at INTEGER NOT NULL DEFAULT 0,
+        renew_status INTEGER NOT NULL DEFAULT 0,
+        renew_msg TEXT NOT NULL DEFAULT '',
+        -- 到期提醒冷却时间戳（避免重复打扰）
+        expire_notified_at INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER,
         updated_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_ssl_cert_user ON ssl_cert(user_id);
+    CREATE INDEX IF NOT EXISTS idx_ssl_cert_expire ON ssl_cert(not_after);
     "#;
     let _ = get_db_pool().await.execute(sql).await;
+    // 升级旧库（建表用 CREATE TABLE IF NOT EXISTS，已存在的表不会被改动）
+    for (col, ddl) in [
+        ("auto_renew", "INTEGER NOT NULL DEFAULT 0"),
+        ("acme_email", "TEXT NOT NULL DEFAULT ''"),
+        ("challenge_type", "TEXT NOT NULL DEFAULT ''"),
+        ("dns_mode", "TEXT NOT NULL DEFAULT ''"),
+        ("dns_provider_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_renew_at", "INTEGER NOT NULL DEFAULT 0"),
+        ("renew_status", "INTEGER NOT NULL DEFAULT 0"),
+        ("renew_msg", "TEXT NOT NULL DEFAULT ''"),
+        ("expire_notified_at", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        ensure_column("ssl_cert", col, ddl).await;
+    }
+    ensure_column("ssl_acme_order", "renew_cert_id", "INTEGER NOT NULL DEFAULT 0").await;
 }
 
 // ── SSL/TLS：ACME（Let's Encrypt）配套表 ──────────────────────
@@ -1416,6 +1448,8 @@ async fn init_ssl_acme_order_table() {
         -- 证书名（签发后写入 ssl_cert.name）
         name TEXT NOT NULL DEFAULT '',
         remark TEXT NOT NULL DEFAULT '',
+        -- 续期订单：>0 表示这是 ssl_cert.id 的自动续期订单，签发后更新原证书而非新增
+        renew_cert_id INTEGER NOT NULL DEFAULT 0,
         domains TEXT NOT NULL DEFAULT '',
         -- let's encrypt 环境同 account.directory
         directory TEXT NOT NULL DEFAULT 'letsencrypt',

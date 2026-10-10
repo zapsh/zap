@@ -1,0 +1,27 @@
+# Zap 面板主配置文件（zapd / zapctl 共用）
+#
+# server.address    监听地址：0.0.0.0 表示监听全部网卡，也可指定单个 IP
+# server.port       监听端口（修改后需重启 zapd 生效）
+# server.cert_file  面板 HTTPS 证书路径（相对路径基于 zapd 工作目录）
+# server.key_file   面板 HTTPS 私钥路径
+# server.url_prefix 统一 URL 前缀，如 zap → 页面 /zap/ 、接口 /zap/api/；留空表示不启用
+# jwt.jwt_expire    登录凭证有效期（秒）
+# jwt.jwt_secure    凭证签发密钥（首次启动自动生成，请勿外泄）
+#
+server:
+  address: 0.0.0.0
+  port: 2600
+  cert_file: conf/zap.crt
+  key_file: conf/zap.key
+  url_prefix: ''
+jwt:
+  jwt_secure: aecd94d1732bd995f344310ebff26781de4f9e5e29d3d7661f3b79acd5191d4b
+  jwt_expire: 3600
+exec:
+  socket_path: /run/zap/exec.sock
+  secret_path: /etc/zap/exec.key
+db:
+  path: data/zap.db
+  cluster_path: ''
+backup:
+  backup_dir: ''

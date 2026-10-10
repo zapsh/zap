@@ -14,11 +14,11 @@ pub mod dns;
 use std::time::Duration;
 
 use instant_acme::{
-    Account, AccountCredentials, ChallengeType as AcmeChallengeType, Identifier, NewAccount,
-    NewOrder, Order, OrderStatus, RetryPolicy,
+    Account, AccountCredentials, CertificateIdentifier, ChallengeType as AcmeChallengeType,
+    Identifier, NewAccount, NewOrder, Order, OrderStatus, RetryPolicy,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zap_proto::{AcmeChallengeEntry, Request};
 
 use crate::{
@@ -135,6 +135,8 @@ pub struct AcmeOrderRow {
     pub cert_id: i64,
     pub name: String,
     pub remark: String,
+    /// >0 表示为 `ssl_cert.id` 的自动续期订单：签发后更新原证书，而不是新增一张
+    pub renew_cert_id: i64,
     pub domains: String,
     pub directory: String,
     pub status: String,
@@ -182,6 +184,29 @@ pub struct CreateParams {
     pub challenge: ChallengeKind,
     pub dns_mode: DnsMode,
     pub dns_provider_id: i64,
+    /// 续期目标证书 id。>0 表示本次是自动续期：签发后更新该证书，而非新增一张
+    pub renew_cert_id: i64,
+    /// 续期时填 ARI 的 `replaces` 字段（待续期证书的 ARI 标识）。
+    ///
+    /// Let's Encrypt 据此把订单识别为续期并**豁免所有频率限制**；
+    /// `None` 表示按普通新订单处理（仍享有同标识符集的续期豁免，但受「同一组标识符每周 5 张」约束）。
+    pub replaces: Option<CertificateIdentifier<'static>>,
+}
+
+/// 从证书 PEM 算出 ARI 证书标识（RFC 9773：AKI + 序列号）。
+///
+/// 只取第一张证书（fullchain 时即叶子证书）。失败（无 AKI 扩展 / PEM 非法）返回 `None`，
+/// 调用方退回普通续期订单即可，不影响签发。
+fn ari_cert_id(pem: &str) -> Option<CertificateIdentifier<'static>> {
+    use rustls_pki_types::CertificateDer;
+
+    let block = x509_parser::pem::Pem::iter_from_buffer(pem.as_bytes())
+        .flatten()
+        .next()?;
+    let der = CertificateDer::from(block.contents.clone());
+    CertificateIdentifier::try_from(&der)
+        .ok()
+        .map(|c| c.into_owned())
 }
 
 fn le_err(e: instant_acme::Error) -> String {
@@ -225,9 +250,9 @@ pub fn strip_wildcard(domain: &str) -> String {
 
 async fn load_row(order_id: i64) -> Result<AcmeOrderRow, String> {
     let row: Option<AcmeOrderRow> = sqlx::query_as(
-        "SELECT id, user_id, account_id, cert_id, name, remark, domains, directory, status,
-                challenge_type, dns_mode, dns_provider_id, order_url, key_pem, challenges,
-                error, expires_at
+        "SELECT id, user_id, account_id, cert_id, name, remark, renew_cert_id, domains,
+                directory, status, challenge_type, dns_mode, dns_provider_id, order_url,
+                key_pem, challenges, error, expires_at
          FROM ssl_acme_order WHERE id = ?",
     )
     .bind(order_id)
@@ -348,9 +373,9 @@ pub async fn order_in_scope(claims: &jwt::Claims, order_id: i64) -> Result<AcmeO
 pub async fn list_orders(claims: &jwt::Claims) -> Result<Vec<OrderView>, String> {
     let pool = db::get_db_pool().await;
     // 公共条件先写死（status / 有效期），各角色只追加归属条件，避免拼接出非法 SQL
-    let cols = "id, user_id, account_id, cert_id, name, remark, domains, directory, status, \
-                challenge_type, dns_mode, dns_provider_id, order_url, key_pem, challenges, \
-                error, expires_at";
+    let cols = "id, user_id, account_id, cert_id, name, remark, renew_cert_id, domains, \
+                directory, status, challenge_type, dns_mode, dns_provider_id, order_url, \
+                key_pem, challenges, error, expires_at";
     let base = "FROM ssl_acme_order WHERE status IN ('pending','processing') AND expires_at > ?";
     let rows: Vec<AcmeOrderRow> = if jwt::is_admin(claims) {
         sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {cols} {base} ORDER BY id DESC")))
@@ -559,10 +584,24 @@ pub async fn create_order(p: CreateParams) -> Result<OrderView, String> {
         .map(|d| Identifier::Dns(strip_wildcard(d)))
         .collect();
 
-    let mut order = account
-        .new_order(&NewOrder::new(&identifiers))
-        .await
-        .map_err(|e| friendly_err(le_err(e)))?;
+    // 续期订单带上 ARI 的 replaces 字段，让 CA 识别为续期并豁免频率限制；
+    // 目录不支持 ARI 时（部分测试环境）自动降级为普通订单，不影响签发。
+    let new_order = match p.replaces.as_ref() {
+        Some(id) => NewOrder::new(&identifiers).replaces(id.clone()),
+        None => NewOrder::new(&identifiers),
+    };
+    let mut order = match account.new_order(&new_order).await {
+        Ok(o) => o,
+        Err(e) if p.replaces.is_some() => {
+            warn!("目录不支持 ARI，续期订单降级为普通订单");
+            debug!(error = %e, "ARI 下单失败详情");
+            account
+                .new_order(&NewOrder::new(&identifiers))
+                .await
+                .map_err(|e| friendly_err(le_err(e)))?
+        }
+        Err(e) => return Err(friendly_err(le_err(e))),
+    };
     let order_url = order.url().to_string();
     let items = collect_challenges(&mut order, p.challenge).await?;
     if items.is_empty() {
@@ -576,15 +615,16 @@ pub async fn create_order(p: CreateParams) -> Result<OrderView, String> {
     };
     let r = sqlx::query(
         "INSERT INTO ssl_acme_order
-            (user_id, account_id, cert_id, name, remark, domains, directory, status,
-             challenge_type, dns_mode, dns_provider_id, order_url, key_pem, challenges,
-             error, expires_at, created_at, updated_at)
-         VALUES (?, ?, 0, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '', ?, '', ?, ?, ?)",
+            (user_id, account_id, cert_id, name, remark, renew_cert_id, domains, directory,
+             status, challenge_type, dns_mode, dns_provider_id, order_url, key_pem,
+             challenges, error, expires_at, created_at, updated_at)
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '', ?, '', ?, ?, ?)",
     )
     .bind(p.user_id)
     .bind(account_id)
     .bind(&p.name)
     .bind(&remark)
+    .bind(p.renew_cert_id)
     .bind(p.domains.join(", "))
     .bind(directory)
     .bind(p.challenge.as_str())
@@ -611,6 +651,89 @@ pub async fn create_order(p: CreateParams) -> Result<OrderView, String> {
 
 pub async fn view(order_id: i64) -> Result<OrderView, String> {
     Ok(view_of(&load_row(order_id).await?))
+}
+
+/// 自动续期入口：按证书上记录的续期配置重新签发，签发后**就地更新该证书**
+/// （站点仍绑定原 id，重同步即可完成部署，无需改绑定）。
+///
+/// 与首次申请的唯一区别：`renew_cert_id` 指向原证书，签发后更新原行而非新增一张。
+pub async fn renew_cert(cert_id: i64) -> Result<OrderView, String> {
+    let pool = db::get_db_pool().await;
+    let row: Option<(i64, String, String, String, String, i64, String, String, String)> =
+        sqlx::query_as(
+            "SELECT user_id, name, domains, acme_email, cert_type, dns_provider_id,
+                challenge_type, dns_mode, cert_content FROM ssl_cert WHERE id = ?",
+        )
+        .bind(cert_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("读取待续期证书失败: {e}"))?;
+    let (
+        user_id,
+        name,
+        domains,
+        email,
+        cert_type,
+        dns_provider_id,
+        challenge_type,
+        dns_mode,
+        cert_content,
+    ) = row.ok_or_else(|| format!("证书 {cert_id} 不存在，无法续期"))?;
+
+    // ARI：带上待续期证书标识，让本单被识别为续期并豁免所有频率限制
+    let replaces = ari_cert_id(&cert_content);
+    if replaces.is_none() {
+        warn!(
+            cert = cert_id,
+            "无法从现证书算出 ARI 标识，本次续期按普通订单处理（仍受「同一组标识符每周 5 张」限制）"
+        );
+    }
+
+    let email = email.trim().to_string();
+    if email.is_empty() {
+        return Err("该证书未配置 ACME 邮箱，无法自动续期".to_string());
+    }
+    let domains: Vec<String> = domains
+        .split([',', ' ', '\n'])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if domains.is_empty() {
+        return Err("该证书没有记录域名，无法续期".to_string());
+    }
+
+    // 空表示未记录验证方式（早期证书）：按 http-01 兜底，它是唯一无需人工介入的方式
+    let challenge = match challenge_type.as_str() {
+        "" => ChallengeKind::Http01,
+        other => ChallengeKind::parse(other),
+    };
+    let is_dns = challenge == ChallengeKind::Dns01;
+    let mode = DnsMode::parse(&dns_mode, is_dns);
+    // DNS-01 手动需人工加 TXT，调度器无法自动完成，订单会一直停在 pending
+    if is_dns && mode == DnsMode::Manual {
+        return Err(
+            "DNS-01 手动模式需人工添加解析记录，无法自动续期（请改用自动 DNS 或 HTTP 验证）"
+                .to_string(),
+        );
+    }
+    if is_dns && mode == DnsMode::Auto && dns_provider_id <= 0 {
+        return Err("自动 DNS 续期缺少 DNS 服务商配置".to_string());
+    }
+
+    create_order(CreateParams {
+        user_id,
+        email,
+        domains,
+        name,
+        remark: "自动续期".to_string(),
+        staging: cert_type == "letsencrypt-staging",
+        challenge,
+        dns_mode: mode,
+        dns_provider_id,
+        renew_cert_id: cert_id,
+        replaces,
+    })
+    .await
 }
 
 /// 触发验证（DNS-01 手动模式下用户点「我已经解析好了」）。
@@ -883,11 +1006,50 @@ async fn store_certificate(row: &AcmeOrderRow, chain: &str, key_pem: &str) -> Re
         .map(|i| (i.not_before, i.not_after))
         .unwrap_or((0, 0));
     let now = now_secs();
+
+    // 续期订单：就地更新原证书（站点仍绑定原 id，续期后无需改绑定，重同步即可生效）
+    if row.renew_cert_id > 0 {
+        let r = sqlx::query(
+            "UPDATE ssl_cert SET cert_content = ?, key_content = ?, ca_bundle = ?,
+                    not_before = ?, not_after = ?, updated_at = ?,
+                    last_renew_at = ?, renew_status = 1, renew_msg = ?
+             WHERE id = ?",
+        )
+        .bind(&leaf)
+        .bind(key_pem)
+        .bind(&ca)
+        .bind(not_before)
+        .bind(not_after)
+        .bind(now)
+        .bind(now)
+        .bind("自动续期签发成功")
+        .bind(row.renew_cert_id)
+        .execute(db::get_db_pool().await)
+        .await
+        .map_err(|e| format!("续期证书更新失败: {e}"))?;
+        if r.rows_affected() == 0 {
+            return Err(format!("续期目标证书 {} 不存在，无法更新", row.renew_cert_id));
+        }
+        info!(id = row.renew_cert_id, "自动续期已更新原证书");
+        return Ok(row.renew_cert_id);
+    }
+
+    // 记下本次签发的 ACME 邮箱与验证方式：自动续期复用同一套参数，
+    // 用户以后只需打开开关，不用重填邮箱 / 验证方式
+    let acme_email: String = sqlx::query_scalar("SELECT email FROM ssl_acme_account WHERE id = ?")
+        .bind(row.account_id)
+        .fetch_optional(db::get_db_pool().await)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
     let r = sqlx::query(
         "INSERT INTO ssl_cert
             (user_id, name, domains, cert_type, cert_content, key_content, ca_bundle, csr,
-             not_before, not_after, status, remark, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, 1, ?, ?, ?)",
+             not_before, not_after, status, remark, created_at, updated_at,
+             acme_email, challenge_type, dns_mode, dns_provider_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(row.user_id)
     .bind(&row.name)
@@ -901,6 +1063,10 @@ async fn store_certificate(row: &AcmeOrderRow, chain: &str, key_pem: &str) -> Re
     .bind(&row.remark)
     .bind(now)
     .bind(now)
+    .bind(&acme_email)
+    .bind(&row.challenge_type)
+    .bind(&row.dns_mode)
+    .bind(row.dns_provider_id)
     .execute(db::get_db_pool().await)
     .await
     .map_err(|e| format!("证书入库失败: {e}"))?;
@@ -915,6 +1081,36 @@ mod tests {
     fn wildcard_stripped() {
         assert_eq!(strip_wildcard("*.example.com"), "example.com");
         assert_eq!(strip_wildcard("example.com"), "example.com");
+    }
+
+    /// ARI 证书标识（RFC 9773）：须由证书的 AKI 与序列号算出，
+    /// 续期订单带上它才能被 CA 识别为续期并豁免频率限制。
+    ///
+    /// 基准值来自测试证书（`target/sectest/leaf.pem`）：
+    /// AKI = F2:8D:45:...:77:8A，序列号 = 65F1EC...1C9F，各取 base64url 后以 `.` 连接。
+    #[test]
+    fn ari_cert_identifier() {
+        const LEAF: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBdDCCARqgAwIBAgIUZfHsIl7/4MCk7trM4Uh2mDbRHJ8wCgYIKoZIzj0EAwIw\n\
+FzEVMBMGA1UEAwwMVGVzdCBFQyBSb290MB4XDTI2MTAxMDE1MzkzOFoXDTI2MTEw\n\
+OTE1MzkzOFowGTEXMBUGA1UEAwwOZWMuZXhhbXBsZS5jb20wWTATBgcqhkjOPQIB\n\
+BggqhkjOPQMBBwNCAATdjNdsfH8dgi3Gi8Q2HYtcQBIo395jlExeDIXxbuVskW9A\n\
+WZU75qDX/3QGZrsBRIVU2bVpqWGTbrJNoZ2i0RcUo0IwQDAdBgNVHQ4EFgQUkZuT\n\
+hClRlkv0eSxK1QfS+GWeRd4wHwYDVR0jBBgwFoAU8o1FtLjcg52tilWXPczj2chd\n\
+d4owCgYIKoZIzj0EAwIDSAAwRQIgDEdb5lj0tRDGcueYLinIPGYXyHEIReEZ+xuU\n\
+3a9aHh4CIQCeK0gTUfzABCui2tHcj0yAadqh7PQghdB7jk3Lm6onRw==\n\
+-----END CERTIFICATE-----\n";
+        let id = ari_cert_id(LEAF).expect("应能从带 AKI 的证书算出 ARI 标识");
+        let got = id.to_string();
+        assert_eq!(
+            got,
+            "8o1FtLjcg52tilWXPczj2chdd4o.ZfHsIl7_4MCk7trM4Uh2mDbRHJ8",
+            "ARI 标识须为 base64url(AKI).base64url(序列号)"
+        );
+
+        // 非 PEM / 无 AKI 的材料算不出标识，调用方会退回普通续期订单
+        assert!(ari_cert_id("not a pem").is_none());
+        assert!(ari_cert_id("").is_none());
     }
 
     #[test]

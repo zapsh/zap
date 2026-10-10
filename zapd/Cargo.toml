@@ -54,7 +54,12 @@ instant-acme = { version = "0.8", default-features = false, features = [
     "hyper-rustls",
     "ring",
     "rcgen",
+    # x509-parser：让 CertificateIdentifier 可直接从待续期证书算出（ARI 的 replaces 字段），
+    # 续期订单因此能被 Let's Encrypt 识别为续期，豁免所有频率限制
+    "x509-parser",
 ] }
+# ARI 证书标识的载体类型（与 instant-acme 内部同一版本，不新增依赖树）
+rustls-pki-types = "1"
 # without OpenSSL
 reqwest = { version = "0.13", default-features = false, features = [
     "json",

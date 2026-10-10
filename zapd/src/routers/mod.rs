@@ -888,6 +888,11 @@ fn api_routers() -> Router {
         .route("/ssl/cert/self-sign", post(ssl::cert_self_sign))
         // SSL/TLS：Let's Encrypt 异步订单（下单 → 验证 → 签发）
         .route("/ssl/letsencrypt", post(ssl::cert_letsencrypt))
+        // SSL/TLS：证书自动续期（配置 / 立即续期 / 全局阈值）
+        .route("/ssl/cert/auto-renew", post(ssl::cert_auto_renew))
+        .route("/ssl/cert/renew", post(ssl::cert_renew_now))
+        .route("/ssl/cert/renew-config", get(ssl::renew_config_get))
+        .route("/ssl/cert/renew-config/save", post(ssl::renew_config_set))
         .route("/ssl/letsencrypt/orders", get(ssl::letsencrypt_orders))
         .route("/ssl/letsencrypt/status", get(ssl::letsencrypt_status))
         .route("/ssl/letsencrypt/verify", post(ssl::letsencrypt_verify))

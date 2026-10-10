@@ -17,8 +17,59 @@ export interface SslCertItem {
   not_after: number
   status: number
   remark: string
+  /** 自动续期：1 = 进入续期窗口后自动重新签发并部署 */
+  auto_renew: number
+  /** 续期用的 ACME 邮箱 */
+  acme_email: string
+  /** 续期验证方式：http-01 / dns-01，空 = 未配置 */
+  challenge_type: string
+  /** dns-01 子模式：manual（无法自动续期）/ auto */
+  dns_mode: string
+  dns_provider_id: number
+  /** 上次续期执行时间 */
+  last_renew_at: number
+  /** 上次续期结果：0 未执行 / 1 成功 / -1 失败 */
+  renew_status: number
+  /** 上次续期结果说明 */
+  renew_msg: string
   created_at: number
   updated_at: number
+}
+
+/** 证书自动续期配置（单张证书） */
+export interface CertAutoRenewData {
+  id: number
+  auto_renew?: number
+  acme_email?: string
+  challenge_type?: string
+  dns_mode?: string
+  dns_provider_id?: number
+}
+
+/** 全局续期阈值 */
+export interface RenewConfig {
+  /** 剩余天数 ≤ 该值即触发自动续期 */
+  renew_days: number
+  /** 剩余天数 ≤ 该值即开始到期提醒 */
+  warn_days: number
+}
+
+/** 设置某张证书的自动续期配置 */
+export function setCertAutoRenew(data: CertAutoRenewData) {
+  return http.post<ApiResponse>('/ssl/cert/auto-renew', data)
+}
+
+/** 立即续期一张证书（后台签发 + 部署 + 通知，接口立即返回） */
+export function renewCertNow(id: number) {
+  return http.post<ApiResponse>('/ssl/cert/renew', { id })
+}
+
+export function getRenewConfig() {
+  return http.get<ApiResponse<RenewConfig>>('/ssl/cert/renew-config')
+}
+
+export function setRenewConfig(data: Partial<RenewConfig>) {
+  return http.post<ApiResponse>('/ssl/cert/renew-config/save', data)
 }
 
 export interface OwnerOption {
