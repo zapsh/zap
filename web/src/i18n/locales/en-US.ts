@@ -110,6 +110,31 @@ const enUS: Messages = {
     docs: 'Docs',
   },
 
+  /** Preferences (avatar dropdown): currently keep-alive pages only, stored in localStorage */
+  prefs: {
+    title: 'Preferences',
+    keepAliveTitle: 'Keep-alive pages',
+    keepAliveHint:
+      'Checked pages stay alive once opened: switching pages or sections never destroys them, so their state is still there when you come back (SSH sessions, file browser location). Saved in this browser only, never uploaded; newly checked pages apply the next time they are opened.',
+    defaultTag: 'default',
+    saved: 'Preferences saved',
+    pages: {
+      files: 'Files',
+      terminal: 'Terminal',
+      site: 'Sites',
+      backup: 'Backup',
+      serverStatus: 'Server Status',
+      serverSystem: 'Server · System',
+      serverNetwork: 'Server · Network',
+      serverEnv: 'Server · Env Vars',
+      automation: 'Scripts / Automation',
+      access: 'Users & Roles',
+      zapConfig: 'Zap Settings',
+      about: 'About ZAP',
+      appScriptGuide: 'App Script Guide',
+    },
+  },
+
   menu: {
     dashboard: 'Dashboard',
     system: 'System Settings',

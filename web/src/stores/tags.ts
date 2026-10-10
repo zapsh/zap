@@ -39,16 +39,54 @@ const DASHBOARD_ICON = 'material-symbols:home'
 const DASHBOARD_NAME = 'Dashboard'
 
 /**
- * 保持存活的页面：打开后标签常驻，切页、切分类都不销毁实例，切回来状态还在。
+ * 可设为「常驻存活」的候选页面。
  *
- * key = 页面路径，value = **组件 name**（keep-alive 的 include 按组件 name 匹配，
- * 所以对应页面里要显式写 `export default { name: ... }`）。
- * 这些页面的状态丢了就得重来（重新选目录、重连 SSH），所以它们各占一个不会被就地改写的标签，
- * keep-alive 白名单也只在它的标签还开着时挂上，用户点 X 关掉标签即释放缓存。
+ * 只有显式声明了**组件 name**（`export default { name: ... }`）的页面才能被
+ * keep-alive 缓存（include 按组件 name 匹配，菜单下发的路由 name 对不上），
+ * 所以候选清单里每一项都对应一个声明了 name 的视图组件。
+ * `labelKey` 是偏好设置弹层里展示用的 i18n key（prefs.pages.*）。
  */
-const ALIVE_PAGES: Record<string, string> = {
-  '/files/index': 'FileManager',
-  '/terminal/index': 'Terminal',
+export interface AliveCandidate {
+  path: string
+  component: string
+  labelKey: string
+}
+
+export const ALIVE_CANDIDATES: readonly AliveCandidate[] = [
+  { path: '/files/index', component: 'FileManager', labelKey: 'prefs.pages.files' },
+  { path: '/terminal/index', component: 'Terminal', labelKey: 'prefs.pages.terminal' },
+  { path: '/site/index', component: 'SiteIndex', labelKey: 'prefs.pages.site' },
+  { path: '/backup/index', component: 'BackupIndex', labelKey: 'prefs.pages.backup' },
+  { path: '/server-status/index', component: 'ServerStatusIndex', labelKey: 'prefs.pages.serverStatus' },
+  { path: '/server/system', component: 'ServerSystem', labelKey: 'prefs.pages.serverSystem' },
+  { path: '/server/network', component: 'ServerNetwork', labelKey: 'prefs.pages.serverNetwork' },
+  { path: '/server/env', component: 'ServerEnv', labelKey: 'prefs.pages.serverEnv' },
+  { path: '/system/automation', component: 'AutomationScripts', labelKey: 'prefs.pages.automation' },
+  { path: '/system/access', component: 'SystemAccess', labelKey: 'prefs.pages.access' },
+  { path: '/system/zap-config', component: 'ZapConfig', labelKey: 'prefs.pages.zapConfig' },
+  { path: '/system/about', component: 'SystemAbout', labelKey: 'prefs.pages.about' },
+  { path: '/dev/app-script-guide', component: 'DevAppScriptGuide', labelKey: 'prefs.pages.appScriptGuide' },
+]
+
+/** 偏好存储键：只存本地 localStorage，不上服务器 */
+const ALIVE_PAGES_LS_KEY = 'zap_alive_pages'
+/** 默认常驻：文件管理 + 终端（偏好设置弹层里给这两项加「默认」标记） */
+export const DEFAULT_ALIVE_PATHS: readonly string[] = ['/files/index', '/terminal/index']
+
+/** 从 localStorage 读用户偏好；只保留合法候选，手改塞进来的垃圾路径直接过滤掉 */
+function loadAlivePaths(): string[] {
+  try {
+    const raw = localStorage.getItem(ALIVE_PAGES_LS_KEY)
+    if (!raw) return [...DEFAULT_ALIVE_PATHS]
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return [...DEFAULT_ALIVE_PATHS]
+    return parsed.filter(
+      (p): p is string =>
+        typeof p === 'string' && ALIVE_CANDIDATES.some((c) => c.path === p),
+    )
+  } catch {
+    return [...DEFAULT_ALIVE_PATHS]
+  }
 }
 
 export interface NavTab {
@@ -110,6 +148,39 @@ export const useTagsStore = defineStore('tags', () => {
   const suspended = ref<string[]>([])
 
   /**
+   * 用户偏好：哪些页面常驻存活（localStorage，仅存本浏览器）。
+   * 由偏好设置弹层通过 setAlivePages 更新。
+   */
+  const alivePaths = ref<string[]>(loadAlivePaths())
+
+  /** 偏好 → 生效映射：path → 组件 name（keep-alive include 按组件 name 匹配） */
+  const aliveMap = computed<Record<string, string>>(() => {
+    const m: Record<string, string> = {}
+    for (const c of ALIVE_CANDIDATES) {
+      if (alivePaths.value.includes(c.path)) m[c.path] = c.component
+    }
+    return m
+  })
+
+  /**
+   * 偏好设置弹层保存：更新存活页面集合并落 localStorage。
+   *
+   * 已打开的标签同步对齐：被取消的页面摘掉 alive 标记（缓存随导航释放），
+   * 新勾选且正开着的页面补上 alive 标记（从此不参与就地改写）。
+   */
+  function setAlivePages(paths: string[]) {
+    alivePaths.value = [...paths]
+    try {
+      localStorage.setItem(ALIVE_PAGES_LS_KEY, JSON.stringify(alivePaths.value))
+    } catch {
+      // localStorage 写满 / 被禁用：偏好仍在本会话内生效
+    }
+    tabs.value.forEach((t) => {
+      if (t.closable) t.alive = !!aliveMap.value[t.path]
+    })
+  }
+
+  /**
    * keep-alive 白名单：当前打开着的标签，加上存活页面标签对应的组件 name，
    * 再减掉刷新时临时摘掉的那个。
    *
@@ -122,7 +193,7 @@ export const useTagsStore = defineStore('tags', () => {
       if (t.name) names.add(t.name)
       // 存活页面：路由 name（菜单下发的 `files-index` 这种）和组件 name 对不上，
       // 所以显式补上组件 name，keep-alive 才认得出。
-      const alive = ALIVE_PAGES[t.path]
+      const alive = aliveMap.value[t.path]
       if (alive) names.add(alive)
     })
     suspended.value.forEach((n) => names.delete(n))
@@ -138,7 +209,7 @@ export const useTagsStore = defineStore('tags', () => {
    * （放早了老实例会被重新缓存，放晚了新实例就不会进缓存）。
    */
   function suspendCache(path: string): () => void {
-    const name = ALIVE_PAGES[path] ?? tabs.value.find((t) => t.path === path)?.name
+    const name = aliveMap.value[path] ?? tabs.value.find((t) => t.path === path)?.name
     if (!name) return () => {}
     suspended.value = [...suspended.value, name]
     return () => {
@@ -173,7 +244,7 @@ export const useTagsStore = defineStore('tags', () => {
     if (tabs.value.some((t) => t.path === path)) return
 
     const isDashboard = path === DASHBOARD_PATH
-    const isAlive = !isDashboard && !!ALIVE_PAGES[path]
+    const isAlive = !isDashboard && !!aliveMap.value[path]
     const titles = tabTitles((first?.meta?.title as string) || '', (route.meta.title as string) || '')
     const name = typeof route.name === 'string' ? route.name : undefined
     const icon = isDashboard ? DASHBOARD_ICON : (route.meta.icon as string | undefined)
@@ -262,6 +333,8 @@ export const useTagsStore = defineStore('tags', () => {
     tabs,
     group,
     cachedNames,
+    alivePaths,
+    setAlivePages,
     sync,
     suspendCache,
     close,

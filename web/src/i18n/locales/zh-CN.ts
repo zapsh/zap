@@ -123,6 +123,31 @@ export default {
    * 因此后端菜单下发中文标题时也能切到英文（见 i18n/index.ts）。
    * key 与后端 menus.name 保持一致（dashboard / system / user …）。
    */
+  /** 偏好设置（头像下拉菜单）：目前只有「常驻页面」，只存本机 localStorage */
+  prefs: {
+    title: '偏好设置',
+    keepAliveTitle: '常驻页面',
+    keepAliveHint:
+      '勾选的页面打开后实例常驻：切换页面、切换分类都不会销毁，切回来状态还在（终端的 SSH 会话、文件管理的目录位置不用重来）。仅保存在当前浏览器，不上传服务器；新勾选的页面下次打开生效。',
+    defaultTag: '默认',
+    saved: '偏好已保存',
+    pages: {
+      files: '文件管理',
+      terminal: '终端',
+      site: '站点',
+      backup: '备份',
+      serverStatus: '服务器状态',
+      serverSystem: '服务器 · 系统',
+      serverNetwork: '服务器 · 网络',
+      serverEnv: '服务器 · 环境变量',
+      automation: '脚本 / 自动化',
+      access: '用户与角色',
+      zapConfig: 'Zap 设置',
+      about: 'About ZAP',
+      appScriptGuide: '应用脚本开发指南',
+    },
+  },
+
   menu: {
     // 一级
     dashboard: '仪表盘',

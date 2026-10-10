@@ -134,6 +134,10 @@
               <el-icon><UserFilled /></el-icon>
               {{ t('layout.profile') }}
             </el-dropdown-item>
+            <el-dropdown-item @click="showPrefs = true">
+              <el-icon><Setting /></el-icon>
+              {{ t('prefs.title') }}
+            </el-dropdown-item>
             <el-dropdown-item v-if="userStore.sudoMode" @click="handleExitSudo">
               <el-icon><SwitchButton /></el-icon>
               {{ t('layout.exitSudo') }}
@@ -145,6 +149,9 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+
+      <!-- 偏好设置：常驻页面勾选，存本机 localStorage -->
+      <PreferencesDialog v-model="showPrefs" />
     </div>
   </div>
 </template>
@@ -160,6 +167,7 @@ import { useUserStore } from '@/stores/user'
 import { getNotices, getUnreadCount, readAllNotices, readNotice } from '@/api/notice'
 import type { NoticeMessage } from '@/api/notice'
 import TagsView from './TagsView.vue'
+import PreferencesDialog from './PreferencesDialog.vue'
 import { setThemeMode, themeMode, type ThemeMode } from '@/composables/useTheme'
 import { useLocale } from '@/composables/useLocale'
 import {
@@ -169,6 +177,7 @@ import {
   Fold,
   Monitor,
   Moon,
+  Setting,
   Sunny,
   SwitchButton,
   Translate,
@@ -206,6 +215,9 @@ const appStore = useAppStore()
 const userStore = useUserStore()
 
 const sidebar = computed(() => appStore.sidebar)
+
+/** 偏好设置弹层 */
+const showPrefs = ref(false)
 
 function toggleSideBar() {
   appStore.toggleSidebar()
