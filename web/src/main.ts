@@ -25,7 +25,6 @@ const pinia = createPinia()
 pinia.use(piniaPluginPersistedstate)
 app.use(pinia)
 app.use(router)
-setupI18n(app)
 
 // 全局错误处理
 app.config.errorHandler = (err, instance, info) => {
@@ -50,4 +49,7 @@ app.config.errorHandler = (err, instance, info) => {
   // 例如：sendErrorToServer(err, instance, info)
 }
 
-app.mount('#app')
+// 语言包按需异步加载；非默认语言加载完成后再挂载，避免首屏语言闪烁
+setupI18n(app).then(() => {
+  app.mount('#app')
+})

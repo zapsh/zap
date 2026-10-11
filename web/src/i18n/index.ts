@@ -14,7 +14,7 @@ import { createI18n } from 'vue-i18n'
 import type { App } from 'vue'
 
 import zhCN from './locales/zh-CN'
-import enUS from './locales/en-US'
+// 非默认语言（en-US）改为按需异步加载（见 loadLocaleMessages），不进首屏包
 
 /** 语言记忆的 localStorage key */
 export const LOCALE_STORAGE_KEY = 'zap-locale'
@@ -34,9 +34,25 @@ export const LOCALE_OPTIONS: LocaleOption[] = [
 
 export const DEFAULT_LOCALE: Locale = 'zh-CN'
 
+// 默认语言包常驻（首屏 + fallback）；其它语言按需动态加载，拆成独立 chunk
 export const messages = {
   'zh-CN': zhCN,
-  'en-US': enUS,
+}
+
+/** 语言包加载器：默认语言直接返回；其它语言动态 import（异步、代码分割） */
+const localeLoaders: Record<Locale, () => Promise<{ default: typeof zhCN }>> = {
+  'zh-CN': () => Promise.resolve(zhCN),
+  'en-US': () => import('./locales/en-US'),
+}
+
+const loadedLocales = new Set<Locale>(['zh-CN'])
+
+/** 按需加载语言包；已加载则跳过。setLocaleMessage 后 vue-i18n 自动重渲染。 */
+export async function loadLocaleMessages(locale: Locale) {
+  if (loadedLocales.has(locale)) return
+  const mod = await localeLoaders[locale]()
+  i18n.global.setLocaleMessage(locale, mod.default)
+  loadedLocales.add(locale)
 }
 
 function isLocale(value: unknown): value is Locale {
@@ -59,7 +75,8 @@ export const i18n = createI18n({
   // Composition API 模式：组件里 useI18n()，模板可直接用 $t
   legacy: false,
   globalInjection: true,
-  locale: detectLocale(),
+  // 初始用默认语言（已常驻），非默认语言由 loadLocaleMessages 异步加载后再切换
+  locale: DEFAULT_LOCALE,
   fallbackLocale: DEFAULT_LOCALE,
   messages,
 })
@@ -96,8 +113,9 @@ export function getLocale(): Locale {
   return isLocale(current) ? current : DEFAULT_LOCALE
 }
 
-/** 切换语言：i18n 实例 + localStorage + `<html lang>` 一起改 */
-export function setLocale(locale: Locale) {
+/** 切换语言：先异步加载该语言包，再切换 i18n + localStorage + `<html lang>` */
+export async function setLocale(locale: Locale) {
+  await loadLocaleMessages(locale)
   composer.locale.value = locale
   try {
     localStorage.setItem(LOCALE_STORAGE_KEY, locale)
@@ -143,9 +161,17 @@ export function translateTitle(raw?: string | null): string {
   return key ? t(key) : raw
 }
 
-/** 在 main.ts 挂载 i18n */
-export function setupI18n(app: App) {
+/**
+ * 在 main.ts 挂载 i18n。返回 Promise：若记忆/浏览器语言非默认，会先异步加载该语言包再切换，
+ * 确保首屏即正确语言（不闪烁）。main.ts 应 `await setupI18n(app)` 后再 `app.mount`。
+ */
+export async function setupI18n(app: App) {
   app.use(i18n)
+  const target = detectLocale()
+  if (target !== DEFAULT_LOCALE) {
+    await loadLocaleMessages(target)
+    composer.locale.value = target
+  }
   // 首次进入时对齐 <html lang>（setLocale 只在主动切换时设置）
   if (typeof document !== 'undefined') {
     document.documentElement.setAttribute('lang', getLocale())
