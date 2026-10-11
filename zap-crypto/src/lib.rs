@@ -5,10 +5,10 @@
 //! 保证三者看到的是**同一套密钥与密文格式**——`zapctl` 存的凭据，`zapexec` 能解开。
 //!
 //! ## 密钥
-//! - 路径：`/etc/zap/secret.key`（生产）→ `{ZAP_PATH}/data/secret.key`（开发 / 单实例回退）
+//! - 路径：`/etc/zap/secret.key`（生产）→ `conf/secret.key`（开发，项目根 `conf/`，不入库）
 //! - 32 字节随机数，首次访问自动生成，权限 `0640`（属组=面板组）
-//! - 早期版本回退位置是 CWD 相对的 `conf/secret.key`，会因各二进制 CWD 不同而分裂成多把
-//!   密钥；现已锚到安装根，启动时自动把旧 `conf/secret.key` 迁移到新位置。
+//! - 开发 / 生产共用同一套路径约定：生产绝对路径 `/etc/zap`，开发锚到项目根 `conf/`；
+//!   不再有早期 CWD 相对的 `conf/secret.key` 按各二进制工作目录分裂成多把密钥的问题。
 //!
 //! ## 密文格式
 //! `v1:<base64(nonce)>:<base64(ciphertext)>`；仅接受此格式密文。
@@ -47,94 +47,29 @@ pub const CRED_SUFFIX: &str = ".cred";
 
 // ── 密钥 ───────────────────────────────────────────────────
 
-/// 安装根目录：与项目其它路径约定一致（`{ZAP_PATH}/data/...`、`{ZAP_PATH}/conf/...`）。
+/// 开发态密钥路径：项目根 `conf/secret.key`。
 ///
-/// 生产由 systemd 注入 `Environment=ZAP_PATH=/usr/local/zap`；`rundev.sh` 里开发态
-/// 把它设成仓库根 `$ROOT_DIR`；未设置时优先 `/usr/local/zap`，若该目录不可写
-/// （开发 / 测试 / CI）则回退到当前工作目录下的 `data/`（与 `data/zap.db` 同源，且可写）。
-///
-/// ⚠️ 正式部署务必注入 `ZAP_PATH`：否则各二进制会按各自工作目录解析 `data/secret.key`，
-/// 可能分裂成多把密钥，导致 DB 里已加密的凭据互解不开（这正是旧版 `conf/secret.key` 的坑）。
-fn install_root() -> PathBuf {
-    if let Ok(p) = std::env::var("ZAP_PATH") {
-        return PathBuf::from(p);
-    }
-    if default_install_root_writable() {
-        return PathBuf::from("/usr/local/zap");
-    }
-    PathBuf::from("data")
-}
-
-/// 探测默认安装根 `/usr/local/zap/data` 是否可写（写入一个探针文件再删除）。
-fn default_install_root_writable() -> bool {
-    let probe = Path::new("/usr/local/zap/data/.zap-writetest");
-    if std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(probe)
-        .is_ok()
-    {
-        let _ = std::fs::remove_file(probe);
-        true
-    } else {
-        false
+/// 由 `ZAP_PATH` 注入项目根（`rundev.sh` 把它设成仓库根 `$ROOT_DIR`），未设置时回退到
+/// 当前工作目录相对的 `conf/secret.key`——约定都是以项目根为 CWD 启动，两者等价。
+fn dev_key_path() -> PathBuf {
+    match std::env::var("ZAP_PATH") {
+        Ok(p) if !p.is_empty() => PathBuf::from(p).join("conf/secret.key"),
+        _ => PathBuf::from("conf/secret.key"),
     }
 }
 
 /// 主密钥候选路径（按优先级探测 / 生成）。
 ///
 /// - `/etc/zap/secret.key`：生产态绝对路径，root 写入、面板组可读（0640），优先；
-/// - `{ZAP_PATH}/data/secret.key`：开发 / 单实例回退，**锚到安装根下的 `data/`**，
-///   与 `data/zap.db` 同级——绝对路径，消除早期版本 `conf/secret.key` 那种按进程
-///   CWD 解析、三个二进制各生成一把导致密文互解不开的问题（见 [`migrate_legacy_conf_key`]）。
+/// - `conf/secret.key`：开发态，落在项目根 `conf/`（与 `conf/zap.yaml` 同源，已被
+///   `.gitignore` 忽略，不入库）。
+///
+/// 不做旧路径兼容：早期按 CWD 相对的 `zapd/conf/secret.key` 等位置不再读取。
 fn key_paths() -> Vec<PathBuf> {
     vec![
         PathBuf::from("/etc/zap/secret.key"),
-        install_root().join("data/secret.key"),
+        dev_key_path(),
     ]
-}
-
-/// 旧密钥候选位置（早期按进程 CWD 解析的 `conf/secret.key`，以及运行方式不同导致的
-/// `zapd/conf/`、`zapexec/conf/`）。仅用于一次性迁移，新版本不再往这些位置写。
-fn legacy_key_candidates() -> Vec<PathBuf> {
-    vec![
-        PathBuf::from("conf/secret.key"),
-        PathBuf::from("zapd/conf/secret.key"),
-        PathBuf::from("zapexec/conf/secret.key"),
-    ]
-}
-
-/// 把早期按 CWD 生成的 `conf/secret.key` 迁移到新位置 `{ZAP_PATH}/data/secret.key`。
-///
-/// 仅当新位置尚不存在、且旧文件存在且长度合法时执行一次；迁移后旧文件保留（已被
-/// `.gitignore` 忽略，无害）。目的：换路径后 DB 里已有的加密凭据仍能用同一把密钥解密。
-fn migrate_legacy_conf_key() {
-    let new_path = install_root().join("data/secret.key");
-    if new_path.exists() {
-        return; // 已在新位置，无需迁移
-    }
-    let Some(legacy) = legacy_key_candidates()
-        .into_iter()
-        .find(|p| p.is_file())
-    else {
-        return; // 没有旧密钥可迁
-    };
-    let Ok(bytes) = fs::read(&legacy) else {
-        return;
-    };
-    if bytes.len() != KEY_LEN {
-        return;
-    }
-    if let Some(parent) = new_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if fs::write(&new_path, &bytes).is_ok() && set_key_permissions(&new_path) {
-        eprintln!(
-            "[zap-crypto] 已把开发密钥 {} 迁移到 {}",
-            legacy.display(),
-            new_path.display()
-        );
-    }
 }
 
 /// 当前生效的密钥文件路径（按生产 → 开发优先级探测），不存在返回 `None`。
@@ -180,8 +115,9 @@ fn chgrp_panel(_path: &Path) {}
 #[cfg(unix)]
 fn set_key_permissions(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    // 0640 + 属组=面板组：zapd(zapadm) 必须能读主密钥，否则会静默回退到
-    // `conf/secret.key` 自行生成一把，与 root 侧密钥分裂（凭据互相解不开）。
+    // 0640 + 属组=面板组：zapd(zapadm) 必须能读主密钥。生产态主密钥在 /etc/zap/secret.key，
+    // 若 zapd 读不到会回退到 conf/secret.key 自行生成一把，与 root 侧（zapctl/zapexec）写入的
+    // 密钥分裂，导致凭据互相解不开——故生产部署须保证 /etc/zap/secret.key 对 zapadm 可读。
     chgrp_panel(path);
     fs::set_permissions(path, fs::Permissions::from_mode(0o640)).is_ok()
 }
@@ -192,9 +128,6 @@ fn set_key_permissions(_path: &Path) -> bool {
 }
 
 fn load_or_create_key() -> Result<[u8; KEY_LEN], String> {
-    // 开发回退历史：把早期按 CWD 生成的 `conf/secret.key` 迁到新位置，确保已有密文可解密
-    migrate_legacy_conf_key();
-
     for path in key_paths() {
         if path.exists() {
             // 存在却读不到 = 权限配错。这里不静默跳过：回退会让本机出现两把密钥，
@@ -240,7 +173,7 @@ fn load_or_create_key() -> Result<[u8; KEY_LEN], String> {
                 && fs::write(p, key).is_ok()
                 && set_key_permissions(p)
         })
-        .ok_or_else(|| "无法创建密钥文件（/etc/zap 与 {ZAP_PATH}/data 均不可写）".to_string())?;
+        .ok_or_else(|| "无法创建密钥文件（/etc/zap 与 conf/secret.key 均不可写）".to_string())?;
 
     Ok(key)
 }
