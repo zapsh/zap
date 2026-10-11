@@ -59,7 +59,7 @@ function isLocale(value: unknown): value is Locale {
   return LOCALE_OPTIONS.some((item) => item.value === value)
 }
 
-/** 语言优先级：本次记忆 > 浏览器语言 > 默认中文 */
+/** 语言优先级：本次记忆 > 浏览器语言列表 > 默认中文 */
 function detectLocale(): Locale {
   try {
     const saved = localStorage.getItem(LOCALE_STORAGE_KEY)
@@ -67,8 +67,18 @@ function detectLocale(): Locale {
   } catch {
     // 无痕模式 / 禁用存储：忽略，退回浏览器语言
   }
-  const nav = typeof navigator !== 'undefined' ? navigator.language : ''
-  return nav && nav.toLowerCase().startsWith('en') ? 'en-US' : DEFAULT_LOCALE
+  if (typeof navigator === 'undefined') return DEFAULT_LOCALE
+  // navigator.languages 是用户偏好降序数组（如 ['en-US','zh-CN']）；
+  // 逐个匹配已支持的语言（精确匹配优先，其次按主语言前缀，如 en-GB→en-US、zh-TW→zh-CN）
+  const langs = navigator.languages?.length ? navigator.languages : [navigator.language]
+  for (const l of langs) {
+    const lower = l.toLowerCase()
+    const hit = LOCALE_OPTIONS.find(
+      (o) => lower === o.value.toLowerCase() || lower.startsWith(o.value.toLowerCase().split('-')[0]),
+    )
+    if (hit) return hit.value
+  }
+  return DEFAULT_LOCALE
 }
 
 export const i18n = createI18n({
