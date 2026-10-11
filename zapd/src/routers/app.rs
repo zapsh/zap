@@ -1541,7 +1541,7 @@ async fn persist_app(
                 repo_url, branch, git_ref, git_subdir, git_depth, build_output, mount_path, \
                 git_commit, output_dir, \
                 deploy_status, task_id, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(site_id, name) DO UPDATE SET \
            app_type = excluded.app_type, runtime_version = excluded.runtime_version, \
            build_cmd = excluded.build_cmd, workdir = excluded.workdir, entry = excluded.entry, \
