@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { http } from '@/utils/request'
+import SshConfigDialog from './SshConfigDialog.vue'
 
 interface SshInfo {
   installed: boolean
@@ -28,10 +29,8 @@ const logBoxRef = ref<HTMLElement>()
 let installTimer: ReturnType<typeof setTimeout> | null = null
 let installOffset = 0
 
-// ── 配置编辑 ─────────────────────────────────────────────────
+// ── 配置编辑（已移交 SshConfigDialog：可视化 / 文件编辑双模式）──
 const configDialog = ref(false)
-const configContent = ref('')
-const configSaving = ref(false)
 
 async function loadSsh() {
   try {
@@ -96,6 +95,11 @@ async function actionSsh(action: 'start' | 'stop') {
   }
 }
 
+/** 打开配置编辑器（可视化 / 文件编辑双模式,详见 SshConfigDialog） */
+function openConfig() {
+  configDialog.value = true
+}
+
 function openTerminal() {
   router.push('/terminal')
 }
@@ -152,44 +156,6 @@ function closeInstallDialog() {
   if (installTimer) {
     clearTimeout(installTimer)
     installTimer = null
-  }
-}
-
-async function editConfig() {
-  try {
-    const res = await http.get<{ code: number; data: { content: string } }>('/system/files/read', {
-      params: { path: '/etc/ssh/sshd_config' },
-    })
-    configContent.value = res.data.content
-    configDialog.value = true
-  } catch {
-    /* handled */
-  }
-}
-
-async function saveConfig(restart = false) {
-  configSaving.value = true
-  try {
-    await http.post('/system/files/write', {
-      path: '/etc/ssh/sshd_config',
-      content: configContent.value,
-    })
-    ElMessage.success(t('serverSsh.configSaved'))
-    if (restart) {
-      // 直接重启（重启内部已有确认弹窗）
-      try {
-        await http.post('/system/config/ssh/restart')
-        ElMessage.success(t('serverSsh.configRestarted'))
-      } catch {
-        /* handled */
-      }
-      configDialog.value = false
-      loadSsh()
-    }
-  } catch {
-    /* handled */
-  } finally {
-    configSaving.value = false
   }
 }
 
@@ -262,7 +228,7 @@ onUnmounted(() => {
           >
             {{ t('serverSsh.restart') }}
           </el-button>
-          <el-button type="primary" plain :disabled="!sshInfo?.installed" @click="editConfig">
+          <el-button type="primary" plain :disabled="!sshInfo?.installed" @click="openConfig">
             {{ t('serverSsh.editConfig') }}
           </el-button>
         </div>
@@ -302,26 +268,8 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <!-- 配置编辑对话框 -->
-    <el-dialog v-model="configDialog" :title="t('serverSsh.configTitle')" width="780px" top="5vh">
-      <el-input
-        v-model="configContent"
-        type="textarea"
-        :rows="22"
-        class="config-editor"
-        spellcheck="false"
-      />
-      <div class="config-tip">{{ t('serverSsh.configTip') }}</div>
-      <template #footer>
-        <el-button @click="configDialog = false">{{ t('common.cancel') }}</el-button>
-        <el-button :loading="configSaving" @click="saveConfig(false)">
-          {{ t('serverSsh.saveOnly') }}
-        </el-button>
-        <el-button type="primary" :loading="configSaving" @click="saveConfig(true)">
-          {{ t('serverSsh.saveAndRestart') }}
-        </el-button>
-      </template>
-    </el-dialog>
+    <!-- 配置编辑（可视化 / 文件编辑 双模式） -->
+    <SshConfigDialog v-model="configDialog" @saved="loadSsh" />
   </div>
 </template>
 

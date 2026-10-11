@@ -481,6 +481,19 @@ fn api_routers() -> Router {
             "/system/config/ssh/install/log/{run_id}",
             get(system_config::ssh_install_log),
         )
+        // sshd_config：可视化（原地改键）/ 文件编辑（全文）两种模式
+        .route(
+            "/system/config/ssh/config",
+            get(system_config::ssh_config_get),
+        )
+        .route(
+            "/system/config/ssh/config/save",
+            post(system_config::ssh_config_save),
+        )
+        .route(
+            "/system/config/ssh/config/apply",
+            post(system_config::ssh_config_apply),
+        )
         // Nginx 服务配置（服务器配置 → Nginx 配置 / 服务器状态 → Nginx Server，admin only）
         .route("/system/nginx/status", get(system_nginx::nginx_status))
         .route("/system/nginx/config", get(system_nginx::nginx_conf_list))

@@ -1311,19 +1311,6 @@ fn backup_conf(conf: &Path) -> Option<PathBuf> {
     std::fs::copy(conf, &dst).ok().map(|_| dst)
 }
 
-/// 站点 location 可选的缓存 zone 名列表（含面板内置）。
-pub fn zones(spec_json: &str) -> Response {
-    match parse_spec(spec_json) {
-        Ok(spec) => Response::ok(
-            "ok",
-            Some(json!({
-                "zones": spec.http.proxy_cache.iter().map(|z| z.name.clone()).collect::<Vec<_>>()
-            })),
-        ),
-        Err(e) => Response::err(-1, e),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1938,6 +1938,17 @@ const enUS: Messages = {
     configTip:
       'The SSH service must be restarted for changes to take effect. Changing the listen port or keys may disrupt current connections — proceed with care.',
     saveOnly: 'Save Only',
+    // sshd_config dual-mode editor
+    modeVisual: 'Visual',
+    modeFile: 'File',
+    validOk: 'sshd -t passed',
+    validBad: 'sshd -t failed',
+    lockWarn:
+      'Before changing the port or disabling password login, make sure the new method works — otherwise you can lock yourself out. Every save runs sshd -t first; invalid configs are never written.',
+    keep: 'unchanged',
+    current: 'Current: ',
+    checkOnly: 'Validate',
+    saveFailed: 'Save failed',
     saveAndRestart: 'Save & Restart',
   },
 

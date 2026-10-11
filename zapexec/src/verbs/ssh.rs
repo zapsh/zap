@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use serde_json::json;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::verbs::root_cmd;
 use zap_proto::Response;
@@ -185,6 +185,414 @@ pub async fn install(run_id: String) -> Response {
     })
     .await
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+// ── sshd_config：可视化（原地改键）+ 文件编辑（全文）两种模式 ──────────
+//
+// 与 nginx.conf 不同，sshd_config 不做「全量重渲染」：
+//   - 发行版配置里有大量 Include、注释、Match 条件块,重渲染必然丢信息;
+//   - 后果不对称 —— nginx 配错只是站点挂,sshd 配错会把人锁在门外。
+// 所以可视化模式走「原地改键」：只替换命中的那一行,其余原样保留;
+// 全文模式则由用户自己把控,但落盘前一律 `sshd -t` 校验 + 自动备份。
+
+const DEFAULT_SSHD_CONF: &str = "/etc/ssh/sshd_config";
+
+/// 只允许编辑 /etc/ssh 下的文件,挡掉路径穿越与误改系统文件。
+fn validate_conf_path(raw: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(raw);
+    let base = PathBuf::from("/etc/ssh");
+    let abs = if p.is_absolute() {
+        p.clone()
+    } else {
+        base.join(&p)
+    };
+    let canon = match abs.canonicalize() {
+        Ok(c) => c,
+        // 文件还不存在（新建 Include 片段）时退回父目录判定
+        Err(_) => match abs.parent().and_then(|d| d.canonicalize().ok()) {
+            Some(d) => d.join(abs.file_name().unwrap_or_default()),
+            None => return Err("配置文件路径不存在".to_string()),
+        },
+    };
+    if !canon.starts_with(&base) && canon != std::fs::canonicalize(&base).unwrap_or(base.clone()) {
+        return Err("仅允许编辑 /etc/ssh 下的配置文件".to_string());
+    }
+    Ok(canon)
+}
+
+fn sshd_bin() -> PathBuf {
+    ["/usr/sbin/sshd", "/usr/bin/sshd", "/sbin/sshd", "/bin/sshd"]
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from("/usr/sbin/sshd"))
+}
+
+fn backup_dir() -> PathBuf {
+    zap_path().join("data/backups/sshd")
+}
+
+/// 备份（保留最近 20 份）。
+fn backup_file(path: &Path) -> Result<PathBuf, String> {
+    let dir = backup_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建备份目录失败: {e}"))?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("conf");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dest = dir.join(format!("{ts}-{name}.bak"));
+    std::fs::copy(path, &dest).map_err(|e| format!("备份失败: {e}"))?;
+
+    let mut kept: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .ok()
+        .map(|rd| rd.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    kept.sort();
+    while kept.len() > 20 {
+        if let Some(old) = kept.first() {
+            let _ = std::fs::remove_file(old);
+            kept.remove(0);
+        }
+    }
+    Ok(dest)
+}
+
+/// `sshd -t -f <file>` 校验：配错 sshd 会拒绝启动,这一步是把人锁门外的唯一防线。
+///
+/// 用 **实际配置所在目录** 下的临时文件,避免相对 HostKey 路径解析到别处。
+fn validate_content(content: &str, tmpl_dir: &Path) -> Result<(), String> {
+    let tmp = tmpl_dir.join(format!(".zap-sshd-{}.conf", std::process::id()));
+    std::fs::write(&tmp, content).map_err(|e| format!("写入临时校验文件失败: {e}"))?;
+    let out = root_cmd(sshd_bin().to_string_lossy().as_ref())
+        .args(["-t", "-f"])
+        .arg(&tmp)
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+    let out = out.map_err(|e| format!("执行 sshd -t 失败: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let mut text = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if text.is_empty() {
+        text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    }
+    if text.is_empty() {
+        text = "sshd -t 返回非零且无输出".to_string();
+    }
+    Err(text.chars().take(2000).collect())
+}
+
+/// 一行里的指令名（大小写不敏感）：`#Port 22` → Some("Port")。
+fn directive_of(line: &str) -> Option<&str> {
+    let t = line.trim();
+    let t = t.strip_prefix('#').unwrap_or(t).trim_start();
+    let mut it = t.split_whitespace();
+    let key = it.next()?;
+    if key.starts_with('#') || key.len() > 64 {
+        return None;
+    }
+    // 纯数字 / 带等号的多半是噪声或 Include 参数
+    if !key.chars().next()?.is_ascii_alphabetic() {
+        return None;
+    }
+    Some(key)
+}
+
+/// 是否处于 `Match xxx` 条件块内（可视化模式不碰条件块内的同名指令,避免误改）。
+fn is_match_header(line: &str) -> bool {
+    let l = line.trim_start();
+    l.len() > 5 && l[..5].eq_ignore_ascii_case("match") && l[5..].starts_with(char::is_whitespace)
+}
+
+/// 可视化模式：把一批 `Key=Value` 原地写回文本。
+///
+/// - 命中已存在的行 → 原地替换为 `Key value`（含被 `#` 注释掉的同名行,等同“启用并改值”）;
+/// - 未命中 → 追加到全局段末尾（**在第一个 Match 块之前**,否则会掉进条件块）;
+/// - value 为空 → 注释该行（等于删除/回退到默认）;
+/// - 命中多行同名时只改**第一行**（sshd 对多数关键字取首次出现的值）,其余保持原样。
+fn apply_directives(content: &str, set: &[(String, String)]) -> String {
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let mut remaining: Vec<(String, String)> = Vec::new();
+
+    for (key, value) in set {
+        let key_trim = key.trim();
+        if key_trim.is_empty() {
+            continue;
+        }
+        let mut hit = false;
+        for line in lines.iter_mut() {
+            if let Some(k) = directive_of(line)
+                && k.eq_ignore_ascii_case(key_trim)
+            {
+                // 保留原行的指令名写法（sshd 大小写不敏感,但别随手改用户风格）
+                *line = if value.trim().is_empty() {
+                    let hint = directive_value_hint(key_trim);
+                    if hint.is_empty() {
+                        format!("#{k}")
+                    } else {
+                        format!("#{k} {hint}")
+                    }
+                } else {
+                    format!("{k} {value}")
+                };
+                hit = true;
+                break;
+            }
+        }
+        if !hit && !value.trim().is_empty() {
+            remaining.push((key_trim.to_string(), value.trim().to_string()));
+        }
+    }
+
+    if !remaining.is_empty() {
+        // 插到第一个 Match 块之前;没有 Match 就整体追加到末尾
+        let insert_at = lines
+            .iter()
+            .position(|l| is_match_header(l))
+            .unwrap_or(lines.len());
+        let mut block: Vec<String> = vec![String::new(), "# ---- zap panel ----".to_string()];
+        for (k, v) in &remaining {
+            block.push(format!("{k} {v}"));
+        }
+        let mut tail = lines.split_off(insert_at);
+        lines.extend(block);
+        lines.append(&mut tail);
+    }
+
+    lines.join("\n")
+}
+
+/// 注释掉某行时补一个占位值,避免出现 `#Port` 这种缺参数的注释行被 sshd 误解析。
+fn directive_value_hint(key: &str) -> &'static str {
+    match key.to_lowercase().as_str() {
+        "port" => "22",
+        "permitrootlogin" => "yes",
+        "passwordauthentication" => "yes",
+        "pubkeyauthentication" => "yes",
+        "permitemptypasswords" => "no",
+        "x11forwarding" => "no",
+        "usePAM" | "usepam" => "yes",
+        "maxauthtries" => "6",
+        "clientaliveinterval" => "0",
+        "clientalivecountmax" => "3",
+        "logingracetime" => "120",
+        "tcpkeepalive" => "yes",
+        "printmotd" => "no",
+        "gssapiauthentication" => "no",
+        "compression" => "delayed",
+        "authorizedkeysfile" => ".ssh/authorized_keys",
+        "subsystem" => "sftp internal-sftp",
+        _ => "",
+    }
+}
+
+/// 读取配置文件（含全文与状态）。
+pub async fn config_get(path: Option<String>) -> Response {
+    tokio::task::spawn_blocking(move || -> Response {
+        let Ok(conf) = validate_conf_path(path.as_deref().unwrap_or(DEFAULT_SSHD_CONF)) else {
+            return Response::err(-1, "配置文件路径非法".to_string());
+        };
+        let content = match std::fs::read_to_string(&conf) {
+            Ok(c) => c,
+            Err(e) => return Response::err(-1, format!("读取配置失败: {e}")),
+        };
+        let md = std::fs::metadata(&conf).ok();
+        Response::ok(
+            "ok",
+            Some(json!({
+                "path": conf,
+                "content": content,
+                "size": md.as_ref().map(|m| m.len()).unwrap_or(0),
+                "mtime": md.as_ref().and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs()).unwrap_or(0),
+                "sshd_bin": sshd_bin(),
+                "valid": validate_content(&content, conf.parent().unwrap_or(std::path::Path::new("/etc/ssh"))).is_ok(),
+            })),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+/// 可视化模式提交：原地改键 → 校验 → 备份 → 落盘 →（可选）重启。
+pub async fn config_apply(
+    path: Option<String>,
+    set: Vec<(String, String)>,
+    restart: bool,
+    dry_run: bool,
+) -> Response {
+    tokio::task::spawn_blocking(move || -> Response {
+        let Ok(conf) = validate_conf_path(path.as_deref().unwrap_or(DEFAULT_SSHD_CONF)) else {
+            return Response::err(-1, "配置文件路径非法".to_string());
+        };
+        let original = match std::fs::read_to_string(&conf) {
+            Ok(c) => c,
+            Err(e) => return Response::err(-1, format!("读取配置失败: {e}")),
+        };
+        let next = apply_directives(&original, &set);
+        let parent = conf.parent().unwrap_or(std::path::Path::new("/etc/ssh")).to_path_buf();
+        if let Err(e) = validate_content(&next, &parent) {
+            return Response::err(-1, format!("配置校验未通过,已中止保存：\n{e}"));
+        }
+        // 只校验：返回「如果保存会是这份内容」,不碰磁盘
+        if dry_run {
+            return Response::ok(
+                "校验通过",
+                Some(json!({ "content": next, "dry_run": true })),
+            );
+        }
+        let backup = backup_file(&conf).ok();
+        if let Err(e) = std::fs::write(&conf, &next) {
+            return Response::err(-1, format!("写入失败: {e}"));
+        }
+        let (reloaded, reason) = if restart {
+            match do_restart() {
+                Ok(()) => (true, None),
+                Err(e) => {
+                    // 重启失败：原样还原并再重启一次,避免把人锁在门外
+                    let _ = std::fs::write(&conf, &original);
+                    let re = do_restart();
+                    (
+                        false,
+                        Some(format!("重启失败已回滚配置：{e}{}", match re {
+                            Ok(()) => String::new(),
+                            Err(e2) => format!("（回滚后重启仍失败：{e2}）"),
+                        })),
+                    )
+                }
+            }
+        } else {
+            (false, None)
+        };
+        Response::ok(
+            "ok",
+            Some(json!({ "content": next, "backup": backup, "restarted": reloaded, "reason": reason })),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+/// 全文（文件编辑）模式：校验 → 备份 → 落盘 →（可选）重启,失败回滚。
+pub async fn config_save(
+    path: Option<String>,
+    content: String,
+    restart: bool,
+    dry_run: bool,
+) -> Response {
+    tokio::task::spawn_blocking(move || -> Response {
+        let Ok(conf) = validate_conf_path(path.as_deref().unwrap_or(DEFAULT_SSHD_CONF)) else {
+            return Response::err(-1, "配置文件路径非法".to_string());
+        };
+        let parent = conf.parent().unwrap_or(std::path::Path::new("/etc/ssh")).to_path_buf();
+        if let Err(e) = validate_content(&content, &parent) {
+            return Response::err(-1, format!("配置校验未通过,已中止保存：\n{e}"));
+        }
+        if dry_run {
+            return Response::ok("校验通过", Some(json!({ "dry_run": true })));
+        }
+        let original = std::fs::read_to_string(&conf).unwrap_or_default();
+        let backup = backup_file(&conf).ok();
+        if let Err(e) = std::fs::write(&conf, &content) {
+            return Response::err(-1, format!("写入失败: {e}"));
+        }
+        let (restarted, reason) = if restart {
+            match do_restart() {
+                Ok(()) => (true, None),
+                Err(e) => {
+                    let _ = std::fs::write(&conf, &original);
+                    let re = do_restart();
+                    (
+                        false,
+                        Some(format!("重启失败已回滚配置：{e}{}", match re {
+                            Ok(()) => String::new(),
+                            Err(e2) => format!("（回滚后重启仍失败：{e2}）"),
+                        })),
+                    )
+                }
+            }
+        } else {
+            (false, None)
+        };
+        Response::ok(
+            "ok",
+            Some(json!({ "backup": backup, "restarted": restarted, "reason": reason })),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+/// 重启 sshd：服务名按发行版不同（RHEL `sshd` / Debian 新版 `ssh`）。
+fn do_restart() -> Result<(), String> {
+    match super::svc::act("restart", "sshd") {
+        Ok(()) => Ok(()),
+        Err(e) => super::svc::act("restart", "ssh").map_err(|e2| {
+            if e.contains(e2.as_str()) {
+                e
+            } else {
+                format!("{e2}（sshd: {e}）")
+            }
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_replaces_existing_line_in_place() {
+        let c = "#Port 22\nPermitRootLogin yes\n";
+        let out = apply_directives(c, &[("Port".into(), "2222".into())]);
+        assert_eq!(out.lines().next(), Some("Port 2222"), "{out}");
+        // 其它行不受影响
+        assert!(out.contains("PermitRootLogin yes"), "{out}");
+    }
+
+    #[test]
+    fn apply_appends_missing_key_before_match_block() {
+        let c = "Port 22\n\nMatch User alice\n    PasswordAuthentication no\n";
+        let out = apply_directives(c, &[("LoginGraceTime".into(), "60".into())]);
+        // 新键必须在 Match 之前（全局段）
+        assert!(out.find("LoginGraceTime 60").unwrap() < out.find("Match User").unwrap(), "{out}");
+        // Match 块内容原样保留
+        assert!(out.contains("Match User alice"), "{out}");
+        assert!(out.contains("    PasswordAuthentication no"), "{out}");
+    }
+
+    #[test]
+    fn apply_empty_value_comments_the_line() {
+        let c = "Port 22\n";
+        let out = apply_directives(c, &[("Port".into(), String::new())]);
+        assert!(out.starts_with("#Port"), "{out}");
+        assert!(!out.lines().any(|l| l.trim() == "Port 22"), "{out}");
+    }
+
+    #[test]
+    fn apply_is_case_insensitive_and_only_first_hit() {
+        let c = "PermitRootLogin yes\nPermitRootLogin no\n";
+        let out = apply_directives(c, &[("permitrootlogin".into(), "prohibit-password".into())]);
+        assert!(out.starts_with("PermitRootLogin prohibit-password"), "{out}");
+        // 第二处同名保持原样（sshd 取首次出现的值,改第二处没有意义反而误导）
+        assert!(out.ends_with("PermitRootLogin no"), "{out}");
+    }
+
+    #[test]
+    fn directive_of_parses_commented_and_plain() {
+        assert_eq!(directive_of("#Port 22"), Some("Port"));
+        assert_eq!(directive_of("   Subsystem sftp internal-sftp"), Some("Subsystem"));
+        assert_eq!(directive_of(""), None);
+        assert_eq!(directive_of("# only comment"), Some("only"));
+    }
+
+    #[test]
+    fn path_outside_etc_ssh_is_rejected() {
+        assert!(validate_conf_path("/etc/passwd").is_err());
+        assert!(validate_conf_path("/root/.ssh/config").is_err());
+    }
 }
 
 pub async fn restart() -> Response {

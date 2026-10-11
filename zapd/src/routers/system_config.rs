@@ -108,6 +108,126 @@ pub async fn ssh_restart(claims: ValidatedClaims) -> ZapJsonResult {
     Ok(Json(json!({ "code": 0, "message": resp.message })))
 }
 
+// ── sshd_config（可视化 / 文件编辑 两种模式）──────────────────────────
+//
+// 两种模式都在 zapexec 侧强制 `sshd -t` 校验 + 备份落盘,写坏配置不会把人锁在门外。
+
+#[derive(Debug, Deserialize)]
+pub struct SshConfigGetQuery {
+    pub path: Option<String>,
+}
+
+/// 读取 sshd 配置（全文 + 当前是否通过校验）
+pub async fn ssh_config_get(
+    claims: ValidatedClaims,
+    Query(q): Query<SshConfigGetQuery>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = crate::zapexec::call(Request::SshConfigGet { path: q.path }).await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    crate::zap::api_ok(resp.data)
+}
+
+/// 统一收口：非 0 直接转成 ZapError,保留原始报错（含 `sshd -t` 输出）。
+async fn ssh_exec(
+    resp: Result<zap_proto::Response, ZapError>,
+) -> ZapJsonResult {
+    let resp = resp?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SshConfigSaveBody {
+    pub content: String,
+    pub path: Option<String>,
+    #[serde(default)]
+    pub restart: bool,
+    /// 只校验不落盘
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// 文件编辑模式：整份写回
+pub async fn ssh_config_save(
+    claims: ValidatedClaims,
+    client_addr: Extension<SocketAddr>,
+    Json(body): Json<SshConfigSaveBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let res = ssh_exec(
+        crate::zapexec::call(Request::SshConfigSave {
+            path: body.path,
+            content: body.content,
+            restart: body.restart,
+            dry_run: body.dry_run,
+        })
+        .await,
+    )
+    .await?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssh_config_save",
+        "sshd_config",
+        if body.restart {
+            "保存 sshd 配置并重启服务"
+        } else {
+            "保存 sshd 配置"
+        },
+    )
+    .await;
+    Ok(res)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SshConfigApplyBody {
+    /// [[key, value], ...]；value 为空表示注释该指令（回退默认）
+    pub set: Vec<(String, String)>,
+    pub path: Option<String>,
+    #[serde(default)]
+    pub restart: bool,
+    /// 只校验不落盘
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// 可视化模式：按 Key=Value 原地改键
+pub async fn ssh_config_apply(
+    claims: ValidatedClaims,
+    client_addr: Extension<SocketAddr>,
+    Json(body): Json<SshConfigApplyBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let res = ssh_exec(
+        crate::zapexec::call(Request::SshConfigApply {
+            path: body.path,
+            set: body.set,
+            restart: body.restart,
+            dry_run: body.dry_run,
+        })
+        .await,
+    )
+    .await?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssh_config_apply",
+        "sshd_config",
+        if body.restart {
+            "可视化修改 sshd 配置并重启服务"
+        } else {
+            "可视化修改 sshd 配置"
+        },
+    )
+    .await;
+    Ok(res)
+}
+
 // ── System Services ─────────────────────────────────────────
 
 /// Get list of system services (systemd)

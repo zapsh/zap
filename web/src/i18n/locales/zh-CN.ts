@@ -1938,6 +1938,17 @@ export default {
       '保存后需重启 SSH 服务使配置生效。修改监听端口、密钥等关键项可能影响当前连接，请谨慎操作。',
     saveOnly: '仅保存',
     saveAndRestart: '保存并重启',
+    // sshd_config 双模式编辑器
+    modeVisual: '可视化配置',
+    modeFile: '文件编辑',
+    validOk: 'sshd -t 校验通过',
+    validBad: 'sshd -t 校验未通过',
+    lockWarn:
+      '修改端口 / 关闭密码登录前请先确认新方式可用，否则可能把自己锁在服务器外。保存前会自动跑 sshd -t 校验，失败不会写入。',
+    keep: '不改动',
+    current: '当前值：',
+    checkOnly: '校验',
+    saveFailed: '保存失败',
   },
 
   /** 服务器 - 网络（主机名 / DNS） */

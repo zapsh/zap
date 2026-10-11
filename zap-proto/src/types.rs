@@ -810,6 +810,33 @@ pub enum Request {
     /// 安装 SSH 服务端（openssh-server），日志写 run-{id}.log
     #[serde(rename = "ssh.install")]
     SshInstall { run_id: String },
+    /// 读取 sshd 配置文件（全文 + 是否通过 `sshd -t`）
+    #[serde(rename = "ssh.config_get")]
+    SshConfigGet { path: Option<String> },
+    /// 文件编辑模式：整份写回（`sshd -t` → 备份 → 落盘 → 可选重启,失败回滚）
+    #[serde(rename = "ssh.config_save")]
+    SshConfigSave {
+        path: Option<String>,
+        content: String,
+        #[serde(default)]
+        restart: bool,
+        /// 只跑 `sshd -t` 校验、不落盘（面板「校验」按钮）
+        #[serde(default)]
+        dry_run: bool,
+    },
+    /// 可视化模式：按 `Key=Value` 原地改键（保留注释 / Include / Match 块）
+    #[serde(rename = "ssh.config_apply")]
+    SshConfigApply {
+        path: Option<String>,
+        /// 待写入的 [key, value]；value 为空表示注释掉该指令（回退默认）
+        #[serde(default)]
+        set: Vec<(String, String)>,
+        #[serde(default)]
+        restart: bool,
+        /// 只跑 `sshd -t` 校验、不落盘
+        #[serde(default)]
+        dry_run: bool,
+    },
     /// 列出系统服务（systemd）
     #[serde(rename = "service.list")]
     ServiceList,
