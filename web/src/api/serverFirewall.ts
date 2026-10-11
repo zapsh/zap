@@ -43,6 +43,8 @@ export interface FirewallStatus {
   ip_forward: boolean
   /** 当前后端是否支持端口转发（ufw 不支持） */
   forward_supported: boolean
+  /** 是否处于锁服状态（封禁全部、仅白名单放通） */
+  locked_down: boolean
 }
 
 /** 端口转发规则：外部 <proto>/<listen_port> → <target_addr>:<target_port> */
@@ -151,4 +153,9 @@ export function importFirewall(data: FirewallExport) {
     '/system/config/firewall/import',
     data,
   )
+}
+
+/** 一键锁服：封禁全部入站，仅开放 SSH(22) / 80 / 443 / 面板端口 */
+export function lockdownFirewall(unlock = false) {
+  return http.post<ApiResponse>('/system/config/firewall/lockdown', { unlock })
 }

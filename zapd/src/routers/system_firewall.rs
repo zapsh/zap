@@ -351,6 +351,43 @@ pub async fn firewall_import(
     })))
 }
 
+/// POST /system/config/firewall/lockdown —— 一键锁服 / 恢复放行
+pub async fn firewall_lockdown(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<FirewallLockdownPayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallLockdown {
+        panel_port: panel_port(),
+        unlock: payload.unlock,
+    })
+    .await?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        if payload.unlock {
+            "firewall_unlock"
+        } else {
+            "firewall_lockdown"
+        },
+        "firewall",
+        &resp.message,
+    )
+    .await;
+
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FirewallLockdownPayload {
+    #[serde(default)]
+    pub unlock: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct FirewallTogglePayload {
     /// start | stop | enable | disable

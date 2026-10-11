@@ -1878,6 +1878,19 @@ export default {
     importConfirmTitle: '导入确认',
     importConfirm: '将导入：端口规则 {ports} 条、转发 {forwards} 条、黑名单 {black} 条。确认继续？',
     importInvalid: '文件格式不正确，需要此前导出的 JSON 文件',
+    hardenTab: '安全加固',
+    hardenTitle: '一键锁服（封禁全部入站）',
+    hardenDesc:
+      '仅开放以下白名单端口，其余入站流量全部丢弃。已建立的连接不受影响（不会掐断当前会话），SSH 与面板端口强制保留，避免把自己锁在外面。',
+    allowTitle: '保持放通',
+    lockedDown: '当前已锁服：仅白名单端口可入站',
+    notLockedDown: '当前未锁服：除显式规则外，默认放行',
+    lockBtn: '一键锁服',
+    unlockBtn: '恢复默认放行',
+    lockTitle: '确认锁服',
+    lockConfirm: '将丢弃全部入站流量，仅保留端口 {ports} 可访问。确认继续？',
+    unlockTitle: '确认恢复放行',
+    unlockConfirm: '将移除锁服规则，恢复默认放行（仅按既有规则过滤）。确认继续？',
   },
 
   /** 服务器 - SSH 服务 */

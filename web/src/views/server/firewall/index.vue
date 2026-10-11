@@ -355,13 +355,67 @@
             </div>
           </div>
         </el-tab-pane>
+
+        <!-- ── 安全加固（锁服） ─────────────────────────── -->
+        <el-tab-pane :label="t('serverFirewall.hardenTab')" name="harden">
+          <el-alert
+            v-if="status.locked_down"
+            type="success"
+            :closable="false"
+            show-icon
+            :title="t('serverFirewall.lockedDown')"
+            style="margin-bottom: 12px"
+          />
+          <el-alert
+            v-else
+            type="info"
+            :closable="false"
+            show-icon
+            :title="t('serverFirewall.notLockedDown')"
+            style="margin-bottom: 12px"
+          />
+          <div class="harden-block">
+            <div class="backup-title">{{ t('serverFirewall.hardenTitle') }}</div>
+            <div class="backup-tip">{{ t('serverFirewall.hardenDesc') }}</div>
+            <div class="allow-list">
+              <el-tag
+                v-for="p in allowPorts"
+                :key="p"
+                size="small"
+                type="success"
+                effect="plain"
+                style="margin: 0 6px 6px 0"
+              >
+                {{ p }}
+              </el-tag>
+            </div>
+            <div style="margin-top: 12px">
+              <el-button
+                v-if="!status.locked_down"
+                type="danger"
+                :loading="lockdowning"
+                @click="doLockdown(false)"
+              >
+                {{ t('serverFirewall.lockBtn') }}
+              </el-button>
+              <el-button
+                v-else
+                type="primary"
+                :loading="lockdowning"
+                @click="doLockdown(true)"
+              >
+                {{ t('serverFirewall.unlockBtn') }}
+              </el-button>
+            </div>
+          </div>
+        </el-tab-pane>
       </el-tabs>
     </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { Refresh } from '@/icons'
@@ -375,6 +429,7 @@ import {
   exportFirewall,
   getFirewallStatus,
   importFirewall,
+  lockdownFirewall,
   toggleFirewall,
   type FirewallBlackEntry,
   type FirewallExport,
@@ -394,8 +449,16 @@ const deletingId = ref('')
 const exporting = ref(false)
 const importing = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const lockdowning = ref(false)
 
 const tab = ref('ports')
+
+/** 锁服后保持放通的端口（SSH 必含，面板端口强制包含） */
+const allowPorts = computed(() => {
+  const set = new Set<number>([22, 80, 443])
+  if (status.panel_port) set.add(status.panel_port)
+  return Array.from(set).sort((a, b) => a - b)
+})
 
 const status = reactive<FirewallStatus>({
   backend: 'none',
@@ -409,6 +472,7 @@ const status = reactive<FirewallStatus>({
   blacklist: [],
   ip_forward: false,
   forward_supported: false,
+  locked_down: false,
 })
 
 const form = reactive({
@@ -444,6 +508,7 @@ async function load() {
     status.blacklist = d.blacklist || []
     status.ip_forward = !!d.ip_forward
     status.forward_supported = !!d.forward_supported
+    status.locked_down = !!d.locked_down
   } catch {
     /* handled */
   } finally {
@@ -716,6 +781,31 @@ async function confirmToggle(action: 'stop' | 'start') {
   await doToggle('stop')
 }
 
+async function doLockdown(unlock: boolean) {
+  const title = unlock ? t('serverFirewall.unlockTitle') : t('serverFirewall.lockTitle')
+  const body = unlock
+    ? t('serverFirewall.unlockConfirm')
+    : t('serverFirewall.lockConfirm', { ports: allowPorts.value.join(' / ') })
+  try {
+    await ElMessageBox.confirm(body, title, {
+      type: 'warning',
+      confirmButtonText: unlock ? t('serverFirewall.unlockBtn') : t('serverFirewall.lockBtn'),
+    })
+  } catch {
+    return
+  }
+  lockdowning.value = true
+  try {
+    const res = await lockdownFirewall(unlock)
+    ElMessage.success(res.message || t('common.operationSuccess'))
+    await load()
+  } catch {
+    /* handled */
+  } finally {
+    lockdowning.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -768,5 +858,12 @@ onMounted(load)
   color: var(--el-text-color-secondary);
   font-size: 13px;
   margin-bottom: 12px;
+}
+.harden-block {
+  max-width: 680px;
+  padding: 8px 0;
+}
+.harden-block .allow-list {
+  margin-top: 10px;
 }
 </style>

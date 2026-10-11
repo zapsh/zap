@@ -1230,6 +1230,15 @@ pub enum Request {
         payload: serde_json::Value,
         panel_port: u16,
     },
+    /// 一键锁服：封禁全部入站，仅开放 SSH(22) / 80 / 443 / 面板端口。
+    /// unlock = true 时移除锁服规则、恢复默认放行。
+    #[serde(rename = "firewall.lockdown")]
+    FirewallLockdown {
+        /// 面板自身监听端口（白名单强制包含，防自锁）
+        panel_port: u16,
+        #[serde(default)]
+        unlock: bool,
+    },
 
     /// 移除站点 Nginx vhost（站点删除时清理，幂等）
     #[serde(rename = "site.vhost_remove")]

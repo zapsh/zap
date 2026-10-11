@@ -439,6 +439,10 @@ fn api_routers() -> Router {
             "/system/config/firewall/import",
             post(system_firewall::firewall_import),
         )
+        .route(
+            "/system/config/firewall/lockdown",
+            post(system_firewall::firewall_lockdown),
+        )
         .route("/system/config/network", get(system_config::network_get))
         .route(
             "/system/config/network/hostname",

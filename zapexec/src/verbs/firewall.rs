@@ -525,6 +525,21 @@ fn forward_supported(b: Backend) -> bool {
     matches!(b, Backend::Firewalld | Backend::Nftables | Backend::Iptables)
 }
 
+/// 是否已处于「锁服」状态（封禁全部、仅白名单放通）。由各后端的加固标记判定。
+fn locked_down(b: Backend) -> bool {
+    match b {
+        Backend::Nftables => cmd_out("nft", &["list", "chain", "inet", "zap_fw", "input"])
+            .contains("zap:lock:drop"),
+        Backend::Iptables => {
+            cmd_out("iptables", &["-S", "INPUT"]).contains("zap:lock:drop")
+                || cmd_out("ip6tables", &["-S", "INPUT"]).contains("zap:lock:drop")
+        }
+        Backend::Firewalld => cmd_out("firewall-cmd", &["--list-all"]).contains("target: DROP"),
+        Backend::Ufw => cmd_out("ufw", &["status", "verbose"]).contains("Default: deny"),
+        _ => false,
+    }
+}
+
 fn list_forwards(b: Backend) -> Vec<Forward> {
     match b {
         Backend::Nftables => nft_forwards(),
@@ -1386,7 +1401,8 @@ pub async fn status(panel_port: u16) -> Response {
                 "blacklist": [],
                 "ip_forward": false,
                 "forward_supported": false,
-            })),
+                "locked_down": false,
+                })),
         );
     }
     let active = backend_active(b);
@@ -1413,6 +1429,7 @@ pub async fn status(panel_port: u16) -> Response {
             "blacklist": blacklist,
             "ip_forward": ip_forward_enabled(),
             "forward_supported": forward_supported(b),
+            "locked_down": locked_down(b),
         })),
     )
 }
@@ -1799,6 +1816,239 @@ pub async fn import(payload: Value, panel_port: u16) -> Response {
             "failed": failed,
         })),
     )
+}
+
+// ── 安全加固（锁服）：封禁全部入站，仅开放白名单 ─────────────
+//
+// 防自锁铁律：
+// 1) 永远最先放通 `ct state established,related`（已建连接），否则当前 SSH / 面板会话
+//    会被瞬间掐断 —— 真·锁死。
+// 2) 白名单强制包含 SSH(22) 与面板端口（server.port，由调用方传入），即便操作者忘记也加。
+// 3) 先加放通规则、最后才设默认丢弃；任一步失败都不落得「策略是 drop 却没放通规则」。
+// 4) 全部打 `zap:lock:*` 标记，可幂等重做、可一键恢复。
+
+const LOCK_TAG: &str = "zap:lock:";
+
+/// 计算白名单端口（去重：面板端口若已是 22/80/443 不重复），SSH 永远在列。
+fn lock_allow_ports(panel_port: u16) -> Vec<u16> {
+    let mut ports: Vec<u16> = vec![22, 80, 443];
+    if panel_port != 0 && !ports.contains(&panel_port) {
+        ports.push(panel_port);
+    }
+    ports
+}
+
+fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
+    nft_ensure_chains();
+    // 清掉历史加固规则（幂等）
+    for line in cmd_out("nft", &["-a", "list", "chain", "inet", "zap_fw", "input"]).lines() {
+        let l = line.trim();
+        if !l.contains(LOCK_TAG) {
+            continue;
+        }
+        if let Some((_, h)) = l.split_once("# handle ") {
+            let handle = h.split_whitespace().next().unwrap_or("");
+            if !handle.is_empty() {
+                let _ = root_cmd("nft")
+                    .args(["delete", "rule", "inet", "zap_fw", "input", "handle", handle])
+                    .output();
+            }
+        }
+    }
+    if unlock {
+        return Ok(());
+    }
+    // 1) 已建连接放通（置顶，防自锁）
+    let _ = root_cmd("nft")
+        .args([
+            "insert", "rule", "inet", "zap_fw", "input",
+            "ct state established,related accept comment zap:lock:established",
+        ])
+        .output();
+    // 2) ICMP（诊断 / PMTU，常规放开）
+    let _ = root_cmd("nft")
+        .args(["add", "rule", "inet", "zap_fw", "input", "ip protocol icmp accept comment zap:lock:icmp"])
+        .output();
+    let _ = root_cmd("nft")
+        .args(["add", "rule", "inet", "zap_fw", "input", "ip6 nexthdr icmpv6 accept comment zap:lock:icmp6"])
+        .output();
+    // 3) 白名单端口
+    let set = lock_allow_ports(panel_port)
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let allow = format!("tcp dport {{ {set} }} accept comment zap:lock:allow");
+    let arefs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &allow]
+        .iter()
+        .copied()
+        .collect();
+    let (ok, out) = run_capture("nft", &arefs);
+    if !ok {
+        return Err(format!("nft 添加白名单失败: {out}"));
+    }
+    // 4) 最后追加「全部丢弃」兜底（位于已建连接 / 白名单之后）
+    let _ = root_cmd("nft")
+        .args(["add", "rule", "inet", "zap_fw", "input", "drop comment zap:lock:drop"])
+        .output();
+    Ok(())
+}
+
+/// 删除 INPUT 链里带 zap:lock: 标记的规则（按行号从大到小删，避免偏移），并恢复默认 ACCEPT。
+fn iptables_clear_lock() {
+    for bin in ["iptables", "ip6tables"] {
+        let out = cmd_out(bin, &["-L", "INPUT", "--line-numbers"]);
+        let mut nums: Vec<u32> = out
+            .lines()
+            .filter(|l| l.contains(LOCK_TAG))
+            .filter_map(|l| l.split_whitespace().next().and_then(|n| n.parse().ok()))
+            .collect();
+        nums.sort_unstable_by(|a, b| b.cmp(a));
+        for n in nums {
+            let _ = root_cmd(bin).args(["-D", "INPUT", &n.to_string()]).output();
+        }
+        let _ = root_cmd(bin).args(["-P", "INPUT", "ACCEPT"]).output();
+    }
+}
+
+fn iptables_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
+    iptables_clear_lock();
+    if unlock {
+        return Ok(());
+    }
+    let ports = lock_allow_ports(panel_port);
+    let dports = ports
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    // 1) 已建连接放通（置顶）
+    for bin in ["iptables", "ip6tables"] {
+        let _ = root_cmd(bin)
+            .args([
+                "-I", "INPUT", "1", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+                "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:established",
+            ])
+            .output();
+    }
+    // 2) 白名单（先确认放通就位，再设策略）
+    let ok4 = cmd_ok(
+        "iptables",
+        &[
+            "-A", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", &dports,
+            "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:allow",
+        ],
+    );
+    let _ = cmd_ok(
+        "ip6tables",
+        &[
+            "-A", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", &dports,
+            "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:allow",
+        ],
+    );
+    let _ = cmd_ok("iptables", &["-A", "INPUT", "-p", "icmp", "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:icmp"]);
+    let _ = cmd_ok("ip6tables", &["-A", "INPUT", "-p", "icmpv6", "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:icmp6"]);
+    if !ok4 {
+        return Err("iptables 添加白名单失败".to_string());
+    }
+    // 3) 默认丢弃（放在放通规则之后；失败则保持放开，不锁死）
+    let _ = root_cmd("iptables").args(["-P", "INPUT", "DROP"]).output();
+    let _ = root_cmd("ip6tables").args(["-P", "INPUT", "DROP"]).output();
+    // 4) 兜底 drop 规则（便于状态检测，且与 nftables 语义一致）
+    let _ = cmd_ok(
+        "iptables",
+        &["-A", "INPUT", "-j", "DROP", "-m", "comment", "--comment", "zap:lock:drop"],
+    );
+    Ok(())
+}
+
+fn firewalld_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
+    if unlock {
+        // 恢复默认 target，并移除我们加的面板端口
+        let _ = run_capture(
+            "firewall-cmd",
+            &["--permanent", "--zone", "public", "--set-target", "default"],
+        );
+        if panel_port != 0 {
+            let _ = run_capture(
+                "firewall-cmd",
+                &["--permanent", "--zone", "public", "--remove-port", &format!("{panel_port}/tcp")],
+            );
+        }
+        let _ = run_capture("firewall-cmd", &["--reload"]);
+        return Ok(());
+    }
+    // 仅开放白名单：ssh / http / https 服务 + 面板端口；其余默认拒绝（target=DROP）
+    for svc in ["ssh", "http", "https"] {
+        let _ = run_capture("firewall-cmd", &["--permanent", "--add-service", svc]);
+    }
+    if panel_port != 0 && !matches!(panel_port, 22 | 80 | 443) {
+        let (ok, out) = run_capture(
+            "firewall-cmd",
+            &["--permanent", "--add-port", &format!("{panel_port}/tcp")],
+        );
+        if !ok {
+            return Err(format!("firewall-cmd 添加面板端口失败：{out}"));
+        }
+    }
+    let (ok, out) = run_capture(
+        "firewall-cmd",
+        &["--permanent", "--zone", "public", "--set-target", "DROP"],
+    );
+    if !ok {
+        return Err(format!("firewall-cmd 设置默认拒绝失败：{out}"));
+    }
+    let (ok, out) = run_capture("firewall-cmd", &["--reload"]);
+    if !ok {
+        return Err(format!("firewall-cmd --reload 执行失败：{out}"));
+    }
+    Ok(())
+}
+
+fn ufw_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
+    if unlock {
+        // 恢复默认放行（已加的 allow 规则保留，不删，避免误删用户既有规则）
+        let (ok, out) = run_capture("ufw", &["default", "allow", "incoming"]);
+        if !ok {
+            return Err(format!("ufw 恢复默认放行失败：{out}"));
+        }
+        return Ok(());
+    }
+    // 先放通白名单，再切默认拒绝 —— 顺序错了会锁 SSH
+    for p in lock_allow_ports(panel_port) {
+        let _ = run_capture("ufw", &["allow", &format!("{p}/tcp")]);
+    }
+    let (ok, out) = run_capture("ufw", &["default", "deny", "incoming"]);
+    if !ok {
+        return Err(format!("ufw 设置默认拒绝失败：{out}"));
+    }
+    Ok(())
+}
+
+fn apply_lockdown(b: Backend, unlock: bool, panel_port: u16) -> Result<(), String> {
+    match b {
+        Backend::Firewalld => firewalld_lockdown(unlock, panel_port),
+        Backend::Nftables => nft_lockdown(unlock, panel_port),
+        Backend::Iptables => iptables_lockdown(unlock, panel_port),
+        Backend::Ufw => ufw_lockdown(unlock, panel_port),
+        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+    }
+}
+
+/// 一键锁服：封禁全部入站，仅开放 SSH / 80 / 443 / 面板端口。
+pub async fn lockdown(unlock: bool, panel_port: u16) -> Response {
+    let ports = lock_allow_ports(panel_port);
+    match apply_lockdown(detect(), unlock, panel_port) {
+        Ok(()) => {
+            let msg = if unlock {
+                "已恢复默认放行（移除锁服规则）".to_string()
+            } else {
+                format!("已锁服：仅开放端口 {}", ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" / "))
+            };
+            Response::ok(msg, None)
+        }
+        Err(e) => Response::err(-1, e),
+    }
 }
 
 #[cfg(test)]

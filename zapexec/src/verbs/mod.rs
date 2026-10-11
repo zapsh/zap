@@ -555,6 +555,9 @@ pub async fn dispatch(req: Request) -> Response {
         Request::FirewallImport { payload, panel_port } => {
             firewall::import(payload, panel_port).await
         }
+        Request::FirewallLockdown { panel_port, unlock } => {
+            firewall::lockdown(unlock, panel_port).await
+        }
         Request::EnvDetect => env::detect().await,
         Request::UserHomeInit { home_dir, owner } => user::home_init(&home_dir, &owner).await,
         Request::UserHomeMigrate {
