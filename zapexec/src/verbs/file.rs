@@ -30,6 +30,12 @@ struct FileInfo {
     mode: u32,
     owner: String,
     group: String,
+    /// 是否为符号链接（软链）
+    is_symlink: bool,
+    /// 软链指向的目标（相对或绝对路径）；非软链为 null
+    link_target: Option<String>,
+    /// 软链是否悬空（目标不存在）；仅 `is_symlink=true` 时可能为真
+    broken: bool,
 }
 
 /// 解析 /etc/passwd 或 /etc/group 为 id → 名称映射。
@@ -362,7 +368,21 @@ fn sandbox_path(
 }
 
 fn file_info(path: &Path) -> Option<FileInfo> {
-    let metadata = std::fs::metadata(path).ok()?;
+    // 先取入口自身元数据（不跟随），保证软链（含悬空链接）也能被列出
+    let link_meta = std::fs::symlink_metadata(path).ok()?;
+    let is_symlink = link_meta.file_type().is_symlink();
+    let link_target = if is_symlink {
+        std::fs::read_link(path)
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    } else {
+        None
+    };
+    // 跟随链接取真实属性；悬空链接则用入口元数据兜底，避免被静默丢掉
+    let (metadata, broken) = match std::fs::metadata(path) {
+        Ok(m) => (m, false),
+        Err(_) => (link_meta, true),
+    };
     let modified = metadata
         .modified()
         .ok()
@@ -381,12 +401,15 @@ fn file_info(path: &Path) -> Option<FileInfo> {
             .unwrap_or_else(|| path.to_string_lossy().to_string()),
         path: path.to_string_lossy().to_string(),
         is_dir: metadata.is_dir(),
-        size: metadata.len(),
+        size: if broken { 0 } else { metadata.len() },
         modified,
         permissions: mode_text(mode),
         mode,
         owner: owner_name(metadata.uid()),
         group: group_name(metadata.gid()),
+        is_symlink,
+        link_target,
+        broken,
     })
 }
 

@@ -50,6 +50,12 @@
         <div v-for="d in dirs" :key="d.path" class="dp-item" @click="fetch(d.path)">
           <el-icon><FolderOpened /></el-icon>
           <span class="dp-item-name" :title="d.path">{{ d.name }}</span>
+          <el-icon
+            v-if="d.is_symlink"
+            class="dp-link"
+            :class="{ 'is-broken': d.broken }"
+            :title="d.broken ? t('dirPicker.linkBroken') : t('dirPicker.linkTitle')"
+          ><Link /></el-icon>
         </div>
       </template>
       <el-empty v-else-if="!loading" :description="t('dirPicker.empty')" :image-size="60" />
@@ -70,7 +76,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { FolderOpened, Refresh } from '@/icons'
+import { FolderOpened, Refresh, Link } from '@/icons'
 import { listFiles, type FileEntry } from '@/api/file'
 import { useUserStore } from '@/stores/user'
 
@@ -237,5 +243,14 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dp-link {
+  flex: none;
+  color: var(--el-color-primary);
+
+  &.is-broken {
+    color: var(--el-color-danger);
+  }
 }
 </style>

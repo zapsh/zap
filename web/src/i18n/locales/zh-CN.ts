@@ -1117,6 +1117,8 @@ export default {
     empty: '该目录下暂无子目录',
     cancel: '取消',
     loadFailed: '目录读取失败',
+    linkTitle: '符号链接（软链目录）',
+    linkBroken: '符号链接失效（目标不存在）',
   },
 
   /** 服务器文件选择窗口（Compose 导入 / 云存储「从服务器选择」这类场景） */
@@ -1195,6 +1197,8 @@ export default {
     colModified: '修改时间',
     tipPerm: '点击修改权限',
     tipOwner: '点击修改属主 / 属组',
+    linkTitle: '符号链接（软链）',
+    linkBroken: '符号链接失效（目标不存在）',
 
     emptyDir: '此目录为空',
     dropHint: '松开鼠标，上传文件或文件夹到 {path}',

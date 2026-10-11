@@ -1100,6 +1100,8 @@ const enUS: Messages = {
     empty: 'No subdirectory here',
     cancel: 'Cancel',
     loadFailed: 'Failed to read the directory',
+    linkTitle: 'Symbolic link (directory)',
+    linkBroken: 'Broken symlink (target missing)',
   },
 
   /** Server file picker (Compose import, cloud "pick from server", …) */
@@ -1177,6 +1179,8 @@ const enUS: Messages = {
     colModified: 'Modified',
     tipPerm: 'Click to change permissions',
     tipOwner: 'Click to change owner / group',
+    linkTitle: 'Symbolic link',
+    linkBroken: 'Broken symlink (target missing)',
 
     emptyDir: 'This directory is empty',
     dropHint: 'Release to upload files or folders to {path}',

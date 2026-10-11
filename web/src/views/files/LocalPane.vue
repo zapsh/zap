@@ -238,9 +238,18 @@
                   >
                     <Folder v-if="row.is_dir" />
                     <Document v-else />
-                  </el-icon>
-                  <span>{{ row.name }}</span>
-                </div>
+                    </el-icon>
+                    <span>{{ row.name }}</span>
+                    <span
+                      v-if="row.is_symlink"
+                      class="fm-link"
+                      :class="{ 'is-broken': row.broken }"
+                      :title="row.broken ? t('filesLocal.linkBroken') : t('filesLocal.linkTitle')"
+                    >
+                      <el-icon><Link /></el-icon>
+                      <span class="fm-link-target">{{ row.link_target }}</span>
+                    </span>
+                    </div>
               </template>
             </el-table-column>
             <el-table-column :label="t('common.size')" width="150" align="right">
@@ -343,9 +352,15 @@
                 >
                   <Folder v-if="row.is_dir" />
                   <Document v-else />
-                </el-icon>
-                <span class="fm-grid-name" :title="row.name">{{ row.name }}</span>
-                <span v-if="!row.is_dir" class="fm-grid-size">{{ formatSize(row.size) }}</span>
+                  </el-icon>
+                  <span class="fm-grid-name" :title="row.name">{{ row.name }}</span>
+                  <span
+                    v-if="row.is_symlink"
+                    class="fm-grid-link"
+                    :class="{ 'is-broken': row.broken }"
+                    :title="row.broken ? t('filesLocal.linkBroken') : t('filesLocal.linkTitle')"
+                  >↪ {{ row.link_target }}</span>
+                  <span v-if="!row.is_dir" class="fm-grid-size">{{ formatSize(row.size) }}</span>
               </div>
               <div v-if="fileList.length === 0 && !loading" class="fm-grid-empty">
                 {{ t('filesLocal.emptyDir') }}
@@ -895,6 +910,7 @@ import {
   Setting,
   Close,
   Loading,
+  Link,
   ArrowDown,
   CircleCloseFilled,
   User,
@@ -3180,6 +3196,48 @@ watch(
   outline-offset: -3px;
   border-radius: 4px;
   background: var(--el-color-primary-light-9);
+}
+
+.fm-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--el-color-primary);
+  max-width: 320px;
+  overflow: hidden;
+
+  .el-icon {
+    flex: none;
+  }
+
+  .fm-link-target {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &.is-broken {
+    color: var(--el-color-danger);
+
+    .fm-link-target::after {
+      content: '（失效）';
+    }
+  }
+}
+
+.fm-grid-link {
+  display: block;
+  font-size: 11px;
+  color: var(--el-color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &.is-broken {
+    color: var(--el-color-danger);
+  }
 }
 
 .fm-dir-size {

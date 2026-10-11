@@ -16,6 +16,12 @@ export interface FileEntry {
   mode: number
   owner?: string
   group?: string
+  /** 是否为符号链接（软链） */
+  is_symlink?: boolean
+  /** 软链指向的目标路径；非软链为 undefined */
+  link_target?: string
+  /** 软链是否悬空（目标不存在）；仅 is_symlink 时可能为真 */
+  broken?: boolean
 }
 
 export interface FileListData {
