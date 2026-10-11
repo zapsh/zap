@@ -3908,6 +3908,7 @@ const enUS: Messages = {
     leRetry: 'Retry',
     leFailedFallback: 'Issuance failed; check that DNS records match the requested domains',
     leOrdersBtn: 'Pending Orders',
+    leOrdersEmpty: 'No pending orders right now',
     leOrdersTitle: 'Pending Certificate Orders',
     leOrdersAlert:
       'Orders are processed in the background: you can close this page and return later to check progress. Orders waiting for manual DNS records stay until you add them.',

@@ -3877,6 +3877,7 @@ export default {
     leRetry: '重新申请',
     leFailedFallback: '申请失败，请检查域名解析与目标域名是否一致',
     leOrdersBtn: '进行中的申请',
+    leOrdersEmpty: '当前没有进行中的申请',
     leOrdersTitle: '进行中的证书申请',
     leOrdersAlert:
       '申请过程由后台订单驱动：您可以关闭本页面，稍后再回来查看进度；DNS 手动验证的订单会一直等您添加解析。',

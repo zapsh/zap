@@ -48,7 +48,12 @@
     
       </el-alert> -->
 
-      <el-table :data="tableData" v-loading="loading" stripe style="margin-top: 14px">
+      <el-tabs v-model="activeTab" class="ssl-tabs">
+        <el-tab-pane name="certs">
+          <template #label>
+            <span class="tab-label">{{ t('sslCerts.cardTitle') }}</span>
+          </template>
+          <el-table :data="tableData" v-loading="loading" stripe>
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column v-if="canManageAll" :label="t('sslCerts.colOwner')" width="160">
           <template #default="{ row }">
@@ -139,6 +144,57 @@
           </template>
         </el-table-column>
       </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane name="orders">
+          <template #label>
+            <span class="tab-label">{{ t('sslCerts.leOrdersBtn') }}</span>
+            <el-badge
+              v-if="orders.length"
+              :value="orders.length"
+              type="primary"
+              class="tab-badge"
+            />
+          </template>
+          <el-alert
+            type="info"
+            :closable="false"
+            show-icon
+            :description="t('sslCerts.leOrdersAlert')"
+            style="margin-bottom: 12px"
+          />
+          <el-table :data="orders" v-loading="ordersLoading" size="small">
+            <el-table-column prop="id" label="ID" width="70" />
+            <el-table-column :label="t('sslCerts.colDomains')" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">{{ (row.domains || []).join(', ') }}</template>
+            </el-table-column>
+            <el-table-column :label="t('sslCerts.leChallenge')" width="110">
+              <template #default="{ row }">{{ challengeLabel(row) }}</template>
+            </el-table-column>
+            <el-table-column :label="t('sslCerts.colStatus')" min-width="180">
+              <template #default="{ row }">
+                <el-tag size="small" :type="orderTagType(row.status)">{{ row.stage }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('common.operation')" width="170" fixed="right">
+              <template #default="{ row }">
+                <el-button type="primary" link @click="trackOrder(row)">{{
+                  t('sslCerts.leTrack')
+                }}</el-button>
+                <el-button type="danger" link @click="cancelOrder(row)">{{
+                  t('sslCerts.leCancelOrder')
+                }}</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty
+            v-if="!ordersLoading && !orders.length"
+            :description="t('sslCerts.leOrdersEmpty')"
+            :image-size="90"
+            style="padding: 30px 0"
+          />
+        </el-tab-pane>
+      </el-tabs>
     </el-card>
 
     <!-- 添加 / 编辑 -->
@@ -693,40 +749,6 @@
     </el-dialog>
 
     <!-- 进行中的申请 -->
-    <el-dialog v-model="ordersVisible" :title="t('sslCerts.leOrdersTitle')" width="760px">
-      <el-alert
-        type="info"
-        :closable="false"
-        show-icon
-        :description="t('sslCerts.leOrdersAlert')"
-        style="margin-bottom: 10px"
-      />
-      <el-table :data="orders" v-loading="ordersLoading" size="small">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column :label="t('sslCerts.colDomains')" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">{{ (row.domains || []).join(', ') }}</template>
-        </el-table-column>
-        <el-table-column :label="t('sslCerts.leChallenge')" width="110">
-          <template #default="{ row }">{{ challengeLabel(row) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('sslCerts.colStatus')" min-width="180">
-          <template #default="{ row }">
-            <el-tag size="small" :type="orderTagType(row.status)">{{ row.stage }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('common.operation')" width="170" fixed="right">
-          <template #default="{ row }">
-            <el-button type="primary" link @click="trackOrder(row)">{{
-              t('sslCerts.leTrack')
-            }}</el-button>
-            <el-button type="danger" link @click="cancelOrder(row)">{{
-              t('sslCerts.leCancelOrder')
-            }}</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-dialog>
-
     <!-- DNS 服务商凭据：原二级子菜单，现改为抽屉，侧栏只留「SSL证书」一个入口 -->
     <el-drawer
       v-model="dnsDrawerVisible"
@@ -1611,7 +1633,6 @@ async function openIssuedCert() {
 }
 
 // ── 进行中的申请（跨会话可续）──────────────────────────────
-const ordersVisible = ref(false)
 const ordersLoading = ref(false)
 const orders = ref<AcmeOrder[]>([])
 
@@ -1627,10 +1648,18 @@ async function loadOrders() {
   }
 }
 
-function openOrders() {
-  ordersVisible.value = true
+/** 当前激活页签：certs=证书列表；orders=进行中的申请 */
+const activeTab = ref<'certs' | 'orders'>('certs')
+
+async function openOrders() {
+  activeTab.value = 'orders'
   loadOrders()
 }
+
+// 切到「进行中的申请」页签时主动拉取，保证进度最新
+watch(activeTab, (tab) => {
+  if (tab === 'orders') loadOrders()
+})
 
 /** 从列表接管某个订单：DNS 手动模式回到第二步，其余直接开始轮询 */
 function trackOrder(row: AcmeOrder) {
@@ -1714,6 +1743,15 @@ onBeforeUnmount(() => {
 /* split-button：左侧主按钮与右侧下拉箭头间距微调 */
 .le-split {
   margin-left: 12px;
+}
+/* 页签标签：文字与数量徽标并排 */
+.ssl-tabs :deep(.el-tabs__item) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tab-badge {
+  margin-top: -2px;
 }
 .title {
   font-size: 16px;
