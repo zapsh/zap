@@ -1042,34 +1042,8 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
                 "index.html"
             });
         core.push_str(&format!("    index {idx};\n"));
-        // 默认 location /：伪静态预设覆盖默认 try_files。
-        // 若用户已自定义 `location /`：
-        //   - proxy / alias / redirect / deny 视为「整段替换」，跳过默认块（用户完全掌控 root 行为）；
-        //   - PHP 站点的 raw `location /` 也视为「整段替换」：伪静态规则迁移到 Location 规则后，
-        //     用户 raw 需要完全接管默认根（如 try_files /index.php），避免默认 try_files =404 截断 rewrite；
-        //   - 静态站点的 raw `location /` 维持「在默认根上追加规则」，默认块照常生成，用户 raw 追加到末尾。
-        if !root_replace {
-            core.push_str("\n    location / {\n");
-            // static site :  SPA  / index.html fallback
-            if s_type == "static" {
-                core.push_str("        try_files $uri $uri/ /index.html;\n");
-            } else {
-                core.push_str("        try_files $uri $uri/ =404;\n");
-            }
-            // raw 追加规则（php/static 在默认根上加 rewrite / 静态指令等）
-            if let Some(l) = root_augment {
-                let raw = l.raw.trim();
-                if !raw.is_empty() {
-                    core.push('\n');
-                    for line in raw.lines() {
-                        core.push_str("        ");
-                        core.push_str(line);
-                        core.push('\n');
-                    }
-                }
-            }
-            core.push_str("    }\n");
-        }
+        // 默认 location / 块（try_files 兜底）推迟到「自定义 locations」之后输出，
+        // 作为整段配置的兜底（详见下方「默认 location /（兜底，置后）」注释）。
         if let Some(sock) = php_socket {
             core.push_str("\n    # PHP Instance\n");
             core.push_str("    location ~ \\.php$ {\n");
@@ -1123,6 +1097,36 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
                 nginx_single_quoted(l.limit_body.trim())
             ));
         }
+    }
+
+    // 默认 location /（兜底，置后）：放在所有自定义 locations 之后，
+    // 保证 `location /` 是整段配置的兜底项；静态站点 + 反代（如 `location /aaa`）
+    // 时，反代规则在前、兜底根在后，符合「具体到模糊」的排布，也避免反代被错误覆盖。
+    // 若用户已自定义 `location /`：
+    //   - proxy / alias / redirect / deny 视为「整段替换」，跳过默认块（用户完全掌控 root 行为）；
+    //   - PHP 站点的 raw `location /` 也视为「整段替换」：用户 raw 需完全接管默认根（try_files）；
+    //   - 静态站点的 raw `location /` 维持「在默认根上追加规则」，默认块照常生成，用户 raw 追加到末尾。
+    if s_type != "proxy" && !root_replace {
+        core.push_str("\n    location / {\n");
+        // static site :  SPA  / index.html fallback
+        if s_type == "static" {
+            core.push_str("        try_files $uri $uri/ /index.html;\n");
+        } else {
+            core.push_str("        try_files $uri $uri/ =404;\n");
+        }
+        // raw 追加规则（php/static 在默认根上加 rewrite / 静态指令等）
+        if let Some(l) = root_augment {
+            let raw = l.raw.trim();
+            if !raw.is_empty() {
+                core.push('\n');
+                for line in raw.lines() {
+                    core.push_str("        ");
+                    core.push_str(line);
+                    core.push('\n');
+                }
+            }
+        }
+        core.push_str("    }\n");
     }
 
     // SSL/TLS：绑定证书后才监听 443；允许 HTTP 跳转时 80 只保留 301
