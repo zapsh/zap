@@ -235,7 +235,7 @@
   <DirPicker
     v-model="dirVisible"
     :title="t('site.appPickDir')"
-    :start-path="form.workdir"
+    :start-path="dirStartPath"
     @confirm="onDirPick"
   />
 </template>
@@ -271,6 +271,8 @@ interface SiteOption {
   name: string
   /** 站点归属的 unix 用户名：非 admin 部署时用它做应用名前缀 */
   owner?: string
+  /** 站点文档根目录：选已有站点时自动作为项目目录（workdir）默认值 */
+  web_root?: string
 }
 
 const visible = computed({
@@ -339,6 +341,30 @@ const form = ref({
   build_output: '',
   git_depth: 0,
 })
+
+/** 当前选中站点的文档根目录（选「已有站点」时用于自动回填项目目录） */
+const selectedSiteWebRoot = computed(() => {
+  const s = sites.value.find((x) => x.id === form.value.site_id)
+  return s?.web_root || ''
+})
+/**
+ * 目录选择器的起始路径：优先用已填的项目目录，其次选中的站点文档根，
+ * 都为空时留空——DirPicker 会落回当前用户家目录（home）。
+ */
+const dirStartPath = computed(() => form.value.workdir.trim() || selectedSiteWebRoot.value || '')
+
+/**
+ * 选「已有站点」时自动把项目目录（workdir）设为该站点的文档根，省去手动挑目录。
+ * 编辑模式保留已回填的 workdir；非 site 目标（新建反代站点）不自动设置。
+ */
+function applySiteWorkdir() {
+  if (props.initial) return
+  if (form.value.target !== 'site' || !form.value.site_id) return
+  const s = sites.value.find((x) => x.id === form.value.site_id)
+  if (s?.web_root) form.value.workdir = s.web_root
+}
+watch(() => form.value.site_id, applySiteWorkdir)
+watch(() => form.value.target, applySiteWorkdir)
 
 const editing = computed(() => !!props.initial)
 // admin 部署不加前缀；其余角色后端会自动补「站点归属用户-」前缀（预览用）
@@ -433,6 +459,7 @@ async function loadMeta() {
       id: r.id,
       name: r.name,
       owner: r.owner_username || '',
+      web_root: r.web_root || '',
     }))
   } catch {
     sites.value = []
