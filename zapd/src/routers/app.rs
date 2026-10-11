@@ -536,30 +536,38 @@ pub async fn app_caps(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
 }
 
 /// GET /site/app/list —— 应用列表 + 实时运行状态
-type SiteAppRow = (
-    i64,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    i64,
-    String,
-    i64,
-    i64,
-    String,
-    String,
-    String,
-);
+#[derive(sqlx::FromRow)]
+struct SiteAppRow {
+    id: i64,
+    name: String,
+    app_type: String,
+    runtime_version: String,
+    build_cmd: String,
+    workdir: String,
+    entry: String,
+    command: String,
+    port: i64,
+    env: String,
+    autostart: i64,
+    running: i64,
+    git_commit: String,
+    repo_url: String,
+    output_dir: String,
+    mount_path: String,
+    install_deps: i64,
+    branch: String,
+    git_subdir: String,
+    git_depth: i64,
+    build_output: String,
+}
 
 pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) -> ZapJsonResult {
     site::site_in_scope(&claims, q.site_id).await?;
     let pool = db::get_db_pool().await;
     let rows: Vec<SiteAppRow> = sqlx::query_as(
         "SELECT id, name, app_type, runtime_version, build_cmd, workdir, entry, command, \
-                port, env, autostart, running, git_commit, repo_url, output_dir \
+                port, env, autostart, running, git_commit, repo_url, output_dir, mount_path, \
+                install_deps, branch, git_subdir, git_depth, build_output \
              FROM site_apps WHERE site_id = ? ORDER BY id",
     )
     .bind(q.site_id)
@@ -568,7 +576,7 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
 
     // 实时状态：zapexec 不可用时静默降级（列表照出，状态为 unknown）
     let mut live: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
-    let names: Vec<String> = rows.iter().map(|r| r.1.clone()).collect();
+    let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
     if !names.is_empty()
         && let Ok(resp) = crate::zapexec::call(Request::AppStatus {
             site_id: q.site_id,
@@ -592,7 +600,7 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
     let apps: Vec<Value> = rows
         .into_iter()
         .map(
-            |(
+            |SiteAppRow {
                 id,
                 name,
                 app_type,
@@ -608,7 +616,13 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
                 git_commit,
                 repo_url,
                 output_dir,
-            )| {
+                mount_path,
+                install_deps,
+                branch,
+                git_subdir,
+                git_depth,
+                build_output,
+            }| {
                 let st = live.get(&name).cloned().unwrap_or(json!({
                     "state": "unknown", "active": false, "enabled": false, "pid": 0,
                 }));
@@ -628,6 +642,12 @@ pub async fn app_list(claims: ValidatedClaims, Query(q): Query<SiteAppQuery>) ->
                     "git_commit": git_commit,
                     "repo_url": repo_url,
                     "output_dir": output_dir,
+                    "mount_path": mount_path,
+                    "install_deps": install_deps == 1,
+                    "branch": branch,
+                    "git_subdir": git_subdir,
+                    "git_depth": git_depth,
+                    "build_output": build_output,
                     "state": st.get("state").and_then(|v| v.as_str()).unwrap_or("unknown"),
                     "active": st.get("active").and_then(|v| v.as_bool()).unwrap_or(false),
                     "enabled": st.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -1049,10 +1069,12 @@ struct AppListRow {
     env: String,
     autostart: i64,
     running: i64,
+    install_deps: i64,
     deploy_status: String,
     task_id: String,
     git_commit: String,
     output_dir: String,
+    mount_path: String,
     repo_url: String,
     branch: String,
     git_ref: String,
@@ -1238,8 +1260,8 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
     let base = "SELECT a.id, a.site_id, s.name AS site_name, a.name, a.app_type, \
                        a.runtime_version, a.build_cmd, a.workdir, a.entry, a.command, \
-                       a.port, a.env, a.autostart, a.running, \
-                       a.deploy_status, a.task_id, a.git_commit, a.output_dir, \
+                       a.port, a.env, a.autostart, a.running, a.install_deps, \
+                       a.deploy_status, a.task_id, a.git_commit, a.output_dir, a.mount_path, \
                        a.repo_url, a.branch, a.git_ref, a.git_subdir, a.git_depth, a.build_output \
                 FROM site_apps a JOIN site s ON s.id = a.site_id";
     let rows: Vec<AppListRow> = if jwt::is_admin(&claims) {
@@ -1329,10 +1351,12 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
                  env,
                  autostart,
                  running,
+                 install_deps,
                  deploy_status,
                  task_id,
                  git_commit,
                  output_dir,
+                 mount_path,
                  repo_url,
                  branch,
                  git_ref,
@@ -1346,10 +1370,17 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
                     .unwrap_or(json!({
                         "state": "unknown", "active": false, "enabled": false, "pid": 0,
                     }));
-                let (mount_path, mount_mode) = mounts
+                let (derived_mount, mount_mode) = mounts
                     .get(&(site_id, name.clone()))
                     .cloned()
                     .unwrap_or_default();
+                // 挂载点优先用 DB 里用户配置的（落库真值），nginx 派生为空时兜底，
+                // 确保「编辑」能原样回填，不受反代配置缓存 / 时序影响。
+                let mount_path = if mount_path.trim().is_empty() {
+                    derived_mount
+                } else {
+                    mount_path
+                };
                 json!({
                     "id": id,
                     "site_id": site_id,
@@ -1367,6 +1398,7 @@ pub async fn app_list_all(claims: ValidatedClaims) -> ZapJsonResult {
                     "env": env,
                     "autostart": autostart == 1,
                     "running": running == 1,
+                    "install_deps": install_deps == 1,
                     "deploy_status": deploy_status,
                     "task_id": task_id,
                     "git_commit": git_commit,
