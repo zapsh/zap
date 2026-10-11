@@ -528,6 +528,33 @@ pub async fn dispatch(req: Request) -> Response {
             firewall::rule_delete(id, panel_port).await
         }
         Request::FirewallToggle { action } => firewall::toggle(action).await,
+        Request::FirewallForwardAdd {
+            proto,
+            listen_port,
+            target_addr,
+            target_port,
+            comment,
+            panel_port,
+        } => {
+            firewall::forward_add(
+                proto,
+                listen_port,
+                target_addr,
+                target_port,
+                comment,
+                panel_port,
+            )
+            .await
+        }
+        Request::FirewallForwardDelete { id } => firewall::forward_delete(id).await,
+        Request::FirewallBlacklistAdd { ip, comment } => {
+            firewall::blacklist_add(ip, comment).await
+        }
+        Request::FirewallBlacklistDelete { id } => firewall::blacklist_delete(id).await,
+        Request::FirewallExport { panel_port } => firewall::export(panel_port).await,
+        Request::FirewallImport { payload, panel_port } => {
+            firewall::import(payload, panel_port).await
+        }
         Request::EnvDetect => env::detect().await,
         Request::UserHomeInit { home_dir, owner } => user::home_init(&home_dir, &owner).await,
         Request::UserHomeMigrate {

@@ -1842,6 +1842,41 @@ const enUS: Messages = {
     stopConfirm: 'Stopping the firewall exposes every port. Continue?',
     dangerTitle: 'Dangerous Operation',
     confirmStop: 'Stop Now',
+    forwardTab: 'Port Forwarding',
+    listenPort: 'Listen Port',
+    target: 'Target',
+    targetAddrPlaceholder: 'Target IP, e.g. 10.0.0.8',
+    addForward: 'Add Forward',
+    forwardEmpty: 'No forwarding rules',
+    forwardAdded: 'Forwarding rule added',
+    forwardDeleted: 'Forwarding rule deleted',
+    deleteForwardConfirm: 'Delete the forwarding rule {label}?',
+    forwardUnsupported:
+      'The current backend ({backend}) does not support port forwarding; nftables / iptables / firewalld is required.',
+    ipForwardAlert:
+      'Kernel IPv4 forwarding is off, so forwarding rules will not take effect. The panel enables it automatically (net.ipv4.ip_forward=1) when you add a rule.',
+    blacklistTab: 'IP Blacklist',
+    blacklistDesc: 'Block all inbound traffic from an IP / CIDR (any port and protocol).',
+    ipLabel: 'IP / CIDR',
+    ipPlaceholder: 'e.g. 1.2.3.4 or 10.0.0.0/8',
+    addBlack: 'Blacklist',
+    blacklistEmpty: 'Blacklist is empty',
+    blackAdded: 'Added to blacklist',
+    blackDeleted: 'Removed from blacklist',
+    deleteBlackConfirm: 'Remove {ip} from the blacklist?',
+    backupTab: 'Import / Export',
+    exportTip:
+      'Export port rules, forwards and the IP blacklist to a JSON file, which can be imported on other servers.',
+    exportBtn: 'Export Rules',
+    exportDone: 'Rules exported',
+    importBtn: 'Import Rules',
+    importTip:
+      'Select a previously exported JSON file. Rules are validated and applied one by one; a failed entry does not affect the rest.',
+    importSelectFile: 'Select JSON File',
+    importConfirmTitle: 'Confirm Import',
+    importConfirm:
+      'About to import: {ports} port rules, {forwards} forwards, {black} blacklist entries. Continue?',
+    importInvalid: 'Invalid file; a previously exported JSON file is required',
   },
 
   /** Server - SSH service */

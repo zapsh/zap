@@ -415,6 +415,30 @@ fn api_routers() -> Router {
             "/system/config/firewall/toggle",
             post(system_firewall::firewall_toggle),
         )
+        .route(
+            "/system/config/firewall/forward/add",
+            post(system_firewall::firewall_forward_add),
+        )
+        .route(
+            "/system/config/firewall/forward/delete",
+            post(system_firewall::firewall_forward_delete),
+        )
+        .route(
+            "/system/config/firewall/blacklist/add",
+            post(system_firewall::firewall_blacklist_add),
+        )
+        .route(
+            "/system/config/firewall/blacklist/delete",
+            post(system_firewall::firewall_blacklist_delete),
+        )
+        .route(
+            "/system/config/firewall/export",
+            get(system_firewall::firewall_export),
+        )
+        .route(
+            "/system/config/firewall/import",
+            post(system_firewall::firewall_import),
+        )
         .route("/system/config/network", get(system_config::network_get))
         .route(
             "/system/config/network/hostname",

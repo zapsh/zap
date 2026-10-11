@@ -35,6 +35,31 @@ export interface FirewallStatus {
   wsl: boolean
   panel_port: number
   rules: FirewallRule[]
+  /** 端口转发规则（DNAT） */
+  forwards: FirewallForward[]
+  /** IP 黑名单 */
+  blacklist: FirewallBlackEntry[]
+  /** 内核 IPv4 转发是否开启（端口转发前置条件） */
+  ip_forward: boolean
+  /** 当前后端是否支持端口转发（ufw 不支持） */
+  forward_supported: boolean
+}
+
+/** 端口转发规则：外部 <proto>/<listen_port> → <target_addr>:<target_port> */
+export interface FirewallForward {
+  id: string
+  proto: 'tcp' | 'udp' | string
+  listen_port: number
+  target_addr: string
+  target_port: number
+  comment: string
+}
+
+/** IP 黑名单条目：拒绝该 IP / CIDR 的全部入站流量 */
+export interface FirewallBlackEntry {
+  id: string
+  ip: string
+  comment: string
 }
 
 export interface FirewallRuleAddPayload {
@@ -44,6 +69,35 @@ export interface FirewallRuleAddPayload {
   /** 来源 IP / CIDR，留空表示不限来源 */
   source?: string
   comment?: string
+}
+
+export interface FirewallForwardAddPayload {
+  proto?: 'tcp' | 'udp'
+  listen_port: number
+  target_addr: string
+  target_port: number
+  comment?: string
+}
+
+/** 导出文件结构（firewall.export 的 data） */
+export interface FirewallExport {
+  version: number
+  backend?: string
+  port_rules?: Array<{
+    port: number
+    proto?: string
+    action?: string
+    source?: string
+    comment?: string
+  }>
+  forwards?: Array<{
+    proto?: string
+    listen_port: number
+    target_addr: string
+    target_port: number
+    comment?: string
+  }>
+  blacklist?: Array<{ ip: string; comment?: string }>
 }
 
 /** 读取防火墙状态与规则列表（仅 admin） */
@@ -64,4 +118,37 @@ export function deleteFirewallRule(id: string) {
 /** 启停 / 开机自启：action = start | stop | enable | disable */
 export function toggleFirewall(action: 'start' | 'stop' | 'enable' | 'disable') {
   return http.post<ApiResponse>('/system/config/firewall/toggle', { action })
+}
+
+/** 新增端口转发规则 */
+export function addFirewallForward(data: FirewallForwardAddPayload) {
+  return http.post<ApiResponse>('/system/config/firewall/forward/add', data)
+}
+
+/** 删除端口转发规则（id 来自状态接口） */
+export function deleteFirewallForward(id: string) {
+  return http.post<ApiResponse>('/system/config/firewall/forward/delete', { id })
+}
+
+/** IP 黑名单：封禁 IP / CIDR */
+export function addFirewallBlacklist(ip: string, comment = '') {
+  return http.post<ApiResponse>('/system/config/firewall/blacklist/add', { ip, comment })
+}
+
+/** 删除黑名单条目（id 来自状态接口） */
+export function deleteFirewallBlacklist(id: string) {
+  return http.post<ApiResponse>('/system/config/firewall/blacklist/delete', { id })
+}
+
+/** 导出全部规则（返回导出 JSON 结构） */
+export function exportFirewall() {
+  return http.get<ApiResponse<FirewallExport>>('/system/config/firewall/export')
+}
+
+/** 导入规则（传入导出 JSON 结构） */
+export function importFirewall(data: FirewallExport) {
+  return http.post<ApiResponse & { data?: { added: number; skipped: number; failed?: string[] } }>(
+    '/system/config/firewall/import',
+    data,
+  )
 }

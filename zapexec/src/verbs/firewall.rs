@@ -163,7 +163,8 @@ fn firewalld_rules() -> Vec<Rule> {
     }
     for line in cmd_out("firewall-cmd", &["--list-rich-rules"]).lines() {
         let raw = line.trim().trim_matches('\'').to_string();
-        if raw.is_empty() {
+        if raw.is_empty() || !raw.contains("port port=\"") {
+            // 无端口的 drop 富规则是 IP 黑名单条目，由 firewalld_blacklist 列出
             continue;
         }
         let port = raw
@@ -224,8 +225,12 @@ fn ufw_rules() -> Vec<Rule> {
             "accept"
         }
         .to_string();
-        // 第一个字段通常是 80/tcp 或 80
+        // 第一个字段通常是 80/tcp 或 80；非端口形态（如黑名单 `Anywhere DENY IN <ip>`）跳过
         let first = body.split_whitespace().next().unwrap_or("");
+        let first_port = first.split('/').next().unwrap_or("");
+        if first_port.is_empty() || !first_port.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
         let (port, proto) = match first.split_once('/') {
             Some((p, pr)) => (p.parse().unwrap_or(0), pr.to_string()),
             None => (first.parse().unwrap_or(0), "tcp".to_string()),
@@ -395,17 +400,17 @@ fn is_wsl() -> bool {
 ///    单纯 `active`（RemainAfterExit）不代表在管防火墙；
 /// 2. 规则集里确实有规则（空规则集 = 装了没用，WSL / 桌面发行版很常见）；
 /// 3. `nft list ruleset` 有内容本身也不能作数（iptables-nft、Docker、libvirt 都会写表）。
-fn nftables_in_control() -> bool {
-    service_active("nftables") && service_enabled("nftables") && nft_has_ruleset()
-}
-
 fn backend_active(b: Backend) -> bool {
     match b {
         Backend::Firewalld => cmd_out("firewall-cmd", &["--state"]).trim() == "running",
         Backend::Ufw => cmd_out("ufw", &["status"]).contains("Status: active"),
-        Backend::Nftables => nftables_in_control(),
-        // iptables 没有守护进程：存在真实规则才算生效（命令可用 ≠ 在过滤流量）
-        Backend::Iptables => iptables_has_rules(),
+        // nftables 是 oneshot 服务：systemd active 即代表正在加载并过滤流量，
+        // 不应再要求「已开机自启 + 规则集非空」，否则刚 `start`（未开机自启 / 空规则集）
+        // 会被误判为未运行，出现「启动成功却显示没运行」。
+        Backend::Nftables => service_active("nftables"),
+        // iptables 通常无守护进程：存在真实规则即视为生效；若发行版提供 iptables.service
+        // 且其 active，同样视为运行中（避免「启动成功却显示未运行」）
+        Backend::Iptables => service_active("iptables") || iptables_has_rules(),
         Backend::Unsupported => false,
     }
 }
@@ -441,6 +446,584 @@ fn list_rules(b: Backend) -> Vec<Rule> {
         Backend::Iptables => iptables_rules(),
         _ => Vec::new(),
     }
+}
+
+// ── 端口转发 / IP 黑名单 ────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct Forward {
+    /// 删除标识：nftables=dstnat 链 handle；iptables=`tcp:8080:1.2.3.4:80`；
+    /// firewalld=forward-port 参数串
+    id: String,
+    proto: String,
+    listen_port: u16,
+    target_addr: String,
+    target_port: u16,
+    comment: String,
+}
+
+#[derive(Debug, Clone)]
+struct Black {
+    /// 删除标识：nftables=input 链 handle；iptables/firewalld(去前缀)/ufw=IP 或 CIDR；
+    /// firewalld=`bl:<rich rule>`
+    id: String,
+    ip: String,
+    comment: String,
+}
+
+fn forward_json(f: &Forward) -> Value {
+    json!({
+        "id": f.id,
+        "proto": f.proto,
+        "listen_port": f.listen_port,
+        "target_addr": f.target_addr,
+        "target_port": f.target_port,
+        "comment": f.comment,
+    })
+}
+
+fn black_json(x: &Black) -> Value {
+    json!({
+        "id": x.id,
+        "ip": x.ip,
+        "comment": x.comment,
+    })
+}
+
+/// 目标地址是否为 IPv4（用于选择 nft 的 ip / ip6 关键字与 rich rule family）
+fn is_ipv4_cidr(s: &str) -> bool {
+    let addr = s.split('/').next().unwrap_or("");
+    addr.parse::<std::net::IpAddr>()
+        .map(|a| a.is_ipv4())
+        .unwrap_or(true)
+}
+
+/// 内核是否开启 IPv4 转发（端口转发的前提）。
+fn ip_forward_enabled() -> bool {
+    std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward")
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
+}
+
+/// 打开 IPv4 转发：立即 `sysctl -w` 生效 + 写 sysctl.d 持久化（幂等）。
+/// 端口转发没有它不生效，属于该功能的必要前置，面板代为开启。
+fn ensure_ip_forward() {
+    if ip_forward_enabled() {
+        return;
+    }
+    let _ = root_cmd("sysctl")
+        .args(["-w", "net.ipv4.ip_forward=1"])
+        .output();
+    let conf = "/etc/sysctl.d/99-zap-firewall.conf";
+    if !std::path::Path::new(conf).exists() {
+        let _ = std::fs::write(conf, "# Created by zap panel (firewall forwarding)\nnet.ipv4.ip_forward = 1\n");
+    }
+}
+
+/// 端口转发是否被当前后端支持（ufw 需改写 before.rules，不做）
+fn forward_supported(b: Backend) -> bool {
+    matches!(b, Backend::Firewalld | Backend::Nftables | Backend::Iptables)
+}
+
+fn list_forwards(b: Backend) -> Vec<Forward> {
+    match b {
+        Backend::Nftables => nft_forwards(),
+        Backend::Iptables => iptables_forwards(),
+        Backend::Firewalld => firewalld_forwards(),
+        _ => Vec::new(),
+    }
+}
+
+fn list_blacklist(b: Backend) -> Vec<Black> {
+    match b {
+        Backend::Nftables => nft_blacklist(),
+        Backend::Iptables => iptables_blacklist(),
+        Backend::Firewalld => firewalld_blacklist(),
+        Backend::Ufw => ufw_blacklist(),
+        _ => Vec::new(),
+    }
+}
+
+// ── nftables：面板自管 zap_fw 表的 dstnat / srcnat 链 ──────
+
+/// 确保 zap_fw 表与 input / dstnat / srcnat 链存在（已存在时 nft 返回错误，忽略即可）。
+fn nft_ensure_chains() {
+    let _ = root_cmd("nft").args(["add", "table", "inet", "zap_fw"]).output();
+    let _ = root_cmd("nft").args([
+        "add", "chain", "inet", "zap_fw", "input",
+        "{ type filter hook input priority 0 ; }",
+    ]).output();
+    let _ = root_cmd("nft").args([
+        "add", "chain", "inet", "zap_fw", "dstnat",
+        "{ type nat hook prerouting priority dstnat ; }",
+    ]).output();
+    let _ = root_cmd("nft").args([
+        "add", "chain", "inet", "zap_fw", "srcnat",
+        "{ type nat hook postrouting priority srcnat ; }",
+    ]).output();
+}
+
+fn nft_forwards() -> Vec<Forward> {
+    let mut out = Vec::new();
+    for line in cmd_out("nft", &["-a", "list", "chain", "inet", "zap_fw", "dstnat"]).lines() {
+        let l = line.trim();
+        let Some((main, handle)) = l.split_once("# handle ") else {
+            continue;
+        };
+        let handle = handle.split_whitespace().next().unwrap_or("").to_string();
+        // 去掉 comment 尾巴，例如 `... dnat to 1.2.3.4:80 comment "zap:masq:..."`
+        let main = main.split(" comment ").next().unwrap_or(main).trim();
+        let Some((left, target)) = main.split_once("dnat to ") else {
+            continue;
+        };
+        let proto = if left.contains("udp dport") { "udp" } else { "tcp" };
+        let Some(listen_port) = left
+            .split("dport ")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.parse().ok())
+        else {
+            continue;
+        };
+        let target = target.trim();
+        let (addr, port) = if let Some(rest) = target.strip_prefix('[') {
+            // IPv6：[addr]:port
+            match rest.split_once("]:") {
+                Some((a, p)) => (a.to_string(), p.parse().unwrap_or(0)),
+                None => (rest.trim_end_matches(']').to_string(), 0),
+            }
+        } else {
+            match target.split_once(':') {
+                Some((a, p)) => (a.to_string(), p.parse().unwrap_or(0)),
+                None => (target.to_string(), 0),
+            }
+        };
+        out.push(Forward {
+            id: handle,
+            proto: proto.to_string(),
+            listen_port,
+            target_addr: addr,
+            target_port: port,
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn nft_forward_add(f: &Forward) -> Result<(), String> {
+    nft_ensure_chains();
+    ensure_ip_forward();
+    let fam = if is_ipv4_cidr(&f.target_addr) {
+        "meta nfproto ipv4"
+    } else {
+        "meta nfproto ipv6"
+    };
+    let to = if is_ipv4_cidr(&f.target_addr) {
+        format!("{}:{}", f.target_addr, f.target_port)
+    } else {
+        format!("[{}]:{}", f.target_addr, f.target_port)
+    };
+    let rule = format!(
+        "{fam} {proto} dport {lp} dnat to {to}",
+        proto = f.proto,
+        lp = f.listen_port,
+        to = to
+    );
+    let refs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "dstnat", &rule]
+        .iter()
+        .copied()
+        .collect();
+    let (ok, out) = run_capture("nft", &refs);
+    if !ok {
+        return Err(format!("nft 添加转发规则失败: {out}"));
+    }
+    // 回程 masquerade：同目标仅加一条（内核较老不支持 inet nat masquerade 时静默忽略）
+    if !nft_has_masq(&f.target_addr) {
+        let fam_kw = if is_ipv4_cidr(&f.target_addr) { "ip" } else { "ip6" };
+        let masq = format!(
+            "{fam_kw} daddr {ta} masquerade comment \"zap:masq:{ta}\"",
+            ta = f.target_addr
+        );
+        let mrefs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "srcnat", &masq]
+            .iter()
+            .copied()
+            .collect();
+        let _ = root_cmd("nft").args(mrefs).output();
+    }
+    Ok(())
+}
+
+fn nft_has_masq(addr: &str) -> bool {
+    cmd_out("nft", &["list", "chain", "inet", "zap_fw", "srcnat"])
+        .contains(&format!("zap:masq:{addr}"))
+}
+
+fn nft_forward_delete(id: &str) -> Result<(), String> {
+    if !cmd_ok("nft", &["delete", "rule", "inet", "zap_fw", "dstnat", "handle", id]) {
+        return Err("nft 删除转发规则失败".to_string());
+    }
+    // 目标已无任何转发规则时，顺手清掉回程 masquerade（按 srcnat 的 comment 反查）
+    nft_cleanup_masq();
+    Ok(())
+}
+
+/// 清理「目标已无转发规则」的 masquerade 规则。
+fn nft_cleanup_masq() {
+    let live: Vec<String> = nft_forwards()
+        .iter()
+        .map(|f| f.target_addr.clone())
+        .collect();
+    for line in cmd_out("nft", &["-a", "list", "chain", "inet", "zap_fw", "srcnat"]).lines() {
+        let l = line.trim();
+        let Some(start) = l.find("zap:masq:") else {
+            continue;
+        };
+        let ta: String = l[start + 9..]
+            .trim_end_matches('"')
+            .chars()
+            .take_while(|c| *c != '"' && *c != ' ')
+            .collect();
+        if live.iter().any(|a| *a == ta) {
+            continue;
+        }
+        if let Some((_, h)) = l.split_once("# handle ") {
+            let handle = h.split_whitespace().next().unwrap_or("");
+            if !handle.is_empty() {
+                let _ = root_cmd("nft")
+                    .args(["delete", "rule", "inet", "zap_fw", "srcnat", "handle", handle])
+                    .output();
+            }
+        }
+    }
+}
+
+fn nft_blacklist() -> Vec<Black> {
+    let mut out = Vec::new();
+    for line in cmd_out("nft", &["-a", "list", "chain", "inet", "zap_fw", "input"]).lines() {
+        let l = line.trim();
+        if !l.contains("drop") || !l.contains("comment \"zap:bl:") {
+            continue;
+        }
+        let Some((_, h)) = l.split_once("# handle ") else {
+            continue;
+        };
+        let handle = h.split_whitespace().next().unwrap_or("").to_string();
+        let ip = l
+            .split("saddr ")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .unwrap_or("")
+            .to_string();
+        out.push(Black {
+            id: handle,
+            ip,
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn nft_blacklist_add(ip: &str) -> Result<(), String> {
+    nft_ensure_chains();
+    let fam = if is_ipv4_cidr(ip) { "ip" } else { "ip6" };
+    let rule = format!("{fam} saddr {ip} drop comment \"zap:bl:{ip}\"");
+    let refs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &rule]
+        .iter()
+        .copied()
+        .collect();
+    let (ok, out) = run_capture("nft", &refs);
+    if !ok {
+        return Err(format!("nft 添加黑名单失败: {out}"));
+    }
+    Ok(())
+}
+
+// ── iptables：nat 表 PREROUTING / POSTROUTING ──────────────
+
+fn iptables_forwards() -> Vec<Forward> {
+    let mut out = Vec::new();
+    for line in cmd_out("iptables", &["-t", "nat", "-S", "PREROUTING"]).lines() {
+        let l = line.trim();
+        if !l.starts_with("-A PREROUTING") || !l.contains("--to-destination") {
+            continue;
+        }
+        let proto = l
+            .split(" -p ")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .unwrap_or("tcp")
+            .to_string();
+        let listen_port = l
+            .split("--dport ")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let to = l
+            .split("--to-destination ")
+            .nth(1)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let (addr, port) = match to.split_once(':') {
+            Some((a, p)) => (a.to_string(), p.parse().unwrap_or(0)),
+            None => (to.clone(), 0),
+        };
+        out.push(Forward {
+            id: format!(
+                "{proto}:{lp}:{addr}:{tp}",
+                lp = listen_port,
+                tp = port
+            ),
+            proto,
+            listen_port,
+            target_addr: addr,
+            target_port: port,
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn iptables_forward_add(f: &Forward) -> Result<(), String> {
+    ensure_ip_forward();
+    let to = format!("{}:{}", f.target_addr, f.target_port);
+    let refs: Vec<String> = vec![
+        "-t".into(), "nat".into(), "-A".into(), "PREROUTING".into(),
+        "-p".into(), f.proto.clone(), "--dport".into(), f.listen_port.to_string(),
+        "-j".into(), "DNAT".into(), "--to-destination".into(), to,
+    ];
+    let srefs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
+    let (ok, out) = run_capture("iptables", &srefs);
+    if !ok {
+        return Err(format!("iptables 添加转发规则失败：{out}"));
+    }
+    // 回程 masquerade：同目标仅加一条
+    if !cmd_out("iptables", &["-t", "nat", "-S", "POSTROUTING"])
+        .lines()
+        .any(|l| l.contains(&format!("-d {} ", f.target_addr)) && l.contains("MASQUERADE"))
+    {
+        let _ = root_cmd("iptables")
+            .args(["-t", "nat", "-A", "POSTROUTING", "-d", &f.target_addr, "-j", "MASQUERADE"])
+            .output();
+    }
+    Ok(())
+}
+
+fn iptables_forward_delete(id: &str) -> Result<(), String> {
+    // id 形如 tcp:8080:1.2.3.4:80，可直接重建精确的删除参数（不依赖易漂移的行号）
+    let parts: Vec<&str> = id.split(':').collect();
+    if parts.len() != 4 {
+        return Err("转发规则 id 不合法".to_string());
+    }
+    let (proto, lp, ta, tp) = (parts[0], parts[1], parts[2], parts[3]);
+    let to = if tp == "0" { ta.to_string() } else { format!("{ta}:{tp}") };
+    let ok = cmd_ok(
+        "iptables",
+        &[
+            "-t", "nat", "-D", "PREROUTING", "-p", proto, "--dport", lp, "-j", "DNAT",
+            "--to-destination", &to,
+        ],
+    );
+    if !ok {
+        return Err("iptables 删除转发规则失败".to_string());
+    }
+    // 同目标已无其它转发规则时清掉 masquerade
+    if !iptables_forwards().iter().any(|f| f.target_addr == ta) {
+        let _ = root_cmd("iptables")
+            .args(["-t", "nat", "-D", "POSTROUTING", "-d", ta, "-j", "MASQUERADE"])
+            .output();
+    }
+    Ok(())
+}
+
+fn iptables_blacklist() -> Vec<Black> {
+    let mut out = Vec::new();
+    for line in cmd_out("iptables", &["-S", "INPUT"]).lines() {
+        let l = line.trim();
+        if !l.starts_with("-A INPUT") || !l.contains("-j DROP") || l.contains("--dport") {
+            continue;
+        }
+        let Some(ip) = l.split(" -s ").nth(1).and_then(|s| s.split_whitespace().next()) else {
+            continue;
+        };
+        out.push(Black {
+            id: ip.to_string(),
+            ip: ip.to_string(),
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn iptables_blacklist_add(ip: &str) -> Result<(), String> {
+    let (ok, out) = run_capture("iptables", &["-I", "INPUT", "1", "-s", ip, "-j", "DROP"]);
+    if !ok {
+        return Err(format!("iptables 添加黑名单失败：{out}"));
+    }
+    Ok(())
+}
+
+// ── firewalld：forward-port + 富规则黑名单 ─────────────────
+
+fn firewalld_forwards() -> Vec<Forward> {
+    let mut out = Vec::new();
+    for line in cmd_out("firewall-cmd", &["--permanent", "--list-forward-ports"]).lines() {
+        let raw = line.trim().trim_matches('\'').to_string();
+        if raw.is_empty() {
+            continue;
+        }
+        // port=8080:proto=tcp:toport=80:toaddr=1.2.3.4
+        let get = |key: &str| -> String {
+            raw.split(&format!("{key}="))
+                .nth(1)
+                .map(|s| s.split(':').next().unwrap_or("").to_string())
+                .unwrap_or_default()
+        };
+        let listen_port = get("port").parse().unwrap_or(0);
+        let proto = {
+            let p = get("proto");
+            if p.is_empty() { "tcp".to_string() } else { p }
+        };
+        let target_port: u16 = get("toport").parse().unwrap_or(0);
+        let target_addr = get("toaddr");
+        if target_addr.is_empty() {
+            continue;
+        }
+        out.push(Forward {
+            id: raw,
+            proto,
+            listen_port,
+            target_addr,
+            target_port,
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn firewalld_forward_add(f: &Forward) -> Result<(), String> {
+    ensure_ip_forward();
+    let spec = format!(
+        "port={lp}:proto={proto}:toport={tp}:toaddr={ta}",
+        lp = f.listen_port,
+        proto = f.proto,
+        tp = f.target_port,
+        ta = f.target_addr
+    );
+    let _ = run_capture("firewall-cmd", &["--permanent", "--add-masquerade"]);
+    let (ok, out) = run_capture("firewall-cmd", &["--permanent", "--add-forward-port", &spec]);
+    if !ok {
+        return Err(format!("firewall-cmd --add-forward-port 执行失败：{out}"));
+    }
+    let (ok, out) = run_capture("firewall-cmd", &["--reload"]);
+    if !ok {
+        return Err(format!("firewall-cmd --reload 执行失败：{out}"));
+    }
+    Ok(())
+}
+
+fn firewalld_forward_delete(id: &str) -> Result<(), String> {
+    let (ok, out) = run_capture(
+        "firewall-cmd",
+        &["--permanent", "--remove-forward-port", id],
+    );
+    if !ok {
+        return Err(format!("firewall-cmd --remove-forward-port 执行失败：{out}"));
+    }
+    let _ = run_capture("firewall-cmd", &["--reload"]);
+    Ok(())
+}
+
+/// 富规则里不含 port 的 drop 规则即黑名单条目
+fn firewalld_blacklist() -> Vec<Black> {
+    let mut out = Vec::new();
+    for line in cmd_out("firewall-cmd", &["--list-rich-rules"]).lines() {
+        let raw = line.trim().trim_matches('\'').to_string();
+        if raw.is_empty() || !raw.contains("drop") || raw.contains("port port=") {
+            continue;
+        }
+        let ip = raw
+            .split("source address=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("")
+            .to_string();
+        if ip.is_empty() {
+            continue;
+        }
+        out.push(Black {
+            id: format!("bl:{raw}"),
+            ip,
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn firewalld_blacklist_add(ip: &str) -> Result<(), String> {
+    let family = if is_ipv4_cidr(ip) { "ipv4" } else { "ipv6" };
+    let rule = format!("rule family=\"{family}\" source address=\"{ip}\" drop");
+    let (ok, out) = run_capture("firewall-cmd", &["--permanent", "--add-rich-rule", &rule]);
+    if !ok {
+        return Err(format!("firewall-cmd --add-rich-rule 执行失败：{out}"));
+    }
+    let (ok, out) = run_capture("firewall-cmd", &["--reload"]);
+    if !ok {
+        return Err(format!("firewall-cmd --reload 执行失败：{out}"));
+    }
+    Ok(())
+}
+
+// ── ufw：黑名单用 deny from（端口转发不支持） ───────────────
+
+fn ufw_blacklist() -> Vec<Black> {
+    let mut out = Vec::new();
+    for line in cmd_out("ufw", &["status", "numbered"]).lines() {
+        let l = line.trim();
+        let Some(rest) = l.strip_prefix('[') else {
+            continue;
+        };
+        let Some((_, body)) = rest.split_once(']') else {
+            continue;
+        };
+        let body = body.trim();
+        if !body.contains("DENY") {
+            continue;
+        }
+        // 形如 `Anywhere  DENY IN  1.2.3.4`：DENY 后除 IN/OUT 外的 token 即来源
+        let after = body.split("DENY").nth(1).unwrap_or("");
+        let from = after
+            .split_whitespace()
+            .find(|t| *t != "IN" && *t != "OUT")
+            .unwrap_or("");
+        if from.is_empty() || from == "Anywhere" {
+            continue;
+        }
+        out.push(Black {
+            id: from.to_string(),
+            ip: from.to_string(),
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn ufw_blacklist_add(ip: &str) -> Result<(), String> {
+    // insert 1 保证黑名单优先于既有放行规则；带注释标记便于列表识别（老 ufw 不支持则退化）
+    let tag = format!("zap:bl_{ip}");
+    let (ok, _) = run_capture(
+        "ufw",
+        &["insert", "1", "deny", "from", ip, "comment", &tag],
+    );
+    if ok {
+        return Ok(());
+    }
+    let (ok, out) = run_capture("ufw", &["insert", "1", "deny", "from", ip]);
+    if !ok {
+        return Err(format!("ufw 添加黑名单失败：{out}"));
+    }
+    Ok(())
 }
 
 // ── 动作 ────────────────────────────────────────────────────
@@ -747,6 +1330,42 @@ fn validate_source(source: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 端口转发入参校验
+fn validate_forward_input(
+    proto: &str,
+    listen_port: u16,
+    target_addr: &str,
+    target_port: u16,
+    panel_port: u16,
+) -> Result<(), String> {
+    if !matches!(proto, "tcp" | "udp") {
+        return Err("协议仅支持 tcp / udp".to_string());
+    }
+    if listen_port == 0 || target_port == 0 {
+        return Err("端口必须在 1 - 65535 之间".to_string());
+    }
+    // 自杀保护：把面板端口转发到别处同样会把自己锁在外面
+    if hits_panel_port(listen_port, panel_port) {
+        return Err(format!(
+            "端口 {listen_port} 是面板监听端口，不允许作为转发监听端口"
+        ));
+    }
+    if target_addr.parse::<std::net::IpAddr>().is_err() {
+        return Err("目标地址必须是合法 IP（不支持域名 / CIDR）".to_string());
+    }
+    Ok(())
+}
+
+/// 黑名单入参校验
+fn validate_blacklist_ip(ip: &str) -> Result<(), String> {
+    validate_source(ip)?;
+    // 黑名单针对全部端口/协议，拒绝「封禁全世界」的自杀操作
+    if matches!(ip, "0.0.0.0/0" | "::/0") {
+        return Err("黑名单不允许封禁所有来源（0.0.0.0/0 / ::/0）".to_string());
+    }
+    Ok(())
+}
+
 // ── handlers ────────────────────────────────────────────────
 
 pub async fn status(panel_port: u16) -> Response {
@@ -763,6 +1382,10 @@ pub async fn status(panel_port: u16) -> Response {
                 "wsl": wsl,
                 "panel_port": panel_port,
                 "rules": [],
+                "forwards": [],
+                "blacklist": [],
+                "ip_forward": false,
+                "forward_supported": false,
             })),
         );
     }
@@ -772,6 +1395,8 @@ pub async fn status(panel_port: u16) -> Response {
         .iter()
         .map(|r| rule_json(r, hits_panel_port(r.port, panel_port)))
         .collect();
+    let forwards: Vec<Value> = list_forwards(b).iter().map(forward_json).collect();
+    let blacklist: Vec<Value> = list_blacklist(b).iter().map(black_json).collect();
     Response::ok(
         "OK",
         Some(json!({
@@ -784,6 +1409,10 @@ pub async fn status(panel_port: u16) -> Response {
             "diag": diag(),
             "panel_port": panel_port,
             "rules": rules,
+            "forwards": forwards,
+            "blacklist": blacklist,
+            "ip_forward": ip_forward_enabled(),
+            "forward_supported": forward_supported(b),
         })),
     )
 }
@@ -855,6 +1484,321 @@ pub async fn toggle(action: String) -> Response {
         Ok(()) => Response::ok(format!("防火墙已{action}"), None),
         Err(e) => Response::err(-1, e),
     }
+}
+
+// ── 转发 / 黑名单 / 导入导出 handlers ───────────────────────
+
+fn apply_forward(b: Backend, f: &Forward) -> Result<(), String> {
+    match b {
+        Backend::Firewalld => firewalld_forward_add(f),
+        Backend::Nftables => nft_forward_add(f),
+        Backend::Iptables => iptables_forward_add(f),
+        Backend::Ufw => Err("ufw 暂不支持端口转发（需改写 before.rules），请改用 nftables / iptables / firewalld 后端".to_string()),
+        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+    }
+}
+
+fn delete_forward(b: Backend, id: &str) -> Result<(), String> {
+    match b {
+        Backend::Firewalld => firewalld_forward_delete(id),
+        Backend::Nftables => nft_forward_delete(id),
+        Backend::Iptables => iptables_forward_delete(id),
+        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+    }
+}
+
+fn apply_blacklist(b: Backend, ip: &str) -> Result<(), String> {
+    match b {
+        Backend::Firewalld => firewalld_blacklist_add(ip),
+        Backend::Nftables => nft_blacklist_add(ip),
+        Backend::Iptables => iptables_blacklist_add(ip),
+        Backend::Ufw => ufw_blacklist_add(ip),
+        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+    }
+}
+
+fn delete_blacklist(b: Backend, id: &str) -> Result<(), String> {
+    match b {
+        Backend::Firewalld => {
+            let Some(raw) = id.strip_prefix("bl:") else {
+                return Err("黑名单 id 不合法".to_string());
+            };
+            if !cmd_ok("firewall-cmd", &["--permanent", "--remove-rich-rule", raw]) {
+                return Err("firewall-cmd 删除黑名单失败".to_string());
+            }
+            let _ = run_capture("firewall-cmd", &["--reload"]);
+            Ok(())
+        }
+        Backend::Nftables => {
+            if cmd_ok("nft", &["delete", "rule", "inet", "zap_fw", "input", "handle", id]) {
+                Ok(())
+            } else {
+                Err("nft 删除黑名单失败".to_string())
+            }
+        }
+        Backend::Iptables => {
+            if cmd_ok("iptables", &["-D", "INPUT", "-s", id, "-j", "DROP"]) {
+                Ok(())
+            } else {
+                Err("iptables 删除黑名单失败".to_string())
+            }
+        }
+        Backend::Ufw => {
+            if cmd_ok("ufw", &["--force", "delete", "deny", "from", id]) {
+                Ok(())
+            } else {
+                Err("ufw 删除黑名单失败".to_string())
+            }
+        }
+        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+    }
+}
+
+pub async fn forward_add(
+    proto: String,
+    listen_port: u16,
+    target_addr: String,
+    target_port: u16,
+    comment: String,
+    panel_port: u16,
+) -> Response {
+    let proto = proto.trim().to_lowercase();
+    let target_addr = target_addr.trim().to_string();
+    if let Err(e) = validate_forward_input(&proto, listen_port, &target_addr, target_port, panel_port) {
+        return Response::err(-1, e);
+    }
+    let f = Forward {
+        id: String::new(),
+        proto,
+        listen_port,
+        target_addr,
+        target_port,
+        comment: comment.trim().to_string(),
+    };
+    match apply_forward(detect(), &f) {
+        Ok(()) => Response::ok("转发规则已添加", None),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+pub async fn forward_delete(id: String) -> Response {
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Response::err(-1, "缺少转发规则 id".to_string());
+    }
+    match delete_forward(detect(), &id) {
+        Ok(()) => Response::ok("转发规则已删除", None),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+pub async fn blacklist_add(ip: String, _comment: String) -> Response {
+    let ip = ip.trim().to_string();
+    if let Err(e) = validate_blacklist_ip(&ip) {
+        return Response::err(-1, e);
+    }
+    match apply_blacklist(detect(), &ip) {
+        Ok(()) => Response::ok("黑名单已添加", None),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+pub async fn blacklist_delete(id: String) -> Response {
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Response::err(-1, "缺少黑名单 id".to_string());
+    }
+    match delete_blacklist(detect(), &id) {
+        Ok(()) => Response::ok("黑名单已删除", None),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+/// 导出全部规则为 JSON（可直接保存为文件，导入端原样回传 firewall.import）。
+pub async fn export(_panel_port: u16) -> Response {
+    let b = detect();
+    let port_rules: Vec<Value> = list_rules(b)
+        .iter()
+        .map(|r| {
+            json!({
+                "port": r.port,
+                "proto": r.proto,
+                "action": r.action,
+                "source": r.source,
+                "comment": r.comment,
+            })
+        })
+        .collect();
+    let forwards: Vec<Value> = list_forwards(b)
+        .iter()
+        .map(|f| {
+            json!({
+                "proto": f.proto,
+                "listen_port": f.listen_port,
+                "target_addr": f.target_addr,
+                "target_port": f.target_port,
+                "comment": f.comment,
+            })
+        })
+        .collect();
+    let blacklist: Vec<Value> = list_blacklist(b)
+        .iter()
+        .map(|x| json!({ "ip": x.ip, "comment": x.comment }))
+        .collect();
+    Response::ok(
+        "OK",
+        Some(json!({
+            "version": 1,
+            "backend": b.name(),
+            "port_rules": port_rules,
+            "forwards": forwards,
+            "blacklist": blacklist,
+        })),
+    )
+}
+
+/// 导入规则（firewall.export 的 data 结构）。逐条校验 + 应用，
+/// 单条失败不影响其余，返回 added / skipped / failed 汇总。
+pub async fn import(payload: Value, panel_port: u16) -> Response {
+    if !payload.is_object() {
+        return Response::err(-1, "导入文件格式不正确（需要 JSON 对象）".to_string());
+    }
+    let b = detect();
+    let mut added: u32 = 0;
+    let mut skipped: u32 = 0;
+    let mut failed: Vec<String> = Vec::new();
+
+    let arr = |key: &str| -> Vec<Value> {
+        payload
+            .get(key)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    // 端口规则
+    for item in arr("port_rules") {
+        let port = item.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+        let proto = item
+            .get("proto")
+            .and_then(|v| v.as_str())
+            .unwrap_or("tcp")
+            .trim()
+            .to_lowercase();
+        let action = item
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("accept")
+            .trim()
+            .to_lowercase();
+        let source = item
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let comment = item
+            .get("comment")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if let Err(e) = validate_rule_input(port, &proto, &action, &source) {
+            failed.push(format!("端口 {port}: {e}"));
+            continue;
+        }
+        // 与手工添加一致的面板端口保护
+        if action != "accept" && hits_panel_port(port, panel_port) {
+            skipped += 1;
+            continue;
+        }
+        let rule = Rule {
+            id: String::new(),
+            port,
+            proto,
+            action,
+            source,
+            comment,
+        };
+        match apply_rule(b, &rule) {
+            Ok(()) => added += 1,
+            Err(e) => failed.push(format!("端口 {}: {}", rule.port, e)),
+        }
+    }
+
+    // 端口转发
+    for item in arr("forwards") {
+        let proto = item
+            .get("proto")
+            .and_then(|v| v.as_str())
+            .unwrap_or("tcp")
+            .trim()
+            .to_lowercase();
+        let listen_port = item.get("listen_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+        let target_addr = item
+            .get("target_addr")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let target_port = item.get("target_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+        let comment = item
+            .get("comment")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if let Err(e) = validate_forward_input(&proto, listen_port, &target_addr, target_port, panel_port) {
+            failed.push(format!("转发 {listen_port}: {e}"));
+            continue;
+        }
+        let f = Forward {
+            id: String::new(),
+            proto,
+            listen_port,
+            target_addr,
+            target_port,
+            comment,
+        };
+        match apply_forward(b, &f) {
+            Ok(()) => added += 1,
+            Err(e) => failed.push(format!("转发 {}: {}", f.listen_port, e)),
+        }
+    }
+
+    // IP 黑名单
+    for item in arr("blacklist") {
+        let ip = item
+            .get("ip")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if let Err(e) = validate_blacklist_ip(&ip) {
+            failed.push(format!("黑名单 {ip}: {e}"));
+            continue;
+        }
+        match apply_blacklist(b, &ip) {
+            Ok(()) => added += 1,
+            Err(e) => failed.push(format!("黑名单 {ip}: {e}")),
+        }
+    }
+
+    let mut message = format!("导入完成：成功 {added} 条");
+    if skipped > 0 {
+        message.push_str(&format!("，跳过 {skipped} 条（面板端口保护）"));
+    }
+    if !failed.is_empty() {
+        message.push_str(&format!("，失败 {} 条", failed.len()));
+    }
+    Response::ok(
+        message,
+        Some(json!({
+            "added": added,
+            "skipped": skipped,
+            "failed": failed,
+        })),
+    )
 }
 
 #[cfg(test)]

@@ -1188,6 +1188,48 @@ pub enum Request {
     /// 防火墙服务启停 / 开机自启：action = start | stop | enable | disable
     #[serde(rename = "firewall.toggle")]
     FirewallToggle { action: String },
+    /// 新增端口转发规则（DNAT：外部 <proto>/<listen_port> → <target_addr>:<target_port>）
+    #[serde(rename = "firewall.forward_add")]
+    FirewallForwardAdd {
+        /// tcp | udp
+        proto: String,
+        /// 对外监听端口 1 - 65535
+        listen_port: u16,
+        /// 目标地址（IP，不支持域名 / CIDR）
+        target_addr: String,
+        /// 目标端口 1 - 65535
+        target_port: u16,
+        /// 备注
+        #[serde(default)]
+        comment: String,
+        /// 面板自身监听端口（禁止把面板端口转发走，避免把自己锁在外面）
+        panel_port: u16,
+    },
+    /// 删除端口转发规则（id 由 firewall.status 返回，按后端语义解析）
+    #[serde(rename = "firewall.forward_delete")]
+    FirewallForwardDelete { id: String },
+    /// IP 黑名单：拒绝该 IP / CIDR 的全部入站流量（不限端口/协议）
+    #[serde(rename = "firewall.blacklist_add")]
+    FirewallBlacklistAdd {
+        ip: String,
+        #[serde(default)]
+        comment: String,
+    },
+    /// 删除黑名单条目（id 由 firewall.status 返回）
+    #[serde(rename = "firewall.blacklist_delete")]
+    FirewallBlacklistDelete { id: String },
+    /// 导出防火墙规则（端口规则 + 转发 + 黑名单）为 JSON
+    #[serde(rename = "firewall.export")]
+    FirewallExport {
+        /// 面板自身监听端口（导出的 drop 规则可能含保护逻辑，需感知）
+        panel_port: u16,
+    },
+    /// 导入防火墙规则：payload 为 firewall.export 的 data 结构
+    #[serde(rename = "firewall.import")]
+    FirewallImport {
+        payload: serde_json::Value,
+        panel_port: u16,
+    },
 
     /// 移除站点 Nginx vhost（站点删除时清理，幂等）
     #[serde(rename = "site.vhost_remove")]

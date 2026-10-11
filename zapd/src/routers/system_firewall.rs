@@ -6,13 +6,20 @@
 //! 便于后续扩展新的防火墙实现。
 //!
 //! 端点：
-//! - GET  /system/config/firewall             状态 + 规则列表
-//! - POST /system/config/firewall/rule/add    新增放行 / 拒绝规则
-//! - POST /system/config/firewall/rule/delete 删除规则
-//! - POST /system/config/firewall/toggle      启停 / 开机自启
+//! - GET  /system/config/firewall                状态 + 端口规则 + 转发 + 黑名单
+//! - POST /system/config/firewall/rule/add       新增放行 / 拒绝规则
+//! - POST /system/config/firewall/rule/delete    删除规则
+//! - POST /system/config/firewall/toggle         启停 / 开机自启
+//! - POST /system/config/firewall/forward/add    新增端口转发（DNAT）
+//! - POST /system/config/firewall/forward/delete 删除端口转发
+//! - POST /system/config/firewall/blacklist/add  IP 黑名单：封禁来源
+//! - POST /system/config/firewall/blacklist/delete
+//! - GET  /system/config/firewall/export         导出规则 JSON
+//! - POST /system/config/firewall/import         导入规则 JSON
 //!
 //! 安全：面板自身监听端口（server.port）受保护 —— 不允许在该端口上添加 drop
-//! 规则，也不允许删除它的放行规则，避免把面板自己锁在外面。
+//! 规则、不允许删除它的放行规则、不允许把它转发走，避免把面板自己锁在外面；
+//! 黑名单不允许封禁当前登录 IP（防误操作自锁）。
 
 use std::net::SocketAddr;
 
@@ -147,6 +154,201 @@ pub async fn firewall_rule_delete(
         return Err(ZapError::New(resp.code, resp.message));
     }
     Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FirewallForwardAddPayload {
+    #[serde(default = "default_proto")]
+    pub proto: String,
+    pub listen_port: u16,
+    /// 目标地址（IP，不支持域名 / CIDR）
+    pub target_addr: String,
+    pub target_port: u16,
+    #[serde(default)]
+    pub comment: String,
+}
+
+/// POST /system/config/firewall/forward/add
+pub async fn firewall_forward_add(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<FirewallForwardAddPayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let detail = format!(
+        "{}/{} -> {}:{}",
+        payload.proto, payload.listen_port, payload.target_addr, payload.target_port
+    );
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallForwardAdd {
+        proto: payload.proto,
+        listen_port: payload.listen_port,
+        target_addr: payload.target_addr,
+        target_port: payload.target_port,
+        comment: payload.comment,
+        panel_port: panel_port(),
+    })
+    .await?;
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "firewall_forward_add",
+        "firewall",
+        &format!("{} -> {}", detail, resp.message),
+    )
+    .await;
+
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+/// POST /system/config/firewall/forward/delete
+pub async fn firewall_forward_delete(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<FirewallRuleDeletePayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallForwardDelete {
+        id: payload.id.clone(),
+    })
+    .await?;
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "firewall_forward_delete",
+        "firewall",
+        &format!("id={} -> {}", payload.id, resp.message),
+    )
+    .await;
+
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FirewallBlacklistAddPayload {
+    /// IP / CIDR
+    pub ip: String,
+    #[serde(default)]
+    pub comment: String,
+}
+
+/// POST /system/config/firewall/blacklist/add
+pub async fn firewall_blacklist_add(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<FirewallBlacklistAddPayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    // 防自锁：不允许封禁当前登录 IP（精确匹配；网段交由操作者自行斟酌）
+    let ip = payload.ip.trim().to_string();
+    if ip == client_addr.ip().to_string() {
+        return Err(ZapError::New(
+            -1,
+            "不能封禁当前登录 IP，否则会把自己锁在外面".to_string(),
+        ));
+    }
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallBlacklistAdd {
+        ip: payload.ip,
+        comment: payload.comment,
+    })
+    .await?;
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "firewall_blacklist_add",
+        "firewall",
+        &format!("ip={} -> {}", ip, resp.message),
+    )
+    .await;
+
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+/// POST /system/config/firewall/blacklist/delete
+pub async fn firewall_blacklist_delete(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<FirewallRuleDeletePayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallBlacklistDelete {
+        id: payload.id.clone(),
+    })
+    .await?;
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "firewall_blacklist_delete",
+        "firewall",
+        &format!("id={} -> {}", payload.id, resp.message),
+    )
+    .await;
+
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+/// GET /system/config/firewall/export —— 导出全部规则为 JSON
+pub async fn firewall_export(claims: ValidatedClaims) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallExport {
+        panel_port: panel_port(),
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({
+        "code": 0,
+        "message": resp.message,
+        "data": resp.data,
+    })))
+}
+
+/// POST /system/config/firewall/import —— 导入规则（导出文件内容原样回传）
+pub async fn firewall_import(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<serde_json::Value>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallImport {
+        payload,
+        panel_port: panel_port(),
+    })
+    .await?;
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "firewall_import",
+        "firewall",
+        &resp.message,
+    )
+    .await;
+
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({
+        "code": 0,
+        "message": resp.message,
+        "data": resp.data,
+    })))
 }
 
 #[derive(Debug, Deserialize)]
