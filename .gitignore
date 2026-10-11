@@ -41,3 +41,8 @@ plugins/
 # Zap Pro
 /zappro/
 /web/src/views/pro/
+
+# 机器主密钥（AES-256-GCM 密钥，禁止入库；曾在 7cff04c 误提交，需轮换）
+# 既匹配 zapd/conf/secret.key、zapexec/conf/secret.key，也匹配 {ZAP_PATH}/data/secret.key
+secret.key
+
