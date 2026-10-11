@@ -527,6 +527,15 @@ pub async fn dispatch(req: Request) -> Response {
         Request::FirewallRuleDelete { id, panel_port } => {
             firewall::rule_delete(id, panel_port).await
         }
+        Request::FirewallRuleUpdate {
+            id,
+            port,
+            proto,
+            action,
+            source,
+            comment,
+            panel_port,
+        } => firewall::rule_update(id, port, proto, action, source, comment, panel_port).await,
         Request::FirewallToggle { action } => firewall::toggle(action).await,
         Request::FirewallForwardAdd {
             proto,

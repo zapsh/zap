@@ -1519,8 +1519,98 @@ pub async fn rule_add(
         source,
         comment: comment.trim().to_string(),
     };
-    match apply_rule(detect(), &rule) {
-        Ok(()) => Response::ok("规则已添加", None),
+    let b = detect();
+    match apply_rule(b, &rule) {
+        Ok(()) => {
+            nft_repin_drop_if_locked(b);
+            Response::ok("规则已添加", None)
+        }
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+/// 加固后，把兜底 drop 规则重新钉到链尾，确保其后追加的放行规则仍可命中。
+/// 仅 nftables 需要：nft 的 drop 是「规则」，新规则会被 append 到它之后而失效；
+/// iptables / firewalld 用链默认策略 drop，显式放行规则无论位置都能命中，无需处理。
+fn nft_repin_drop_if_locked(b: Backend) {
+    if b != Backend::Nftables || !locked_down(b) {
+        return;
+    }
+    let mut handle = String::new();
+    for line in cmd_out("nft", &["-a", "list", "chain", "inet", "zap_fw", "input"]).lines() {
+        let l = line.trim();
+        if l.contains("drop comment \"zap:lock:drop\"") {
+            if let Some((_, h)) = l.split_once("# handle ") {
+                handle = h.split_whitespace().next().unwrap_or("").to_string();
+            }
+            break;
+        }
+    }
+    if handle.is_empty() {
+        return;
+    }
+    let _ = root_cmd("nft")
+        .args(["delete", "rule", "inet", "zap_fw", "input", "handle", &handle])
+        .output();
+    let _ = root_cmd("nft")
+        .args(["add", "rule", "inet", "zap_fw", "input", "drop comment \"zap:lock:drop\""])
+        .output();
+}
+
+/// 修改规则：先按 id 删除旧规则（含面板端口自杀保护），再新增。
+/// 受保护规则（面板端口 / 加固白名单）在前端已禁用编辑，这里再次兜底拦截。
+pub async fn rule_update(
+    id: String,
+    port: u16,
+    proto: String,
+    action: String,
+    source: String,
+    comment: String,
+    panel_port: u16,
+) -> Response {
+    let id = id.trim().to_string();
+    let proto = proto.trim().to_lowercase();
+    let action = action.trim().to_lowercase();
+    let source = source.trim().to_string();
+    if id.is_empty() {
+        return Response::err(-1, "缺少规则 id".to_string());
+    }
+    if let Err(e) = validate_rule_input(port, &proto, &action, &source) {
+        return Response::err(-1, e);
+    }
+    if action != "accept" && hits_panel_port(port, panel_port) {
+        return Response::err(
+            -1,
+            format!("端口 {port} 是面板监听端口，拒绝在此端口上添加 drop/reject 规则"),
+        );
+    }
+    let b = detect();
+    // 受保护规则（面板端口放行 / 加固白名单）禁止修改
+    let protected = list_rules(b).iter().any(|r| {
+        r.id == id
+            && (r.comment.starts_with("zap:lock:")
+                || (r.action == "accept" && hits_panel_port(r.port, panel_port)))
+    });
+    if protected {
+        return Response::err(-1, "受保护规则（面板端口 / 加固白名单）不可修改".to_string());
+    }
+    // 先删后加
+    if let Err(e) = delete_rule(b, &id) {
+        return Response::err(-1, e);
+    }
+    let rule = Rule {
+        id: String::new(),
+        port,
+        proto,
+        action,
+        source,
+        comment: comment.trim().to_string(),
+    };
+    match apply_rule(b, &rule) {
+        Ok(()) => {
+            nft_repin_drop_if_locked(b);
+            Response::ok("规则已修改", None)
+        }
         Err(e) => Response::err(-1, e),
     }
 }
@@ -1670,8 +1760,12 @@ pub async fn blacklist_add(ip: String, _comment: String) -> Response {
     if let Err(e) = validate_blacklist_ip(&ip) {
         return Response::err(-1, e);
     }
-    match apply_blacklist(detect(), &ip) {
-        Ok(()) => Response::ok("黑名单已添加", None),
+    let b = detect();
+    match apply_blacklist(b, &ip) {
+        Ok(()) => {
+            nft_repin_drop_if_locked(b);
+            Response::ok("黑名单已添加", None)
+        }
         Err(e) => Response::err(-1, e),
     }
 }
@@ -1864,6 +1958,7 @@ pub async fn import(payload: Value, panel_port: u16) -> Response {
     if !failed.is_empty() {
         message.push_str(&format!("，失败 {} 条", failed.len()));
     }
+    nft_repin_drop_if_locked(detect());
     Response::ok(
         message,
         Some(json!({

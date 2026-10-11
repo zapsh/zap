@@ -1185,6 +1185,26 @@ pub enum Request {
         /// 面板自身监听端口
         panel_port: u16,
     },
+    /// 修改防火墙规则：先按 id 删除旧规则，再按新参数新增（受保护规则不可改）
+    #[serde(rename = "firewall.rule_update")]
+    FirewallRuleUpdate {
+        /// 旧规则 id（由 status 返回）
+        id: String,
+        /// 新端口 1 - 65535
+        port: u16,
+        /// tcp | udp
+        proto: String,
+        /// accept | drop
+        action: String,
+        /// 来源地址（IP 或 CIDR）；空串表示不限制来源
+        #[serde(default)]
+        source: String,
+        /// 备注
+        #[serde(default)]
+        comment: String,
+        /// 面板自身监听端口（用于拒绝"拒绝面板端口"这类自杀式操作）
+        panel_port: u16,
+    },
     /// 防火墙服务启停 / 开机自启：action = start | stop | enable | disable
     #[serde(rename = "firewall.toggle")]
     FirewallToggle { action: String },

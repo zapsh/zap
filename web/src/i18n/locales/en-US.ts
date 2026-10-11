@@ -1836,6 +1836,8 @@ const enUS: Messages = {
     portRange: 'Port must be between 1 and 65535',
     ruleAdded: 'Rule added',
     ruleDeleted: 'Rule deleted',
+    ruleUpdated: 'Rule updated',
+    editTitle: 'Edit Rule',
     opDone: 'Done',
     deleteTitle: 'Confirm Deletion',
     deleteConfirm: 'Delete the {action} rule for {proto} {port}?',

@@ -1840,6 +1840,8 @@ export default {
     portRange: '端口需在 1 - 65535 之间',
     ruleAdded: '规则已添加',
     ruleDeleted: '规则已删除',
+    ruleUpdated: '规则已修改',
+    editTitle: '修改规则',
     opDone: '操作完成',
     deleteTitle: '删除确认',
     deleteConfirm: '确认删除 {proto} {port} 的{action}规则？',

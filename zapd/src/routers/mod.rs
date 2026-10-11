@@ -412,6 +412,10 @@ fn api_routers() -> Router {
             post(system_firewall::firewall_rule_delete),
         )
         .route(
+            "/system/config/firewall/rule/update",
+            post(system_firewall::firewall_rule_update),
+        )
+        .route(
             "/system/config/firewall/toggle",
             post(system_firewall::firewall_toggle),
         )

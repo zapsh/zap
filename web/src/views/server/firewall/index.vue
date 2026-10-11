@@ -177,7 +177,7 @@
                 <span v-else class="dim">{{ row.comment || '-' }}</span>
               </template>
             </el-table-column>
-            <el-table-column :label="t('common.operation')" width="120" fixed="right">
+            <el-table-column :label="t('common.operation')" width="160" fixed="right">
               <template #default="{ row }">
                 <el-tooltip
                   v-if="row.protected"
@@ -188,21 +188,65 @@
                     {{ t('common.delete') }}
                   </el-button>
                 </el-tooltip>
-                <el-button
-                  v-else
-                  link
-                  type="danger"
-                  :loading="deletingId === row.id"
-                  @click="removeRule(row)"
-                >
-                  {{ t('common.delete') }}
-                </el-button>
+                <template v-else>
+                  <el-button link type="primary" @click="openEdit(row)">
+                    {{ t('common.edit') }}
+                  </el-button>
+                  <el-button
+                    link
+                    type="danger"
+                    :loading="deletingId === row.id"
+                    @click="removeRule(row)"
+                  >
+                    {{ t('common.delete') }}
+                  </el-button>
+                </template>
               </template>
             </el-table-column>
             <template #empty>
               <el-empty :description="t('serverFirewall.empty')" :image-size="70" />
             </template>
           </el-table>
+
+          <el-dialog v-model="editVisible" :title="t('serverFirewall.editTitle')" width="460px">
+            <el-form :model="editForm" label-width="80px" @submit.prevent>
+              <el-form-item :label="t('serverFirewall.port')">
+                <el-input-number v-model="editForm.port" :min="1" :max="65535" controls-position="right" style="width: 150px" />
+              </el-form-item>
+              <el-form-item :label="t('serverFirewall.protocol')">
+                <el-select v-model="editForm.proto" style="width: 110px">
+                  <el-option label="TCP" value="tcp" />
+                  <el-option label="UDP" value="udp" />
+                </el-select>
+              </el-form-item>
+              <el-form-item :label="t('serverFirewall.action')">
+                <el-select v-model="editForm.action" style="width: 110px">
+                  <el-option :label="t('serverFirewall.accept')" value="accept" />
+                  <el-option :label="t('serverFirewall.drop')" value="drop" />
+                </el-select>
+              </el-form-item>
+              <el-form-item :label="t('serverFirewall.source')">
+                <el-input
+                  v-model="editForm.source"
+                  :placeholder="t('serverFirewall.sourcePlaceholder')"
+                  style="width: 220px"
+                  clearable
+                />
+              </el-form-item>
+              <el-form-item :label="t('common.remark')">
+                <el-input
+                  v-model="editForm.comment"
+                  :placeholder="t('serverFirewall.commentPlaceholder')"
+                  style="width: 220px"
+                  clearable
+                />
+              </el-form-item>
+            </el-form>
+            <template #footer>
+              <el-button @click="editVisible = false">{{ t('common.cancel') }}</el-button>
+              <el-button type="primary" :loading="editing" @click="saveEdit">{{ t('common.confirm') }}</el-button>
+            </template>
+          </el-dialog>
         </el-tab-pane>
 
         <!-- ── 端口转发 ─────────────────────────────────── -->
@@ -434,6 +478,7 @@ import {
   deleteFirewallBlacklist,
   deleteFirewallForward,
   deleteFirewallRule,
+  updateFirewallRule,
   exportFirewall,
   getFirewallStatus,
   importFirewall,
@@ -458,6 +503,53 @@ const exporting = ref(false)
 const importing = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const lockdowning = ref(false)
+
+const editVisible = ref(false)
+const editing = ref(false)
+const editForm = reactive({
+  id: '',
+  port: 80,
+  proto: 'tcp' as 'tcp' | 'udp',
+  action: 'accept' as 'accept' | 'drop',
+  source: '',
+  comment: '',
+})
+
+function openEdit(row: FirewallRule) {
+  editForm.id = row.id
+  editForm.port = row.port
+  editForm.proto = (row.proto || 'tcp') as 'tcp' | 'udp'
+  editForm.action = (row.action || 'accept') as 'accept' | 'drop'
+  editForm.source = row.source || ''
+  editForm.comment = row.comment || ''
+  editVisible.value = true
+}
+
+async function saveEdit() {
+  const port = Number(editForm.port)
+  if (!port || port < 1 || port > 65535) {
+    ElMessage.warning(t('serverFirewall.portRange'))
+    return
+  }
+  editing.value = true
+  try {
+    const res = await updateFirewallRule({
+      id: editForm.id,
+      port,
+      proto: editForm.proto,
+      action: editForm.action,
+      source: editForm.source.trim(),
+      comment: editForm.comment.trim(),
+    })
+    ElMessage.success(res.message || t('serverFirewall.ruleUpdated'))
+    editVisible.value = false
+    await load()
+  } catch {
+    /* handled */
+  } finally {
+    editing.value = false
+  }
+}
 
 const tab = ref('ports')
 

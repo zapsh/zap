@@ -117,6 +117,18 @@ export function deleteFirewallRule(id: string) {
   return http.post<ApiResponse>('/system/config/firewall/rule/delete', { id })
 }
 
+/** 修改规则（先删后加，受保护规则不可改） */
+export function updateFirewallRule(data: {
+  id: string
+  port: number
+  proto: string
+  action: string
+  source: string
+  comment: string
+}) {
+  return http.post<ApiResponse>('/system/config/firewall/rule/update', data)
+}
+
 /** 启停 / 开机自启：action = start | stop | enable | disable */
 export function toggleFirewall(action: 'start' | 'stop' | 'enable' | 'disable') {
   return http.post<ApiResponse>('/system/config/firewall/toggle', { action })

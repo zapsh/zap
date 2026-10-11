@@ -156,6 +156,54 @@ pub async fn firewall_rule_delete(
     Ok(Json(json!({ "code": 0, "message": resp.message })))
 }
 
+/// POST /system/config/firewall/rule/update —— 修改规则（先删后加）
+pub async fn firewall_rule_update(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<FirewallRuleUpdatePayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallRuleUpdate {
+        id: payload.id.clone(),
+        port: payload.port,
+        proto: payload.proto.clone(),
+        action: payload.action.clone(),
+        source: payload.source.clone(),
+        comment: payload.comment.clone(),
+        panel_port: panel_port(),
+    })
+    .await?;
+
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "firewall_rule_update",
+        "firewall",
+        &format!(
+            "id={} {} {}/{} {} -> {}",
+            payload.id, payload.action, payload.proto, payload.port, payload.source, resp.message
+        ),
+    )
+    .await;
+
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FirewallRuleUpdatePayload {
+    pub id: String,
+    pub port: u16,
+    pub proto: String,
+    pub action: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub comment: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct FirewallForwardAddPayload {
     #[serde(default = "default_proto")]
