@@ -217,7 +217,8 @@ fn ensure_owner(actor: Option<Actor>, path: &Path) -> Result<(), String> {
     if !actor.enforce_owner {
         return Ok(());
     }
-    let md = std::fs::metadata(path).map_err(|e| format!("路径不存在: {e}"))?;
+    // 不跟随软链：悬空链接也能判属主（按链接本身），删除/重命名等操作才不被误拦
+    let md = std::fs::symlink_metadata(path).map_err(|e| format!("路径不存在: {e}"))?;
     if md.uid() == actor.uid {
         Ok(())
     } else {
@@ -561,7 +562,8 @@ pub async fn delete(path: String, as_user: Option<String>, skip_owner_check: boo
         if is_critical_path(&resolved) {
             return Response::err(-1, "不能删除系统关键目录");
         }
-        let md = match std::fs::metadata(&resolved) {
+        // 不跟随软链：悬空链接也视为存在，否则空软链永远删不掉
+        let md = match std::fs::symlink_metadata(&resolved) {
             Ok(m) => m,
             Err(e) => return Response::err(-1, format!("路径不存在: {e}")),
         };
@@ -569,10 +571,11 @@ pub async fn delete(path: String, as_user: Option<String>, skip_owner_check: boo
         if let Err(e) = ensure_owner(actor, &resolved) {
             return Response::err(-1, e);
         }
-        let result = if md.is_dir() {
-            std::fs::remove_dir_all(&resolved)
-        } else {
+        // 软链（含悬空）只删链接本身，不触及目标；目录才递归删
+        let result = if md.is_symlink() || !md.is_dir() {
             std::fs::remove_file(&resolved)
+        } else {
+            std::fs::remove_dir_all(&resolved)
         };
         match result {
             Ok(_) => Response::ok("删除成功", None),
@@ -628,14 +631,15 @@ pub async fn rename(
         if let Err(e) = sandbox_path(&new_path, &as_user, skip_owner_check) {
             return Response::err(-1, e);
         }
-        if !old_path.exists() {
+        // 不跟随软链：悬空链接也是"存在"的条目，可重命名/移动
+        if std::fs::symlink_metadata(&old_path).is_err() {
             return Response::err(-1, "源文件不存在");
         }
         // 只能重命名本人文件
         if let Err(e) = ensure_owner(actor, &old_path) {
             return Response::err(-1, e);
         }
-        if new_path.exists() {
+        if std::fs::symlink_metadata(&new_path).is_ok() {
             return Response::err(-1, "目标已存在");
         }
         match std::fs::rename(&old_path, &new_path) {
@@ -1042,7 +1046,8 @@ pub async fn copy(
             Err(e) => return Response::err(-1, e),
         };
         let src = resolve_path(&path);
-        if !src.exists() {
+        // 不跟随软链：悬空链接也先放行到复制阶段，报出更准确的读取错误
+        if std::fs::symlink_metadata(&src).is_err() {
             return Response::err(-1, "源文件不存在");
         }
         let dst = resolve_path(&new_path);
@@ -1055,7 +1060,7 @@ pub async fn copy(
         if is_critical_path(&dst) {
             return Response::err(-1, "不能覆盖系统关键目录");
         }
-        if dst.exists() {
+        if std::fs::symlink_metadata(&dst).is_ok() {
             return Response::err(-1, "目标已存在");
         }
         // 复制需要读取源 + 在目标父目录写入
