@@ -3918,14 +3918,14 @@ export default {
     cardTitle: 'DNS 服务商凭据',
     add: '添加服务商',
     tipUsage:
-      '这里保存的 API 凭据用于在 DNS-01 证书申请时自动增删 _acme-challenge 的 TXT 记录：申请时选择「自动」模式即可免手工操作。',
+      'API 凭据用于在 DNS-01 证书申请时自动增删 _acme-challenge 的 TXT 记录：申请时选择「自动」模式即可免手工操作、自动续费证书。',
     tipSecurity:
-      '安全提示：凭据在数据库中加密存储，读接口一律返回脱敏值（如 abc***xyz），且永远不会下发到浏览器明文。',
+      '安全提示：凭据在数据库中加密存储，且永远不会下发到浏览器明文。',
     colOwner: '归属',
     ownerSelf: '自己',
     colName: '名称',
     colProvider: '服务商',
-    colCredentials: '凭据（脱敏）',
+    colCredentials: '凭据',
     colRemark: '备注',
     namePlaceholder: '如 Cloudflare 主账号',
     providerPlaceholder: '请选择服务商',

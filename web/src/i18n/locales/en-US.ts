@@ -3958,7 +3958,7 @@ const enUS: Messages = {
     ownerSelf: 'Myself',
     colName: 'Name',
     colProvider: 'Provider',
-    colCredentials: 'Credentials (masked)',
+    colCredentials: 'Credentials',
     colRemark: 'Remark',
     namePlaceholder: 'e.g. Cloudflare main account',
     providerPlaceholder: 'Select a provider',
