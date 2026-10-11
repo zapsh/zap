@@ -21,9 +21,12 @@ pub const DEFAULT_EXEC_SOCKET: &str = "/run/zap/exec.sock";
 
 pub use types::{
     APP_TYPES, AcmeChallengeEntry, DockerBuildArg, HeaderSpec, LOC_DIRECTIVES, LocDirSpec,
-    LocDirValue, LocDirective, LocationSpec, Message, Request, Response, SiteSecuritySpec,
-    UpstreamServer, UpstreamSpec, app_type_supported, docker_namespace, linux_username,
-    normalize_image_tag, sanitize_site_name, valid_image_ref,
+    LocDirValue, LocDirective, LocationSpec, Message, NGINX_GLOBAL_SPEC_VER,
+    NGINX_LOG_FORMAT_MAIN, NginxCachePurgeSpec, NginxCacheZone, NginxEventsSpec, NginxGlobalSpec,
+    NginxGzipSpec, NginxHttpBasicSpec, NginxHttpSpec, NginxLogSpec, NginxMainSpec, NginxProxySpec,
+    NginxSecuritySpec, NginxTlsSpec, Request, Response, SiteSecuritySpec, UpstreamServer,
+    UpstreamSpec, app_type_supported, docker_namespace, linux_username, normalize_image_tag,
+    sanitize_site_name, valid_image_ref,
 };
 
 /// base64 编码（文件内容传输用）。

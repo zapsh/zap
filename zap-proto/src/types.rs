@@ -7,6 +7,364 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Nginx 全局配置模型的版本号：字段增减时递增，供 zapd 做模型迁移判断。
+pub const NGINX_GLOBAL_SPEC_VER: u32 = 1;
+
+/// Nginx 主配置（nginx.conf）的**唯一数据源**：面板按它全量渲染 nginx.conf。
+///
+/// 设计要点：
+/// - 所有字段均为 `Option`：
+///   - `None` → **不生成**该指令（用户可在 conf.d 里自己管这条，避免 duplicate）；
+///   - `Some(v)` → 按值渲染。天然支持「面板值 / 不生成」三态。
+/// - `preserve_*_raw` 保留 adopt 时无法识别的原配置行，逐行原样吐回，
+///   保证「一键接管」绝不吞掉用户的自定义指令。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxGlobalSpec {
+    #[serde(default = "default_spec_ver")]
+    pub ver: u32,
+    /// 顶层上下文（main context）
+    #[serde(default)]
+    pub general: NginxMainSpec,
+    /// events {} 上下文
+    #[serde(default)]
+    pub events: NginxEventsSpec,
+    /// http {} 上下文
+    #[serde(default)]
+    pub http: NginxHttpSpec,
+    /// 顶层 `load_module` 动态模块（如 ModSecurity、ngx cache purge）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub load_modules: Vec<String>,
+    /// http{} 之前的顶层 include（发行版 `modules-enabled/*.conf` 等）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_includes: Vec<String>,
+    /// 顶层识别不了、需原样保留的行（adopt 回填）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preserve_top_raw: Vec<String>,
+    /// http{} 内识别不了、需原样保留的行（adopt 回填）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preserve_http_raw: Vec<String>,
+}
+
+fn default_spec_ver() -> u32 {
+    NGINX_GLOBAL_SPEC_VER
+}
+
+/// 顶层上下文（main context）指令。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxMainSpec {
+    /// `user <value>`：None 时不生成（容器内常见做法）
+    #[serde(default)]
+    pub user: Option<String>,
+    /// `worker_processes <n|auto>`
+    #[serde(default)]
+    pub worker_processes: Option<String>,
+    /// worker 进程优先级（-20 ~ 19）
+    #[serde(default)]
+    pub worker_priority: Option<i32>,
+    #[serde(default)]
+    pub worker_rlimit_nofile: Option<u32>,
+    #[serde(default)]
+    pub worker_shutdown_timeout: Option<String>,
+    /// `timer_resolution 100ms`
+    #[serde(default)]
+    pub timer_resolution: Option<String>,
+    #[serde(default)]
+    pub pid: Option<String>,
+    /// `error_log <path> <level>`：整串参数
+    #[serde(default)]
+    pub error_log: Option<String>,
+    #[serde(default)]
+    pub pcre_jit: Option<bool>,
+    #[serde(default)]
+    pub thread_pool: Option<String>,
+}
+
+/// events {} 上下文。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxEventsSpec {
+    #[serde(default)]
+    pub worker_connections: Option<u32>,
+    #[serde(default)]
+    pub multi_accept: Option<bool>,
+    #[serde(default)]
+    pub accept_mutex: Option<bool>,
+    #[serde(default)]
+    pub accept_mutex_delay: Option<String>,
+    /// `use epoll`；None 时不生成（让 nginx 自选）
+    #[serde(default)]
+    pub use_method: Option<String>,
+}
+
+/// http {} 上下文：按 UI 分组，方便前端 tab 一一对应。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxHttpSpec {
+    #[serde(default)]
+    pub basic: NginxHttpBasicSpec,
+    #[serde(default)]
+    pub gzip: NginxGzipSpec,
+    /// SSL / TLS 与 OCSP stapling
+    #[serde(default)]
+    pub tls: NginxTlsSpec,
+    #[serde(default)]
+    pub logging: NginxLogSpec,
+    #[serde(default)]
+    pub proxy: NginxProxySpec,
+    /// 反代共享缓存区（可多条，站点 location 按名字引用）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proxy_cache: Vec<NginxCacheZone>,
+    /// 第三方 ngx cache purge 模块的清理白名单（渲染为 http 级 map）
+    #[serde(default)]
+    pub cache_purge: NginxCachePurgeSpec,
+    /// ModSecurity 等安全指令（需已加载对应模块）
+    #[serde(default)]
+    pub security: NginxSecuritySpec,
+    /// 高级：http{} 末尾追加的原样指令（同步前仍会被 `nginx -t` 把关）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub custom_raw: String,
+}
+
+/// http{} 基础 / 性能参数。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxHttpBasicSpec {
+    #[serde(default)]
+    pub sendfile: Option<bool>,
+    #[serde(default)]
+    pub sendfile_max_chunk: Option<String>,
+    #[serde(default)]
+    pub tcp_nopush: Option<bool>,
+    #[serde(default)]
+    pub tcp_nodelay: Option<bool>,
+    /// `keepalive_timeout 65 65`（可带第二个值）
+    #[serde(default)]
+    pub keepalive_timeout: Option<String>,
+    #[serde(default)]
+    pub keepalive_requests: Option<u32>,
+    #[serde(default)]
+    pub send_timeout: Option<String>,
+    #[serde(default)]
+    pub client_header_timeout: Option<String>,
+    #[serde(default)]
+    pub client_body_timeout: Option<String>,
+    #[serde(default)]
+    pub reset_timedout_connection: Option<bool>,
+    #[serde(default)]
+    pub client_max_body_size: Option<String>,
+    #[serde(default)]
+    pub client_body_buffer_size: Option<String>,
+    #[serde(default)]
+    pub large_client_header_buffers: Option<String>,
+    #[serde(default)]
+    pub types_hash_max_size: Option<u32>,
+    #[serde(default)]
+    pub server_names_hash_max_size: Option<u32>,
+    #[serde(default)]
+    pub server_names_hash_bucket_size: Option<u32>,
+    #[serde(default)]
+    pub server_tokens: Option<bool>,
+    #[serde(default)]
+    pub default_type: Option<String>,
+    #[serde(default)]
+    pub variables_hash_max_size: Option<u32>,
+    #[serde(default)]
+    pub lingering_close: Option<String>,
+}
+
+/// Gzip 压缩（Brotli 由第三方模块提供，不在内置模板里）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxGzipSpec {
+    #[serde(default)]
+    pub enable: Option<bool>,
+    /// 压缩级别 1-9
+    #[serde(default)]
+    pub comp_level: Option<u8>,
+    #[serde(default)]
+    pub min_length: Option<u32>,
+    /// 空格分隔的 MIME 列表
+    #[serde(default)]
+    pub types: Option<String>,
+    #[serde(default)]
+    pub vary: Option<bool>,
+    #[serde(default)]
+    pub proxied: Option<String>,
+    #[serde(default)]
+    pub disable: Option<String>,
+    #[serde(default)]
+    pub http_version: Option<String>,
+    #[serde(default)]
+    pub buffers: Option<String>,
+}
+
+/// SSL / TLS 与 OCSP stapling。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxTlsSpec {
+    #[serde(default)]
+    pub protocols: Option<String>,
+    #[serde(default)]
+    pub ciphers: Option<String>,
+    #[serde(default)]
+    pub prefer_server_ciphers: Option<bool>,
+    #[serde(default)]
+    pub session_cache: Option<String>,
+    #[serde(default)]
+    pub session_timeout: Option<String>,
+    #[serde(default)]
+    pub session_tickets: Option<bool>,
+    #[serde(default)]
+    pub session_ticket_key: Option<String>,
+    #[serde(default)]
+    pub buffer_size: Option<String>,
+    #[serde(default)]
+    pub ecdh_curve: Option<String>,
+    #[serde(default)]
+    pub dhparam: Option<String>,
+    #[serde(default)]
+    pub early_data: Option<bool>,
+    /// OCSP stapling（`ssl_stapling`）
+    #[serde(default)]
+    pub stapling: Option<bool>,
+    #[serde(default)]
+    pub stapling_verify: Option<bool>,
+    #[serde(default)]
+    pub trusted_certificate: Option<String>,
+    #[serde(default)]
+    pub crl: Option<String>,
+    /// OCSP / resolver 解析：stapling 必需
+    #[serde(default)]
+    pub resolver: Option<String>,
+    #[serde(default)]
+    pub resolver_timeout: Option<String>,
+}
+
+/// 访问日志格式与输出。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxLogSpec {
+    /// `access_log` 参数串；"off" 表示关闭
+    #[serde(default)]
+    pub access_log: Option<String>,
+    #[serde(default)]
+    pub log_format_main: Option<String>,
+    #[serde(default)]
+    pub log_format_json: Option<String>,
+    #[serde(default)]
+    pub open_log_file_cache: Option<String>,
+    #[serde(default)]
+    pub error_log: Option<String>,
+}
+
+/// 默认 log_format（Nginx 官方 main / combined）。
+pub const NGINX_LOG_FORMAT_MAIN: &str =
+    "'$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent \"$http_referer\" \"$http_user_agent\" \"$http_x_forwarded_for\"'";
+
+/// 反代默认参数（可被站点 location 级覆盖）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxProxySpec {
+    #[serde(default)]
+    pub connect_timeout: Option<String>,
+    #[serde(default)]
+    pub read_timeout: Option<String>,
+    #[serde(default)]
+    pub send_timeout: Option<String>,
+    #[serde(default)]
+    pub buffers: Option<String>,
+    #[serde(default)]
+    pub buffer_size: Option<String>,
+    #[serde(default)]
+    pub busy_buffers_size: Option<String>,
+    #[serde(default)]
+    pub max_temp_file_size: Option<String>,
+    #[serde(default)]
+    pub temp_file_write_size: Option<String>,
+    #[serde(default)]
+    pub temp_path: Option<String>,
+    #[serde(default)]
+    pub request_buffering: Option<bool>,
+    #[serde(default)]
+    pub buffering: Option<bool>,
+    #[serde(default)]
+    pub http_version: Option<String>,
+    #[serde(default)]
+    pub ignore_headers: Option<String>,
+    #[serde(default)]
+    pub next_upstream: Option<String>,
+    #[serde(default)]
+    pub force_ranges: Option<bool>,
+}
+
+/// 一条共享反代缓存区（`proxy_cache_path`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NginxCacheZone {
+    /// zone 名，站点 location 的 `proxy_cache` 按此引用
+    pub name: String,
+    /// 磁盘缓存目录
+    pub path: String,
+    #[serde(default = "default_cache_levels")]
+    pub levels: String,
+    #[serde(default = "default_cache_keys_zone")]
+    pub keys_zone_size: String,
+    #[serde(default = "default_cache_max_size")]
+    pub max_size: String,
+    #[serde(default = "default_cache_inactive")]
+    pub inactive: String,
+    #[serde(default)]
+    pub use_temp_path: Option<bool>,
+    #[serde(default)]
+    pub loader_files: Option<u32>,
+    #[serde(default)]
+    pub loader_sleep: Option<String>,
+    #[serde(default)]
+    pub loader_threshold: Option<String>,
+    #[serde(default)]
+    pub manager_files: Option<u32>,
+    #[serde(default)]
+    pub manager_sleep: Option<String>,
+    #[serde(default)]
+    pub manager_threshold: Option<String>,
+    /// 追加到 `proxy_cache_path` 尾部的额外参数
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub extra: String,
+}
+
+fn default_cache_levels() -> String {
+    "1:2".to_string()
+}
+fn default_cache_keys_zone() -> String {
+    "32m".to_string()
+}
+fn default_cache_max_size() -> String {
+    "1g".to_string()
+}
+fn default_cache_inactive() -> String {
+    "60m".to_string()
+}
+
+/// 第三方 ngx cache purge 模块的清理白名单。
+///
+/// `proxy_cache_purge` 只能用在 location 里，故 http 级只渲染两个 map
+/// 供站点 location（或用户自定义 server）引用：
+/// `$zap_purge_method`（是否 PURGE 方法）+ `$zap_purge_acl`（来源 IP 是否放行）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxCachePurgeSpec {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub enabled: bool,
+    /// 允许清理的来源 IP / CIDR
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_ips: Vec<String>,
+    /// map 中命中时的变量名前缀（默认 zap_purge）
+    #[serde(default)]
+    pub var_prefix: Option<String>,
+}
+
+/// ModSecurity 等 http 级安全指令（需已 `load_module` 对应模块）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NginxSecuritySpec {
+    #[serde(default)]
+    pub modsecurity: Option<bool>,
+    #[serde(default)]
+    pub modsecurity_rules_file: Option<String>,
+    #[serde(default)]
+    pub add_header_csp: Option<String>,
+}
+
 /// 日志归档默认保留天数（site.log_rotate）
 fn default_keep_days() -> u32 {
     30
@@ -1367,6 +1725,16 @@ pub enum Request {
     /// 保存配置：备份 → 写入 → `nginx -t` 校验 → 失败回滚 → 运行中则重载
     #[serde(rename = "nginx.conf_save")]
     NginxConfSave { path: String, content: String },
+    /// 干跑：把结构模型渲染成 nginx.conf 全文并返回（不写盘、不校验）
+    #[serde(rename = "nginx.global_preview")]
+    NginxGlobalPreview { spec_json: String },
+    /// 落盘：扫描冲突 → 渲染 → `nginx -t -c <tmp>` → 失败回滚 → 成功则备份旧文件、
+    /// 原子替换 → 运行中 reload。返回 { content, diff, warnings, reloaded }
+    #[serde(rename = "nginx.global_apply")]
+    NginxGlobalApply { spec_json: String },
+    /// 读取当前 nginx.conf 并返回结构模型（回填 default）
+    #[serde(rename = "nginx.global_spec")]
+    NginxGlobalSpec,
     /// Nginx 服务控制：start / stop / restart / reload（优先 systemd unit nginx）
     #[serde(rename = "nginx.control")]
     NginxControl { action: String },

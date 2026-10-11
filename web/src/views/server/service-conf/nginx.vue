@@ -19,7 +19,18 @@
       >
         {{ t('servicesNginx.pageStream') }}
       </button>
+      <button
+        type="button"
+        class="nginx-pill"
+        :class="{ 'is-active': page === 'global' }"
+        @click="page = 'global'"
+      >
+        {{ t('servicesNginx.pageGlobal') }}
+      </button>
     </nav>
+
+    <!-- 主配置可视化：结构模型 → 面板全量生成 nginx.conf -->
+    <NginxGlobal v-show="page === 'global'" />
 
     <!-- v-show：切回来时编辑器里没保存的内容还在 -->
     <div v-show="page === 'conf'" v-loading="bootLoading" class="nginx-config">
@@ -449,6 +460,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document } from '@/icons'
 import CodeEditor from '@/components/CodeEditor.vue'
+import NginxGlobal from './nginx/global.vue'
 import {
   controlNginx,
   getNginxStatus,
@@ -487,8 +499,8 @@ const busy = ref(false)
 const acting = ref('')
 const installed = ref<boolean | null>(null)
 const status = ref<NginxStatus>({})
-/** conf = nginx 自身配置；stream = 四层转发规则（原独立菜单已收进来） */
-const page = ref<'conf' | 'stream'>('conf')
+/** conf = nginx 自身配置；stream = 四层转发规则；global = 主配置可视化（全量生成 nginx.conf） */
+const page = ref<'conf' | 'stream' | 'global'>('conf')
 const mode = ref('visual')
 
 const running = computed(() => !!status.value.running)

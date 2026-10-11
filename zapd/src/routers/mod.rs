@@ -501,6 +501,40 @@ fn api_routers() -> Router {
             "/system/nginx/stub-status",
             get(system_nginx::nginx_stub_status_get).post(system_nginx::nginx_stub_status_set),
         )
+        // Nginx 主配置可视化：结构模型 → 全量渲染 nginx.conf（admin only）
+        .route(
+            "/system/nginx/global/spec",
+            get(system_nginx::nginx_global_spec_get).put(system_nginx::nginx_global_spec_put),
+        )
+        .route(
+            "/system/nginx/global/preview",
+            post(system_nginx::nginx_global_preview),
+        )
+        .route(
+            "/system/nginx/global/apply",
+            post(system_nginx::nginx_global_apply),
+        )
+        .route(
+            "/system/nginx/global/adopt",
+            post(system_nginx::nginx_global_adopt),
+        )
+        .route(
+            "/system/nginx/global/revisions",
+            get(system_nginx::nginx_global_revisions),
+        )
+        // 路径参数必须是 `{id}`（axum 0.8 起 `:id` 会 panic）
+        .route(
+            "/system/nginx/global/revisions/{id}",
+            get(system_nginx::nginx_global_revision_get),
+        )
+        .route(
+            "/system/nginx/global/rollback",
+            post(system_nginx::nginx_global_rollback),
+        )
+        .route(
+            "/system/nginx/global/zones",
+            get(system_nginx::nginx_global_zones),
+        )
         // 四层转发（Nginx stream，admin only）
         .route("/system/stream/status", get(system_stream::status))
         .route("/system/stream/list", get(system_stream::list))

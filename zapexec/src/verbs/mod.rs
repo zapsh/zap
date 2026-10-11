@@ -15,6 +15,7 @@ mod fs;
 mod logs;
 mod network;
 mod nginx;
+mod nginx_conf;
 mod php;
 mod php_ext;
 mod platform;
@@ -599,6 +600,9 @@ pub async fn dispatch(req: Request) -> Response {
         Request::NginxConfList => nginx::conf_list().await,
         Request::NginxConfRead { path } => nginx::conf_read(path).await,
         Request::NginxConfSave { path, content } => nginx::conf_save(path, content).await,
+        Request::NginxGlobalPreview { spec_json } => nginx_conf::preview(spec_json).await,
+        Request::NginxGlobalSpec => nginx_conf::current_spec().await,
+        Request::NginxGlobalApply { spec_json } => nginx_conf::apply(spec_json).await,
         Request::NginxControl { action } => nginx::control(&action).await,
         Request::NginxDefaultVhost { enable } => nginx::default_vhost(enable).await,
         Request::NginxStubStatus { enable } => nginx::stub_status(enable).await,

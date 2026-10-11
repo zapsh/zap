@@ -61,6 +61,91 @@ export interface NginxControlData {
   state: 'running' | 'stopped'
 }
 
+export interface NginxGlobalSpec {
+  ver?: number
+  general?: Record<string, unknown>
+  events?: Record<string, unknown>
+  http?: Record<string, unknown>
+  load_modules?: string[]
+  top_includes?: string[]
+  preserve_top_raw?: string[]
+  preserve_http_raw?: string[]
+}
+
+export interface NginxGlobalSpecData {
+  spec: NginxGlobalSpec
+  /** true = 首次生成（库里无记录，已按现有 nginx.conf / 面板默认值回填） */
+  seeded: boolean
+}
+
+export interface NginxGlobalPreviewData {
+  content: string
+  warnings: string[]
+  diff: string
+  conf_file: string
+}
+
+export interface NginxGlobalApplyData {
+  content: string
+  diff: string
+  warnings: string[]
+  backup?: string | null
+  reloaded: boolean
+  reload_error?: string | null
+}
+
+export interface NginxGlobalRevision {
+  id: number
+  actor: string
+  ok: boolean
+  created_at: number
+}
+
+/** 读取（无记录时按现有 nginx.conf / 默认值生成）Nginx 主配置结构模型 */
+export const getNginxGlobalSpec = () =>
+  http.get<{ code: number; message: string; data: NginxGlobalSpecData }>('/system/nginx/global/spec')
+
+/** 保存草稿（不写 nginx.conf） */
+export const putNginxGlobalSpec = (spec: NginxGlobalSpec) =>
+  http.put<{ code: number; message: string; data: null }>('/system/nginx/global/spec', { spec })
+
+/** 干跑：渲染 + 冲突扫描 + diff */
+export const previewNginxGlobal = (spec: NginxGlobalSpec) =>
+  http.post<{ code: number; message: string; data: NginxGlobalPreviewData }>(
+    '/system/nginx/global/preview',
+    { spec },
+  )
+
+/** 落盘：nginx -t → 备份替换 → reload */
+export const applyNginxGlobal = (spec: NginxGlobalSpec) =>
+  http.post<{ code: number; message: string; data: NginxGlobalApplyData }>(
+    '/system/nginx/global/apply',
+    { spec },
+  )
+
+/** 按现有 nginx.conf 重新接管模型 */
+export const adoptNginxGlobal = () =>
+  http.post<{ code: number; message: string; data: { spec: NginxGlobalSpec } }>(
+    '/system/nginx/global/adopt',
+  )
+
+export const listNginxGlobalRevisions = () =>
+  http.get<{ code: number; message: string; data: { items: NginxGlobalRevision[] } }>(
+    '/system/nginx/global/revisions',
+  )
+
+export const getNginxGlobalRevision = (id: number) =>
+  http.get<{ code: number; message: string; data: { content: string } }>(
+    `/system/nginx/global/revisions/${id}`,
+  )
+
+export const rollbackNginxGlobal = (id: number) =>
+  http.post<{ code: number; message: string; data: null }>('/system/nginx/global/rollback', { id })
+
+/** 站点 location 可选的缓存 zone 名 */
+export const listNginxCacheZones = () =>
+  http.get<{ code: number; message: string; data: { zones: string[] } }>('/system/nginx/global/zones')
+
 export const getNginxStatus = () =>
   http.get<{ code: number; message: string; data: NginxStatus }>('/system/nginx/status')
 

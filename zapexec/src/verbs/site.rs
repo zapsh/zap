@@ -2273,10 +2273,17 @@ fn validate_vhost_cfg(
                 {
                     return Err("proxy_redirect 规则非法或超长".to_string());
                 }
-                // 反代缓存（zone 固定白名单，由执行端幂等创建共享缓存区）
+                // 反代缓存：zone 名须为标识符。可用的 zone 由主配置模型里的
+                // `proxy_cache_path` 定义（站点同步时执行端会幂等确保 zap_cache 存在）。
+                // 名字非法在这里拦下；引用了不存在的 zone 则由 `nginx -t` 报 zone not found。
                 let cz = l.cache.trim();
-                if !cz.is_empty() && cz != "zap_cache" {
-                    return Err("缓存区仅支持内置的 zap_cache".to_string());
+                if !cz.is_empty()
+                    && (cz.len() > 64
+                        || !cz
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                {
+                    return Err("缓存区名非法（仅支持字母数字与下划线，最长 64）".to_string());
                 }
                 if !l.cache_valid.trim().is_empty()
                     && (l.cache_valid.len() > 200
@@ -2492,7 +2499,7 @@ fn run_mode(mode: Option<&str>, enabled: bool) -> &str {
     }
 }
 
-/// 站点配置是否需要反代共享缓存区（任意 proxy location 启用了 zap_cache）
+/// 站点配置是否需要反代共享缓存区（任意 proxy location 指定了 zone 名）
 fn needs_cache_zone(locations: &[LocationSpec]) -> bool {
     locations
         .iter()
@@ -2500,11 +2507,18 @@ fn needs_cache_zone(locations: &[LocationSpec]) -> bool {
 }
 
 /// 幂等准备反代共享缓存区：
-/// - 磁盘缓存目录（{ZAP_PATH}/data/cache/nginx-zap_cache）存在且属主 www:www（nginx worker 写）；
+/// - 磁盘缓存目录存在且属主 www:www（nginx worker 写）；
 /// - 向 nginx include 目录发布固定名 zone 定义文件（include 位于 http 上下文，zone 随之生效）。
 ///
-/// zone 文件独立于站点 vhost、可被多个站点复用；无站点引用时残留亦无害。
+/// **主配置被面板接管后不再需要这些定义**：zone 由 `nginx.global_apply` 渲染进 nginx.conf，
+/// 这里再发一份会导致 `proxy_cache_path` 重复（nginx 报 duplicate）。故先探测主配置是否已
+/// 声明同名 keys_zone —— 已声明就跳过发布，并清理历史遗留的分片文件。
 fn ensure_cache_zone(_edir: &std::path::Path) -> Result<(), String> {
+    const FILE: &str = "00-zap-cache.conf";
+    if main_conf_declares_zone("zap_cache") {
+        let _ = super::webconf::purge_named("nginx", FILE);
+        return Ok(());
+    }
     let cache_root = zap_path().join("data/cache/nginx-zap_cache");
     if !cache_root.exists() {
         std::fs::create_dir_all(&cache_root).map_err(|e| format!("创建反代缓存目录失败: {e}"))?;
@@ -2518,7 +2532,19 @@ fn ensure_cache_zone(_edir: &std::path::Path) -> Result<(), String> {
          proxy_cache_path {} levels=1:2 keys_zone=zap_cache:32m max_size=1g inactive=60m use_temp_path=off;\n",
         cache_root.to_string_lossy()
     );
-    super::webconf::publish_named("nginx", "00-zap-cache.conf", &content).map(|_| ())
+    super::webconf::publish_named("nginx", FILE, &content).map(|_| ())
+}
+
+/// 主配置里是否已声明某个 keys_zone（用于避免重复定义）。
+fn main_conf_declares_zone(name: &str) -> bool {
+    let Some(conf) = find_nginx_conf_file() else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(&conf) else {
+        return false;
+    };
+    text.lines()
+        .any(|l| l.contains(&format!("keys_zone={name}:")))
 }
 
 fn vhost_sync_inner(cfg: SiteConfig) -> Result<Response, String> {

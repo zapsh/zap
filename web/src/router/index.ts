@@ -327,6 +327,7 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/server-status/nginx-server/index.vue'),
         meta: { title: 'Nginx Server', icon: 'material-symbols:monitor', affix: true },
       },
+      // 主配置可视化不单独占路由/菜单，作为「服务配置 → Nginx」页的一个页签
       {
         path: 'process',
         name: 'ServerStatusProcess',

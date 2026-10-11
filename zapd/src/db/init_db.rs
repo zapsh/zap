@@ -64,6 +64,9 @@ pub async fn init_schema() {
     // 四层转发（Nginx stream）规则表 + 全局自定义片段
     init_nginx_stream_table().await;
     init_nginx_stream_global_table().await;
+    // Nginx 主配置可视化：结构模型（单行）+ 每次落盘的历史 revision
+    init_nginx_conf_table().await;
+    init_nginx_conf_revision_table().await;
     // 站内信（通知中心）表
     init_notice_message_table().await;
     // 邮件通知模板表（全局 / reseller 覆盖，独立存储）
@@ -457,6 +460,43 @@ async fn init_nginx_stream_global_table() {
         id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
         content TEXT NOT NULL DEFAULT '',
         updated_at INTEGER
+    );
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+/// Nginx 主配置（nginx.conf）的**结构模型**。
+///
+/// 面板不再让用户直接改 nginx.conf：模型是唯一数据源，nginx.conf 是渲染产物。
+/// 单行表（id 恒为 1）；首次读取时若无记录，会向 zapexec 索取（接管现有配置 / 面板默认）并落库。
+async fn init_nginx_conf_table() {
+    if table_exists("nginx_conf").await {
+        return;
+    }
+    let sql = r#"
+    CREATE TABLE nginx_conf (
+        id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+        spec TEXT NOT NULL DEFAULT '{}',
+        ver INTEGER NOT NULL DEFAULT 1,
+        adopted INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER
+    );
+    "#;
+    let _ = get_db_pool().await.execute(sql).await;
+}
+
+/// 每次「渲染落盘」留存一份，用于 diff 回溯与一键回滚。
+async fn init_nginx_conf_revision_table() {
+    if table_exists("nginx_conf_revision").await {
+        return;
+    }
+    let sql = r#"
+    CREATE TABLE nginx_conf_revision (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        content TEXT NOT NULL,
+        actor TEXT NOT NULL DEFAULT '',
+        ok INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER
     );
     "#;
     let _ = get_db_pool().await.execute(sql).await;

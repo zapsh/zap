@@ -1,0 +1,1469 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Nginx 主配置（nginx.conf）的**全量渲染 / 接管 / 落盘**（root 执行）。
+//!
+//! 与站点 vhost 保持同一套范式：**数据只在结构模型里，nginx.conf 是渲染产物**。
+//!
+//! ```text
+//! 结构模型 NginxGlobalSpec
+//!   → render()     纯函数，输出 nginx.conf 全文（单测可验证）
+//!   → 冲突扫描     conf.d 中 http 级同名指令会 duplicate，提前预警
+//!   → nginx -t -c  同目录临时文件（相对 include 基准不变）
+//!   → 备份 + 原子替换 + reload
+//! ```
+//!
+//! 约定：
+//! - 所有字段 `Option`：None = 不生成该指令（用户可在 conf.d 自己管），天然三态；
+//! - `include <conf.d>/*.conf` 恒在面板 http 指令之后、站点 include 之前 —— 用户自定义优先于面板指令环境，且永不删除；
+//! - `include /etc/zap/webservers/nginx/sites-enabled/*.conf` 必须存在且排在最后（面板站点由此生效）。
+
+use std::path::{Path, PathBuf};
+
+use serde_json::json;
+use zap_proto::Response;
+use zap_proto::{
+    NginxCacheZone, NginxGlobalSpec, NginxHttpSpec, NGINX_LOG_FORMAT_MAIN, NGINX_GLOBAL_SPEC_VER,
+};
+
+use super::root_cmd;
+use super::site;
+
+/// 渲染时的环境信息（全部可在检测到后才用，纯函数 render 只依赖它）。
+pub struct RenderCtx {
+    /// 主配置路径，如 `/etc/nginx/nginx.conf`
+    pub conf_path: PathBuf,
+    /// 主配置所在目录，如 `/etc/nginx`
+    pub conf_dir: PathBuf,
+    /// 面板站点 include 目标（必须存在）
+    pub sites_include: String,
+    /// 用户自定义 conf.d include（目录不存在时为 None）
+    pub conf_d_include: Option<String>,
+    /// mime.types（缺失时不生成）
+    pub mime_types: Option<String>,
+    /// 日志目录探测结果
+    pub log_dir: PathBuf,
+}
+
+impl RenderCtx {
+    /// 从当前系统探测渲染所需环境。
+    pub fn detect() -> Result<Self, String> {
+        let conf_path =
+            site::find_nginx_conf_file().ok_or_else(|| "未找到 Nginx 主配置文件".to_string())?;
+        let conf_dir = conf_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/etc/nginx"));
+
+        let conf_d = conf_dir.join("conf.d");
+        let conf_d_include = if conf_d.is_dir() {
+            Some(
+                conf_d
+                    .join("*.conf")
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+
+        let mime = conf_dir.join("mime.types");
+        let mime_types = if mime.exists() {
+            Some(mime.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        // 面板托管的站点 include（必须存在，缺失时 render 仍会写，由 ensure sites dir 兜底）
+        let sites_include = super::webconf::enabled_dir("nginx")
+            .join("*.conf")
+            .to_string_lossy()
+            .to_string();
+
+        let log_dir = detect_log_dir(&conf_dir);
+        Ok(Self {
+            conf_path,
+            conf_dir,
+            sites_include,
+            conf_d_include,
+            mime_types,
+            log_dir,
+        })
+    }
+}
+
+/// 日志目录：优先发行版惯例 `/var/log/nginx`，否则退回 conf 同级 `logs/`。
+fn detect_log_dir(conf_dir: &Path) -> PathBuf {
+    let candidates = [
+        PathBuf::from("/var/log/nginx"),
+        conf_dir.join("../logs"),
+        conf_dir.join("logs"),
+    ];
+    for c in candidates {
+        if c.is_dir() {
+            return c;
+        }
+    }
+    PathBuf::from("/var/log/nginx")
+}
+
+// ── 值清洗 / 防注入 ───────────────────────────────────────────
+
+/// 指令值清洗：剔除 `;` `{}` 与换行，压缩空白。
+///
+/// 防止 `100m; location / { proxy_pass http://evil; }` 这类值把额外指令注入到 http / main 上下文。
+pub fn clean(v: &str) -> String {
+    let s: String = v
+        .chars()
+        .map(|c| match c {
+            ';' | '{' | '}' | '\r' | '\n' | '\t' => ' ',
+            c => c,
+        })
+        .collect();
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// zone / map 名：只保留标识符字符。
+fn ident(v: &str) -> String {
+    v.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
+}
+
+// ── 行输出辅助 ───────────────────────────────────────────────
+
+fn push_val(out: &mut String, indent: &str, name: &str, v: &Option<String>) {
+    if let Some(raw) = v {
+        let s = clean(raw);
+        if !s.is_empty() {
+            out.push_str(indent);
+            out.push_str(name);
+            out.push(' ');
+            out.push_str(&s);
+            out.push_str(";\n");
+        }
+    }
+}
+
+fn push_bool(out: &mut String, indent: &str, name: &str, v: Option<bool>) {
+    if let Some(b) = v {
+        out.push_str(indent);
+        out.push_str(name);
+        out.push_str(if b { " on;\n" } else { " off;\n" });
+    }
+}
+
+fn push_num<T: std::fmt::Display>(out: &mut String, indent: &str, name: &str, v: Option<T>) {
+    if let Some(n) = v {
+        out.push_str(indent);
+        out.push_str(name);
+        out.push(' ');
+        out.push_str(&n.to_string());
+        out.push_str(";\n");
+    }
+}
+
+// ── 渲染 ─────────────────────────────────────────────────────
+
+/// 把结构模型渲染为 nginx.conf 全文（纯函数，便于单测）。
+pub fn render(spec: &NginxGlobalSpec, ctx: &RenderCtx) -> String {
+    let mut o = String::new();
+    let i4 = "    ";
+
+    o.push_str("# ---------------------------------------------------------------------------\n");
+    o.push_str("# Generated by Zap Panel — 本文件由面板全量生成，请勿手工修改。\n");
+    o.push_str("# 自定义配置请写入 conf.d/ 目录（已在 http{} 内 include），不会被覆盖。\n");
+    o.push_str("# ---------------------------------------------------------------------------\n\n");
+
+    // ── main context ──
+    for m in &spec.load_modules {
+        let s = clean(m);
+        if !s.is_empty() {
+            o.push_str("load_module ");
+            o.push_str(&s);
+            o.push_str(";\n");
+        }
+    }
+    if !spec.load_modules.is_empty() {
+        o.push('\n');
+    }
+    for inc in &spec.top_includes {
+        let s = clean(inc);
+        if !s.is_empty() {
+            o.push_str("include ");
+            o.push_str(&s);
+            o.push_str(";\n");
+        }
+    }
+    if !spec.top_includes.is_empty() {
+        o.push('\n');
+    }
+    emit_preserve(&mut o, "", &spec.preserve_top_raw);
+
+    let g = &spec.general;
+    push_val(&mut o, "", "user", &g.user);
+    push_val(&mut o, "", "worker_processes", &g.worker_processes);
+    if let Some(p) = g.worker_priority {
+        if (-20..=19).contains(&p) {
+            push_num(&mut o, "", "worker_priority", Some(p));
+        }
+    }
+    push_num(&mut o, "", "worker_rlimit_nofile", g.worker_rlimit_nofile);
+    push_val(&mut o, "", "worker_shutdown_timeout", &g.worker_shutdown_timeout);
+    push_val(&mut o, "", "timer_resolution", &g.timer_resolution);
+    push_bool(&mut o, "", "pcre_jit", g.pcre_jit);
+    push_val(&mut o, "", "pid", &g.pid);
+    push_val(&mut o, "", "error_log", &g.error_log);
+    push_val(&mut o, "", "thread_pool", &g.thread_pool);
+
+    // ── events {} ──
+    o.push_str("\nevents {\n");
+    let e = &spec.events;
+    push_num(&mut o, i4, "worker_connections", e.worker_connections);
+    push_bool(&mut o, i4, "multi_accept", e.multi_accept);
+    push_bool(&mut o, i4, "accept_mutex", e.accept_mutex);
+    push_val(&mut o, i4, "accept_mutex_delay", &e.accept_mutex_delay);
+    push_val(&mut o, i4, "use", &e.use_method);
+    o.push_str("}\n");
+
+    // ── http {} ──
+    o.push_str("\nhttp {\n");
+    if let Some(mime) = &ctx.mime_types {
+        o.push_str(i4);
+        o.push_str("include ");
+        o.push_str(&clean(mime));
+        o.push_str(";\n");
+    }
+    emit_http_body(&mut o, &spec.http, i4);
+    emit_preserve(&mut o, i4, &spec.preserve_http_raw);
+    emit_includes(&mut o, ctx, i4);
+    o.push_str("}\n");
+
+    o
+}
+
+fn emit_http_body(o: &mut String, h: &NginxHttpSpec, i: &str) {
+    // ── 基础 / 性能 ──
+    let b = &h.basic;
+    o.push_str("\n    # ── 基础 / 性能 ──\n");
+    push_val(o, i, "default_type", &b.default_type);
+    push_bool(o, i, "sendfile", b.sendfile);
+    push_val(o, i, "sendfile_max_chunk", &b.sendfile_max_chunk);
+    push_bool(o, i, "tcp_nopush", b.tcp_nopush);
+    push_bool(o, i, "tcp_nodelay", b.tcp_nodelay);
+    push_val(o, i, "keepalive_timeout", &b.keepalive_timeout);
+    push_num(o, i, "keepalive_requests", b.keepalive_requests);
+    push_val(o, i, "send_timeout", &b.send_timeout);
+    push_val(o, i, "client_header_timeout", &b.client_header_timeout);
+    push_val(o, i, "client_body_timeout", &b.client_body_timeout);
+    push_bool(o, i, "reset_timedout_connection", b.reset_timedout_connection);
+    push_val(o, i, "client_max_body_size", &b.client_max_body_size);
+    push_val(o, i, "client_body_buffer_size", &b.client_body_buffer_size);
+    push_val(o, i, "large_client_header_buffers", &b.large_client_header_buffers);
+    push_num(o, i, "types_hash_max_size", b.types_hash_max_size);
+    push_num(o, i, "server_names_hash_max_size", b.server_names_hash_max_size);
+    push_num(o, i, "server_names_hash_bucket_size", b.server_names_hash_bucket_size);
+    push_num(o, i, "variables_hash_max_size", b.variables_hash_max_size);
+    push_bool(o, i, "server_tokens", b.server_tokens);
+
+    // ── Gzip ──
+    let gz = &h.gzip;
+    o.push_str("\n    # ── 压缩 ──\n");
+    push_bool(o, i, "gzip", gz.enable);
+    push_num(o, i, "gzip_comp_level", gz.comp_level);
+    push_num(o, i, "gzip_min_length", gz.min_length);
+    if let Some(t) = &gz.types {
+        let s = clean(t);
+        if !s.is_empty() {
+            o.push_str(i);
+            o.push_str("gzip_types ");
+            o.push_str(&s);
+            o.push_str(";\n");
+        }
+    }
+    push_bool(o, i, "gzip_vary", gz.vary);
+    push_val(o, i, "gzip_proxied", &gz.proxied);
+    push_val(o, i, "gzip_disable", &gz.disable);
+    push_val(o, i, "gzip_http_version", &gz.http_version);
+    push_val(o, i, "gzip_buffers", &gz.buffers);
+
+    // ── SSL / TLS / OCSP ──
+    let t = &h.tls;
+    o.push_str("\n    # ── SSL / TLS / OCSP stapling ──\n");
+    push_val(o, i, "ssl_protocols", &t.protocols);
+    push_val(o, i, "ssl_ciphers", &t.ciphers);
+    push_bool(o, i, "ssl_prefer_server_ciphers", t.prefer_server_ciphers);
+    push_val(o, i, "ssl_session_cache", &t.session_cache);
+    push_val(o, i, "ssl_session_timeout", &t.session_timeout);
+    push_bool(o, i, "ssl_session_tickets", t.session_tickets);
+    push_val(o, i, "ssl_session_ticket_key", &t.session_ticket_key);
+    push_val(o, i, "ssl_buffer_size", &t.buffer_size);
+    push_val(o, i, "ssl_ecdh_curve", &t.ecdh_curve);
+    push_val(o, i, "ssl_dhparam", &t.dhparam);
+    push_bool(o, i, "ssl_early_data", t.early_data);
+    push_bool(o, i, "ssl_stapling", t.stapling);
+    push_bool(o, i, "ssl_stapling_verify", t.stapling_verify);
+    push_val(o, i, "ssl_trusted_certificate", &t.trusted_certificate);
+    push_val(o, i, "ssl_crl", &t.crl);
+    push_val(o, i, "resolver", &t.resolver);
+    push_val(o, i, "resolver_timeout", &t.resolver_timeout);
+
+    // ── 安全（ModSecurity 等）──
+    let s = &h.security;
+    o.push_str("\n    # ── 安全 ──\n");
+    push_bool(o, i, "modsecurity", s.modsecurity);
+    push_val(o, i, "modsecurity_rules_file", &s.modsecurity_rules_file);
+
+    // ── 日志：log_format 必须先于 access_log（nginx 解析时校验名字）──
+    let l = &h.logging;
+    o.push_str("\n    # ── 日志 ──\n");
+    if let Some(f) = &l.log_format_main {
+        let fmt = clean(f);
+        if !fmt.is_empty() {
+            o.push_str(i);
+            o.push_str("log_format main ");
+            o.push_str(&fmt);
+            o.push_str(";\n");
+        }
+    }
+    if let Some(f) = &l.log_format_json {
+        let fmt = clean(f);
+        if !fmt.is_empty() {
+            o.push_str(i);
+            o.push_str("log_format json escape=json ");
+            o.push_str(&fmt);
+            o.push_str(";\n");
+        }
+    }
+    push_val(o, i, "access_log", &l.access_log);
+    push_val(o, i, "error_log", &l.error_log);
+    push_val(o, i, "open_log_file_cache", &l.open_log_file_cache);
+
+    // ── 反代默认参数 ──
+    let p = &h.proxy;
+    o.push_str("\n    # ── 反向代理默认参数 ──\n");
+    push_val(o, i, "proxy_connect_timeout", &p.connect_timeout);
+    push_val(o, i, "proxy_read_timeout", &p.read_timeout);
+    push_val(o, i, "proxy_send_timeout", &p.send_timeout);
+    push_val(o, i, "proxy_buffers", &p.buffers);
+    push_val(o, i, "proxy_buffer_size", &p.buffer_size);
+    push_val(o, i, "proxy_busy_buffers_size", &p.busy_buffers_size);
+    push_val(o, i, "proxy_max_temp_file_size", &p.max_temp_file_size);
+    push_val(o, i, "proxy_temp_file_write_size", &p.temp_file_write_size);
+    push_val(o, i, "proxy_temp_path", &p.temp_path);
+    push_bool(o, i, "proxy_request_buffering", p.request_buffering);
+    push_bool(o, i, "proxy_buffering", p.buffering);
+    push_val(o, i, "proxy_http_version", &p.http_version);
+    push_val(o, i, "proxy_ignore_headers", &p.ignore_headers);
+    push_val(o, i, "proxy_next_upstream", &p.next_upstream);
+    push_bool(o, i, "proxy_force_ranges", p.force_ranges);
+
+    // ── 代理缓存（多 zone）──
+    emit_cache_zones(o, &h.proxy_cache, i);
+    emit_cache_purge(o, &h.cache_purge, i);
+
+    // ── 高级自定义 ──
+    if !h.custom_raw.trim().is_empty() {
+        o.push_str("\n    # ── 自定义指令 ──\n");
+        for line in h.custom_raw.lines() {
+            let s = clean(line);
+            if !s.is_empty() {
+                o.push_str(i);
+                o.push_str(&s);
+                o.push_str(";\n");
+            }
+        }
+    }
+}
+
+/// `proxy_cache_path`：站点 location 的 `proxy_cache <name>` 按 zone 名引用。
+fn emit_cache_zones(o: &mut String, zones: &[NginxCacheZone], i: &str) {
+    if zones.is_empty() {
+        return;
+    }
+    o.push_str("\n    # ── 反代共享缓存区 ──\n");
+    for z in zones {
+        let name = ident(&z.name);
+        let path = clean(&z.path);
+        if name.is_empty() || path.is_empty() {
+            continue;
+        }
+        o.push_str(i);
+        o.push_str("proxy_cache_path ");
+        o.push_str(&path);
+        o.push_str(" levels=");
+        o.push_str(&clean(&z.levels));
+        o.push_str(" keys_zone=");
+        o.push_str(&name);
+        o.push(':');
+        o.push_str(&clean(&z.keys_zone_size));
+        o.push_str(" max_size=");
+        o.push_str(&clean(&z.max_size));
+        o.push_str(" inactive=");
+        o.push_str(&clean(&z.inactive));
+        if let Some(b) = z.use_temp_path {
+            o.push_str(&format!(" use_temp_path={}", if b { "on" } else { "off" }));
+        }
+        if let Some(n) = z.loader_files {
+            o.push_str(&format!(" loader_files={n}"));
+        }
+        if let Some(v) = &z.loader_sleep {
+            if !v.trim().is_empty() {
+                o.push_str(&format!(" loader_sleep={}", clean(v)));
+            }
+        }
+        if let Some(v) = &z.loader_threshold {
+            if !v.trim().is_empty() {
+                o.push_str(&format!(" loader_threshold={}", clean(v)));
+            }
+        }
+        if let Some(n) = z.manager_files {
+            o.push_str(&format!(" manager_files={n}"));
+        }
+        if let Some(v) = &z.manager_sleep {
+            if !v.trim().is_empty() {
+                o.push_str(&format!(" manager_sleep={}", clean(v)));
+            }
+        }
+        if let Some(v) = &z.manager_threshold {
+            if !v.trim().is_empty() {
+                o.push_str(&format!(" manager_threshold={}", clean(v)));
+            }
+        }
+        let extra = clean(&z.extra);
+        if !extra.is_empty() {
+            o.push(' ');
+            o.push_str(&extra);
+        }
+        o.push_str(";\n");
+    }
+}
+
+/// ngx cache purge：`proxy_cache_purge` 只能写在 location 里，
+/// 故 http 级只渲染两个 map 供站点 / 用户自定义 location 引用。
+fn emit_cache_purge(o: &mut String, c: &zap_proto::NginxCachePurgeSpec, i: &str) {
+    if !c.enabled {
+        return;
+    }
+    let pfx = c
+        .var_prefix
+        .as_deref()
+        .map(ident)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "zap_purge".to_string());
+    let method_var = format!("${pfx}_method");
+    let acl_var = format!("${pfx}_acl");
+
+    o.push_str("\n    # ── 缓存清理白名单（ngx cache purge）──\n");
+    o.push_str(&format!("{i}map $request_method {method_var} {{\n"));
+    o.push_str(&format!("{i}{i}default        0;\n"));
+    o.push_str(&format!("{i}{i}PURGE          1;\n"));
+    o.push_str(&format!("{i}}}\n"));
+
+    o.push_str(&format!("{i}map $remote_addr {acl_var} {{\n"));
+    o.push_str(&format!("{i}{i}default        0;\n"));
+    o.push_str(&format!("{i}{i}127.0.0.1      1;\n"));
+    o.push_str(&format!("{i}{i}::1            1;\n"));
+    for ip in &c.allowed_ips {
+        let ip = clean(ip);
+        if !ip.is_empty() {
+            o.push_str(&format!("{i}{i}{ip} 1;\n"));
+        }
+    }
+    o.push_str(&format!("{i}}}\n"));
+    o.push_str(&format!(
+        "    # 用法（站点 location 内）：\n\
+         \x20   # if ({acl_var}{method_var} = 11) {{ proxy_cache_purge <zone名> $1; }}\n"
+    ));
+}
+
+/// adopt 回填的原样保留行（支持多行块，整体重缩进）。
+fn emit_preserve(o: &mut String, indent: &str, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    o.push_str("\n# ── 接管时未能识别的原有配置（原样保留，请勿依赖面板维护）──\n");
+    for raw in lines {
+        for line in raw.lines() {
+            let t = line.trim();
+            if t.is_empty() {
+                continue;
+            }
+            o.push_str(indent);
+            o.push_str(t);
+            o.push('\n');
+        }
+    }
+    o.push('\n');
+}
+
+fn emit_includes(o: &mut String, ctx: &RenderCtx, i: &str) {
+    o.push('\n');
+    o.push_str(i);
+    o.push_str("# ── 用户自定义（conf.d，不会被面板覆盖）──\n");
+    if let Some(c) = &ctx.conf_d_include {
+        o.push_str(i);
+        o.push_str("include ");
+        o.push_str(&clean(c));
+        o.push_str(";\n");
+    }
+    o.push('\n');
+    // 面板站点：必须存在且排在最后
+    o.push_str(i);
+    o.push_str("# ── 面板托管站点（必须最后；缺失会导致所有站点失效）──\n");
+    o.push_str(i);
+    o.push_str("include ");
+    o.push_str(&clean(&ctx.sites_include));
+    o.push_str(";\n");
+}
+
+// ── 默认模型 ─────────────────────────────────────────────────
+
+/// 面板默认配置：数据库无记录时用这份兜底（生产可用，非最小集）。
+pub fn default_spec(ctx: &RenderCtx) -> NginxGlobalSpec {
+    let log_dir = ctx.log_dir.to_string_lossy().to_string();
+    NginxGlobalSpec {
+        ver: NGINX_GLOBAL_SPEC_VER,
+        general: zap_proto::NginxMainSpec {
+            user: Some("www".to_string()),
+            worker_processes: Some("auto".to_string()),
+            worker_priority: None,
+            worker_rlimit_nofile: Some(65535),
+            worker_shutdown_timeout: None,
+            timer_resolution: None,
+            pid: None,
+            error_log: Some(format!("{log_dir}/error.log warn")),
+            pcre_jit: Some(true),
+            thread_pool: None,
+        },
+        events: zap_proto::NginxEventsSpec {
+            worker_connections: Some(65535),
+            multi_accept: Some(true),
+            accept_mutex: Some(true),
+            accept_mutex_delay: None,
+            use_method: Some("epoll".to_string()),
+        },
+        http: NginxHttpSpec {
+            basic: zap_proto::NginxHttpBasicSpec {
+                sendfile: Some(true),
+                sendfile_max_chunk: None,
+                tcp_nopush: Some(true),
+                tcp_nodelay: Some(true),
+                keepalive_timeout: Some("65".to_string()),
+                keepalive_requests: Some(1000),
+                send_timeout: Some("60s".to_string()),
+                client_header_timeout: Some("60s".to_string()),
+                client_body_timeout: Some("60s".to_string()),
+                reset_timedout_connection: Some(true),
+                client_max_body_size: Some("100m".to_string()),
+                client_body_buffer_size: None,
+                large_client_header_buffers: Some("4 16k".to_string()),
+                types_hash_max_size: Some(2048),
+                server_names_hash_max_size: Some(512),
+                server_names_hash_bucket_size: Some(128),
+                server_tokens: Some(false),
+                default_type: Some("application/octet-stream".to_string()),
+                variables_hash_max_size: None,
+                lingering_close: None,
+            },
+            gzip: zap_proto::NginxGzipSpec {
+                enable: Some(true),
+                comp_level: Some(5),
+                min_length: Some(1024),
+                types: Some(
+                    "text/plain text/css text/xml application/json application/javascript \
+                     application/xml application/xml+rss application/xhtml+xml image/svg+xml"
+                        .to_string(),
+                ),
+                vary: Some(true),
+                proxied: Some("any".to_string()),
+                disable: Some("msie6".to_string()),
+                http_version: None,
+                buffers: Some("4 16k".to_string()),
+            },
+            tls: zap_proto::NginxTlsSpec {
+                protocols: Some("TLSv1.2 TLSv1.3".to_string()),
+                ciphers: Some("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:HIGH:!aNULL:!MD5".to_string()),
+                prefer_server_ciphers: Some(false),
+                session_cache: Some("shared:SSL:10m".to_string()),
+                session_timeout: Some("10m".to_string()),
+                session_tickets: Some(false),
+                session_ticket_key: None,
+                buffer_size: Some("4k".to_string()),
+                ecdh_curve: Some("auto".to_string()),
+                dhparam: None,
+                early_data: None,
+                stapling: Some(true),
+                stapling_verify: Some(true),
+                trusted_certificate: None,
+                crl: None,
+                resolver: Some("8.8.8.8 1.1.1.1 valid=300s".to_string()),
+                resolver_timeout: Some("5s".to_string()),
+            },
+            logging: zap_proto::NginxLogSpec {
+                access_log: Some(format!("{log_dir}/access.log main buffer=32k flush=5s")),
+                log_format_main: Some(NGINX_LOG_FORMAT_MAIN.to_string()),
+                log_format_json: None,
+                open_log_file_cache: Some("max=1000 inactive=20s valid=1m min_uses=2".to_string()),
+                error_log: Some(format!("{log_dir}/error.log warn")),
+            },
+            proxy: zap_proto::NginxProxySpec {
+                connect_timeout: Some("30s".to_string()),
+                read_timeout: Some("60s".to_string()),
+                send_timeout: Some("60s".to_string()),
+                buffers: Some("8 32k".to_string()),
+                buffer_size: Some("16k".to_string()),
+                busy_buffers_size: Some("64k".to_string()),
+                max_temp_file_size: Some("1024m".to_string()),
+                temp_file_write_size: Some("64k".to_string()),
+                temp_path: None,
+                request_buffering: Some(true),
+                buffering: Some(true),
+                http_version: Some("1.1".to_string()),
+                ignore_headers: None,
+                next_upstream: Some("error timeout http_502".to_string()),
+                force_ranges: None,
+            },
+            proxy_cache: vec![NginxCacheZone {
+                name: "zap_cache".to_string(),
+                path: site::zap_path()
+                    .join("data/cache/nginx-zap_cache")
+                    .to_string_lossy()
+                    .to_string(),
+                levels: "1:2".to_string(),
+                keys_zone_size: "32m".to_string(),
+                max_size: "1g".to_string(),
+                inactive: "60m".to_string(),
+                use_temp_path: Some(false),
+                loader_files: None,
+                loader_sleep: None,
+                loader_threshold: None,
+                manager_files: None,
+                manager_sleep: None,
+                manager_threshold: None,
+                extra: String::new(),
+            }],
+            cache_purge: zap_proto::NginxCachePurgeSpec {
+                enabled: true,
+                allowed_ips: Vec::new(),
+                var_prefix: None,
+            },
+            security: zap_proto::NginxSecuritySpec {
+                modsecurity: Some(false),
+                modsecurity_rules_file: None,
+                add_header_csp: None,
+            },
+            custom_raw: String::new(),
+        },
+        load_modules: Vec::new(),
+        top_includes: Vec::new(),
+        preserve_top_raw: Vec::new(),
+        preserve_http_raw: Vec::new(),
+    }
+}
+
+// ── 接管：解析现有 nginx.conf ─────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ctx {
+    Main,
+    Events,
+    Http,
+    /// http 内的嵌套块（server / upstream / map / geo …），整块原样保留
+    Nested,
+}
+
+/// 把现有 nginx.conf 解析为结构模型（纯函数，便于单测）。
+///
+/// - 能识别的指令回填到对应字段；
+/// - **识别不了的行原样保留**到 `preserve_top_raw` / `preserve_http_raw`，保证不丢配置。
+pub fn parse_conf_text(text: &str) -> NginxGlobalSpec {
+    let mut spec = NginxGlobalSpec { ver: NGINX_GLOBAL_SPEC_VER, ..Default::default() };
+
+    let mut ctx = Ctx::Main;
+    let mut depth = 0isize;
+    // 嵌套块（server / upstream / map …）：整段抓取，原样保留
+    let mut nested: Option<String> = None;
+    let mut nested_depth = 0isize;
+    let mut nested_parent = Ctx::Http;
+    let (mut main_keep, mut http_keep) = (Vec::new(), Vec::new());
+
+    for line in text.lines() {
+        let t = strip_comment(line).trim().to_string();
+        if t.is_empty() {
+            continue;
+        }
+
+        // 已在嵌套块内：累计到缓冲，等块的 `}` 出现时整段入库
+        if let Some(buf) = nested.as_mut() {
+            buf.push_str(&t);
+            buf.push('\n');
+            depth += brace_delta(&t);
+            // 收尾行已进缓冲后再判定：处理完闭合 `}` 后深度回落到块内层的下一层
+            if depth < nested_depth {
+                let block = std::mem::take(buf).trim().to_string();
+                if !block.is_empty() {
+                    if nested_parent == Ctx::Http {
+                        spec.preserve_http_raw.push(block);
+                    } else {
+                        main_keep.push(block);
+                    }
+                }
+                nested = None;
+                ctx = nested_parent;
+            }
+            continue;
+        }
+
+        // 块头：http / events 内部的嵌套块整体保留，其余记录上下文
+        if t.ends_with('{') {
+            let head = t.trim_end().trim_end_matches('{').trim().to_string();
+            if ctx == Ctx::Http || ctx == Ctx::Events {
+                nested = Some(format!("{head} {{\n"));
+                nested_parent = ctx;
+                nested_depth = depth + 1;
+                depth += brace_delta(&t);
+                ctx = Ctx::Nested;
+                continue;
+            }
+            match head.as_str() {
+                "events" => ctx = Ctx::Events,
+                "http" => ctx = Ctx::Http,
+                _ => {}
+            }
+            depth += brace_delta(&t);
+            continue;
+        }
+
+        if t == "}" {
+            depth -= 1;
+            if depth <= 0 {
+                depth = 0;
+                ctx = Ctx::Main;
+            }
+            continue;
+        }
+
+        // 普通指令
+        let (name, args) = split_directive(&t);
+        let args = args.trim_end_matches(';').trim().to_string();
+        match ctx {
+            Ctx::Main => {
+                if !apply_main(&mut spec, &name, &args) {
+                    main_keep.push(t.clone());
+                }
+            }
+            Ctx::Events => {
+                if !apply_events(&mut spec, &name, &args) {
+                    main_keep.push(t.clone());
+                }
+            }
+            Ctx::Http => {
+                if !apply_http(&mut spec, &name, &args) {
+                    // proxy_cache_path 单独解析成 zone
+                    if name == "proxy_cache_path" {
+                        if let Some(z) = parse_cache_zone(&args) {
+                            spec.http.proxy_cache.push(z);
+                        } else {
+                            http_keep.push(t.clone());
+                        }
+                    } else if name == "include" {
+                        // include 由 include 规则重建，不进保留区（避免重复 include）
+                    } else {
+                        http_keep.push(t.clone());
+                    }
+                }
+            }
+            Ctx::Nested => unreachable!(),
+        }
+    }
+
+    // 追加而非赋值：嵌套块可能已经直接入库
+    spec.preserve_top_raw.extend(main_keep);
+    spec.preserve_http_raw.extend(http_keep);
+    spec
+}
+
+/// 单行带来的花括号深度变化（可为负）。
+fn brace_delta(s: &str) -> isize {
+    s.chars().filter(|c| *c == '{').count() as isize
+        - s.chars().filter(|c| *c == '}').count() as isize
+}
+
+/// 去掉 `#` 之后的内容（不处理引号内的 #，nginx 指令里基本不出现）。
+fn strip_comment(s: &str) -> &str {
+    match s.find('#') {
+        Some(i) => &s[..i],
+        None => s,
+    }
+}
+
+fn split_directive(s: &str) -> (String, String) {
+    match s.split_once(char::is_whitespace) {
+        Some((n, a)) => (n.trim().to_string(), a.trim().to_string()),
+        None => (s.trim().to_string(), String::new()),
+    }
+}
+
+fn on_off(v: &str) -> Option<bool> {
+    match v.trim().to_lowercase().as_str() {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn num<T: std::str::FromStr>(v: &str) -> Option<T> {
+    v.split_whitespace().next()?.parse().ok()
+}
+
+fn apply_main(s: &mut NginxGlobalSpec, n: &str, a: &str) -> bool {
+    let g = &mut s.general;
+    match n {
+        "load_module" if !a.is_empty() => {
+            s.load_modules.push(a.to_string());
+            true
+        }
+        "include" if a.ends_with(".conf") || a.contains('*') => {
+            s.top_includes.push(a.to_string());
+            true
+        }
+        "user" => assign(&mut g.user, a),
+        "worker_processes" => assign(&mut g.worker_processes, a),
+        "worker_priority" => opt_num(&mut g.worker_priority, a),
+        "worker_rlimit_nofile" => opt_num(&mut g.worker_rlimit_nofile, a),
+        "worker_shutdown_timeout" => assign(&mut g.worker_shutdown_timeout, a),
+        "timer_resolution" => assign(&mut g.timer_resolution, a),
+        "pid" => assign(&mut g.pid, a),
+        "error_log" => assign(&mut g.error_log, a),
+        "pcre_jit" => opt_bool(&mut g.pcre_jit, a),
+        "thread_pool" => assign(&mut g.thread_pool, a),
+        _ => false,
+    }
+}
+
+fn apply_events(s: &mut NginxGlobalSpec, n: &str, a: &str) -> bool {
+    let e = &mut s.events;
+    match n {
+        "worker_connections" => opt_num(&mut e.worker_connections, a),
+        "multi_accept" => opt_bool(&mut e.multi_accept, a),
+        "accept_mutex" => opt_bool(&mut e.accept_mutex, a),
+        "accept_mutex_delay" => assign(&mut e.accept_mutex_delay, a),
+        "use" => assign(&mut e.use_method, a),
+        _ => false,
+    }
+}
+
+fn apply_http(s: &mut NginxGlobalSpec, n: &str, a: &str) -> bool {
+    let h = &mut s.http;
+    let b = &mut h.basic;
+    match n {
+        "default_type" => assign(&mut b.default_type, a),
+        "sendfile" => opt_bool(&mut b.sendfile, a),
+        "sendfile_max_chunk" => assign(&mut b.sendfile_max_chunk, a),
+        "tcp_nopush" => opt_bool(&mut b.tcp_nopush, a),
+        "tcp_nodelay" => opt_bool(&mut b.tcp_nodelay, a),
+        "keepalive_timeout" => assign(&mut b.keepalive_timeout, a),
+        "keepalive_requests" => opt_num(&mut b.keepalive_requests, a),
+        "send_timeout" => assign(&mut b.send_timeout, a),
+        "client_header_timeout" => assign(&mut b.client_header_timeout, a),
+        "client_body_timeout" => assign(&mut b.client_body_timeout, a),
+        "reset_timedout_connection" => opt_bool(&mut b.reset_timedout_connection, a),
+        "client_max_body_size" => assign(&mut b.client_max_body_size, a),
+        "client_body_buffer_size" => assign(&mut b.client_body_buffer_size, a),
+        "large_client_header_buffers" => assign(&mut b.large_client_header_buffers, a),
+        "types_hash_max_size" => opt_num(&mut b.types_hash_max_size, a),
+        "server_names_hash_max_size" => opt_num(&mut b.server_names_hash_max_size, a),
+        "server_names_hash_bucket_size" => opt_num(&mut b.server_names_hash_bucket_size, a),
+        "variables_hash_max_size" => opt_num(&mut b.variables_hash_max_size, a),
+        "server_tokens" => opt_bool(&mut b.server_tokens, a),
+
+        "gzip" => opt_bool(&mut h.gzip.enable, a),
+        "gzip_comp_level" => opt_num(&mut h.gzip.comp_level, a),
+        "gzip_min_length" => opt_num(&mut h.gzip.min_length, a),
+        "gzip_types" => assign(&mut h.gzip.types, a),
+        "gzip_vary" => opt_bool(&mut h.gzip.vary, a),
+        "gzip_proxied" => assign(&mut h.gzip.proxied, a),
+        "gzip_disable" => assign(&mut h.gzip.disable, a),
+        "gzip_http_version" => assign(&mut h.gzip.http_version, a),
+        "gzip_buffers" => assign(&mut h.gzip.buffers, a),
+
+        "ssl_protocols" => assign(&mut h.tls.protocols, a),
+        "ssl_ciphers" => assign(&mut h.tls.ciphers, a),
+        "ssl_prefer_server_ciphers" => opt_bool(&mut h.tls.prefer_server_ciphers, a),
+        "ssl_session_cache" => assign(&mut h.tls.session_cache, a),
+        "ssl_session_timeout" => assign(&mut h.tls.session_timeout, a),
+        "ssl_session_tickets" => opt_bool(&mut h.tls.session_tickets, a),
+        "ssl_session_ticket_key" => assign(&mut h.tls.session_ticket_key, a),
+        "ssl_buffer_size" => assign(&mut h.tls.buffer_size, a),
+        "ssl_ecdh_curve" => assign(&mut h.tls.ecdh_curve, a),
+        "ssl_dhparam" => assign(&mut h.tls.dhparam, a),
+        "ssl_early_data" => opt_bool(&mut h.tls.early_data, a),
+        "ssl_stapling" => opt_bool(&mut h.tls.stapling, a),
+        "ssl_stapling_verify" => opt_bool(&mut h.tls.stapling_verify, a),
+        "ssl_trusted_certificate" => assign(&mut h.tls.trusted_certificate, a),
+        "ssl_crl" => assign(&mut h.tls.crl, a),
+        "resolver" => assign(&mut h.tls.resolver, a),
+        "resolver_timeout" => assign(&mut h.tls.resolver_timeout, a),
+
+        "modsecurity" => opt_bool(&mut h.security.modsecurity, a),
+        "modsecurity_rules_file" => assign(&mut h.security.modsecurity_rules_file, a),
+
+        "access_log" => assign(&mut h.logging.access_log, a),
+        "error_log" => assign(&mut h.logging.error_log, a),
+        "open_log_file_cache" => assign(&mut h.logging.open_log_file_cache, a),
+        "log_format" => {
+            // `log_format main '...'`：按 name 落到 main / json 槽位
+            let mut it = a.splitn(2, char::is_whitespace);
+            let name = it.next().unwrap_or_default().to_string();
+            let body = it.next().unwrap_or_default().trim().to_string();
+            if name == "main" {
+                h.logging.log_format_main = Some(body);
+            } else if name == "json" || name == "json_combined" {
+                h.logging.log_format_json = Some(body);
+            } else {
+                // 其它自定义格式名：原样保留
+                return false;
+            }
+            true
+        }
+
+        "proxy_connect_timeout" => assign(&mut h.proxy.connect_timeout, a),
+        "proxy_read_timeout" => assign(&mut h.proxy.read_timeout, a),
+        "proxy_send_timeout" => assign(&mut h.proxy.send_timeout, a),
+        "proxy_buffers" => assign(&mut h.proxy.buffers, a),
+        "proxy_buffer_size" => assign(&mut h.proxy.buffer_size, a),
+        "proxy_busy_buffers_size" => assign(&mut h.proxy.busy_buffers_size, a),
+        "proxy_max_temp_file_size" => assign(&mut h.proxy.max_temp_file_size, a),
+        "proxy_temp_file_write_size" => assign(&mut h.proxy.temp_file_write_size, a),
+        "proxy_temp_path" => assign(&mut h.proxy.temp_path, a),
+        "proxy_request_buffering" => opt_bool(&mut h.proxy.request_buffering, a),
+        "proxy_buffering" => opt_bool(&mut h.proxy.buffering, a),
+        "proxy_http_version" => assign(&mut h.proxy.http_version, a),
+        "proxy_ignore_headers" => assign(&mut h.proxy.ignore_headers, a),
+        "proxy_next_upstream" => assign(&mut h.proxy.next_upstream, a),
+        "proxy_force_ranges" => opt_bool(&mut h.proxy.force_ranges, a),
+        _ => false,
+    }
+}
+
+fn assign(dst: &mut Option<String>, v: &str) -> bool {
+    if v.is_empty() {
+        return false;
+    }
+    *dst = Some(v.to_string());
+    true
+}
+fn opt_bool(dst: &mut Option<bool>, v: &str) -> bool {
+    match on_off(v) {
+        Some(b) => {
+            *dst = Some(b);
+            true
+        }
+        None => false,
+    }
+}
+fn opt_num<T: std::str::FromStr>(dst: &mut Option<T>, v: &str) -> bool {
+    match num::<T>(v) {
+        Some(n) => {
+            *dst = Some(n);
+            true
+        }
+        None => false,
+    }
+}
+
+/// `proxy_cache_path /x levels=1:2 keys_zone=NAME:32m max_size=1g inactive=60m use_temp_path=off`
+fn parse_cache_zone(a: &str) -> Option<NginxCacheZone> {
+    let mut it = a.split_whitespace();
+    let path = it.next()?.to_string();
+    let mut z = NginxCacheZone {
+        name: String::new(),
+        path,
+        levels: "1:2".to_string(),
+        keys_zone_size: "32m".to_string(),
+        max_size: "1g".to_string(),
+        inactive: "60m".to_string(),
+        use_temp_path: None,
+        loader_files: None,
+        loader_sleep: None,
+        loader_threshold: None,
+        manager_files: None,
+        manager_sleep: None,
+        manager_threshold: None,
+        extra: String::new(),
+    };
+    let mut extra_parts = Vec::new();
+    for kv in it {
+        match kv.split_once('=') {
+            Some(("levels", v)) => z.levels = v.to_string(),
+            Some(("keys_zone", v)) => {
+                if let Some((n, size)) = v.split_once(':') {
+                    z.name = n.to_string();
+                    z.keys_zone_size = size.to_string();
+                }
+            }
+            Some(("max_size", v)) => z.max_size = v.to_string(),
+            Some(("inactive", v)) => z.inactive = v.to_string(),
+            Some(("use_temp_path", v)) => z.use_temp_path = on_off(v),
+            Some(("loader_files", v)) => z.loader_files = num(v),
+            Some(("loader_sleep", v)) => z.loader_sleep = Some(v.to_string()),
+            Some(("loader_threshold", v)) => z.loader_threshold = Some(v.to_string()),
+            Some(("manager_files", v)) => z.manager_files = num(v),
+            Some(("manager_sleep", v)) => z.manager_sleep = Some(v.to_string()),
+            Some(("manager_threshold", v)) => z.manager_threshold = Some(v.to_string()),
+            _ => extra_parts.push(kv.to_string()),
+        }
+    }
+    if z.name.is_empty() {
+        return None;
+    }
+    z.extra = extra_parts.join(" ");
+    Some(z)
+}
+
+// ── 冲突扫描 ─────────────────────────────────────────────────
+
+/// 扫描 conf.d：若用户在同一 http 上下文（brace 深度 0）已写了同名指令，
+/// 面板再生成就会出现 `directive is duplicate`。
+pub fn scan_conflicts(rendered: &str, ctx: &RenderCtx) -> Vec<String> {
+    let Some(conf_d) = &ctx.conf_d_include else {
+        return Vec::new();
+    };
+    let dir = PathBuf::from(conf_d.trim_end_matches("*.conf").trim());
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+
+    let mut names: Vec<String> = Vec::new();
+    for line in rendered.lines() {
+        let t = strip_comment(line).trim();
+        if t.is_empty() || t.starts_with('#') || t.contains('{') || t.contains('}') {
+            continue;
+        }
+        if let Some((n, _)) = t.split_once(char::is_whitespace) {
+            if n == "include" || names.contains(&n.to_string()) {
+                continue;
+            }
+            names.push(n.to_string());
+        }
+    }
+    if names.is_empty() {
+        return Vec::new();
+    }
+
+    let mut hits = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("conf") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            let mut depth = 0usize;
+            for (idx, line) in text.lines().enumerate() {
+                let t = strip_comment(line).trim();
+                if t.is_empty() {
+                    continue;
+                }
+                if let Some((n, _)) = t.split_once(char::is_whitespace) {
+                    if depth == 0 && names.contains(&n.to_string()) {
+                        hits.push(format!(
+                            "{}:{} 的 `{}` 与本次生成的同名指令冲突（nginx 会报 duplicate）",
+                            p.display(),
+                            idx + 1,
+                            n
+                        ));
+                    }
+                }
+                depth = depth
+                    .saturating_add(t.chars().filter(|c| *c == '{').count())
+                    .saturating_sub(t.chars().filter(|c| *c == '}').count());
+            }
+        }
+    }
+    hits
+}
+
+// ── diff ─────────────────────────────────────────────────────
+
+/// 简单行级 unified diff（LCS，行数上限保护）。
+pub fn diff(old: &str, new: &str) -> String {
+    const MAX: usize = 800;
+    let a: Vec<&str> = old.lines().collect();
+    let b: Vec<&str> = new.lines().collect();
+    if a.len() > MAX || b.len() > MAX {
+        return "(差异过大，请直接查看渲染结果)".to_string();
+    }
+    // LCS DP
+    let (n, m) = (a.len(), b.len());
+    let mut dp = vec![vec![0u32; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i][j] = if a[i] == b[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    let mut out = String::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < n && j < m {
+        if a[i] == b[j] {
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            out.push_str("- ");
+            out.push_str(a[i]);
+            out.push('\n');
+            i += 1;
+        } else {
+            out.push_str("+ ");
+            out.push_str(b[j]);
+            out.push('\n');
+            j += 1;
+        }
+    }
+    while i < n {
+        out.push_str("- ");
+        out.push_str(a[i]);
+        out.push('\n');
+        i += 1;
+    }
+    while j < m {
+        out.push_str("+ ");
+        out.push_str(b[j]);
+        out.push('\n');
+        j += 1;
+    }
+    if out.is_empty() {
+        "(与当前生效配置无差异)".to_string()
+    } else {
+        out
+    }
+}
+
+// ── 对外 RPC ─────────────────────────────────────────────────
+
+fn parse_spec(raw: &str) -> Result<NginxGlobalSpec, String> {
+    let mut spec: NginxGlobalSpec =
+        serde_json::from_str(raw).map_err(|e| format!("配置模型解析失败: {e}"))?;
+    if spec.ver == 0 {
+        spec.ver = NGINX_GLOBAL_SPEC_VER;
+    }
+    Ok(spec)
+}
+
+/// 干跑：返回渲染全文 + 冲突告警 + 与当前文件的 diff（不写盘）。
+pub async fn preview(spec_json: String) -> Response {
+    tokio::task::spawn_blocking(move || preview_inner(&spec_json))
+        .await
+        .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+fn preview_inner(spec_json: &str) -> Response {
+    let (ctx, spec) = match (RenderCtx::detect(), parse_spec(spec_json)) {
+        (Ok(c), Ok(s)) => (c, s),
+        (Err(e), _) | (_, Err(e)) => return Response::err(-1, e),
+    };
+    let content = render(&spec, &ctx);
+    let warnings = scan_conflicts(&content, &ctx);
+    let current = std::fs::read_to_string(&ctx.conf_path).unwrap_or_default();
+    Response::ok(
+        "预览成功",
+        Some(json!({
+            "content": content,
+            "warnings": warnings,
+            "diff": diff(&current, &content),
+            "conf_file": ctx.conf_path,
+        })),
+    )
+}
+
+/// 读取当前 nginx.conf → 结构模型（文件不存在时给出面板默认模型）。
+pub async fn current_spec() -> Response {
+    tokio::task::spawn_blocking(|| current_spec_inner())
+        .await
+        .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+fn current_spec_inner() -> Response {
+    let ctx = match RenderCtx::detect() {
+        Ok(c) => c,
+        Err(e) => return Response::err(-1, e),
+    };
+    let spec = match std::fs::read_to_string(&ctx.conf_path) {
+        Ok(text) if text.trim().contains("worker_processes") => parse_conf_text(&text),
+        _ => default_spec(&ctx),
+    };
+    match serde_json::to_value(&spec) {
+        Ok(v) => Response::ok("ok", Some(json!({ "spec": v, "conf_file": ctx.conf_path }))),
+        Err(e) => Response::err(-1, format!("模型序列化失败: {e}")),
+    }
+}
+
+/// 落盘：冲突扫描 → 渲染 → `nginx -t -c <tmp>` → 备份旧文件 → 原子替换 → reload。
+pub async fn apply(spec_json: String) -> Response {
+    tokio::task::spawn_blocking(move || apply_inner(&spec_json))
+        .await
+        .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+fn apply_inner(spec_json: &str) -> Response {
+    let (ctx, spec) = match (RenderCtx::detect(), parse_spec(spec_json)) {
+        (Ok(c), Ok(s)) => (c, s),
+        (Err(e), _) | (_, Err(e)) => return Response::err(-1, e),
+    };
+
+    let content = render(&spec, &ctx);
+    let warnings = scan_conflicts(&content, &ctx);
+
+    // 站点 include 是防线：渲染结果必须带上，否则所有站点会整体失效
+    if !content.contains("include") || !content.contains(&ctx.sites_include.replace("*.conf", "")) {
+        return Response::err(
+            -1,
+            format!(
+                "渲染结果缺少面板站点 include（{}），已中止以避免站点全部失效",
+                ctx.sites_include
+            ),
+        );
+    }
+
+    let bin = site::nginx_bin(&ctx.conf_path);
+    // 同目录临时文件：include 的相对基准与正式文件一致，`nginx -t` 结论才可信
+    let tmp = ctx.conf_dir.join("nginx.conf.zap-tmp");
+    if let Err(e) = std::fs::write(&tmp, &content) {
+        return Response::err(-1, format!("写入临时配置失败: {e}"));
+    }
+    if let Err(e) = nginx_test_conf(&bin, &tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Response::err(-1, format!("Nginx 配置校验未通过，已保留原配置：\n{e}"));
+    }
+
+    // 备份（沿用 `{ZAP_PATH}/data/backups/nginx` 约定）
+    let backup = backup_conf(&ctx.conf_path);
+    if let Err(e) = std::fs::rename(&tmp, &ctx.conf_path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Response::err(-1, format!("替换主配置失败: {e}"));
+    }
+    let _ = std::fs::set_permissions(&ctx.conf_path, std::os::unix::fs::PermissionsExt::from_mode(0o644));
+
+    let reloaded = site::reload_nginx(&bin);
+    let old = std::fs::read_to_string(&backup.as_ref().map(|p| p.as_path()).unwrap_or(Path::new("")))
+        .unwrap_or_default();
+
+    Response::ok(
+        "已应用并重载 Nginx",
+        Some(json!({
+            "content": content,
+            "diff": diff(&old, &content),
+            "warnings": warnings,
+            "backup": backup.map(|p| p.to_string_lossy().to_string()),
+            "reloaded": reloaded.is_ok(),
+            "reload_error": reloaded.err(),
+        })),
+    )
+}
+
+/// 用指定配置文件做校验（不依赖默认 -c 路径）。
+fn nginx_test_conf(bin: &Path, conf: &Path) -> Result<(), String> {
+    let o = root_cmd(super::platform::SHELL)
+        .args(["-c"])
+        .arg(format!(
+            "'{}' -t -c '{}' 2>&1",
+            bin.to_string_lossy().replace('\'', "'\\''"),
+            conf.to_string_lossy().replace('\'', "'\\''")
+        ))
+        .output()
+        .map_err(|e| format!("执行 nginx -t 失败: {e}"))?;
+    if o.status.success() {
+        Ok(())
+    } else {
+        let text = String::from_utf8_lossy(&o.stderr).trim().to_string();
+        let text = if text.is_empty() {
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        } else {
+            text
+        };
+        Err(if text.is_empty() {
+            "nginx -t 返回非零".to_string()
+        } else {
+            text
+        })
+    }
+}
+
+/// 备份当前主配置到 `{ZAP_PATH}/data/backups/nginx`。
+fn backup_conf(conf: &Path) -> Option<PathBuf> {
+    if !conf.exists() {
+        return None;
+    }
+    let dir = site::zap_path().join("data/backups/nginx");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dst = dir.join(format!("nginx.conf.{ts}.bak"));
+    std::fs::copy(conf, &dst).ok().map(|_| dst)
+}
+
+/// 站点 location 可选的缓存 zone 名列表（含面板内置）。
+pub fn zones(spec_json: &str) -> Response {
+    match parse_spec(spec_json) {
+        Ok(spec) => Response::ok(
+            "ok",
+            Some(json!({
+                "zones": spec.http.proxy_cache.iter().map(|z| z.name.clone()).collect::<Vec<_>>()
+            })),
+        ),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> RenderCtx {
+        RenderCtx {
+            conf_path: PathBuf::from("/etc/nginx/nginx.conf"),
+            conf_dir: PathBuf::from("/etc/nginx"),
+            sites_include: "/etc/zap/webservers/nginx/sites-enabled/*.conf".to_string(),
+            conf_d_include: Some("/etc/nginx/conf.d/*.conf".to_string()),
+            mime_types: Some("/etc/nginx/mime.types".to_string()),
+            log_dir: PathBuf::from("/var/log/nginx"),
+        }
+    }
+
+    #[test]
+    fn default_render_contains_core_blocks() {
+        let c = ctx();
+        let s = default_spec(&c);
+        let out = render(&s, &c);
+        assert!(out.contains("worker_processes auto;"), "{out}");
+        assert!(out.contains("events {"), "{out}");
+        assert!(out.contains("http {"), "{out}");
+        assert!(out.contains("include /etc/nginx/mime.types;"), "{out}");
+        assert!(out.contains("proxy_cache_path"), "{out}");
+        assert!(out.contains("ssl_stapling on;"), "{out}");
+        // conf.d 必须在站点 include 之前
+        let cd = out.find("conf.d/*.conf").unwrap();
+        let st = out.find("sites-enabled/*.conf").unwrap();
+        assert!(cd < st, "conf.d 必须排在站点 include 之前");
+        // log_format 必须先于 access_log
+        assert!(out.find("log_format main").unwrap() < out.find("access_log").unwrap());
+    }
+
+    #[test]
+    fn none_fields_are_omitted() {
+        let c = ctx();
+        let mut s = default_spec(&c);
+        s.http.gzip.enable = None;
+        s.http.basic.sendfile = None;
+        let out = render(&s, &c);
+        assert!(!out.contains("gzip on"), "{out}");
+        assert!(!out.contains("sendfile"), "{out}");
+    }
+
+    #[test]
+    fn injection_is_stripped() {
+        let c = ctx();
+        let mut s = default_spec(&c);
+        s.http.basic.client_max_body_size =
+            Some("100m; location /evil { proxy_pass http://x; }".to_string());
+        let out = render(&s, &c);
+        // 真正的防线：去掉 `;` `{}` 后无法拼出新的指令行，注入内容只能留在同一条指令的值里
+        assert!(
+            out.lines().all(|l| !l.trim_start().starts_with("proxy_pass")),
+            "{out}"
+        );
+        assert!(
+            out.lines().all(|l| !l.trim_start().starts_with("location ")),
+            "{out}"
+        );
+        assert!(out.contains("client_max_body_size 100m location"), "{out}");
+    }
+
+    #[test]
+    fn adopt_roundtrip_keeps_unknown_lines() {
+        let text = "\
+user www;
+worker_processes  4;
+timer_resolution 100ms;
+custom_top_directive  abc def;
+events {
+    worker_connections  1024;
+    multi_accept on;
+}
+http {
+    sendfile on;
+    gzip off;
+    my_unknown_http_directive whatever;
+    proxy_cache_path /tmp/c levels=1:2 keys_zone=z1:10m max_size=100m inactive=10m use_temp_path=off;
+    server {
+        listen 80;
+    }
+    include /etc/nginx/conf.d/*.conf;
+}
+";
+        let s = parse_conf_text(text);
+        assert_eq!(s.general.user.as_deref(), Some("www"));
+        assert_eq!(s.general.worker_processes.as_deref(), Some("4"));
+        assert_eq!(s.general.timer_resolution.as_deref(), Some("100ms"));
+        assert_eq!(s.events.worker_connections, Some(1024));
+        assert_eq!(s.http.basic.sendfile, Some(true));
+        assert_eq!(s.http.gzip.enable, Some(false));
+        assert_eq!(s.http.proxy_cache.len(), 1);
+        assert_eq!(s.http.proxy_cache[0].name, "z1");
+        assert_eq!(s.http.proxy_cache[0].keys_zone_size, "10m");
+        // 不认识的行必须原样保留
+        assert!(s
+            .preserve_top_raw
+            .iter()
+            .any(|l| l.contains("custom_top_directive")), "{:?}", s.preserve_top_raw);
+        assert!(s
+            .preserve_http_raw
+            .iter()
+            .any(|l| l.contains("my_unknown_http_directive")), "{:?}", s.preserve_http_raw);
+        // server 整块保留
+        assert!(s
+            .preserve_http_raw
+            .iter()
+            .any(|l| l.contains("listen 80")), "{:?}", s.preserve_http_raw);
+
+        // 再渲染：保留的内容不能丢
+        let c = ctx();
+        let out = render(&s, &c);
+        assert!(out.contains("custom_top_directive"), "{out}");
+        assert!(out.contains("my_unknown_http_directive"), "{out}");
+        assert!(out.contains("listen 80"), "{out}");
+        assert!(out.contains("keys_zone=z1:10m"), "{out}");
+    }
+
+    #[test]
+    fn modsecurity_and_purge_render() {
+        let c = ctx();
+        let mut s = default_spec(&c);
+        s.load_modules = vec!["modules/ngx_http_modsecurity_module.so".to_string()];
+        s.http.security.modsecurity = Some(true);
+        s.http.cache_purge.enabled = true;
+        s.http.cache_purge.allowed_ips = vec!["10.0.0.1".to_string()];
+        let out = render(&s, &c);
+        assert!(out.contains("load_module modules/ngx_http_modsecurity_module.so;"), "{out}");
+        assert!(out.contains("modsecurity on;"), "{out}");
+        assert!(out.contains("map $request_method $zap_purge_method"), "{out}");
+        assert!(out.contains("10.0.0.1 1;"), "{out}");
+    }
+
+    #[test]
+    fn diff_reports_changes() {
+        let d = diff("a\nb\nc\n", "a\nB\nc\n");
+        assert!(d.contains("- b"), "{d}");
+        assert!(d.contains("+ B"), "{d}");
+        assert_eq!(diff("x\n", "x\n"), "(与当前生效配置无差异)");
+    }
+}

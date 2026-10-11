@@ -34,6 +34,7 @@ import { useUserStore } from '@/stores/user'
 import type { InstalledApp } from '@/api/appstore'
 import { getInstalledApps } from '@/api/appstore'
 import { getLocDirectives, getSiteSecurity, getSecurityCaps } from '@/api/site'
+import { listNginxCacheZones } from '@/api/serverNginx'
 import type { LocDirectiveSpec } from '@/api/site'
 import type { SiteSecurity } from '@/api/site'
 import { getCertList } from '@/api/ssl'
@@ -1076,6 +1077,17 @@ async function loadLocDirectives() {
   }
 }
 
+/** 可用的反代共享缓存区（主配置模型里定义的 proxy_cache_path 名） */
+const cacheZones = ref<string[]>([])
+async function loadCacheZones() {
+  try {
+    const res = await listNginxCacheZones()
+    cacheZones.value = res.data?.zones || []
+  } catch {
+    cacheZones.value = []
+  }
+}
+
 /** 白名单条目（决定值输入控件与示例） */
 function dirSpecOf(key: string): LocDirectiveSpec | undefined {
   return locDirectives.value.find((d) => d.key === key)
@@ -1619,7 +1631,7 @@ async function submitForm() {
                 .map((h) => ({ key: h.key.trim(), value: h.value.trim() }))
             : [],
         proxy_redirect: l.kind === 'proxy' ? (l.proxy_redirect || '').trim() : '',
-        cache: l.kind === 'proxy' && l.cache === 'zap_cache' ? 'zap_cache' : '',
+        cache: l.kind === 'proxy' ? (l.cache || '').trim() : '',
         cache_valid: l.kind === 'proxy' ? (l.cache_valid || '').trim() : '',
         no_buffering: l.kind === 'proxy' ? !!l.no_buffering : false,
         limit_req_rate: l.limit_req_rate || 0,
@@ -1802,6 +1814,7 @@ function onSitesChanged() {
 
 onMounted(() => {
   loadLocDirectives()
+  loadCacheZones()
   window.addEventListener('zap:sites-changed', onSitesChanged)
   loadOwners()
   loadPhpOptions()
@@ -2726,12 +2739,19 @@ onMounted(() => {
                       </div>
                       <div class="adv-row">
                         <span class="adv-label">{{ t('site.proxyCache') }}</span>
-                        <el-switch
-                          :model-value="loc.cache === 'zap_cache'"
-                          @update:model-value="(v: boolean) => (loc.cache = v ? 'zap_cache' : '')"
-                        />
+                        <el-select
+                          v-model="loc.cache"
+                          clearable
+                          filterable
+                          allow-create
+                          default-first-option
+                          :placeholder="t('site.cacheZonePlaceholder')"
+                          class="adv-num"
+                        >
+                          <el-option v-for="z in cacheZones" :key="z" :label="z" :value="z" />
+                        </el-select>
                         <el-input
-                          v-if="loc.cache === 'zap_cache'"
+                          v-if="loc.cache"
                           v-model="loc.cache_valid"
                           :placeholder="t('site.cacheValidPlaceholder')"
                           class="adv-long"
