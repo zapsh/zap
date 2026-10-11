@@ -203,7 +203,11 @@ pub async fn env_nodejs_action(
     }
     let action = payload.action.trim().to_string();
     if !["install", "default", "uninstall"].contains(&action.as_str()) {
-        return Err(ZapError::New(-1, "不支持的操作".to_string()));
+        return Err(ZapError::Key(
+            -1,
+            "api.common.unsupportedOp".to_string(),
+            "不支持的操作".to_string(),
+        ));
     }
     let version = payload.version.trim().to_string();
     if version.is_empty() || version.len() > 16 {

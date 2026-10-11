@@ -214,7 +214,11 @@ pub async fn login(
         .to_string();
     let username = payload.username.trim().to_string();
     if username.is_empty() {
-        return Err(ZapError::New(-1, "用户名不能为空".to_string()));
+        return Err(ZapError::Key(
+            -1,
+            "api.auth.usernameRequired".to_string(),
+            "用户名不能为空".to_string(),
+        ));
     }
 
     // 第二道防线：持久化失败锁定（账号+IP）
@@ -243,15 +247,20 @@ pub async fn login(
                 &format!("status={}", row.status),
             )
             .await;
-            return Err(ZapError::New(-1, user_status_block_msg(row.status)));
+            return Err(ZapError::Key(
+                -1,
+                "api.auth.accountBlocked".to_string(),
+                user_status_block_msg(row.status),
+            ));
         }
         // TOTP 两步验证（已启用时校验）
         if row.totp_enabled == 1 {
             let code = payload.totp_code.unwrap_or_default();
             if code.is_empty() {
                 // 密码正确但未提供验证码：通知前端进入第二步（展示验证码输入）
-                return Err(ZapError::New(
+                return Err(ZapError::Key(
                     1002,
+                    "api.auth.totpRequired".to_string(),
                     "该账号已启用两步验证，请输入验证码".to_string(),
                 ));
             }
@@ -265,7 +274,11 @@ pub async fn login(
                     login_history::STATUS_2FA_FAILED,
                 )
                 .await;
-                return Err(ZapError::New(-1, "两步验证码错误或已失效".to_string()));
+                return Err(ZapError::Key(
+                    -1,
+                    "api.auth.totpInvalid".to_string(),
+                    "两步验证码错误或已失效".to_string(),
+                ));
             }
         }
 
@@ -311,7 +324,11 @@ pub async fn login(
     audit::log(None, Some(&ip), "login_failed", &username, "").await;
     // 失败尝试记在用户名下（user_id=0：账号未必存在，无法归属）
     login_history::record(0, &username, &ip, &user_agent, login_history::STATUS_FAILED).await;
-    Err(ZapError::New(-1, "用户名或密码错误".to_string()))
+    Err(ZapError::Key(
+        -1,
+        "api.auth.loginFailed".to_string(),
+        "用户名或密码错误".to_string(),
+    ))
 }
 
 pub async fn logout() -> Result<(HeaderMap, Json<serde_json::Value>), ZapError> {
@@ -522,8 +539,9 @@ pub async fn totp_setup(claims: ValidatedClaims) -> ZapJsonResult {
             .fetch_one(pool)
             .await?;
     if enabled == 1 {
-        return Err(ZapError::New(
+        return Err(ZapError::Key(
             -1,
+            "api.auth.totpEnabled".to_string(),
             "两步验证已启用，如需更换请先关闭".to_string(),
         ));
     }

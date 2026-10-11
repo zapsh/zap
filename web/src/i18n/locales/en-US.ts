@@ -5225,6 +5225,31 @@ const enUS: Messages = {
     deleteTitle: 'Delete Message',
     deleteOk: 'Deleted successfully',
   },
+
+  /** Backend error keys (api.*): Chinese fallback text; frontend translates by key */
+  api: {
+    auth: {
+      loginFailed: 'Invalid username or password',
+      totpInvalid: 'Invalid or expired two-factor code',
+      usernameRequired: 'Username is required',
+      accountBlocked: 'This account is disabled and cannot log in',
+      totpRequired: 'Two-factor code required for this account',
+      totpEnabled: 'Two-factor is enabled; disable it before changing',
+    },
+    common: {
+      forbidden: 'Admin access only',
+      paramInvalid: 'Invalid parameter',
+      unsupportedOp: 'Unsupported operation',
+    },
+    ssl: {
+      certNotFound: 'Certificate not found',
+      certNameRequired: 'Certificate name is required',
+      acmeEmailRequired: 'ACME account email is required',
+      domainRequired: 'At least one domain is required',
+      certOwnerInvalid: 'Certificate owner is invalid',
+      providerNameRequired: 'Provider name is required',
+    },
+  },
 }
 
 export default enUS

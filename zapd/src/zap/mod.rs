@@ -69,12 +69,19 @@ pub enum ZapError {
 
     #[error("{1}")]
     New(i64, String),
+
+    /// 带 i18n key 的错误：前端用 key 命中 locale 翻译，`message` 作为中文兜底。
+    #[error("{2}")]
+    Key(i64, String, String),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ZapErrorResponse {
     pub code: i64,
     pub message: String,
+    /// 前端翻译用的 i18n key（未接 key 的老错误为 null）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 pub type ZapJsonResult = Result<axum::Json<serde_json::Value>, ZapError>;
@@ -82,19 +89,20 @@ pub type ZapResult<T> = Result<T, ZapError>;
 
 impl IntoResponse for ZapError {
     fn into_response(self) -> Response {
-        let (code, message) = match self {
-            ZapError::Error(msg) => (1, msg.to_string()),
-            ZapError::JsonParseError(e) => (2, e.to_string()),
-            ZapError::JsonWebTokenError(e) => (3, e.to_string()),
-            ZapError::DataBaseError(e) => (4, e.to_string()),
-            ZapError::IOError(e) => (5, e.to_string()),
-            ZapError::NotFound => (404, self.to_string()),
-            ZapError::Message(msg) => (0, msg.to_string()),
-            ZapError::New(code, msg) => (code, msg.to_string()),
+        let (code, message, key) = match self {
+            ZapError::Error(msg) => (1, msg.to_string(), None),
+            ZapError::JsonParseError(e) => (2, e.to_string(), None),
+            ZapError::JsonWebTokenError(e) => (3, e.to_string(), None),
+            ZapError::DataBaseError(e) => (4, e.to_string(), None),
+            ZapError::IOError(e) => (5, e.to_string(), None),
+            ZapError::NotFound => (404, self.to_string(), None),
+            ZapError::Message(msg) => (0, msg.to_string(), None),
+            ZapError::New(code, msg) => (code, msg.to_string(), None),
+            ZapError::Key(code, k, msg) => (code, msg.to_string(), Some(k)),
         };
         (
             hyper::StatusCode::OK,
-            Json(ZapErrorResponse { code, message }),
+            Json(ZapErrorResponse { code, message, key }),
         )
             .into_response()
     }
@@ -103,6 +111,11 @@ impl IntoResponse for ZapError {
 impl ZapError {
     pub fn new(code: i64, message: String) -> ZapJsonResult {
         Err(ZapError::New(code, message))
+    }
+
+    /// 带 i18n key 的错误：前端按 key 命中 locale 翻译，`message` 作为中文兜底（未翻译时显示）。
+    pub fn key(code: i64, key: impl Into<String>, message: impl Into<String>) -> ZapError {
+        ZapError::Key(code, key.into(), message.into())
     }
 }
 
@@ -128,4 +141,9 @@ pub fn api_ok_data(message: impl Into<String>, data: impl Serialize) -> ZapJsonR
 /// 统一错误响应：`{ code, message }`（等价于 `ZapError::new`，便于与 `api_ok` 配对）。
 pub fn api_err(code: i64, message: impl Into<String>) -> ZapJsonResult {
     ZapError::new(code, message.into())
+}
+
+/// 统一错误响应（带 i18n key）：`{ code, message, key }`，前端按 key 翻译，message 兜底。
+pub fn api_err_key(code: i64, key: impl Into<String>, message: impl Into<String>) -> ZapJsonResult {
+    Err(ZapError::key(code, key, message))
 }

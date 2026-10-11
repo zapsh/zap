@@ -29,7 +29,11 @@ fn require_admin(claims: &ValidatedClaims) -> Result<(), ZapError> {
     if is_admin(claims) {
         Ok(())
     } else {
-        Err(ZapError::New(-1, "仅管理员可访问".to_string()))
+        Err(ZapError::Key(
+            -1,
+            "api.common.forbidden".to_string(),
+            "仅管理员可访问".to_string(),
+        ))
     }
 }
 

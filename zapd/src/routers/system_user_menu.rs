@@ -101,7 +101,11 @@ pub async fn user_menus_get(
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     if user_id <= 0 {
-        return Err(ZapError::New(-1, "参数无效：user_id".to_string()));
+        return Err(ZapError::Key(
+            -1,
+            "api.common.paramInvalid".to_string(),
+            "参数无效：user_id".to_string(),
+        ));
     }
     if !manageable(&claims, user_id).await {
         return Err(ZapError::New(

@@ -5138,4 +5138,29 @@ export default {
     deleteTitle: '删除消息',
     deleteOk: '删除成功',
   },
+
+  /** 后端错误 key（api.*）：中文兜底文案，前端按 key 翻译 */
+  api: {
+    auth: {
+      loginFailed: '用户名或密码错误',
+      totpInvalid: '两步验证码错误或已失效',
+      usernameRequired: '用户名不能为空',
+      accountBlocked: '账号已被禁用，无法登录',
+      totpRequired: '该账号已启用两步验证，请输入验证码',
+      totpEnabled: '两步验证已启用，如需更换请先关闭',
+    },
+    common: {
+      forbidden: '仅管理员可访问',
+      paramInvalid: '参数无效',
+      unsupportedOp: '不支持的操作',
+    },
+    ssl: {
+      certNotFound: '证书不存在',
+      certNameRequired: '请填写证书名称',
+      acmeEmailRequired: '请填写 ACME 账户邮箱',
+      domainRequired: '请填写至少一个域名',
+      certOwnerInvalid: '证书归属用户不合法',
+      providerNameRequired: '请填写服务商名称',
+    },
+  },
 }

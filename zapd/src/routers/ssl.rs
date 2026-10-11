@@ -92,7 +92,7 @@ async fn cert_in_scope(claims: &jwt::Claims, cert_id: i64) -> Result<i64, ZapErr
         .fetch_optional(pool)
         .await?;
     let Some((cuid,)) = row else {
-        return Err(ZapError::New(-1, "证书不存在".to_string()));
+        return Err(ZapError::Key(-1, "api.ssl.certNotFound".to_string(), "证书不存在".to_string()));
     };
     if jwt::is_admin(claims) || cuid == claims.id as i64 {
         return Ok(cuid);
@@ -123,7 +123,7 @@ async fn cert_in_scope(claims: &jwt::Claims, cert_id: i64) -> Result<i64, ZapErr
 /// 与站点归属共用同一套规则（`site::resolve_target_user`）。
 async fn resolve_cert_owner(claims: &jwt::Claims, target: i64) -> Result<(), ZapError> {
     if target <= 0 {
-        return Err(ZapError::New(-1, "证书归属用户不合法".to_string()));
+        return Err(ZapError::Key(-1, "api.ssl.certOwnerInvalid".to_string(), "证书归属用户不合法".to_string()));
     }
     crate::routers::site::resolve_target_user(claims, target).await
 }
@@ -235,7 +235,7 @@ pub async fn cert_detail(
         .await?;
     match row {
         Some(r) => Ok(Json(json!({ "code": 0, "message": "OK", "data": r }))),
-        None => Err(ZapError::New(-1, "证书不存在".to_string())),
+        None => Err(ZapError::Key(-1, "api.ssl.certNotFound".to_string(), "证书不存在".to_string())),
     }
 }
 
@@ -269,7 +269,7 @@ pub async fn cert_add(
 ) -> ZapJsonResult {
     let name = payload.name.trim().to_string();
     if name.is_empty() {
-        return Err(ZapError::New(-1, "请填写证书名称".to_string()));
+        return Err(ZapError::Key(-1, "api.ssl.certNameRequired".to_string(), "请填写证书名称".to_string()));
     }
     let has_material = !payload.cert_content.trim().is_empty()
         || !payload.key_content.trim().is_empty()
@@ -468,7 +468,7 @@ pub async fn cert_update(
     qb.push(" WHERE id = ").push_bind(payload.id);
     let r = qb.build().execute(pool).await?;
     if r.rows_affected() == 0 {
-        return Err(ZapError::New(-1, "证书不存在".to_string()));
+        return Err(ZapError::Key(-1, "api.ssl.certNotFound".to_string(), "证书不存在".to_string()));
     }
     audit::log(
         Some(&claims),
@@ -555,7 +555,7 @@ pub async fn cert_delete(
         .execute(pool)
         .await?;
     if r.rows_affected() == 0 {
-        return Err(ZapError::New(-1, "证书不存在".to_string()));
+        return Err(ZapError::Key(-1, "api.ssl.certNotFound".to_string(), "证书不存在".to_string()));
     }
     audit::log(
         Some(&claims),
@@ -1096,7 +1096,7 @@ pub async fn cert_self_sign(
 ) -> ZapJsonResult {
     let name = payload.name.trim().to_string();
     if name.is_empty() {
-        return Err(ZapError::New(-1, "请填写证书名称".to_string()));
+        return Err(ZapError::Key(-1, "api.ssl.certNameRequired".to_string(), "请填写证书名称".to_string()));
     }
     let domains = split_domains(&payload.domains);
     let days = payload.days.clamp(1, 3650);
@@ -1193,11 +1193,11 @@ pub async fn cert_letsencrypt(
 ) -> ZapJsonResult {
     let email = payload.email.trim().to_string();
     if email.is_empty() {
-        return Err(ZapError::New(-1, "请填写 ACME 账户邮箱".to_string()));
+        return Err(ZapError::Key(-1, "api.ssl.acmeEmailRequired".to_string(), "请填写 ACME 账户邮箱".to_string()));
     }
     let domains = split_domains(&payload.domains);
     if domains.is_empty() {
-        return Err(ZapError::New(-1, "请填写至少一个域名".to_string()));
+        return Err(ZapError::Key(-1, "api.ssl.domainRequired".to_string(), "请填写至少一个域名".to_string()));
     }
     // 归属用户：admin / reseller 可指定（resolve_cert_owner 校验范围）；普通用户强制自己
     let owner_user = match payload.user_id {
@@ -1387,7 +1387,7 @@ pub async fn cert_auto_renew(
             .bind(payload.id)
             .fetch_optional(pool)
             .await?
-            .ok_or_else(|| ZapError::New(-1, "证书不存在".to_string()))?;
+            .ok_or_else(|| ZapError::Key(-1, "api.ssl.certNotFound".to_string(), "证书不存在".to_string()))?;
     if on && !matches!(cert_type.as_str(), "letsencrypt" | "letsencrypt-staging") {
         return Err(ZapError::New(
             -1,
@@ -1599,7 +1599,7 @@ pub async fn acme_dns_save(
 ) -> ZapJsonResult {
     let name = payload.name.trim().to_string();
     if name.is_empty() {
-        return Err(ZapError::New(-1, "请填写服务商名称".to_string()));
+        return Err(ZapError::Key(-1, "api.ssl.providerNameRequired".to_string(), "请填写服务商名称".to_string()));
     }
     let provider = payload.provider.trim().to_string();
     if !acme::dns::providers().iter().any(|p| p.kind == provider) {

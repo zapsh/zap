@@ -20,6 +20,16 @@ function addRefreshSubscriber(cb: (token: string) => void) {
   refreshSubscribers.push(cb)
 }
 
+/**
+ * 后端错误文案本地化：优先用 key 命中前端 locale；key 缺失（未翻译 / 老接口无 key）
+ * 时回退到后端的中文 message。避免 key 漏翻时把 key 字符串直接显示给用户。
+ */
+function terr(key: string | undefined, fallback: string): string {
+  if (!key) return fallback
+  const s = t(key)
+  return s && s !== key ? s : fallback
+}
+
 const service: AxiosInstance = axios.create({
   // 优先用后端注入的前缀（zap.yaml 的 server.url_prefix），开发环境回退 .env
   baseURL: API_BASE || import.meta.env.VITE_API_URL,
@@ -76,7 +86,7 @@ service.interceptors.response.use(
     // 业务错误码：只 reject，由调用方自行处理 UI 提示（错误对象携带 code，供两步验证等场景判断）
     if (res.code !== 0) {
       // 后端 message 优先（业务错误自带文案），缺失时用前端兜底文案
-      const err: Error & { code?: number } = new Error(res.message || t('error.system'))
+      const err: Error & { code?: number } = new Error(terr(res.key, res.message) || t('error.system'))
       err.code = res.code
       return Promise.reject(err)
     }
@@ -113,7 +123,7 @@ service.interceptors.response.use(
 
         case 403:
           ElMessage({
-            message: data?.message || t('error.forbidden'),
+            message: terr(data?.key, data?.message) || t('error.forbidden'),
             type: 'error',
             duration: 5000,
             grouping: true,
@@ -140,7 +150,7 @@ service.interceptors.response.use(
             break
           }
           ElMessage({
-            message: data?.message || t('error.requestFailed', { status }),
+            message: terr(data?.key, data?.message) || t('error.requestFailed', { status }),
             type: 'error',
             duration: 5000,
             grouping: true,
