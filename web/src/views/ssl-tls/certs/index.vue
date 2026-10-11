@@ -9,24 +9,37 @@
             <el-tag type="warning" size="small" style="margin-left: 8px">SSL/TLS</el-tag>
           </div>
           <div class="header-actions">
-            <el-button type="primary" :icon="Plus" @click="openAdd">{{
-              t('sslCerts.addCert')
-            }}</el-button>
-            <el-button :icon="Key" @click="openSelfSign">{{ t('sslCerts.selfSignBtn') }}</el-button>
-            <el-button type="success" :icon="MagicStick" @click="openLetsEncrypt">{{
-              t('sslCerts.letsEncryptBtn')
-            }}</el-button>
-            <el-button :icon="IconDns" @click="openDnsDrawer">{{
-              t('sslCerts.dnsProviderBtn')
-            }}</el-button>
-            <el-button :icon="Refresh" @click="openRenewConfig">{{
-              t('sslCerts.renewConfigTitle')
-            }}</el-button>
-            <el-badge :value="orders.length" :hidden="!orders.length" type="primary">
-              <el-button :icon="Loading" @click="openOrders">{{
-                t('sslCerts.leOrdersBtn')
-              }}</el-button>
-            </el-badge>
+            <!-- 工具栏：主按钮默认申请 Let's Encrypt 证书，其余操作收进 split-button 下拉 -->
+            <el-dropdown
+              split-button
+              type="success"
+              class="le-split"
+              placement="bottom-end"
+              @click="openLetsEncrypt"
+              @command="onToolbarCommand"
+            >
+              {{ t('sslCerts.letsEncryptBtn') }}
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="add" :icon="Plus">{{
+                    t('sslCerts.addCert')
+                  }}</el-dropdown-item>
+                  <el-dropdown-item command="selfsign" :icon="Key">{{
+                    t('sslCerts.selfSignBtn')
+                  }}</el-dropdown-item>
+                  <el-dropdown-item command="dns" :icon="IconDns">{{
+                    t('sslCerts.dnsProviderBtn')
+                  }}</el-dropdown-item>
+                  <el-dropdown-item command="renew" :icon="Refresh">{{
+                    t('sslCerts.renewConfigTitle')
+                  }}</el-dropdown-item>
+                  <el-dropdown-item command="orders" divided :icon="Loading">
+                    {{ t('sslCerts.leOrdersBtn')
+                    }}{{ orders.length ? ` (${orders.length})` : '' }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
         </div>
       </template>
@@ -103,18 +116,26 @@
         <el-table-column :label="t('sslCerts.colUpdatedAt')" width="160">
           <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
         </el-table-column>
-        <el-table-column :label="t('common.operation')" width="240" fixed="right">
+        <!-- 操作：详情常驻，编辑 / 自动续期 / 删除收进「更多」下拉 -->
+        <el-table-column :label="t('common.operation')" width="130" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link @click="openDetail(row)">{{
               t('sslCerts.detail')
             }}</el-button>
-            <el-button type="primary" link @click="openEdit(row)">{{ t('common.edit') }}</el-button>
-            <el-button v-if="isAcmeCert(row)" type="primary" link @click="openAutoRenew(row)">{{
-              t('sslCerts.colAutoRenew')
-            }}</el-button>
-            <el-button type="danger" link @click="handleDelete(row)">{{
-              t('common.delete')
-            }}</el-button>
+            <el-dropdown trigger="click" @command="(c: string) => onOpCommand(c, row)">
+              <el-button link type="primary" :icon="MoreFilled" :aria-label="t('common.more')" />
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="edit">{{ t('common.edit') }}</el-dropdown-item>
+                  <el-dropdown-item v-if="isAcmeCert(row)" command="renew">{{
+                    t('sslCerts.colAutoRenew')
+                  }}</el-dropdown-item>
+                  <el-dropdown-item command="delete" divided>{{
+                    t('common.delete')
+                  }}</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -724,7 +745,6 @@ import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
   Plus,
   Key,
-  MagicStick,
   ArrowRight,
   Loading,
   CircleCheckFilled,
@@ -732,6 +752,7 @@ import {
   WarningFilled,
   Dns as IconDns,
   Refresh,
+  MoreFilled,
 } from '@/icons'
 import DnsProvidersPane from '@/views/ssl-tls/dns-providers/DnsProvidersPane.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -997,6 +1018,22 @@ function splitChain() {
 
 function daysLeft(ts: number) {
   return Math.max(0, Math.ceil((ts - nowTs.value) / 86400))
+}
+
+/** 操作列「更多」下拉命令分发：编辑 / 自动续期 / 删除 */
+function onOpCommand(cmd: string, row: SslCertItem) {
+  if (cmd === 'edit') openEdit(row)
+  else if (cmd === 'renew') openAutoRenew(row)
+  else if (cmd === 'delete') handleDelete(row)
+}
+
+/** 头部 split-button 下拉命令分发：添加 / 自签 / DNS / 续期策略 / 进行中的申请 */
+function onToolbarCommand(cmd: string) {
+  if (cmd === 'add') openAdd()
+  else if (cmd === 'selfsign') openSelfSign()
+  else if (cmd === 'dns') openDnsDrawer()
+  else if (cmd === 'renew') openRenewConfig()
+  else if (cmd === 'orders') openOrders()
 }
 
 async function openEdit(row: SslCertItem | SslCertDetail | undefined) {
@@ -1673,6 +1710,10 @@ onBeforeUnmount(() => {
 .header-left {
   display: flex;
   align-items: center;
+}
+/* split-button：左侧主按钮与右侧下拉箭头间距微调 */
+.le-split {
+  margin-left: 12px;
 }
 .title {
   font-size: 16px;
