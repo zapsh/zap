@@ -1862,15 +1862,15 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
     let _ = root_cmd("nft")
         .args([
             "insert", "rule", "inet", "zap_fw", "input",
-            "ct state established,related accept comment zap:lock:established",
+            "ct state established,related accept comment \"zap:lock:established\"",
         ])
         .output();
     // 2) ICMP（诊断 / PMTU，常规放开）
     let _ = root_cmd("nft")
-        .args(["add", "rule", "inet", "zap_fw", "input", "ip protocol icmp accept comment zap:lock:icmp"])
+        .args(["add", "rule", "inet", "zap_fw", "input", "ip protocol icmp accept comment \"zap:lock:icmp\""])
         .output();
     let _ = root_cmd("nft")
-        .args(["add", "rule", "inet", "zap_fw", "input", "ip6 nexthdr icmpv6 accept comment zap:lock:icmp6"])
+        .args(["add", "rule", "inet", "zap_fw", "input", "ip6 nexthdr icmpv6 accept comment \"zap:lock:icmp6\""])
         .output();
     // 3) 白名单端口
     let set = lock_allow_ports(panel_port)
@@ -1878,7 +1878,7 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
         .map(|p| p.to_string())
         .collect::<Vec<_>>()
         .join(",");
-    let allow = format!("tcp dport {{ {set} }} accept comment zap:lock:allow");
+    let allow = format!("tcp dport {{ {set} }} accept comment \"zap:lock:allow\"");
     let arefs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &allow]
         .iter()
         .copied()
@@ -1889,7 +1889,7 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
     }
     // 4) 最后追加「全部丢弃」兜底（位于已建连接 / 白名单之后）
     let _ = root_cmd("nft")
-        .args(["add", "rule", "inet", "zap_fw", "input", "drop comment zap:lock:drop"])
+        .args(["add", "rule", "inet", "zap_fw", "input", "drop comment \"zap:lock:drop\""])
         .output();
     Ok(())
 }

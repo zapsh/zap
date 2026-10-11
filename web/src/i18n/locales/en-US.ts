@@ -1878,19 +1878,19 @@ const enUS: Messages = {
       'About to import: {ports} port rules, {forwards} forwards, {black} blacklist entries. Continue?',
     importInvalid: 'Invalid file; a previously exported JSON file is required',
     hardenTab: 'Hardening',
-    hardenTitle: 'Lock Server Down (block all inbound)',
+    hardenTitle: 'Harden Server (block all inbound)',
     hardenDesc:
       'Only the whitelist ports below stay open; all other inbound traffic is dropped. Established connections are kept (your current session will not be cut), and SSH plus the panel port are always retained to avoid locking yourself out.',
     allowTitle: 'Allowed',
-    lockedDown: 'Server is locked down: only the whitelist ports are reachable',
-    notLockedDown: 'Server is not locked down: default-allow except for explicit rules',
-    lockBtn: 'Lock Down',
+    lockedDown: 'Server is hardened: only the whitelist ports are reachable',
+    notLockedDown: 'Server is not hardened: default-allow except for explicit rules',
+    lockBtn: 'Harden',
     unlockBtn: 'Restore Default Allow',
-    lockTitle: 'Confirm Lockdown',
+    lockTitle: 'Confirm Harden',
     lockConfirm:
       'All inbound traffic will be dropped; only ports {ports} remain reachable. Continue?',
     unlockTitle: 'Confirm Restore',
-    unlockConfirm: 'Remove the lockdown rules and restore default allow. Continue?',
+    unlockConfirm: 'Remove the hardening rules and restore default allow. Continue?',
   },
 
   /** Server - SSH service */
