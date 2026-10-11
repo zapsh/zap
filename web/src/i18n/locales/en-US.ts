@@ -5040,7 +5040,7 @@ const enUS: Messages = {
     extraDirectives: 'Extra directives',
     extraDirectivesTip: '(whitelisted nginx directives; values validated server-side)',
     extraKeyPlaceholder: 'Pick a directive',
-    addExtra: '+ Directive',
+    addExtra: 'Directive',
     staticPreset: 'Static asset preset',
     staticPresetApplied: 'Filled: expires 30d / access_log off / gzip on',
     locTargetProxy: 'e.g. http://backend_api or http://127.0.0.1:8080',

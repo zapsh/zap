@@ -4953,7 +4953,7 @@ export default {
     extraDirectives: '附加指令',
     extraDirectivesTip: '（白名单内的 nginx 指令，值格式由服务端校验）',
     extraKeyPlaceholder: '选择指令',
-    addExtra: '＋ 附加指令',
+    addExtra: '附加指令',
     staticPreset: '静态资源预设',
     staticPresetApplied: '已填入：expires 30d / access_log off / gzip on',
     locTargetProxy: '如 http://backend_api 或 http://127.0.0.1:8080',

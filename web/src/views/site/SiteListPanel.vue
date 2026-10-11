@@ -2574,10 +2574,8 @@ onMounted(() => {
                     <!-- 附加指令：白名单内动态增删（值格式由服务端校验） -->
                     <div v-if="loc.adv && loc.kind !== 'raw'" class="loc-extra">
                       <div class="adv-row adv-col">
-                        <span class="adv-label">
-                          {{ t('site.extraDirectives') }}
-                          <span class="form-tip">{{ t('site.extraDirectivesTip') }}</span>
-                        </span>
+                        <span class="adv-label">{{ t('site.extraDirectives') }}</span>
+                        <div class="form-tip">{{ t('site.extraDirectivesTip') }}</div>
                         <div v-for="(d, j) in loc.extra || []" :key="j" class="extra-row">
                           <el-select
                             v-model="d.key"
