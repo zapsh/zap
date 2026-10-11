@@ -167,42 +167,41 @@
             >
               <template #default="{ row }">
                 <el-tag
-                  v-if="isLockRemark(row)"
+                  v-if="lockRemarkOf(row)"
                   size="small"
                   type="warning"
                   effect="plain"
                 >
-                  {{ t('serverFirewall.lockRemark') }}
+                  {{ lockRemarkOf(row) }}
                 </el-tag>
                 <span v-else class="dim">{{ row.comment || '-' }}</span>
               </template>
             </el-table-column>
             <el-table-column :label="t('common.operation')" width="160" fixed="right">
               <template #default="{ row }">
+                <el-button link type="primary" @click="openEdit(row)">
+                  {{ t('common.edit') }}
+                </el-button>
                 <el-tooltip
-                  v-if="row.protected"
-                  :content="isLockRemark(row) ? t('serverFirewall.lockProtectedTip') : t('serverFirewall.protectedTip')"
+                  v-if="row.port === status.panel_port"
+                  :content="t('serverFirewall.protectedTip')"
                   placement="top"
                 >
                   <el-button link type="danger" disabled>
                     {{ t('common.delete') }}
                   </el-button>
                 </el-tooltip>
-                <template v-else>
-                  <el-button link type="primary" @click="openEdit(row)">
-                    {{ t('common.edit') }}
-                  </el-button>
-                  <el-button
-                    link
-                    type="danger"
-                    :loading="deletingId === row.id"
-                    @click="removeRule(row)"
-                  >
-                    {{ t('common.delete') }}
-                  </el-button>
+                <el-button
+                v-else
+                link
+                type="danger"
+                :loading="deletingId === row.id"
+                @click="removeRule(row)"
+                >
+                  {{ t('common.delete') }}
+                </el-button>
                 </template>
-              </template>
-            </el-table-column>
+                </el-table-column>
             <template #empty>
               <el-empty :description="t('serverFirewall.empty')" :image-size="70" />
             </template>
@@ -560,9 +559,12 @@ const allowPorts = computed(() => {
   return Array.from(set).sort((a, b) => a - b)
 })
 
-/** 该行是否为加固白名单规则（备注是后端标记 zap:lock:*） */
-function isLockRemark(row: FirewallRule): boolean {
-  return typeof row.comment === 'string' && row.comment.startsWith('zap:lock:')
+/** 该行的加固备注（后端以 zap:lock: 前缀标记，去掉前缀即显示 Ssh/http/https/zap） */
+function lockRemarkOf(row: FirewallRule): string {
+  if (typeof row.comment === 'string' && row.comment.startsWith('zap:lock:')) {
+    return row.comment.slice('zap:lock:'.length)
+  }
+  return ''
 }
 
 const status = reactive<FirewallStatus>({

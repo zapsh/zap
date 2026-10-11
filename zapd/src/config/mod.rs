@@ -129,7 +129,7 @@ pub fn new() -> ZapConfig {
     ZapConfig {
         server: ServerConfig {
             address: "0.0.0.0".to_string(),
-            port: 2600,
+            port: 2663,
             cert_file: "conf/zap.crt".to_string(),
             key_file: "conf/zap.key".to_string(),
             url_prefix: String::new(),

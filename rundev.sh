@@ -211,7 +211,7 @@ if [ ! -f "$DEV_CONF" ]; then
   cat > "$DEV_CONF" <<EOF
 server:
   address: 0.0.0.0
-  port: 2600
+  port: 2663
   cert_file: $ROOT_DIR/conf/zap.crt
   key_file: $ROOT_DIR/conf/zap.key
   url_prefix: "$CONF_URL_PREFIX"

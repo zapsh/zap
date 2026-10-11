@@ -853,7 +853,7 @@ const enUS: Messages = {
     bindAllV6: ':: (all IPv6)',
     bindIpHint: '0.0.0.0 listens on all interfaces; a single server IP can also be used',
     listenPort: 'Listen Port',
-    portHint: 'Default 2600; the panel is reachable at https://<server-ip>:<port>/',
+    portHint: 'Default 2663; the panel is reachable at https://<server-ip>:<port>/',
     saveServer: 'Save Server Settings',
 
     sslHint:
@@ -1882,7 +1882,7 @@ const enUS: Messages = {
     hardenTab: 'Hardening',
     hardenTitle: 'Harden Server (block all inbound)',
     hardenDesc:
-      'Only the whitelist ports below stay open; all other inbound traffic is dropped. Established connections are kept (your current session will not be cut), and SSH plus the panel port are always retained to avoid locking yourself out.',
+      'Only the whitelist ports below stay open; all other inbound traffic is dropped. Established connections are kept (your current session will not be cut). Each whitelisted port can be edited or deleted individually — e.g. restrict the panel port to specific source IPs.',
     allowTitle: 'Allowed',
     lockedDown: 'Server is hardened: only the whitelist ports are reachable',
     notLockedDown: 'Server is not hardened: default-allow except for explicit rules',
@@ -1893,8 +1893,6 @@ const enUS: Messages = {
       'All inbound traffic will be dropped; only ports {ports} remain reachable. Continue?',
     unlockTitle: 'Confirm Restore',
     unlockConfirm: 'Remove the hardening rules and restore default allow. Continue?',
-    lockRemark: 'Hardening whitelist',
-    lockProtectedTip: 'Hardening whitelist port: restore default allow on the Hardening tab to adjust',
   },
 
   /** Server - SSH service */

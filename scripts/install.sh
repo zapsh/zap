@@ -624,7 +624,7 @@ if [ ! -f /etc/zap/zap.yaml ]; then
     cat > /etc/zap/zap.yaml <<'EOF'
 server:
   address: 0.0.0.0
-  port: 2600
+  port: 2663
   cert_file: /etc/zap/zap.crt
   key_file: /etc/zap/zap.key
   url_prefix: ""

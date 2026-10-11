@@ -290,7 +290,7 @@ const savingPrefix = ref(false)
 const restarting = ref(false)
 const regening = ref(false)
 
-const server = reactive({ address: '0.0.0.0', port: 2600, url_prefix: '' })
+const server = reactive({ address: '0.0.0.0', port: 2663, url_prefix: '' })
 const sslForm = reactive({
   source: 'self-signed' as ZapSslSource,
   cert_id: undefined as number | undefined,
@@ -353,7 +353,7 @@ async function load() {
     const res = await getZapSettings()
     const d = res.data
     server.address = d.server.address || '0.0.0.0'
-    server.port = d.server.port || 2600
+    server.port = d.server.port || 2663
     server.url_prefix = d.server.url_prefix ?? ''
     sslForm.source = d.ssl.source || 'self-signed'
     sslForm.cert_id = d.ssl.cert_id || undefined

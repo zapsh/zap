@@ -884,7 +884,7 @@ export default {
     bindAllV6: '::（全部 IPv6）',
     bindIpHint: '0.0.0.0 表示监听全部网卡，也可填写服务器上的单个 IP',
     listenPort: '监听端口',
-    portHint: '默认 2600，访问地址形如 https://服务器IP:端口/',
+    portHint: '默认 2663，访问地址形如 https://服务器IP:端口/',
     saveServer: '保存服务设置',
 
     sslHint:
@@ -1883,7 +1883,7 @@ export default {
     hardenTab: '安全加固',
     hardenTitle: '一键加固（封禁全部入站）',
     hardenDesc:
-      '仅开放以下白名单端口，其余入站流量全部丢弃。已建立的连接不受影响（不会掐断当前会话），SSH 与面板端口强制保留，避免把自己锁在外面。',
+      '仅开放以下白名单端口，其余入站流量全部丢弃。已建立的连接不受影响（不会掐断当前会话）。白名单端口均可单独编辑 / 删除，例如把面板端口限制为仅允许特定 IP 访问。',
     allowTitle: '保持放通',
     lockedDown: '当前已加固：仅白名单端口可入站',
     notLockedDown: '当前未加固：除显式规则外，默认放行',
@@ -1893,8 +1893,6 @@ export default {
     lockConfirm: '将丢弃全部入站流量，仅保留端口 {ports} 可访问。确认继续？',
     unlockTitle: '确认恢复放行',
     unlockConfirm: '将移除加固规则，恢复默认放行（仅按既有规则过滤）。确认继续？',
-    lockRemark: '一键加固白名单',
-    lockProtectedTip: '加固白名单端口：请在「安全加固」页恢复放行后调整',
   },
 
   /** 服务器 - SSH 服务 */

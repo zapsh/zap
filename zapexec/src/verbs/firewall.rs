@@ -1463,7 +1463,12 @@ pub async fn status(panel_port: u16) -> Response {
         .map(|r| {
             rule_json(
                 r,
-                hits_panel_port(r.port, panel_port) || r.comment.starts_with("zap:lock:"),
+                // 仅加固「基础设施」规则（已建连接 / ICMP / 兜底丢弃）受保护不可单独删改；
+                // 白名单端口（zap:lock:Ssh 等）与面板端口放行规则均可单独编辑 / 删除，
+                // 便于把端口限制为仅允许特定 IP（自杀式改为 drop 仍由下方校验拦截）。
+                r.comment.starts_with("zap:lock:established")
+                    || r.comment.starts_with("zap:lock:icmp")
+                    || r.comment.starts_with("zap:lock:drop"),
             )
         })
         .collect();
@@ -1558,7 +1563,9 @@ fn nft_repin_drop_if_locked(b: Backend) {
 }
 
 /// 修改规则：先按 id 删除旧规则（含面板端口自杀保护），再新增。
-/// 受保护规则（面板端口 / 加固白名单）在前端已禁用编辑，这里再次兜底拦截。
+/// 仅加固「基础设施」规则（已建连接 / ICMP / 兜底丢弃）不可单独改；
+/// 白名单端口与面板端口放行规则允许编辑（例如把面板端口限制为仅允许特定 IP 访问），
+/// 但改成 drop/reject 仍由上方校验拦截，避免把自己锁外面。
 pub async fn rule_update(
     id: String,
     port: u16,
@@ -1585,14 +1592,16 @@ pub async fn rule_update(
         );
     }
     let b = detect();
-    // 受保护规则（面板端口放行 / 加固白名单）禁止修改
+    // 加固基础设施规则（已建连接 / ICMP / 兜底丢弃）不可单独修改
     let protected = list_rules(b).iter().any(|r| {
         r.id == id
-            && (r.comment.starts_with("zap:lock:")
-                || (r.action == "accept" && hits_panel_port(r.port, panel_port)))
+            && (r.comment.starts_with("zap:lock:established")
+                || r.comment.starts_with("zap:lock:icmp")
+                || r.comment.starts_with("zap:lock:icmp6")
+                || r.comment.starts_with("zap:lock:drop"))
     });
     if protected {
-        return Response::err(-1, "受保护规则（面板端口 / 加固白名单）不可修改".to_string());
+        return Response::err(-1, "加固基础设施规则（已建连接 / ICMP / 兜底丢弃）不可单独修改".to_string());
     }
     // 先删后加
     if let Err(e) = delete_rule(b, &id) {
@@ -1989,6 +1998,22 @@ fn lock_allow_ports(panel_port: u16) -> Vec<u16> {
     ports
 }
 
+/// 加固白名单端口在端口规则列表里的备注：22→Ssh，80→http，443→https，面板端口→zap。
+fn lock_port_remark(port: u16, panel_port: u16) -> String {
+    if port == 22 {
+        "Ssh".to_string()
+    } else if port == 80 {
+        "http".to_string()
+    } else if port == 443 {
+        "https".to_string()
+    } else if port == panel_port {
+        "zap".to_string()
+    } else {
+        //  unlikely：白名单里出现其它端口时直接以端口号标记
+        format!("zap:lock:{port}")
+    }
+}
+
 fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
     nft_ensure_chains();
     // 清掉历史加固规则（幂等）
@@ -2023,20 +2048,23 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
     let _ = root_cmd("nft")
         .args(["add", "rule", "inet", "zap_fw", "input", "ip6 nexthdr icmpv6 accept comment \"zap:lock:icmp6\""])
         .output();
-    // 3) 白名单端口
-    let set = lock_allow_ports(panel_port)
-        .iter()
-        .map(|p| p.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let allow = format!("tcp dport {{ {set} }} accept comment \"zap:lock:allow\"");
-    let arefs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &allow]
-        .iter()
-        .copied()
-        .collect();
-    let (ok, out) = run_capture("nft", &arefs);
-    if !ok {
-        return Err(format!("nft 添加白名单失败: {out}"));
+    // 3) 白名单端口（逐端口，便于单独编辑 / 限制来源；备注 Ssh/http/https/zap）
+    for p in lock_allow_ports(panel_port) {
+        let remark = lock_port_remark(p, panel_port);
+        let comment = if remark.starts_with("zap:lock:") {
+            remark
+        } else {
+            format!("zap:lock:{remark}")
+        };
+        let allow = format!("tcp dport {p} accept comment \"{comment}\"");
+        let arefs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &allow]
+            .iter()
+            .copied()
+            .collect();
+        let (ok, out) = run_capture("nft", &arefs);
+        if !ok {
+            return Err(format!("nft 添加白名单端口 {p} 失败: {out}"));
+        }
     }
     // 4) 最后追加「全部丢弃」兜底（位于已建连接 / 白名单之后）
     let _ = root_cmd("nft")
@@ -2067,12 +2095,6 @@ fn iptables_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
     if unlock {
         return Ok(());
     }
-    let ports = lock_allow_ports(panel_port);
-    let dports = ports
-        .iter()
-        .map(|p| p.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
     // 1) 已建连接放通（置顶）
     for bin in ["iptables", "ip6tables"] {
         let _ = root_cmd(bin)
@@ -2082,26 +2104,29 @@ fn iptables_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
             ])
             .output();
     }
-    // 2) 白名单（先确认放通就位，再设策略）
-    let ok4 = cmd_ok(
-        "iptables",
-        &[
-            "-A", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", &dports,
-            "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:allow",
-        ],
-    );
-    let _ = cmd_ok(
-        "ip6tables",
-        &[
-            "-A", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", &dports,
-            "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:allow",
-        ],
-    );
+    // 2) 白名单（逐端口，便于单独编辑 / 限制来源）
+    for bin in ["iptables", "ip6tables"] {
+        for p in lock_allow_ports(panel_port) {
+            let remark = lock_port_remark(p, panel_port);
+            let comment = if remark.starts_with("zap:lock:") {
+                remark
+            } else {
+                format!("zap:lock:{remark}")
+            };
+            let ok = cmd_ok(
+                bin,
+                &[
+                    "-A", "INPUT", "-p", "tcp", "--dport", &p.to_string(),
+                    "-j", "ACCEPT", "-m", "comment", "--comment", &comment,
+                ],
+            );
+            if !ok {
+                return Err(format!("{bin} 添加白名单端口 {p} 失败"));
+            }
+        }
+    }
     let _ = cmd_ok("iptables", &["-A", "INPUT", "-p", "icmp", "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:icmp"]);
     let _ = cmd_ok("ip6tables", &["-A", "INPUT", "-p", "icmpv6", "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:icmp6"]);
-    if !ok4 {
-        return Err("iptables 添加白名单失败".to_string());
-    }
     // 3) 默认丢弃（放在放通规则之后；失败则保持放开，不锁死）
     let _ = root_cmd("iptables").args(["-P", "INPUT", "DROP"]).output();
     let _ = root_cmd("ip6tables").args(["-P", "INPUT", "DROP"]).output();
