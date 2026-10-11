@@ -1607,6 +1607,7 @@ async function submitForm() {
           l.kind === 'redirect' || l.kind === 'proxy' || l.kind === 'alias' ? l.target.trim() : '',
         code: l.kind === 'redirect' || l.kind === 'deny' ? l.code : 0,
         ws: l.kind === 'proxy' ? !!l.ws : false,
+        strip_prefix: l.kind === 'proxy' ? !!l.strip_prefix : false,
         raw: l.raw || '',
         conn_timeout: l.kind === 'proxy' ? l.conn_timeout || 0 : 0,
         read_timeout: l.kind === 'proxy' ? l.read_timeout || 0 : 0,
