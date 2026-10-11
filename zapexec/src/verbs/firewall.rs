@@ -272,83 +272,121 @@ fn nft_rules() -> Vec<Rule> {
             .and_then(|s| s.split_whitespace().next())
             .unwrap_or("")
             .to_string();
-        let port = l
-            .split("dport ")
-            .nth(1)
-            .and_then(|s| s.split_whitespace().next())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+        // dport 可能是单端口，也可能是集合 `{ a,b,c }`（一键加固白名单）——逐端口展开
+        let rest = l.split("dport ").nth(1).unwrap_or("");
+        let ports: Vec<u16> = if rest.trim_start().starts_with('{') {
+            let inner = rest
+                .split('{')
+                .nth(1)
+                .and_then(|s| s.split('}').next())
+                .unwrap_or("");
+            inner
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect()
+        } else {
+            vec![rest
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)]
+        };
         let proto = if l.contains("udp dport") {
             "udp"
         } else {
             "tcp"
-        }
-        .to_string();
+        };
         let action = if l.contains("accept") {
             "accept"
         } else {
             "drop"
-        }
-        .to_string();
+        };
         let source = l
             .split("saddr ")
             .nth(1)
             .and_then(|s| s.split_whitespace().next())
             .unwrap_or("")
             .to_string();
-        out.push(Rule {
-            id: handle,
-            port,
-            proto,
-            action,
-            source,
-            comment: String::new(),
-        });
+        let comment = l
+            .split("comment \"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("")
+            .to_string();
+        for port in ports {
+            out.push(Rule {
+                id: handle.clone(),
+                port,
+                proto: proto.to_string(),
+                action: action.to_string(),
+                source: source.clone(),
+                comment: comment.clone(),
+            });
+        }
     }
     out
 }
 
 fn iptables_rules() -> Vec<Rule> {
-    // 只看 INPUT 链里带 dport 的规则，取行号作为删除 id
+    // 只看 INPUT 链里带 dpt:/dports 的规则，取行号作为删除 id
     let mut out = Vec::new();
     for line in cmd_out("iptables", &["-L", "INPUT", "-n", "--line-numbers"]).lines() {
         let l = line.trim();
-        if !l.contains("dpt:") {
+        // 单端口 dpt: 或 multiport dports（一键加固白名单）——逐端口展开
+        let ports: Vec<u16> = if l.contains("dports ") {
+            l.split("dports ")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect())
+                .unwrap_or_default()
+        } else if l.contains("dpt:") {
+            vec![l
+                .split("dpt:")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)]
+        } else {
+            continue;
+        };
+        if ports.is_empty() {
             continue;
         }
-        let mut it = l.split_whitespace();
-        let num = it.next().unwrap_or("").to_string();
+        let toks: Vec<&str> = l.split_whitespace().collect();
+        let num = toks.first().copied().unwrap_or("").to_string();
         if !num.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
-        let action = it.next().unwrap_or("").to_lowercase();
+        let action = toks.get(1).copied().unwrap_or("").to_lowercase();
         let action = if action.contains("accept") {
             "accept"
         } else {
             "drop"
-        }
-        .to_string();
-        let proto = if l.contains(" udp ") { "udp" } else { "tcp" }.to_string();
-        let port = l
-            .split("dpt:")
-            .nth(1)
-            .and_then(|s| s.split_whitespace().next())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let source = it.next().unwrap_or("0.0.0.0/0").to_string();
+        };
+        let proto = if l.contains(" udp ") { "udp" } else { "tcp" };
+        // -L 列序：num target prot opt in out source destination [扩展...]
+        let source = toks.get(6).copied().unwrap_or("0.0.0.0/0").to_string();
         let source = if source == "0.0.0.0/0" {
             String::new()
         } else {
             source
         };
-        out.push(Rule {
-            id: num,
-            port,
-            proto,
-            action,
-            source,
-            comment: String::new(),
-        });
+        let comment = l
+            .split("/* ")
+            .nth(1)
+            .and_then(|s| s.split(" */").next())
+            .unwrap_or("")
+            .to_string();
+        for port in ports {
+            out.push(Rule {
+                id: num.clone(),
+                port,
+                proto: proto.to_string(),
+                action: action.to_string(),
+                source: source.clone(),
+                comment: comment.clone(),
+            });
+        }
     }
     out
 }
@@ -1167,6 +1205,11 @@ fn nft_apply(r: &Rule) -> Result<(), String> {
         expr.push_str(&format!("ip saddr {} ", r.source));
     }
     expr.push_str(&format!("{} dport {} {}", r.proto, r.port, action));
+    // 备注写入 nft comment（引号/反斜杠会破坏语法，剔除）
+    if !r.comment.is_empty() {
+        let c = r.comment.replace('\\', "").replace('"', "'");
+        expr.push_str(&format!(" comment \"{c}\""));
+    }
     let out = root_cmd("nft")
         .args(["add", "rule", "inet", "zap_fw", "input", &expr])
         .output();
@@ -1201,6 +1244,14 @@ fn iptables_apply(r: &Rule) -> Result<(), String> {
     }
     args.push("-j".to_string());
     args.push(target.to_string());
+    // 备注写入 iptables comment
+    if !r.comment.is_empty() {
+        let c = r.comment.replace('"', "'");
+        args.push("-m".to_string());
+        args.push("comment".to_string());
+        args.push("--comment".to_string());
+        args.push(c);
+    }
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let (ok, out) = run_capture("iptables", &refs);
     if !ok {
@@ -1409,7 +1460,12 @@ pub async fn status(panel_port: u16) -> Response {
     let enabled = backend_enabled(b);
     let rules: Vec<Value> = list_rules(b)
         .iter()
-        .map(|r| rule_json(r, hits_panel_port(r.port, panel_port)))
+        .map(|r| {
+            rule_json(
+                r,
+                hits_panel_port(r.port, panel_port) || r.comment.starts_with("zap:lock:"),
+            )
+        })
         .collect();
     let forwards: Vec<Value> = list_forwards(b).iter().map(forward_json).collect();
     let blacklist: Vec<Value> = list_blacklist(b).iter().map(black_json).collect();

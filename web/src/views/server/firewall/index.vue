@@ -166,14 +166,22 @@
               show-overflow-tooltip
             >
               <template #default="{ row }">
-                <span class="dim">{{ row.comment || '-' }}</span>
+                <el-tag
+                  v-if="isLockRemark(row)"
+                  size="small"
+                  type="warning"
+                  effect="plain"
+                >
+                  {{ t('serverFirewall.lockRemark') }}
+                </el-tag>
+                <span v-else class="dim">{{ row.comment || '-' }}</span>
               </template>
             </el-table-column>
             <el-table-column :label="t('common.operation')" width="120" fixed="right">
               <template #default="{ row }">
                 <el-tooltip
                   v-if="row.protected"
-                  :content="t('serverFirewall.protectedTip')"
+                  :content="isLockRemark(row) ? t('serverFirewall.lockProtectedTip') : t('serverFirewall.protectedTip')"
                   placement="top"
                 >
                   <el-button link type="danger" disabled>
@@ -459,6 +467,11 @@ const allowPorts = computed(() => {
   if (status.panel_port) set.add(status.panel_port)
   return Array.from(set).sort((a, b) => a - b)
 })
+
+/** 该行是否为加固白名单规则（备注是后端标记 zap:lock:*） */
+function isLockRemark(row: FirewallRule): boolean {
+  return typeof row.comment === 'string' && row.comment.startsWith('zap:lock:')
+}
 
 const status = reactive<FirewallStatus>({
   backend: 'none',

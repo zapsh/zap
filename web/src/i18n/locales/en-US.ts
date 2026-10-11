@@ -1891,6 +1891,8 @@ const enUS: Messages = {
       'All inbound traffic will be dropped; only ports {ports} remain reachable. Continue?',
     unlockTitle: 'Confirm Restore',
     unlockConfirm: 'Remove the hardening rules and restore default allow. Continue?',
+    lockRemark: 'Hardening whitelist',
+    lockProtectedTip: 'Hardening whitelist port: restore default allow on the Hardening tab to adjust',
   },
 
   /** Server - SSH service */

@@ -1891,6 +1891,8 @@ export default {
     lockConfirm: '将丢弃全部入站流量，仅保留端口 {ports} 可访问。确认继续？',
     unlockTitle: '确认恢复放行',
     unlockConfirm: '将移除加固规则，恢复默认放行（仅按既有规则过滤）。确认继续？',
+    lockRemark: '一键加固白名单',
+    lockProtectedTip: '加固白名单端口：请在「安全加固」页恢复放行后调整',
   },
 
   /** 服务器 - SSH 服务 */
