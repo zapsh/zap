@@ -329,7 +329,7 @@ pub async fn list_recordings(claims: ValidatedClaims, Query(q): Query<ListQuery>
             .await?
         }
     };
-    let items: Vec<Value> = rows.iter().map(|r| row_to_json(r)).collect();
+    let items: Vec<Value> = rows.iter().map(row_to_json).collect();
     crate::zap::api_ok(items)
 }
 

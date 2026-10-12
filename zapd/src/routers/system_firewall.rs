@@ -650,15 +650,14 @@ pub async fn firewall_whitelist_delete(
         panel_port: panel_port(),
     })
     .await;
-    if let Ok(r) = st {
-        if r.code == 0 {
-            if let Some(rules) = r
+    if let Ok(r) = st
+        && r.code == 0
+            && let Some(rules) = r
                 .data
                 .as_ref()
                 .and_then(|d| d.get("whitelist"))
                 .and_then(|v| v.as_array())
-            {
-                if let Some(found) = rules
+                && let Some(found) = rules
                     .iter()
                     .find(|x| x.get("ip").and_then(|v| v.as_str()) == Some(ip.as_str()))
                 {
@@ -668,9 +667,6 @@ pub async fn firewall_whitelist_delete(
                         .unwrap_or(&ip)
                         .to_string();
                 }
-            }
-        }
-    }
     let resp =
         crate::zapexec::call(zap_proto::Request::FirewallWhitelistDelete { id: rule_id }).await?;
     audit::log(

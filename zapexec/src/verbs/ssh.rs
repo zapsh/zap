@@ -545,6 +545,22 @@ fn do_restart() -> Result<(), String> {
     }
 }
 
+pub async fn restart() -> Response {
+    tokio::task::spawn_blocking(|| {
+        // 服务名按发行版不同：RHEL 是 sshd，Debian 新版本是 ssh
+        let err = match super::svc::act("restart", "sshd") {
+            Ok(()) => return Response::ok("SSH 服务已重启", None),
+            Err(e) => e,
+        };
+        match super::svc::act("restart", "ssh") {
+            Ok(()) => Response::ok("SSH 服务已重启", None),
+            Err(e2) => Response::err(-1, format!("SSH 重启失败: {e2}（sshd: {err}）")),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,20 +624,4 @@ mod tests {
         assert!(validate_conf_path("/etc/passwd").is_err());
         assert!(validate_conf_path("/root/.ssh/config").is_err());
     }
-}
-
-pub async fn restart() -> Response {
-    tokio::task::spawn_blocking(|| {
-        // 服务名按发行版不同：RHEL 是 sshd，Debian 新版本是 ssh
-        let err = match super::svc::act("restart", "sshd") {
-            Ok(()) => return Response::ok("SSH 服务已重启", None),
-            Err(e) => e,
-        };
-        match super::svc::act("restart", "ssh") {
-            Ok(()) => Response::ok("SSH 服务已重启", None),
-            Err(e2) => Response::err(-1, format!("SSH 重启失败: {e2}（sshd: {err}）")),
-        }
-    })
-    .await
-    .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
 }

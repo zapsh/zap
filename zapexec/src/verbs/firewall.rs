@@ -742,10 +742,7 @@ fn nft_forward_add(f: &Forward) -> Result<(), String> {
         lp = f.listen_port,
         to = to
     );
-    let refs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "dstnat", &rule]
-        .iter()
-        .copied()
-        .collect();
+    let refs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "dstnat", &rule].to_vec();
     let (ok, out) = run_capture("nft", &refs);
     if !ok {
         return Err(format!("nft 添加转发规则失败: {out}"));
@@ -761,10 +758,7 @@ fn nft_forward_add(f: &Forward) -> Result<(), String> {
             "{fam_kw} daddr {ta} masquerade comment \"zap:masq:{ta}\"",
             ta = f.target_addr
         );
-        let mrefs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "srcnat", &masq]
-            .iter()
-            .copied()
-            .collect();
+        let mrefs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "srcnat", &masq].to_vec();
         let _ = root_cmd("nft").args(mrefs).output();
     }
     Ok(())
@@ -803,7 +797,7 @@ fn nft_cleanup_masq() {
             .chars()
             .take_while(|c| *c != '"' && *c != ' ')
             .collect();
-        if live.iter().any(|a| *a == ta) {
+        if live.contains(&ta) {
             continue;
         }
         if let Some((_, h)) = l.split_once("# handle ") {
@@ -849,10 +843,7 @@ fn nft_blacklist_add(ip: &str) -> Result<(), String> {
     nft_ensure_chains();
     let fam = if is_ipv4_cidr(ip) { "ip" } else { "ip6" };
     let rule = format!("{fam} saddr {ip} drop comment \"zap:bl:{ip}\"");
-    let refs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &rule]
-        .iter()
-        .copied()
-        .collect();
+    let refs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &rule].to_vec();
     let (ok, out) = run_capture("nft", &refs);
     if !ok {
         return Err(format!("nft 添加黑名单失败: {out}"));
@@ -892,17 +883,11 @@ fn nft_whitelist_add(ip: &str) -> Result<(), String> {
     nft_ensure_chains();
     let fam = if is_ipv4_cidr(ip) { "ip" } else { "ip6" };
     let rule = format!("{fam} saddr {ip} accept comment \"zap:wl:{ip}\"");
-    let refs: Vec<&str> = ["insert", "rule", "inet", "zap_fw", "input", &rule]
-        .iter()
-        .copied()
-        .collect();
+    let refs: Vec<&str> = ["insert", "rule", "inet", "zap_fw", "input", &rule].to_vec();
     let (ok, out) = run_capture("nft", &refs);
     if !ok {
         // 老版本 nft 不支持 insert rule：退化为追加
-        let refs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &rule]
-            .iter()
-            .copied()
-            .collect();
+        let refs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &rule].to_vec();
         let (ok2, out2) = run_capture("nft", &refs);
         if !ok2 {
             return Err(format!("nft 添加白名单失败: {out} / {out2}"));
@@ -2538,10 +2523,7 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
             format!("zap:lock:{remark}")
         };
         let allow = format!("tcp dport {p} accept comment \"{comment}\"");
-        let arefs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &allow]
-            .iter()
-            .copied()
-            .collect();
+        let arefs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &allow].to_vec();
         let (ok, out) = run_capture("nft", &arefs);
         if !ok {
             return Err(format!("nft 添加白名单端口 {p} 失败: {out}"));

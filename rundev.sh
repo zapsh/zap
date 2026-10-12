@@ -92,19 +92,14 @@ cd "$ROOT_DIR"
 
 # --with-pro 是手动开关（同 build.sh）：不带就是开源构建，产物与现在完全一致
 if [ "$WITH_PRO" = true ]; then
-  # 模块源码不在本仓库，没 clone 就直接失败：开着开关编出「假 Pro 版」更危险
-  [ -f "$ROOT_DIR/zappro/src/mod.rs" ] \
+  [ -f "$ROOT_DIR/zappro/pro.sh" ] \
     || die "指定 --with-pro 但未找到 $ROOT_DIR/zappro（先 clone 商业模块仓库）"
-  # Pro 页面不在本仓库（在 zappro/web/views）：每次都同步一次，页面改了不用记着手动跑
-  # setup 是 rm -rf + 全量拷贝，幂等，几毫秒的事
-  info "同步 Pro 页面 (zappro/pro.sh setup) ..."
+  info "sync pro page ..."
   bash "$ROOT_DIR/zappro/pro.sh" setup || die "同步 Pro 页面失败"
-  info "启用商业模块 Zap Pro（--features zapd/commercial）"
+  info "enable Zap Pro(-features zapd/commercial)"
 fi
 
-# clippy 用 --all-features 会把 zapd 的 commercial 也打开 —— 开源检出（没有 zappro/）
-# 会直接编不过。模块在就用全 feature，不在就按默认 feature 检查。
-if [ -f "$ROOT_DIR/zappro/src/mod.rs" ]; then
+if [ -f "$ROOT_DIR/zappro/pro.sh" ]; then
   CLIPPY_FEATURES=(--all-features)
 else
   CLIPPY_FEATURES=()

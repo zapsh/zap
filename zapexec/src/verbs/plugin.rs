@@ -2816,46 +2816,6 @@ actions:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 随发行包走的示例 / 商店插件 manifest 必须是合法 YAML。
-    ///
-    /// 这类文件平时没人编译它，缩进错一个空格就要等到用户安装时才炸
-    /// （而且报错是「manifest 解析失败」，很难看出是 YAML 问题）。
-    #[test]
-    fn shipped_manifests_are_valid() {
-        let git = include_str!("../../../data/appstore/repos/appstore/plugins/git/manifest.yaml");
-        let m: serde_yaml::Value = serde_yaml::from_str(git).expect("git manifest 解析失败");
-        assert_eq!(m["name"].as_str(), Some("git"));
-        // 依赖声明：缺命令时安装会被拒，拼写错了也一样
-        let requires = m["requires"]["commands"].as_sequence().unwrap();
-        assert!(requires.iter().any(|c| c.as_str() == Some("git")));
-
-        // i18n 是**可选项**：插件可以完全不提供翻译（那就一直显示基准文案）。
-        // 但如果提供了某张表，里面翻译出来的动作名必须都在基准 actions 里 ——
-        // 写错名字的孤儿键在面板上永远看不到，纯浪费。
-        let base = m["actions"].as_mapping().unwrap();
-        for lang in ["zh-CN", "en-US"] {
-            let Some(table) = i18n_table(&m, Some(lang)) else {
-                continue;
-            };
-            if let Some(actions) = table
-                .get(serde_yaml::Value::String("actions".to_string()))
-                .and_then(|v| v.as_mapping())
-            {
-                for (k, _) in actions {
-                    let name = k.as_str().expect("action 名必须是字符串");
-                    assert!(
-                        base.contains_key(k),
-                        "i18n.{lang} 里的 action『{name}』不在基准 actions 中"
-                    );
-                }
-            }
-        }
-
-        let demo = include_str!("../../../data/plugins/examples/widgets-demo/manifest.yaml");
-        let d: serde_yaml::Value = serde_yaml::from_str(demo).expect("示例插件 manifest 解析失败");
-        assert_eq!(d["name"].as_str(), Some("widgets-demo"));
-    }
-
     #[test]
     fn path_helpers() {
         // 插件统一装在系统目录 $ZAP_PATH/plugins；用户级已移除

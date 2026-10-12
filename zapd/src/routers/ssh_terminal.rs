@@ -62,9 +62,21 @@ const SSH_FAIL_WINDOW: Duration = Duration::from_secs(300);
 /// 全局并发会话配额（见 `MAX_SSH_SESSIONS`）
 static SSH_SESSION_SLOTS: Semaphore = Semaphore::const_new(MAX_SSH_SESSIONS);
 
+/// SSH 认证失败的键：用户 ID 和 IP 的组合
+type AuthKey = (i64, i64);
+
+/// SSH 认证失败的值：失败次数和最后一次失败时间
+type AuthFailRecord = (u32, Instant);
+
+/// SSH 认证失败记录表
+type AuthFailMap = HashMap<AuthKey, AuthFailRecord>;
+
 /// 认证失败计数：`(user_id, conn_id) -> (失败次数, 首次失败时刻)`
-static SSH_AUTH_FAILS: LazyLock<Mutex<HashMap<(i64, i64), (u32, Instant)>>> =
+static SSH_AUTH_FAILS: LazyLock<Mutex<AuthFailMap>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+// static SSH_AUTH_FAILS: LazyLock<Mutex<HashMap<(i64, i64), (u32, Instant)>>> =
+//     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// 结构化错误帧：和 resize / ask_password 同一套控制消息协议。
 ///
@@ -912,7 +924,7 @@ async fn handle_terminal(
             return;
         }
         Err(je) => {
-            let detail = if let Some(p) = je.try_into_panic().ok() {
+            let detail = if let Ok(p) = je.try_into_panic() {
                 let msg = panic_message(p);
                 error!("SSH connect panicked (connection {}): {}", conn_id, msg);
                 format!("连接过程发生内部错误（已记录日志）: {msg}")
@@ -1190,9 +1202,7 @@ fn parse_private_key(content: &str) -> Result<PrivateKey, String> {
 /// 计数以「用户 + 连接」为维度：别人失败不会连累你，你换一条连接也不受影响。
 fn ssh_auth_blocked(user_id: i64, conn_id: i64) -> Option<u64> {
     let mut fails = SSH_AUTH_FAILS.lock().unwrap();
-    let Some((count, first)) = fails.get(&(user_id, conn_id)) else {
-        return None;
-    };
+    let (count, first) = fails.get(&(user_id, conn_id))?;
     if *count < SSH_FAIL_LIMIT {
         return None;
     }

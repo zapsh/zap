@@ -196,11 +196,10 @@ pub fn render(spec: &NginxGlobalSpec, ctx: &RenderCtx) -> String {
     let g = &spec.general;
     push_val(&mut o, "", "user", &g.user);
     push_val(&mut o, "", "worker_processes", &g.worker_processes);
-    if let Some(p) = g.worker_priority {
-        if (-20..=19).contains(&p) {
+    if let Some(p) = g.worker_priority
+        && (-20..=19).contains(&p) {
             push_num(&mut o, "", "worker_priority", Some(p));
         }
-    }
     push_num(&mut o, "", "worker_rlimit_nofile", g.worker_rlimit_nofile);
     push_val(
         &mut o,
@@ -425,29 +424,25 @@ fn emit_cache_zones(o: &mut String, zones: &[NginxCacheZone], i: &str) {
         if let Some(n) = z.loader_files {
             o.push_str(&format!(" loader_files={n}"));
         }
-        if let Some(v) = &z.loader_sleep {
-            if !v.trim().is_empty() {
+        if let Some(v) = &z.loader_sleep
+            && !v.trim().is_empty() {
                 o.push_str(&format!(" loader_sleep={}", clean(v)));
             }
-        }
-        if let Some(v) = &z.loader_threshold {
-            if !v.trim().is_empty() {
+        if let Some(v) = &z.loader_threshold
+            && !v.trim().is_empty() {
                 o.push_str(&format!(" loader_threshold={}", clean(v)));
             }
-        }
         if let Some(n) = z.manager_files {
             o.push_str(&format!(" manager_files={n}"));
         }
-        if let Some(v) = &z.manager_sleep {
-            if !v.trim().is_empty() {
+        if let Some(v) = &z.manager_sleep
+            && !v.trim().is_empty() {
                 o.push_str(&format!(" manager_sleep={}", clean(v)));
             }
-        }
-        if let Some(v) = &z.manager_threshold {
-            if !v.trim().is_empty() {
+        if let Some(v) = &z.manager_threshold
+            && !v.trim().is_empty() {
                 o.push_str(&format!(" manager_threshold={}", clean(v)));
             }
-        }
         let extra = clean(&z.extra);
         if !extra.is_empty() {
             o.push(' ');
@@ -1089,8 +1084,8 @@ pub fn scan_conflicts(rendered: &str, ctx: &RenderCtx) -> Vec<String> {
                 if t.is_empty() {
                     continue;
                 }
-                if let Some((n, _)) = t.split_once(char::is_whitespace) {
-                    if depth == 0 && names.contains(&n.to_string()) {
+                if let Some((n, _)) = t.split_once(char::is_whitespace)
+                    && depth == 0 && names.contains(&n.to_string()) {
                         hits.push(format!(
                             "{}:{} 的 `{}` 与本次生成的同名指令冲突（nginx 会报 duplicate）",
                             p.display(),
@@ -1098,7 +1093,6 @@ pub fn scan_conflicts(rendered: &str, ctx: &RenderCtx) -> Vec<String> {
                             n
                         ));
                     }
-                }
                 depth = depth
                     .saturating_add(t.chars().filter(|c| *c == '{').count())
                     .saturating_sub(t.chars().filter(|c| *c == '}').count());
@@ -1206,7 +1200,7 @@ fn preview_inner(spec_json: &str) -> Response {
 
 /// 读取当前 nginx.conf → 结构模型（文件不存在时给出面板默认模型）。
 pub async fn current_spec() -> Response {
-    tokio::task::spawn_blocking(|| current_spec_inner())
+    tokio::task::spawn_blocking(current_spec_inner)
         .await
         .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
 }
@@ -1277,9 +1271,7 @@ fn apply_inner(spec_json: &str) -> Response {
 
     let reloaded = site::reload_nginx(&bin);
     let old = std::fs::read_to_string(
-        &backup
-            .as_ref()
-            .map(|p| p.as_path())
+        backup.as_deref()
             .unwrap_or(Path::new("")),
     )
     .unwrap_or_default();

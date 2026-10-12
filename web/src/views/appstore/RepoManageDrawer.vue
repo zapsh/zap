@@ -166,7 +166,7 @@ async function handleAdd() {
     ElMessage.success(t('appstore.addStarted'))
     addForm.value = { name: '', url: '' }
     mode.value = 'list'
-    emit('log', resp.data.run_id, t('appstore.addRepoLogTitle'))
+    emit('log', resp.data.task_id, t('appstore.addRepoLogTitle'))
     setTimeout(() => {
       loadRepos()
       emit('changed')
@@ -182,7 +182,7 @@ async function handleUpdate(r: RepoSource) {
   try {
     const resp = await updateRepo({ id: r.id })
     ElMessage.success(t('appstore.updateStarted'))
-    emit('log', resp.data.run_id, t('appstore.updateLogTitle', { name: r.name || r.id }))
+    emit('log', resp.data.task_id, t('appstore.updateLogTitle', { name: r.name || r.id }))
     setTimeout(() => {
       loadRepos()
       emit('changed')

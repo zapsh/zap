@@ -418,7 +418,7 @@ fn parse_failure(line: &str) -> Option<String> {
             .split_whitespace()
             .next()
             .unwrap_or("")
-            .trim_end_matches(|c: char| c == ',' || c == ';');
+            .trim_end_matches([',', ';']);
         if tok.parse::<std::net::IpAddr>().is_ok() {
             return Some(tok.to_string());
         }
@@ -427,7 +427,7 @@ fn parse_failure(line: &str) -> Option<String> {
     if let Some(idx) = l.find("authenticating user") {
         let rest = &l[idx + "authenticating user".len()..];
         for tok in rest.split_whitespace().skip(1) {
-            let tok = tok.trim_end_matches(|c: char| c == ',' || c == ';');
+            let tok = tok.trim_end_matches([',', ';']);
             if tok.parse::<std::net::IpAddr>().is_ok() {
                 return Some(tok.to_string());
             }
@@ -439,7 +439,7 @@ fn parse_failure(line: &str) -> Option<String> {
             .split_whitespace()
             .next()
             .unwrap_or("")
-            .trim_end_matches(|c: char| c == ',' || c == ';');
+            .trim_end_matches([',', ';']);
         if tok.parse::<std::net::IpAddr>().is_ok() {
             return Some(tok.to_string());
         }
@@ -450,7 +450,7 @@ fn parse_failure(line: &str) -> Option<String> {
 /// 行内第一个看起来像 IP 的 token（正则没写捕获组时的兜底提取）。
 fn first_ip_in_line(line: &str) -> Option<String> {
     for tok in line.split_whitespace() {
-        let tok = tok.trim_end_matches(|c: char| c == ',' || c == ';' || c == ':');
+        let tok = tok.trim_end_matches([',', ';', ':']);
         if tok.parse::<std::net::IpAddr>().is_ok() {
             return Some(tok.to_string());
         }
@@ -726,11 +726,10 @@ async fn tick(s: &BanSettings) {
                 if rid != rule.id {
                     continue;
                 }
-                if let Some(re) = &re {
-                    if !re.is_match(&line) {
+                if let Some(re) = &re
+                    && !re.is_match(&line) {
                         continue;
                     }
-                }
                 new_failures.push((rule.id.clone(), ip));
             }
             st.sources.insert(rule.id.clone(), "面板登录".to_string());
@@ -805,7 +804,7 @@ async fn tick(s: &BanSettings) {
             .iter()
             .map(|(k, (n, _, _))| (k.clone(), *n))
             .collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1));
+        ranked.sort_by_key(|a| std::cmp::Reverse(a.1));
         let keep: std::collections::HashSet<String> =
             ranked.into_iter().take(100).map(|(k, _)| k).collect();
         st.ignored.retain(|k, _| keep.contains(k));

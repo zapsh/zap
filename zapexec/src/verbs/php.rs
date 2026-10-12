@@ -391,7 +391,7 @@ fn render_pool_conf(
             DEFAULT_DISABLE_FUNCTIONS.to_string(),
         ),
     ]);
-    for (_k, v) in admin_value.iter_mut() {
+    for v in admin_value.values_mut() {
         *v = v.replace("{home}", home_dir).replace("{user}", linux_user);
     }
     for (k, v) in admin_value_user {
