@@ -452,7 +452,7 @@ const WL_KEY: &str = "firewall.whitelist";
 ///
 /// 与防火墙后端的 accept 规则是两回事：
 /// - 后端规则决定「流量放行」；
-/// - 这份清单决定「面板绝不允许把它加进黑名单 / 爆破防护不封它」。
+/// - 这份清单决定「面板绝不允许把它加进黑名单 / IP Ban 不封它」。
 async fn wl_load() -> Vec<serde_json::Value> {
     let pool = crate::db::get_db_pool().await;
     let raw: Option<(String,)> = sqlx::query_as("SELECT value FROM global_settings WHERE key=?")
@@ -611,7 +611,7 @@ pub async fn firewall_whitelist_delete(
     Ok(Json(json!({ "code": 0, "message": resp.message })))
 }
 
-// ── SSH 爆破防护（fail2ban）─────────────────────────────────────
+// ── IP Ban（fail2ban）──────────────────────────────────────────
 
 /// GET /system/config/firewall/ban/status
 pub async fn firewall_ban_status(claims: ValidatedClaims) -> ZapJsonResult {

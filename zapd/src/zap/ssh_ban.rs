@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! SSH 爆破防护（面板内置 fail2ban）：
+//! IP Ban（面板内置 fail2ban）：
 //!
 //! 周期性解析 sshd 认证失败日志 → 窗口内达到阈值即封禁 → 到期自动解封。
 //! 规则本身落在防火墙后端（复用 `firewall.blacklist_*` 动词），这里只负责
@@ -7,7 +7,8 @@
 //!
 //! 关键取舍：
 //! - 白名单（防火墙白名单 + 设置里的忽略 IP）永不被封；
-//! - 默认忽略内网 / 环回，避免误伤运维跳板机（可在设置里关掉）；
+//! - 默认不忽略内网 / 环回，让功能对 LAN 来源的爆破也生效（遗留的运维跳板机
+//!   请加入白名单，而不是默认放过）；如需忽略内网可在设置里打开开关；
 //! - 封禁动作走 zapexec，解封时按 IP 反查规则 id，兼容各后端不同的 id 形态。
 
 use std::time::Duration;
@@ -37,8 +38,9 @@ fn def_ban_time() -> u32 {
 fn def_interval() -> u32 {
     60
 }
-fn def_true() -> bool {
-    true
+/// 默认「不忽略内网」：让功能对 LAN 来源的爆破也生效（跳板机请加白名单）。
+fn def_ignore_private() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,8 +59,8 @@ pub struct BanSettings {
     /// 扫描间隔（秒）
     #[serde(default = "def_interval")]
     pub interval: u32,
-    /// 忽略内网 / 环回地址（默认开，防止误伤跳板机）
-    #[serde(default = "def_true")]
+    /// 忽略内网 / 环回地址（默认关：让功能对 LAN 爆破也生效，跳板机请加白名单）
+    #[serde(default = "def_ignore_private")]
     pub ignore_private: bool,
     /// 额外忽略的 IP / CIDR（逗号分隔写在 JSON 数组里）
     #[serde(default)]
@@ -76,7 +78,7 @@ impl Default for BanSettings {
             find_time: def_find_time(),
             ban_time: def_ban_time(),
             interval: def_interval(),
-            ignore_private: def_true(),
+            ignore_private: def_ignore_private(),
             ignored_ips: Vec::new(),
             log_file: String::new(),
         }
@@ -493,7 +495,7 @@ async fn remove_firewall_rule(ip: &str) -> Result<(), String> {
 
 // ── 主循环 ─────────────────────────────────────────────────────
 
-/// 启动爆破防护循环（后台任务）。默认关闭，用户在面板开启后生效。
+/// 启动 IP Ban 循环（后台任务）。默认关闭，用户在面板开启后生效。
 pub fn start() {
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -596,10 +598,10 @@ async fn tick(s: &BanSettings) {
     });
     for ip in &expired {
         if let Err(e) = remove_firewall_rule(ip).await {
-            warn!("爆破防护解封 {ip} 失败: {e}");
+            warn!("IP Ban 解封 {ip} 失败: {e}");
             st.last_error = format!("解封 {ip} 失败: {e}");
         } else {
-            info!("爆破防护到期解封: {ip}");
+            info!("IP Ban 到期解封: {ip}");
         }
     }
 
@@ -640,7 +642,7 @@ async fn tick(s: &BanSettings) {
     let already: Vec<String> = list.iter().map(|b| b.ip.clone()).collect();
     for (ip, (count, _)) in st.hits.clone() {
         if count < s.max_retry {
-            debug!("爆破防护：{ip} 失败 {count} 次，未达阈值 {}", s.max_retry);
+            debug!("IP Ban：{ip} 失败 {count} 次，未达阈值 {}", s.max_retry);
             continue;
         }
         if already.contains(&ip) || skip_reason(&ip, s, &wl).await.is_some() {
@@ -659,10 +661,10 @@ async fn tick(s: &BanSettings) {
                 new_bans += 1;
                 // 已封的 IP 不再重复计数
                 st.hits.remove(&ip);
-                info!("爆破防护封禁 {ip}（失败 {count} 次）");
+                info!("IP Ban 封禁 {ip}（失败 {count} 次）");
             }
             Err(e) => {
-                warn!("爆破防护封禁 {ip} 失败: {e}");
+                warn!("IP Ban 封禁 {ip} 失败: {e}");
                 st.last_error = format!("封禁 {ip} 失败: {e}");
             }
         }
@@ -755,21 +757,23 @@ mod tests {
 
     #[test]
     fn skip_reason_explains_why_not_banned() {
-        let s = BanSettings::default(); // ignore_private = true
+        // 默认 ignore_private=false：内网也会封，只有白名单 / 环回才跳过
+        let mut s = BanSettings::default();
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         rt.block_on(async {
-            // 内网 → 命中「忽略内网」
-            assert!(skip_reason("192.168.1.11", &s, &[]).await.is_some());
+            // 默认不开忽略内网：内网 → 不跳过
+            assert!(skip_reason("192.168.1.11", &s, &[]).await.is_none());
             // 公网 → 不跳过
             assert!(skip_reason("1.2.3.4", &s, &[]).await.is_none());
+            // 环回 → 跳过
+            assert!(skip_reason("127.0.0.1", &s, &[]).await.is_some());
             // 白名单 CIDR 命中
             let r = skip_reason("1.2.3.4", &s, &["1.2.3.0/24".to_string()]).await;
             assert!(r.is_some());
             assert!(r.unwrap().contains("1.2.3.0/24"));
-            // 关掉忽略内网后，内网仍可封
-            let mut s2 = s.clone();
-            s2.ignore_private = false;
-            assert!(skip_reason("192.168.1.11", &s2, &[]).await.is_none());
+            // 打开忽略内网后，内网才被跳过
+            s.ignore_private = true;
+            assert!(skip_reason("192.168.1.11", &s, &[]).await.is_some());
         });
     }
 

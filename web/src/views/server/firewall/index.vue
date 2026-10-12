@@ -440,7 +440,7 @@
           </el-table>
         </el-tab-pane>
 
-        <!-- ── SSH 爆破防护（fail2ban） ─────────────────── -->
+        <!-- ── IP Ban（fail2ban） ─────────────────── -->
         <el-tab-pane :label="t('serverFirewall.banTab')" name="ban">
           <div class="tab-desc">{{ t('serverFirewall.banDesc') }}</div>
 
@@ -466,6 +466,14 @@
             :closable="false"
             show-icon
             :title="t('serverFirewall.banNoLogTip')"
+            style="margin-bottom: 12px"
+          />
+          <el-alert
+            v-if="ban.settings.enabled && !ban.settings.ignore_private"
+            type="info"
+            :closable="false"
+            show-icon
+            :title="t('serverFirewall.banPrivateOnInfo')"
             style="margin-bottom: 12px"
           />
           <el-alert

@@ -435,7 +435,7 @@ fn api_routers() -> Router {
             "/system/config/firewall/blacklist/delete",
             post(system_firewall::firewall_blacklist_delete),
         )
-        // IP 白名单（放行优先；命中后黑名单 / 爆破防护都不再封它）
+        // IP 白名单（放行优先；命中后黑名单 / IP Ban 都不再封它）
         .route(
             "/system/config/firewall/whitelist",
             get(system_firewall::firewall_whitelist_list),
@@ -448,7 +448,7 @@ fn api_routers() -> Router {
             "/system/config/firewall/whitelist/delete",
             post(system_firewall::firewall_whitelist_delete),
         )
-        // SSH 爆破防护（内置 fail2ban）：设置 / 状态 / 手动解封
+        // IP Ban（内置 fail2ban）：设置 / 状态 / 手动解封
         .route(
             "/system/config/firewall/ban/status",
             get(system_firewall::firewall_ban_status),

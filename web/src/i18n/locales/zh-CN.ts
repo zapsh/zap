@@ -1874,9 +1874,9 @@ export default {
     blackAdded: '已加入黑名单',
     blackDeleted: '已移出黑名单',
     deleteBlackConfirm: '确认将 {ip} 移出黑名单？',
-    // ── IP 白名单（放行优先于黑名单与爆破防护）──
+    // ── IP 白名单（放行优先于黑名单与 IP Ban）──
     whitelistTab: 'IP 白名单',
-    whitelistDesc: '白名单内的 IP / CIDR 一律放行：既不会被黑名单封禁，也不会被爆破防护自动封禁。',
+    whitelistDesc: '白名单内的 IP / CIDR 一律放行：既不会被黑名单封禁，也不会被 IP Ban 自动封禁。',
     addWhite: '加入白名单',
     whitelistEmpty: '白名单为空',
     whiteAdded: '已加入白名单',
@@ -1887,13 +1887,13 @@ export default {
     whiteRuleCol: '防火墙规则',
     whiteRuleOk: '已生效',
     whiteRuleMissing: '未同步',
-    // ── SSH 爆破防护（内置 fail2ban）──
-    banTab: '爆破防护',
+    // ── IP Ban（内置 fail2ban）──
+    banTab: 'IP Ban',
     banDesc:
       '周期性解析 sshd 认证失败日志，同一 IP 在统计窗口内失败达到阈值即自动加入黑名单，到期自动解封。',
-    banOffTip: '爆破防护当前未启用。开启后会持续扫描 sshd 日志，请确认白名单已包含自己的固定 IP。',
-    banOnTip: '防护运行中，正在监听 {log}，当前封禁 {n} 个 IP。',
-    banEnable: '启用爆破防护',
+    banOffTip: 'IP Ban 当前未启用。开启后会持续扫描 sshd 日志，请确认白名单已包含自己的固定 IP。',
+    banOnTip: 'IP Ban 运行中，正在监听 {log}，当前封禁 {n} 个 IP。',
+    banEnable: '启用 IP Ban',
     banMaxRetry: '失败次数阈值',
     banMaxRetryTip: '窗口内失败达到此次数即封禁',
     banFindTime: '统计窗口',
@@ -1902,7 +1902,7 @@ export default {
     banInterval: '扫描间隔',
     seconds: '秒',
     banIgnorePrivate: '忽略内网地址',
-    banIgnorePrivateTip: '默认开启，避免误伤跳板机 / 容器网段',
+    banIgnorePrivateTip: '默认关闭：内网 IP 也会因多次失败被封禁；若管理 IP 在 LAN 请先加白名单',
     banIgnoredIps: '额外忽略的 IP',
     banIgnoredIpsTip: '逗号分隔，支持 IP 与 CIDR，如 8.8.8.8, 192.168.1.0/24',
     banLogFile: '日志文件',
@@ -1922,8 +1922,10 @@ export default {
     banLastSeen: '最近失败',
     banIgnoredTitle: '被忽略的来源（不会封禁）',
     banSkipReason: '跳过原因',
-    banIgnoredTip: '检测到 {n} 个来源的失败被忽略，因此不会封禁。内网地址默认忽略，可在下方关闭。',
+    banIgnoredTip: '检测到 {n} 个来源的失败被忽略，因此不会封禁。如想封内网，请在下方关闭「忽略内网地址」。',
     banDisableIgnorePrivate: '关闭忽略内网',
+    banPrivateOnInfo:
+      '当前未忽略内网地址：LAN / 容器网段的来源失败达到阈值也会被封禁。若你的管理 IP 在相同网段，请先加入上方「IP 白名单」，否则可能把自己锁在门外。',
     backupTab: '导入导出',
     exportTip: '导出端口规则、端口转发与 IP 黑名单，保存为 JSON 文件，可在其它服务器导入。',
     exportBtn: '导出规则',

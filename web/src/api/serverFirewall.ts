@@ -64,14 +64,14 @@ export interface FirewallBlackEntry {
   comment: string
 }
 
-/** IP 白名单条目：放行优先，命中后黑名单 / 爆破防护都不再封它 */
+/** IP 白名单条目：放行优先，命中后黑名单 / IP Ban 都不再封它 */
 export interface FirewallWhiteEntry {
   ip: string
   comment?: string
   created_at?: number
 }
 
-/** 爆破防护（fail2ban）设置 */
+/** IP Ban（fail2ban）设置 */
 export interface BanSettings {
   enabled: boolean
   max_retry: number
@@ -232,14 +232,14 @@ export function deleteFirewallWhitelist(ip: string) {
   return http.post<ApiResponse>('/system/config/firewall/whitelist/delete', { ip })
 }
 
-// ── SSH 爆破防护（内置 fail2ban）─────────────────────────────
+// ── IP Ban（内置 fail2ban）─────────────────────────────
 
-/** 爆破防护状态：设置 + 生效封禁 + 正在计数的 IP */
+/** IP Ban 状态：设置 + 生效封禁 + 正在计数的 IP */
 export function getBanStatus() {
   return http.get<ApiResponse<BanStatus>>('/system/config/firewall/ban/status')
 }
 
-/** 保存爆破防护设置 */
+/** 保存 IP Ban 设置 */
 export function saveBanSettings(data: BanSettings) {
   return http.post<ApiResponse>('/system/config/firewall/ban/settings', data)
 }

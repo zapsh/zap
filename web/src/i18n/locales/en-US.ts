@@ -1870,10 +1870,10 @@ const enUS: Messages = {
     blackAdded: 'Added to blacklist',
     blackDeleted: 'Removed from blacklist',
     deleteBlackConfirm: 'Remove {ip} from the blacklist?',
-    // ── IP whitelist (takes precedence over blacklist & ban) ──
+    // ── IP whitelist (takes precedence over blacklist & IP Ban) ──
     whitelistTab: 'IP Whitelist',
     whitelistDesc:
-      'Whitelisted IPs / CIDRs are always allowed: never blacklisted and never auto-banned by brute-force protection.',
+      'Whitelisted IPs / CIDRs are always allowed: never blacklisted and never auto-banned by IP Ban.',
     addWhite: 'Whitelist',
     whitelistEmpty: 'Whitelist is empty',
     whiteAdded: 'Added to whitelist',
@@ -1884,14 +1884,14 @@ const enUS: Messages = {
     whiteRuleCol: 'Firewall rule',
     whiteRuleOk: 'Active',
     whiteRuleMissing: 'Not synced',
-    // ── SSH brute-force protection (built-in fail2ban) ──
-    banTab: 'Brute-force',
+    // ── IP Ban (built-in fail2ban) ──
+    banTab: 'IP Ban',
     banDesc:
       'Periodically parses sshd auth-failure logs: an IP that fails max_retry times inside the window is blacklisted automatically and released when the ban expires.',
     banOffTip:
-      'Brute-force protection is disabled. Before enabling it, make sure your fixed IP is in the whitelist.',
-    banOnTip: 'Protection running, watching {log}, currently banning {n} IP(s).',
-    banEnable: 'Enable brute-force protection',
+      'IP Ban is disabled. Once enabled it keeps scanning sshd logs; make sure your own fixed IP is in the whitelist first.',
+    banOnTip: 'IP Ban running, watching {log}, currently banning {n} IP(s).',
+    banEnable: 'Enable IP Ban',
     banMaxRetry: 'Failure threshold',
     banMaxRetryTip: 'failures inside the window that trigger a ban',
     banFindTime: 'Counting window',
@@ -1900,7 +1900,8 @@ const enUS: Messages = {
     banInterval: 'Scan interval',
     seconds: 's',
     banIgnorePrivate: 'Ignore private ranges',
-    banIgnorePrivateTip: 'on by default, avoids banning jump hosts / container nets',
+    banIgnorePrivateTip:
+      'off by default: LAN IPs can also be banned on repeated failures; add your mgmt IP to the whitelist first',
     banIgnoredIps: 'Extra ignored IPs',
     banIgnoredIpsTip: 'comma separated, IP or CIDR, e.g. 8.8.8.8, 192.168.1.0/24',
     banLogFile: 'Log file',
@@ -1924,8 +1925,10 @@ const enUS: Messages = {
     banIgnoredTitle: 'Ignored sources (never banned)',
     banSkipReason: 'Skip reason',
     banIgnoredTip:
-      'Failures from {n} source(s) are ignored, so they will not be banned. Private ranges are ignored by default; you can turn that off below.',
+      'Failures from {n} source(s) are ignored, so they will not be banned. Turn off "Ignore private ranges" below to ban LAN IPs too.',
     banDisableIgnorePrivate: 'Stop ignoring private ranges',
+    banPrivateOnInfo:
+      'Private ranges are NOT ignored: LAN / container sources will also be banned after enough failures. If your own mgmt IP is on the same subnet, add it to the IP whitelist above first, or you may lock yourself out.',
     backupTab: 'Import / Export',
     exportTip:
       'Export port rules, forwards and the IP blacklist to a JSON file, which can be imported on other servers.',

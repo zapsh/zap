@@ -1623,7 +1623,7 @@ pub enum Request {
     /// 删除黑名单条目（id 由 firewall.status 返回）
     #[serde(rename = "firewall.blacklist_delete")]
     FirewallBlacklistDelete { id: String },
-    /// IP 白名单：放行优先，命中后不再被黑名单 / 爆破防护封禁
+    /// IP 白名单：放行优先，命中后不再被黑名单 / IP Ban 封禁
     #[serde(rename = "firewall.whitelist_list")]
     FirewallWhitelistList,
     #[serde(rename = "firewall.whitelist_add")]
