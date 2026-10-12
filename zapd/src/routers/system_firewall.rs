@@ -626,12 +626,18 @@ pub async fn firewall_ban_status(claims: ValidatedClaims) -> ZapJsonResult {
     let watching: Vec<serde_json::Value> = st
         .hits
         .iter()
-        .map(|(ip, (n, at))| json!({ "ip": ip, "hits": n, "last": at }))
+        .map(|(k, (n, at))| {
+            let (rule, ip) = crate::zap::ssh_ban::split_hit_key(k);
+            json!({ "rule": rule, "ip": ip, "hits": n, "last": at })
+        })
         .collect();
     let ignored: Vec<serde_json::Value> = st
         .ignored
         .iter()
-        .map(|(ip, (n, reason, _))| json!({ "ip": ip, "hits": n, "reason": reason }))
+        .map(|(k, (n, reason, _))| {
+            let (rule, ip) = crate::zap::ssh_ban::split_hit_key(k);
+            json!({ "rule": rule, "ip": ip, "hits": n, "reason": reason })
+        })
         .collect();
     Ok(Json(json!({
         "code": 0,
@@ -648,7 +654,7 @@ pub async fn firewall_ban_status(claims: ValidatedClaims) -> ZapJsonResult {
             })).collect::<Vec<_>>(),
             "watching": watching,
             "ignored": ignored,
-            "log_file": st.log_file,
+            "sources": st.sources,
             "last_run": st.last_run,
             "total_banned": st.total_banned,
             "last_error": st.last_error,
@@ -670,8 +676,11 @@ pub async fn firewall_ban_settings_save(
         "firewall_ban_settings",
         "firewall",
         &format!(
-            "enabled={} max_retry={} find_time={} ban_time={} interval={}",
-            payload.enabled, payload.max_retry, payload.find_time, payload.ban_time, payload.interval
+            "enabled={} rules={} ban_time={} interval={}",
+            payload.enabled,
+            payload.rules.len(),
+            payload.ban_time,
+            payload.interval
         ),
     )
     .await;

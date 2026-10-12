@@ -321,6 +321,8 @@ pub async fn login(
         }
     }
     record_failed_login(&ip, &username).await;
+    // IP Ban（面板登录失败来源）：进程内上报，由后台循环计数并封禁
+    crate::zap::ssh_ban::report_failure("zapd", &ip, &username);
     audit::log(None, Some(&ip), "login_failed", &username, "").await;
     // 失败尝试记在用户名下（user_id=0：账号未必存在，无法归属）
     login_history::record(0, &username, &ip, &user_agent, login_history::STATUS_FAILED).await;

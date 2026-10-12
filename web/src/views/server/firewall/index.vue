@@ -453,19 +453,19 @@
             style="margin-bottom: 12px"
           />
           <el-alert
-            v-else-if="ban.log_file"
+            v-else-if="Object.keys(ban.sources).length"
             type="success"
             :closable="false"
             show-icon
-            :title="t('serverFirewall.banOnTip', { log: ban.log_file, n: ban.bans.length })"
+            :title="t('serverFirewall.banOnTip', { n: ban.bans.length, rules: ban.settings.rules.length })"
             style="margin-bottom: 12px"
           />
           <el-alert
-            v-if="ban.settings.enabled && !ban.log_file"
-            type="warning"
+            v-if="ban.settings.enabled && ban.last_error"
+            type="error"
             :closable="false"
             show-icon
-            :title="t('serverFirewall.banNoLogTip')"
+            :title="ban.last_error"
             style="margin-bottom: 12px"
           />
           <el-alert
@@ -495,14 +495,6 @@
             <el-form-item :label="t('serverFirewall.banEnable')">
               <el-switch v-model="ban.settings.enabled" />
             </el-form-item>
-            <el-form-item :label="t('serverFirewall.banMaxRetry')">
-              <el-input-number v-model="ban.settings.max_retry" :min="1" :max="100" controls-position="right" />
-              <span class="hint">{{ t('serverFirewall.banMaxRetryTip') }}</span>
-            </el-form-item>
-            <el-form-item :label="t('serverFirewall.banFindTime')">
-              <el-input-number v-model="ban.settings.find_time" :min="30" :max="86400" controls-position="right" />
-              <span class="hint">{{ t('serverFirewall.seconds') }}</span>
-            </el-form-item>
             <el-form-item :label="t('serverFirewall.banTime')">
               <el-input-number v-model="ban.settings.ban_time" :min="60" :max="604800" controls-position="right" />
               <span class="hint">{{ t('serverFirewall.banTimeTip') }}</span>
@@ -523,15 +515,6 @@
                 clearable
               />
             </el-form-item>
-            <el-form-item :label="t('serverFirewall.banLogFile')">
-              <el-input
-                v-model="ban.settings.log_file"
-                :placeholder="t('serverFirewall.banLogFileTip')"
-                style="width: 380px"
-                clearable
-              />
-              <span class="hint">{{ t('serverFirewall.banLogFileHint') }}</span>
-            </el-form-item>
             <el-form-item>
               <el-button type="primary" :loading="savingBan" @click="saveBan">
                 {{ t('serverFirewall.banSave') }}
@@ -541,9 +524,96 @@
             </el-form-item>
           </el-form>
 
+          <!-- 封禁规则：多来源（SSH 日志 / 面板登录 / 自定义日志 + 正则） -->
+          <el-divider content-position="left">{{ t('serverFirewall.banRulesTitle') }}</el-divider>
+          <el-form :inline="true" :model="newRule" class="rule-form" @submit.prevent>
+            <el-form-item :label="t('serverFirewall.banRuleName')">
+              <el-input v-model="newRule.name" style="width: 150px" clearable />
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banRuleSource')">
+              <el-select v-model="newRule.kind" style="width: 180px">
+                <el-option :label="t('serverFirewall.banSourceAuto')" value="auto" />
+                <el-option :label="t('serverFirewall.banSourceZapd')" value="zapd" />
+                <el-option :label="t('serverFirewall.banSourceJournal')" value="journal" />
+                <el-option :label="t('serverFirewall.banSourceFile')" value="file" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="newRule.kind === 'journal' || newRule.kind === 'file'">
+              <el-input
+                v-model="newRule.arg"
+                :placeholder="t('serverFirewall.banSourcePlaceholder')"
+                style="width: 260px"
+                clearable
+              />
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banRulePattern')">
+              <el-input
+                v-model="newRule.pattern"
+                :placeholder="t('serverFirewall.banRulePatternTip')"
+                style="width: 300px"
+                clearable
+              />
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banRuleMaxRetry')">
+              <el-input-number v-model="newRule.max_retry" :min="1" :max="100" controls-position="right" />
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banRuleFindTime')">
+              <el-input-number v-model="newRule.find_time" :min="30" :max="86400" controls-position="right" />
+              <span class="hint">{{ t('serverFirewall.seconds') }}</span>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" plain @click="addBanRule">
+                {{ t('serverFirewall.banRuleAdd') }}
+              </el-button>
+            </el-form-item>
+          </el-form>
+
+          <el-table :data="ban.settings.rules" size="small" stripe>
+            <el-table-column :label="t('serverFirewall.banEnable')" width="80">
+              <template #default="{ row }">
+                <el-switch v-model="row.enabled" size="small" />
+              </template>
+            </el-table-column>
+            <el-table-column prop="name" :label="t('serverFirewall.banRuleName')" min-width="130" />
+            <el-table-column :label="t('serverFirewall.banRuleSource')" min-width="200">
+              <template #default="{ row }">
+                <span>{{ sourceLabel(row.source) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('serverFirewall.banRulePattern')" min-width="220">
+              <template #default="{ row }">
+                <code v-if="row.pattern" class="dim">{{ row.pattern }}</code>
+                <span v-else class="dim">{{ t('serverFirewall.banPatternBuiltin') }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('serverFirewall.banRuleMaxRetry')" width="90">
+              <template #default="{ row }">{{ row.max_retry }}</template>
+            </el-table-column>
+            <el-table-column :label="t('serverFirewall.banRuleFindTime')" width="90">
+              <template #default="{ row }">{{ row.find_time }}s</template>
+            </el-table-column>
+            <el-table-column :label="t('common.operation')" width="90" fixed="right">
+              <template #default="{ $index }">
+                <el-button
+                  link
+                  type="danger"
+                  :disabled="ban.settings.rules.length <= 1"
+                  @click="ban.settings.rules.splice($index, 1)"
+                >
+                  {{ t('common.delete') }}
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
           <el-divider content-position="left">{{ t('serverFirewall.banListTitle') }}</el-divider>
           <el-table :data="ban.bans" size="small" stripe>
             <el-table-column prop="ip" :label="t('serverFirewall.ipLabel')" min-width="170" />
+            <el-table-column :label="t('serverFirewall.banRuleCol')" min-width="120">
+              <template #default="{ row }">
+                <el-tag size="small" effect="plain">{{ row.rule || '-' }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column :label="t('serverFirewall.banReason')" min-width="200">
               <template #default="{ row }">{{ row.reason }}</template>
             </el-table-column>
@@ -574,10 +644,17 @@
             <el-divider content-position="left">{{ t('serverFirewall.banWatchTitle') }}</el-divider>
             <el-table :data="ban.watching" size="small" stripe>
               <el-table-column prop="ip" :label="t('serverFirewall.ipLabel')" min-width="170" />
+              <el-table-column :label="t('serverFirewall.banRuleCol')" width="120">
+                <template #default="{ row }">{{ row.rule || '-' }}</template>
+              </el-table-column>
               <el-table-column :label="t('serverFirewall.banHits')" width="90">
                 <template #default="{ row }">
-                  <el-tag size="small" :type="row.hits >= ban.settings.max_retry ? 'danger' : 'info'" effect="plain">
-                    {{ row.hits }} / {{ ban.settings.max_retry }}
+                  <el-tag
+                    size="small"
+                    :type="row.hits >= (ban.settings.rules.find((r) => r.id === row.rule)?.max_retry || 5) ? 'danger' : 'info'"
+                    effect="plain"
+                  >
+                    {{ row.hits }} / {{ ban.settings.rules.find((r) => r.id === row.rule)?.max_retry || 5 }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -591,6 +668,9 @@
             <el-divider content-position="left">{{ t('serverFirewall.banIgnoredTitle') }}</el-divider>
             <el-table :data="ban.ignored" size="small" stripe>
               <el-table-column prop="ip" :label="t('serverFirewall.ipLabel')" min-width="170" />
+              <el-table-column :label="t('serverFirewall.banRuleCol')" width="120">
+                <template #default="{ row }">{{ row.rule || '-' }}</template>
+              </el-table-column>
               <el-table-column :label="t('serverFirewall.banHits')" width="90">
                 <template #default="{ row }">{{ row.hits }}</template>
               </el-table-column>
@@ -893,7 +973,7 @@ async function removeWhite(row: { ip: string }) {
   }
 }
 
-// ── SSH 爆破防护（内置 fail2ban） ────────────────────────────
+// ── IP Ban（多来源规则化 fail2ban） ──────────────────────────
 const banLoading = ref(false)
 const savingBan = ref(false)
 const unbanning = ref('')
@@ -902,31 +982,67 @@ const banIgnoredText = ref('')
 const ban = reactive<{
   settings: BanSettings
   bans: BanRecord[]
-  watching: Array<{ ip: string; hits: number; last: number }>
-  ignored: Array<{ ip: string; hits: number; reason: string }>
-  log_file: string
+  watching: Array<{ rule: string; ip: string; hits: number; last: number }>
+  ignored: Array<{ rule: string; ip: string; hits: number; reason: string }>
+  sources: Record<string, string>
   last_run: number
   total_banned: number
   last_error: string
 }>({
   settings: {
     enabled: false,
-    max_retry: 5,
-    find_time: 600,
     ban_time: 3600,
     interval: 60,
-    ignore_private: true,
+    ignore_private: false,
     ignored_ips: [],
-    log_file: '',
+    rules: [],
   },
   bans: [],
   watching: [],
   ignored: [],
-  log_file: '',
+  sources: {},
   last_run: 0,
   total_banned: 0,
   last_error: '',
 })
+
+// 新增规则的表单
+const newRule = reactive({
+  name: '',
+  kind: 'auto',
+  arg: '',
+  pattern: '',
+  max_retry: 5,
+  find_time: 600,
+})
+
+let ruleSeq = 0
+function addBanRule() {
+  const id = `rule-${Date.now()}-${ruleSeq++}`
+  let source = newRule.kind
+  if (newRule.kind === 'journal') source = `journal:${newRule.arg.trim() || 'ssh,sshd'}`
+  if (newRule.kind === 'file') source = `file:${newRule.arg.trim()}`
+  ban.settings.rules.push({
+    id,
+    name: newRule.name.trim() || id,
+    enabled: true,
+    source,
+    pattern: newRule.pattern.trim(),
+    max_retry: newRule.max_retry,
+    find_time: newRule.find_time,
+  })
+  newRule.name = ''
+  newRule.arg = ''
+  newRule.pattern = ''
+}
+
+function sourceLabel(source: string): string {
+  if (source === 'auto') return t('serverFirewall.banSourceAuto')
+  if (source === 'zapd') return t('serverFirewall.banSourceZapd')
+  if (source.startsWith('journal:')) return `journal: ${source.slice(8)}`
+  if (source.startsWith('file:')) return source.slice(5)
+  return source
+}
 
 async function loadBan() {
   banLoading.value = true
@@ -935,6 +1051,7 @@ async function loadBan() {
     const d = res.data
     if (!d) return
     Object.assign(ban, d)
+    if (!ban.settings.rules) ban.settings.rules = []
     banIgnoredText.value = (d.settings?.ignored_ips || []).join(',')
   } catch {
     /* handled */

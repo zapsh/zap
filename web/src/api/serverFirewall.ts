@@ -71,21 +71,33 @@ export interface FirewallWhiteEntry {
   created_at?: number
 }
 
+/** IP Ban 单条规则：一个日志来源 + 匹配模式 + 阈值 */
+export interface BanRule {
+  id: string
+  name: string
+  enabled: boolean
+  /** auto | journal:<units> | file:<path> | zapd */
+  source: string
+  /** 匹配正则；留空用内置 SSH 失败解析；命名捕获组 (?<ip>...) 指定 IP 位置 */
+  pattern: string
+  max_retry: number
+  find_time: number
+}
+
 /** IP Ban（fail2ban）设置 */
 export interface BanSettings {
   enabled: boolean
-  max_retry: number
-  find_time: number
   ban_time: number
   interval: number
   ignore_private: boolean
   ignored_ips: string[]
-  log_file: string
+  rules: BanRule[]
 }
 
 /** 当前生效的封禁 */
 export interface BanRecord {
   ip: string
+  rule: string
   reason: string
   hits: number
   created_at: number
@@ -97,9 +109,12 @@ export interface BanRecord {
 export interface BanStatus {
   settings: BanSettings
   bans: BanRecord[]
-  /** 窗口内正在累计失败次数的 IP */
-  watching: Array<{ ip: string; hits: number; last: number }>
-  log_file: string
+  /** 窗口内正在累计失败次数的 (规则, IP) */
+  watching: Array<{ rule: string; ip: string; hits: number; last: number }>
+  /** 被策略跳过（内网 / 白名单）的来源 */
+  ignored: Array<{ rule: string; ip: string; hits: number; reason: string }>
+  /** 各规则实际使用的日志来源 */
+  sources: Record<string, string>
   last_run: number
   total_banned: number
   last_error: string

@@ -1,18 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! IP Ban（面板内置 fail2ban）：
+//! IP Ban（面板内置 fail2ban，多来源规则化）：
 //!
-//! 周期性解析 sshd 认证失败日志 → 窗口内达到阈值即封禁 → 到期自动解封。
-//! 规则本身落在防火墙后端（复用 `firewall.blacklist_*` 动词），这里只负责
-//! 「什么时候封、封多久、封过谁」，状态存 `global_settings` KV。
+//! 每条规则 = 一个日志来源 + 一个匹配模式 + 一组阈值：
+//! - `auto`            自动探测 sshd 日志（auth.log / secure，缺省转 journal）
+//! - `journal:<units>` journalctl 按 unit 逗号分隔增量读（如 `journal:ssh,sshd`）
+//! - `file:<path>`     任意文本日志文件（按字节偏移增量读）
+//! - `zapd`            面板自身登录失败，由登录流程进程内上报（不解析日志）
+//!
+//! 匹配模式：留空 = 内置 sshd 失败解析；填正则则按正则匹配行，
+//! 可用命名捕获组 `(?<ip>...)` 指定 IP 位置，否则取行内第一个 IP。
+//!
+//! 规则落在防火墙后端（复用 `firewall.blacklist_*` 动词），计数状态存 KV。
+//! KV key 带 `_v2`：结构升级时直接换 key，旧配置（含旧的 ignore_private=true）
+//! 一并作废，避免历史值卡住新默认行为。
 //!
 //! 关键取舍：
 //! - 白名单（防火墙白名单 + 设置里的忽略 IP）永不被封；
-//! - 默认不忽略内网 / 环回，让功能对 LAN 来源的爆破也生效（遗留的运维跳板机
-//!   请加入白名单，而不是默认放过）；如需忽略内网可在设置里打开开关；
+//! - 默认不忽略内网 / 环回，让功能对 LAN 来源的爆破也生效（跳板机请加白名单）；
 //! - 封禁动作走 zapexec，解封时按 IP 反查规则 id，兼容各后端不同的 id 形态。
 
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -20,18 +30,15 @@ use crate::db::get_db_pool;
 use crate::zapexec;
 use zap_proto::Request;
 
-const KEY_SETTINGS: &str = "firewall.ban_settings";
-const KEY_BANS: &str = "firewall.ban_records";
-const KEY_STATE: &str = "firewall.ban_state";
+/// v2：结构升级换 key，旧配置作废（旧 ignore_private=true 不会再卡住新默认）
+const KEY_SETTINGS: &str = "firewall.ban_settings_v2";
+const KEY_BANS: &str = "firewall.ban_records_v2";
+const KEY_STATE: &str = "firewall.ban_state_v2";
 const KEY_WHITELIST: &str = "firewall.whitelist";
 
-/// 计数窗口内单 IP 的失败次数上限之外的字段默认值。
-fn def_max_retry() -> u32 {
-    5
-}
-fn def_find_time() -> u32 {
-    600
-}
+/// hits / ignored 的复合键分隔符（rule id 里不会出现）
+const KEY_SEP: char = '\u{1}';
+
 fn def_ban_time() -> u32 {
     3600
 }
@@ -44,15 +51,42 @@ fn def_ignore_private() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BanSettings {
+pub struct BanRule {
+    /// 稳定 id（计数 / 展示的键）
     #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default = "def_true")]
     pub enabled: bool,
+    /// `auto` | `journal:<units>` | `file:<path>` | `zapd`
+    #[serde(default)]
+    pub source: String,
+    /// 匹配正则；留空 = 内置 sshd 失败解析。命名捕获组 `(?<ip>...)` 指定 IP 位置。
+    #[serde(default)]
+    pub pattern: String,
     /// 窗口内失败几次即封禁
     #[serde(default = "def_max_retry")]
     pub max_retry: u32,
     /// 计数窗口（秒）
     #[serde(default = "def_find_time")]
     pub find_time: u32,
+}
+
+fn def_true() -> bool {
+    true
+}
+fn def_max_retry() -> u32 {
+    5
+}
+fn def_find_time() -> u32 {
+    600
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BanSettings {
+    #[serde(default)]
+    pub enabled: bool,
     /// 封禁时长（秒），到期自动解封
     #[serde(default = "def_ban_time")]
     pub ban_time: u32,
@@ -62,25 +96,42 @@ pub struct BanSettings {
     /// 忽略内网 / 环回地址（默认关：让功能对 LAN 爆破也生效，跳板机请加白名单）
     #[serde(default = "def_ignore_private")]
     pub ignore_private: bool,
-    /// 额外忽略的 IP / CIDR（逗号分隔写在 JSON 数组里）
+    /// 额外忽略的 IP / CIDR
     #[serde(default)]
     pub ignored_ips: Vec<String>,
-    /// 指定日志文件；留空 = 自动探测（auth.log / secure）
+    /// 多条封禁规则（sshd / 面板 / 自定义日志）
     #[serde(default)]
-    pub log_file: String,
+    pub rules: Vec<BanRule>,
 }
 
 impl Default for BanSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            max_retry: def_max_retry(),
-            find_time: def_find_time(),
             ban_time: def_ban_time(),
             interval: def_interval(),
             ignore_private: def_ignore_private(),
             ignored_ips: Vec::new(),
-            log_file: String::new(),
+            rules: vec![
+                BanRule {
+                    id: "sshd".into(),
+                    name: "SSH 登录失败".into(),
+                    enabled: true,
+                    source: "auto".into(),
+                    pattern: String::new(),
+                    max_retry: 5,
+                    find_time: 600,
+                },
+                BanRule {
+                    id: "zapd".into(),
+                    name: "面板登录失败".into(),
+                    enabled: true,
+                    source: "zapd".into(),
+                    pattern: String::new(),
+                    max_retry: 10,
+                    find_time: 600,
+                },
+            ],
         }
     }
 }
@@ -88,6 +139,9 @@ impl Default for BanSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BanRecord {
     pub ip: String,
+    /// 触发封禁的规则名
+    #[serde(default)]
+    pub rule: String,
     pub reason: String,
     /// 触发时的失败次数
     pub hits: u32,
@@ -97,27 +151,64 @@ pub struct BanRecord {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BanState {
-    #[serde(default)]
-    pub log_file: String,
-    /// 已读到的日志字节偏移（增量扫描，避免每轮重读全文件）
-    #[serde(default)]
-    pub offset: u64,
-    #[serde(default)]
     pub last_run: u64,
-    #[serde(default)]
     pub total_banned: u64,
-    #[serde(default)]
     pub last_error: String,
-    /// 窗口内各 IP 的失败计数 `ip -> (次数, 最近一次时间)`，随 find_time 滑动
+    /// 窗口内各 (规则, IP) 的失败计数 `"{rule}\u{1}{ip}" -> (次数, 最近一次时间)`
     #[serde(default)]
     pub hits: std::collections::HashMap<String, (u32, u64)>,
-    /// journal 模式：上次读到的游标（`journalctl --after-cursor` 增量读）
-    #[serde(default)]
-    pub journal_cursor: String,
-    /// 命中失败但被策略跳过（内网 / 白名单）的来源 `ip -> (次数, 原因, 最近一次)`，
-    /// 用于面板解释「为什么这个 IP 没被封」——内网默认忽略最容易踩这个坑。
+    /// 命中失败但被策略跳过（内网 / 白名单）的来源，用于面板解释「为什么没封」
     #[serde(default)]
     pub ignored: std::collections::HashMap<String, (u32, String, u64)>,
+    /// 各 journal 来源的读取游标 `source_key -> cursor`
+    #[serde(default)]
+    pub cursors: std::collections::HashMap<String, String>,
+    /// 各日志文件的字节偏移 `path -> offset`
+    #[serde(default)]
+    pub offsets: std::collections::HashMap<String, u64>,
+    /// 各规则最近的实际日志来源（面板展示）`rule_id -> 描述`
+    #[serde(default)]
+    pub sources: std::collections::HashMap<String, String>,
+}
+
+fn hit_key(rule: &str, ip: &str) -> String {
+    format!("{rule}{KEY_SEP}{ip}")
+}
+
+/// 拆复合键；兼容无分隔符的历史键
+fn split_key(k: &str) -> (&str, &str) {
+    k.split_once(KEY_SEP).unwrap_or(("", k))
+}
+
+/// 供状态接口拆复合键（rule, ip）
+pub fn split_hit_key(k: &str) -> (&str, &str) {
+    split_key(k)
+}
+
+// ── zapd 进程内上报 ────────────────────────────────────────────
+
+/// 面板登录失败上报队列：(rule_id, ip, 附加行文本)。
+/// 登录处理路径里只做内存入队，实际计数与封禁由 tick 统一处理。
+static REPORTS: LazyLock<Mutex<Vec<(String, String, String)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// 面板登录失败时调用（auth 流程），rule_id 用 `zapd`。
+pub fn report_failure(rule_id: &str, ip: &str, line: &str) {
+    if let Ok(mut q) = REPORTS.lock() {
+        q.push((rule_id.to_string(), ip.to_string(), line.to_string()));
+        // 队列兜底限长，异常情况下也不至于无限涨
+        if q.len() > 10_000 {
+            let drop = q.len() - 10_000;
+            q.drain(..drop);
+        }
+    }
+}
+
+fn drain_reports() -> Vec<(String, String, String)> {
+    REPORTS
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
 }
 
 // ── KV ─────────────────────────────────────────────────────────
@@ -152,12 +243,28 @@ pub async fn settings() -> BanSettings {
 }
 
 pub async fn save_settings(s: &BanSettings) {
-    // 参数收敛：防止把扫描间隔设成 0 导致空转烧 CPU
     let mut s = s.clone();
-    s.max_retry = s.max_retry.clamp(1, 100);
-    s.find_time = s.find_time.clamp(30, 86_400);
     s.ban_time = s.ban_time.clamp(60, 7 * 86_400);
     s.interval = s.interval.clamp(10, 3_600);
+    // 规则收敛：id 去空去重、阈值夹紧、非法正则的规则直接丢弃
+    let mut seen = std::collections::HashSet::new();
+    s.rules.retain_mut(|r| {
+        r.id = r.id.trim().to_string();
+        if r.id.is_empty() || !seen.insert(r.id.clone()) {
+            return false;
+        }
+        r.name = r.name.trim().to_string();
+        if r.name.is_empty() {
+            r.name = r.id.clone();
+        }
+        r.max_retry = r.max_retry.clamp(1, 100);
+        r.find_time = r.find_time.clamp(30, 86_400);
+        r.pattern = r.pattern.trim().to_string();
+        if !r.pattern.is_empty() && Regex::new(&r.pattern).is_err() {
+            return false; // 非法正则
+        }
+        true
+    });
     if let Ok(v) = serde_json::to_string(&s) {
         kv_set(KEY_SETTINGS, &v).await;
     }
@@ -206,7 +313,43 @@ pub async fn unban(ip: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ── 日志解析 ───────────────────────────────────────────────────
+// ── 日志来源解析 ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+enum Src {
+    /// sshd 自动探测：有文件走文件，否则走 journal（unit: ssh / sshd）
+    Auto,
+    Journal(Vec<String>),
+    File(String),
+}
+
+fn resolve_source(source: &str) -> Src {
+    let t = source.trim();
+    if t.is_empty() || t.eq_ignore_ascii_case("auto") {
+        return Src::Auto;
+    }
+    if let Some(units) = t.strip_prefix("journal:") {
+        let units: Vec<String> = units
+            .split(',')
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty())
+            .collect();
+        return if units.is_empty() {
+            Src::Auto
+        } else {
+            Src::Journal(units)
+        };
+    }
+    if wants_journal(t) {
+        return Src::Journal(vec!["ssh".into(), "sshd".into()]);
+    }
+    if let Some(p) = t.strip_prefix("file:") {
+        let p = p.trim();
+        return if p.is_empty() { Src::Auto } else { Src::File(p.into()) };
+    }
+    // 兼容：直接填了路径
+    Src::File(t.to_string())
+}
 
 fn journal_available() -> bool {
     std::process::Command::new("journalctl")
@@ -218,20 +361,24 @@ fn journal_available() -> bool {
         .unwrap_or(false)
 }
 
-/// journal 模式的展示名（面板上显示「日志来源」用）。
-const JOURNAL_LABEL: &str = "journalctl -u ssh";
+/// 显式要求走 journal（Debian 默认不装 rsyslog，auth.log 不存在）。
+fn wants_journal(configured: &str) -> bool {
+    matches!(
+        configured.trim().to_ascii_lowercase().as_str(),
+        "journal" | "journalctl" | "systemd-journal"
+    )
+}
 
-/// 读 journal 里 sshd 的新条目，返回 `(消息行, 新游标)`。
+/// 读 journal 里指定 units 的新条目，返回 `(消息行, 新游标)`。
 ///
 /// 用游标增量读，等价于文件模式的字节偏移；首次（无游标）只取最近若干条，
 /// 避免开机以来全部历史被重放导致误封。
-fn read_journal(cursor: &str, limit: usize) -> Result<(Vec<String>, String), String> {
+fn read_journal(units: &[String], cursor: &str, limit: usize) -> Result<(Vec<String>, String), String> {
     let mut cmd = std::process::Command::new("journalctl");
+    for u in units {
+        cmd.arg("-u").arg(u);
+    }
     cmd.args([
-        "-u",
-        "ssh",
-        "-u",
-        "sshd",
         "-o",
         "json",
         "--no-pager",
@@ -249,7 +396,7 @@ fn read_journal(cursor: &str, limit: usize) -> Result<(Vec<String>, String), Str
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         // 游标失效（日志被 vacuum / 轮转清掉）时丢游标重试一次，取最近若干条
         if !cursor.is_empty() {
-            return read_journal("", limit);
+            return read_journal(units, "", limit);
         }
         return Err(if err.is_empty() {
             "journalctl 返回非零".to_string()
@@ -266,7 +413,7 @@ fn read_journal(cursor: &str, limit: usize) -> Result<(Vec<String>, String), Str
         if let Some(c) = v.get("__CURSOR").and_then(|x| x.as_str()) {
             new_cursor = c.to_string();
         }
-        // 多行消息 journal 会拆成数组，这里拼回来，保证 parse_failure 看到完整一行
+        // 多行消息 journal 会拆成数组，这里拼回来，保证解析看到完整一行
         let msg = match v.get("MESSAGE") {
             Some(serde_json::Value::String(s)) => s.clone(),
             Some(serde_json::Value::Array(a)) => a
@@ -303,13 +450,7 @@ fn detect_log_file(configured: &str) -> Option<String> {
     None
 }
 
-/// 显式要求走 journal（Debian 默认不装 rsyslog，auth.log 不存在）。
-fn wants_journal(configured: &str) -> bool {
-    matches!(
-        configured.trim().to_ascii_lowercase().as_str(),
-        "journal" | "journalctl" | "systemd-journal"
-    )
-}
+// ── 行匹配 ─────────────────────────────────────────────────────
 
 /// 该行是否是 sshd 认证失败，并取出失败来源 IP。
 ///
@@ -370,7 +511,37 @@ fn parse_failure(line: &str) -> Option<String> {
     None
 }
 
-/// 内网 / 环回 / 链路本地：默认不封（运维跳板机与容器网段常见）。
+/// 行内第一个看起来像 IP 的 token（正则没写捕获组时的兜底提取）。
+fn first_ip_in_line(line: &str) -> Option<String> {
+    for tok in line.split_whitespace() {
+        let tok = tok.trim_end_matches(|c: char| c == ',' || c == ';' || c == ':');
+        if tok.parse::<std::net::IpAddr>().is_ok() {
+            return Some(tok.to_string());
+        }
+    }
+    None
+}
+
+/// 按规则匹配一行，返回来源 IP。
+/// pattern 为空 → 内置 sshd 解析；有 pattern → 正则匹配，
+/// 命名捕获组 `(?<ip>...)` 优先，否则取行内第一个 IP。
+fn apply_line(re: Option<&Regex>, line: &str) -> Option<String> {
+    match re {
+        None => parse_failure(line),
+        Some(re) => {
+            let caps = re.captures(line)?;
+            if let Some(m) = caps.name("ip") {
+                let ip = m.as_str();
+                return ip.parse::<std::net::IpAddr>().is_ok().then(|| ip.to_string());
+            }
+            first_ip_in_line(line)
+        }
+    }
+}
+
+// ── 策略 ───────────────────────────────────────────────────────
+
+/// 内网 / 环回 / 链路本地。
 fn is_private_ip(ip: &str) -> bool {
     let Ok(a) = ip.parse::<std::net::IpAddr>() else {
         return true; // 解析不了的一律按需保护处理
@@ -516,74 +687,38 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+fn rule_max_retry(r: &BanRule) -> u32 {
+    if r.max_retry == 0 { 5 } else { r.max_retry }
+}
+fn rule_find_time(r: &BanRule) -> u64 {
+    (if r.find_time == 0 { 600 } else { r.find_time }) as u64
+}
+
+/// 读一个文件来源的新行（按字节偏移增量），返回 (行, 是否出错)
+fn read_file_source(path: &str, st: &mut BanState) -> Result<Vec<String>, String> {
+    // 日志轮转 / 文件被清空：偏移比文件还大就从头读
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let offset = st.offsets.get(path).copied().unwrap_or(0);
+    let offset = if offset > len { 0 } else { offset };
+    let content = std::fs::File::open(path)
+        .and_then(|mut f| {
+            use std::io::{Read, Seek, SeekFrom};
+            f.seek(SeekFrom::Start(offset))?;
+            let mut buf = String::new();
+            f.read_to_string(&mut buf)?;
+            Ok(buf)
+        })
+        .map_err(|e| format!("读取 {path} 失败: {e}"))?;
+    // 只按完整行推进偏移，避免半行被截断后下一轮解析出错
+    let consumed = content.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    st.offsets.insert(path.to_string(), offset + consumed as u64);
+    Ok(content[..consumed].lines().map(|l| l.to_string()).collect())
+}
+
 async fn tick(s: &BanSettings) {
     let mut st = state().await;
     let ts = now();
     st.last_run = ts;
-
-    // 日志来源：优先文件（RHEL / 装了 rsyslog 的 Debian），
-    // 没有 auth.log/secure 时（Debian 默认形态）转 journalctl。
-    let journal_mode = wants_journal(&s.log_file)
-        || (s.log_file.trim().is_empty() && detect_log_file("").is_none() && journal_available());
-    if !journal_mode && detect_log_file(&s.log_file).is_none() {
-        st.last_error = if journal_available() {
-            "未找到 sshd 日志文件，且未指定 journal".to_string()
-        } else {
-            "未找到 sshd 日志（auth.log / secure），系统也没有 journalctl".to_string()
-        };
-        kv_set(KEY_STATE, &serde_json::to_string(&st).unwrap_or_default()).await;
-        return;
-    }
-
-    let find_time = s.find_time.max(30) as u64;
-    // 窗口滑动：淘汰超过 find_time 的旧计数，只保留仍在窗口内的
-    st.hits.retain(|_, (_, at)| ts.saturating_sub(*at) <= find_time);
-
-    // 取这一轮的失败行（文件按字节偏移增量读；journal 按游标增量读）
-    let lines: Vec<String> = if journal_mode {
-        st.log_file = JOURNAL_LABEL.to_string();
-        match read_journal(&st.journal_cursor, 500) {
-            Ok((ls, cursor)) => {
-                st.journal_cursor = cursor;
-                ls
-            }
-            Err(e) => {
-                st.last_error = e;
-                kv_set(KEY_STATE, &serde_json::to_string(&st).unwrap_or_default()).await;
-                return;
-            }
-        }
-    } else {
-        let path = detect_log_file(&s.log_file).unwrap_or_default();
-        // 日志轮转 / 文件被清空：偏移比文件还大就从头读
-        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        if st.log_file != path || st.offset > len {
-            st.log_file = path.clone();
-            st.offset = 0;
-        }
-        let content = match std::fs::File::open(&path).and_then(|mut f| {
-            use std::io::{Read, Seek, SeekFrom};
-            f.seek(SeekFrom::Start(st.offset))?;
-            let mut buf = String::new();
-            f.read_to_string(&mut buf)?;
-            Ok(buf)
-        }) {
-            Ok(c) => c,
-            Err(e) => {
-                st.last_error = format!("读取 {path} 失败: {e}");
-                kv_set(KEY_STATE, &serde_json::to_string(&st).unwrap_or_default()).await;
-                return;
-            }
-        };
-        // 只按完整行推进偏移，避免半行被截断后下一轮解析出错
-        let consumed = match content.rfind('\n') {
-            Some(i) => i + 1,
-            None => 0,
-        };
-        st.offset += consumed as u64;
-        content[..consumed].lines().map(|l| l.to_string()).collect()
-    };
-
     let wl = protected_ips().await;
 
     // 到期解封
@@ -605,24 +740,129 @@ async fn tick(s: &BanSettings) {
         }
     }
 
-    // 累加窗口计数
-    for line in &lines {
-        if let Some(ip) = parse_failure(line) {
-            let e = st.hits.entry(ip).or_insert((0, ts));
-            e.0 += 1;
-            e.1 = ts;
+    // 每条启用规则编译一次正则
+    let mut new_failures: Vec<(String, String)> = Vec::new(); // (rule_id, ip)
+    let mut rules_err: Vec<String> = Vec::new();
+
+    for rule in s.rules.iter().filter(|r| r.enabled) {
+        let re = if rule.pattern.is_empty() {
+            None
+        } else {
+            match Regex::new(&rule.pattern) {
+                Ok(re) => Some(re),
+                Err(e) => {
+                    rules_err.push(format!("规则 {} 正则无效: {e}", rule.name));
+                    continue;
+                }
+            }
+        };
+
+        if rule.source.trim() == "zapd" {
+            // 面板登录失败：从进程内队列取（line = 用户名，可被正则二次过滤）
+            for (rid, ip, line) in drain_reports() {
+                if rid != rule.id {
+                    continue;
+                }
+                if let Some(re) = &re {
+                    if !re.is_match(&line) {
+                        continue;
+                    }
+                }
+                new_failures.push((rule.id.clone(), ip));
+            }
+            st.sources.insert(rule.id.clone(), "面板登录".to_string());
+            continue;
+        }
+
+        // 日志来源
+        let lines = match resolve_source(&rule.source) {
+            Src::Auto => {
+                if let Some(path) = detect_log_file("") {
+                    st.sources.insert(rule.id.clone(), path.clone());
+                    read_file_source(&path, &mut st)
+                } else if journal_available() {
+                    let units = vec!["ssh".to_string(), "sshd".to_string()];
+                    st.sources
+                        .insert(rule.id.clone(), "journalctl -u ssh".to_string());
+                    read_journal(&units, st.cursors.get("auto").map(|s| s.as_str()).unwrap_or(""), 500)
+                        .map(|(ls, cur)| {
+                            st.cursors.insert("auto".to_string(), cur);
+                            ls
+                        })
+                } else {
+                    Err("未找到 sshd 日志（auth.log / secure），系统也没有 journalctl".to_string())
+                }
+            }
+            Src::Journal(units) => {
+                let key = format!("journal:{}", units.join(","));
+                st.sources
+                    .insert(rule.id.clone(), format!("journalctl -u {}", units.join(" -u ")));
+                read_journal(&units, st.cursors.get(&key).map(|s| s.as_str()).unwrap_or(""), 500)
+                    .map(|(ls, cur)| {
+                        st.cursors.insert(key, cur);
+                        ls
+                    })
+            }
+            Src::File(path) => {
+                st.sources.insert(rule.id.clone(), path.clone());
+                read_file_source(&path, &mut st)
+            }
+        };
+
+        match lines {
+            Ok(ls) => {
+                for line in ls {
+                    if let Some(ip) = apply_line(re.as_ref(), &line) {
+                        new_failures.push((rule.id.clone(), ip));
+                    }
+                }
+            }
+            Err(e) => rules_err.push(format!("规则 {}（{}）: {e}", rule.name, rule.source)),
         }
     }
+
+    if !rules_err.is_empty() {
+        st.last_error = rules_err.join("；");
+    }
+
+    // 累加窗口计数
+    for (rid, ip) in new_failures {
+        let e = st.hits.entry(hit_key(&rid, &ip)).or_insert((0, ts));
+        e.0 += 1;
+        e.1 = ts;
+    }
+    // 窗口滑动：按各规则自己的 find_time 淘汰旧计数
+    st.hits.retain(|k, (_, at)| {
+        let (rid, _) = split_key(k);
+        let ft = s
+            .rules
+            .iter()
+            .find(|r| r.id == rid)
+            .map(rule_find_time)
+            .unwrap_or(600);
+        ts.saturating_sub(*at) <= ft
+    });
+
     // 被策略跳过的来源单独记账，面板据此解释「为什么没封它」
     st.ignored
-        .retain(|_, (_, _, at)| ts.saturating_sub(*at) <= find_time);
-    for (ip, (count, _)) in st.hits.clone() {
-        if let Some(reason) = skip_reason(&ip, s, &wl).await {
-            let e = st.ignored.entry(ip.clone()).or_insert((0, reason, ts));
+        .retain(|k, (_, _, at)| {
+            let (rid, _) = split_key(k);
+            let ft = s
+                .rules
+                .iter()
+                .find(|r| r.id == rid)
+                .map(rule_find_time)
+                .unwrap_or(600);
+            ts.saturating_sub(*at) <= ft
+        });
+    for (key, (count, _)) in st.hits.clone() {
+        let (_, ip) = split_key(&key);
+        if let Some(reason) = skip_reason(ip, s, &wl).await {
+            let e = st.ignored.entry(key.clone()).or_insert((0, reason, ts));
             e.0 = e.0.max(count);
             e.2 = ts;
-            // 已跳过的 IP 不参与封禁计数
-            st.hits.remove(&ip);
+            // 已跳过的来源不参与封禁计数
+            st.hits.remove(&key);
         }
     }
     // ignored 表兜底限长，避免异常日志打爆存储：只保留失败次数最多的前 100 个
@@ -640,9 +880,15 @@ async fn tick(s: &BanSettings) {
 
     let mut new_bans = 0u32;
     let already: Vec<String> = list.iter().map(|b| b.ip.clone()).collect();
-    for (ip, (count, _)) in st.hits.clone() {
-        if count < s.max_retry {
-            debug!("IP Ban：{ip} 失败 {count} 次，未达阈值 {}", s.max_retry);
+    for (key, (count, _)) in st.hits.clone() {
+        let (rid, ip) = split_key(&key);
+        let ip = ip.to_string();
+        let Some(rule) = s.rules.iter().find(|r| r.id == rid) else {
+            continue;
+        };
+        let threshold = rule_max_retry(rule);
+        if count < threshold {
+            debug!("IP Ban：{ip} 失败 {count} 次，未达规则 {} 阈值 {threshold}", rule.name);
             continue;
         }
         if already.contains(&ip) || skip_reason(&ip, s, &wl).await.is_some() {
@@ -652,7 +898,8 @@ async fn tick(s: &BanSettings) {
             Ok(()) => {
                 list.push(BanRecord {
                     ip: ip.clone(),
-                    reason: format!("ssh 认证失败 {count} 次 / {}s", s.find_time),
+                    rule: rule.name.clone(),
+                    reason: format!("[{}] 认证失败 {count} 次 / {}s", rule.name, rule.find_time),
                     hits: count,
                     created_at: ts,
                     expires_at: ts + s.ban_time as u64,
@@ -660,8 +907,8 @@ async fn tick(s: &BanSettings) {
                 st.total_banned += 1;
                 new_bans += 1;
                 // 已封的 IP 不再重复计数
-                st.hits.remove(&ip);
-                info!("IP Ban 封禁 {ip}（失败 {count} 次）");
+                st.hits.remove(&key);
+                info!("IP Ban 封禁 {ip}（规则 {}，失败 {count} 次）", rule.name);
             }
             Err(e) => {
                 warn!("IP Ban 封禁 {ip} 失败: {e}");
@@ -753,6 +1000,87 @@ mod tests {
             parse_failure("Failed keyboard-interactive/pam for zap from 2001:db8::9 port 22 ssh2").as_deref(),
             Some("2001:db8::9"),
         );
+    }
+
+    #[test]
+    fn regex_pattern_with_named_ip_group() {
+        let re = Regex::new(r#"login failed from (?<ip>\S+) user"#).unwrap();
+        assert_eq!(
+            apply_line(Some(&re), "auth: login failed from 5.6.7.8 user bob").as_deref(),
+            Some("5.6.7.8"),
+        );
+        // 命名组是权威：组内不是 IP 就视为不匹配（不回退，避免误封无关 IP）
+        assert_eq!(
+            apply_line(Some(&re), "auth: login failed from host user bob 9.9.9.9").as_deref(),
+            None,
+        );
+        // 不匹配则无 IP
+        assert!(apply_line(Some(&re), "login ok").is_none());
+    }
+
+    #[test]
+    fn regex_without_group_falls_back_to_first_ip() {
+        let re = Regex::new("failed").unwrap();
+        assert_eq!(
+            apply_line(Some(&re), "failed login 4.4.4.4 done").as_deref(),
+            Some("4.4.4.4"),
+        );
+        assert!(apply_line(Some(&re), "failed login no-ip").is_none());
+    }
+
+    #[test]
+    fn empty_pattern_uses_builtin_sshd_parser() {
+        assert_eq!(
+            apply_line(None, "Failed password for zap from 192.168.11.134 port 60602 ssh2").as_deref(),
+            Some("192.168.11.134"),
+        );
+    }
+
+    #[test]
+    fn source_strings_resolve() {
+        assert_eq!(resolve_source(""), Src::Auto);
+        assert_eq!(resolve_source("auto"), Src::Auto);
+        assert_eq!(
+            resolve_source("journal:ssh,sshd"),
+            Src::Journal(vec!["ssh".into(), "sshd".into()])
+        );
+        assert_eq!(resolve_source("journal"), Src::Journal(vec!["ssh".into(), "sshd".into()]));
+        assert_eq!(
+            resolve_source("file:/var/log/nginx/error.log"),
+            Src::File("/var/log/nginx/error.log".into())
+        );
+        assert_eq!(
+            resolve_source("/var/log/my.log"),
+            Src::File("/var/log/my.log".into())
+        );
+    }
+
+    #[test]
+    fn hit_keys_roundtrip() {
+        let k = hit_key("sshd", "1.2.3.4");
+        assert_eq!(split_key(&k), ("sshd", "1.2.3.4"));
+        assert_eq!(split_key("1.2.3.4"), ("", "1.2.3.4"));
+    }
+
+    #[test]
+    fn zapd_reports_are_queued_and_drained() {
+        report_failure("zapd", "3.3.3.3", "bob");
+        report_failure("zapd", "3.3.3.3", "bob");
+        let drained = drain_reports();
+        assert_eq!(drained.len(), 2);
+        assert!(drain_reports().is_empty());
+    }
+
+    #[test]
+    fn default_settings_have_sshd_and_zapd_rules() {
+        let s = BanSettings::default();
+        assert_eq!(s.rules.len(), 2);
+        assert_eq!(s.rules[0].id, "sshd");
+        assert_eq!(s.rules[0].source, "auto");
+        assert_eq!(s.rules[1].id, "zapd");
+        assert_eq!(s.rules[1].source, "zapd");
+        // 默认不忽略内网：LAN 测试 IP 也会被封
+        assert!(!s.ignore_private);
     }
 
     #[test]

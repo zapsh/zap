@@ -6307,6 +6307,7 @@ dependencies = [
  "pulldown-cmark",
  "rand 0.8.5",
  "rcgen 0.13.2",
+ "regex",
  "reqwest",
  "russh",
  "russh-sftp",

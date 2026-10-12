@@ -102,6 +102,8 @@ flate2 = "1.0"
 idna = "1.1"
 # markdown
 pulldown-cmark = "0.12"
+# IP Ban 规则匹配
+regex = "1"
 
 # smtp without openssl
 lettre = { version = "0.11", default-features = false, features = [
