@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! IP Ban（面板内置 fail2ban，多来源规则化）：
+//! IP Ban ：
 //!
 //! 每条规则 = 一个日志来源 + 一个匹配模式 + 一组阈值：
 //! - `auto`            自动探测 sshd 日志（auth.log / secure，缺省转 journal）

@@ -582,13 +582,13 @@ async fn init_roles_table() {
         updated_at INTEGER
     );
     INSERT INTO roles (name, role_key, description, status, created_at, updated_at)
-    VALUES ('管理员', 'admin', '系统最高权限角色', 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES ('Administrator', 'admin', '系统最高权限角色', 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO roles (name, role_key, description, status, created_at, updated_at)
-    VALUES ('普通用户', 'user', '普通用户角色', 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES ('User', 'user', '普通用户角色', 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO roles (name, role_key, description, status, created_at, updated_at)
-    VALUES ('经销商', 'reseller', '经销商角色', 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES ('Reseller', 'reseller', '经销商角色', 1, strftime('%s','now'), strftime('%s','now'));
     INSERT INTO roles (name, role_key, description, status, created_at, updated_at)
-    VALUES ('演示', 'demo', '演示角色', 1, strftime('%s','now'), strftime('%s','now'));
+    VALUES ('Demo', 'demo', '演示角色', 1, strftime('%s','now'), strftime('%s','now'));
     "#;
     let _ = get_db_pool().await.execute(sql).await;
 }
