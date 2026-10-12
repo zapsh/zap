@@ -2676,6 +2676,8 @@ const enUS: Messages = {
   servicesOverview: {
     desc: 'Installed apps that registered a systemd unit — start, stop and boot control here',
     colService: 'Service',
+    colVersion: 'Version',
+    colCategory: 'Category / Instance',
     colState: 'State',
     autostart: 'Start on boot',
     start: 'Start',

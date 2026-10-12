@@ -2664,6 +2664,8 @@ export default {
   servicesOverview: {
     desc: '应用商店已安装、且登记了 systemd 服务的应用实例，可在这里启停与设置开机自启',
     colService: '服务',
+    colVersion: '版本',
+    colCategory: '分类 / 实例',
     colState: '状态',
     autostart: '开机自启',
     start: '启动',

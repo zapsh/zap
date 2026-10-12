@@ -30,18 +30,10 @@
       size="small"
       stripe
       class="ov-table"
-      :default-expand-all="false"
     >
-      <el-table-column :label="t('servicesOverview.colService')" min-width="260">
+      <el-table-column :label="t('servicesOverview.colService')" min-width="220">
         <template #default="{ row }">
-          <div class="ov-svc">
-            <span class="ov-name">{{ row.name }}</span>
-            <el-tag v-if="row.version" size="small" type="info">{{ row.version }}</el-tag>
-            <el-tag size="small" effect="plain">{{ row.category }}</el-tag>
-            <el-tag v-if="row.instance && row.instance !== '-'" size="small" effect="plain">
-              {{ row.instance }}
-            </el-tag>
-          </div>
+          <div class="ov-name">{{ row.name }}</div>
           <div class="ov-unit mono">
             {{ row.svc }}
             <el-tag v-if="!row.exists" size="small" type="danger" effect="plain">
@@ -51,7 +43,25 @@
         </template>
       </el-table-column>
 
-      <el-table-column :label="t('servicesOverview.colState')" width="120">
+      <el-table-column :label="t('servicesOverview.colVersion')" width="110">
+        <template #default="{ row }">
+          <el-tag v-if="row.version" size="small" type="info">{{ row.version }}</el-tag>
+          <span v-else class="ov-dash">-</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column :label="t('servicesOverview.colCategory')" min-width="140">
+        <template #default="{ row }">
+          <div class="ov-tags">
+            <el-tag size="small" effect="plain">{{ row.category }}</el-tag>
+            <el-tag v-if="row.instance && row.instance !== '-'" size="small" effect="plain">
+              {{ row.instance }}
+            </el-tag>
+          </div>
+        </template>
+      </el-table-column>
+
+      <el-table-column :label="t('servicesOverview.colState')" width="110">
         <template #default="{ row }">
           <el-tag size="small" :type="stateType(row.state)">{{ stateText(row.state) }}</el-tag>
         </template>
@@ -209,24 +219,29 @@ onMounted(load)
   margin-top: 4px;
 }
 
-.ov-svc {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 .ov-name {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
+  line-height: 1.4;
 }
 
 .ov-unit {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+.ov-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
+}
+
+.ov-dash {
+  color: var(--el-text-color-placeholder);
 }
 
 .mono {
