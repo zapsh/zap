@@ -41,7 +41,7 @@ export const messages = {
 
 /** 语言包加载器：默认语言直接返回；其它语言动态 import（异步、代码分割） */
 const localeLoaders: Record<Locale, () => Promise<{ default: typeof zhCN }>> = {
-  'zh-CN': () => Promise.resolve(zhCN),
+  'zh-CN': () => Promise.resolve({ default: zhCN }),
   'en-US': () => import('./locales/en-US'),
 }
 

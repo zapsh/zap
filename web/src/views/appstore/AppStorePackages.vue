@@ -717,9 +717,9 @@ async function doInstall(
       openQueue()
     } else {
       ElMessage.success(t('appstore.started', { action: actName }))
-      logDrawerRef.value?.openDrawer(resp.data.task_id, `${actName} ${pkg.name}`)
+      logDrawerRef.value?.openDrawer(resp.data.run_id, `${actName} ${pkg.name}`)
     }
-    trackRun(resp.data.task_id, `${pkg.title || pkg.name} ${actName}`)
+    trackRun(resp.data.run_id, `${pkg.title || pkg.name} ${actName}`)
     emit('queue-changed')
     return true
   } catch (e: any) {
@@ -755,8 +755,8 @@ async function doUninstall(pkg: AppPackage, options?: FormOptions): Promise<bool
       options,
     })
     ElMessage.success(t('appstore.uninstallStarted'))
-    logDrawerRef.value?.openDrawer(resp.data.task_id, `${t('appstore.btnUninstall')} ${pkg.name}`)
-    trackRun(resp.data.task_id, `${pkg.title || pkg.name} ${t('appstore.btnUninstall')}`)
+    logDrawerRef.value?.openDrawer(resp.data.run_id, `${t('appstore.btnUninstall')} ${pkg.name}`)
+    trackRun(resp.data.run_id, `${pkg.title || pkg.name} ${t('appstore.btnUninstall')}`)
     return true
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e.message || t('appstore.uninstallFailed'))
@@ -817,9 +817,9 @@ async function doUpgrade(pkg: AppPackage, options?: FormOptions): Promise<boolea
       openQueue()
     } else {
       ElMessage.success(t('appstore.upgradeStarted'))
-      logDrawerRef.value?.openDrawer(resp.data.task_id, `${t('appstore.btnUpgrade')} ${pkg.name}`)
+      logDrawerRef.value?.openDrawer(resp.data.run_id, `${t('appstore.btnUpgrade')} ${pkg.name}`)
     }
-    trackRun(resp.data.task_id, `${pkg.title || pkg.name} ${t('appstore.btnUpgrade')}`)
+    trackRun(resp.data.run_id, `${pkg.title || pkg.name} ${t('appstore.btnUpgrade')}`)
     return true
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e.message || t('appstore.upgradeFailed'))
