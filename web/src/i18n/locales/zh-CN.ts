@@ -381,7 +381,7 @@ export default {
     fpmInheritOption: '继承 {owner} 名下默认规格',
     fpmCustomOption: '自定义 JSON（高级）',
     fpmCustomPlaceholder:
-      '覆盖面板默认的 JSON，如 \\{"max_children": 16, "memory_limit": "512M"\\}',
+      '覆盖面板默认的 JSON，例如 {\'{"max_children": 16, "memory_limit": "512M"}\'}',
     fpmKeepTip: '保留该用户原自定义规格（{json}）。如需修改请改选模板或自定义。',
     fpmTipInherit:
       '选用「{owner}」名下默认规格：优先 {owner}_default 模板，其次名下最新模板；若名下没有模板则回退面板默认。',
@@ -2333,7 +2333,7 @@ export default {
     purgeIps: '允许清理的来源 IP',
     confKeep: '恒保留（用户自定义）',
     topIncludes: '顶层 include',
-    customRaw: 'http{} 自定义指令（每行一条，省略分号）',
+    customRaw: 'http 块内自定义指令（每行一条，省略分号）',
     preserved: '接管时保留的原有指令',
     preservedTip: '这些行面板无法识别，已逐行原样写回；建议迁移到 conf.d 后在这里清理。',
     noPreserved: '没有需要保留的未知指令',
@@ -2663,6 +2663,8 @@ export default {
   /** 服务配置 → 总览：已装应用中带 systemd 服务的实例卡片 */
   servicesOverview: {
     desc: '应用商店已安装、且登记了 systemd 服务的应用实例，可在这里启停与设置开机自启',
+    colService: '服务',
+    colState: '状态',
     autostart: '开机自启',
     start: '启动',
     stop: '停止',
@@ -5064,7 +5066,7 @@ export default {
       '反向代理站点至少需要一个 location / 作为默认转发（模板已自动生成）；nginx 按最长前缀匹配，规则自上而下建议从“具体路径”到“/”排列',
     locPathPlaceholder: '路径如 / 或 /api',
     locRegexPlaceholder: '正则，如 \\.(gif|jpg|png)$ 按文件名匹配，或 \\.php$',
-    locRegexTip: '正则模式：路径填写正则表达式，无需以 / 开头；点号需用 \\. 转义，整体渲染为 location ~* <表达式> {',
+    locRegexTip: '正则模式：路径填写正则表达式，无需以 / 开头；点号需用 \\. 转义，整体渲染为 location ~* <表达式> {\'{}\'} 指令块',
     locTargetRedirect: '如 https://example.com/$request_uri',
     locTargetAlias: '绝对路径（可指向应用静态目录）',
     pickDir: '从已有目录中选择',

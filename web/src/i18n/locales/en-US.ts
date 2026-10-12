@@ -349,7 +349,7 @@ const enUS: Messages = {
     fpmInheritOption: "Inherit {owner}'s default spec",
     fpmCustomOption: 'Custom JSON (advanced)',
     fpmCustomPlaceholder:
-      'JSON overriding the panel default, e.g. \\{"max_children": 16, "memory_limit": "512M"\\}',
+      'JSON overriding the panel default, e.g. {\'{"max_children": 16, "memory_limit": "512M"}\'}',
     fpmKeepTip:
       "Keep this user's existing custom spec ({json}). Choose a template or custom to change it.",
     fpmTipInherit:
@@ -2343,7 +2343,7 @@ const enUS: Messages = {
     purgeIps: 'Allowed source IPs',
     confKeep: 'Always included (user-defined)',
     topIncludes: 'Top-level includes',
-    customRaw: 'Custom http{} directives (one per line, no semicolon)',
+    customRaw: 'Custom directives in the http block (one per line, no semicolon)',
     preserved: 'Preserved directives adopted from old config',
     preservedTip:
       'These lines are not recognized by the panel and are written back verbatim. Move them to conf.d to clean this up.',
@@ -2675,6 +2675,8 @@ const enUS: Messages = {
   /** Service config → overview: installed apps that registered a systemd unit */
   servicesOverview: {
     desc: 'Installed apps that registered a systemd unit — start, stop and boot control here',
+    colService: 'Service',
+    colState: 'State',
     autostart: 'Start on boot',
     start: 'Start',
     stop: 'Stop',
@@ -5158,7 +5160,7 @@ const enUS: Messages = {
       'A reverse proxy site needs at least one location / as the default forward (the template generates it automatically); nginx matches the longest prefix, so order rules from specific paths to "/" top-down',
     locPathPlaceholder: 'Path, e.g. / or /api',
     locRegexPlaceholder: 'Regex, e.g. \\.(gif|jpg|png)$ to match by filename, or \\.php$',
-    locRegexTip: 'Regex mode: the path is a regular expression, no leading / required; escape dots with \\. and it renders as location ~* <expr> {',
+    locRegexTip: 'Regex mode: the path is a regular expression, no leading / required; escape dots with \\. and it renders as a location ~* <expr> {\'{}\'} block',
     locTargetRedirect: 'e.g. https://example.com/$request_uri',
     locTargetAlias: 'Absolute path (may point to the app static dir)',
     pickDir: 'Pick an existing directory',

@@ -9,7 +9,7 @@
         type="button"
         class="svc-pill"
         :class="{ 'is-active': active === tab.key }"
-        @click="active = tab.key"
+        @click="switchTab(tab.key)"
       >
         <span>{{ tab.label }}</span>
       </button>
@@ -25,6 +25,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import Overview from './overview.vue'
 import NginxConf from './nginx.vue'
 import PhpConf from './php.vue'
@@ -33,11 +34,28 @@ import PythonConf from './python.vue'
 import NodejsConf from './nodejs.vue'
 
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
 
-/** 初始页是总览：先看装了哪些带服务的应用、状态与自启动 */
-const active = ref('overview')
+const TAB_KEYS = ['overview', 'nginx', 'php', 'mysql', 'python', 'nodejs'] as const
 
-const tabs = computed(() => [
+/** 初始页：优先取 ?tab=（刷新停留在原页），无 / 非法则总览 */
+const initial = String(route.query.tab || '')
+const active = ref<(typeof TAB_KEYS)[number]>(
+  (TAB_KEYS as readonly string[]).includes(initial)
+    ? (initial as (typeof TAB_KEYS)[number])
+    : 'overview',
+)
+
+function switchTab(key: (typeof TAB_KEYS)[number]) {
+  active.value = key
+  // URL 同步（replace 不产生历史记录）；离开 nginx 时顺带清掉它的子页参数
+  router.replace({
+    query: { ...route.query, tab: key, ...(key === 'nginx' ? {} : { page: undefined }) },
+  })
+}
+
+const tabs = computed<{ key: (typeof TAB_KEYS)[number]; label: string; component: unknown }[]>(() => [
   { key: 'overview', label: t('serviceConf.overview'), component: Overview },
   { key: 'nginx', label: t('serviceConf.nginx'), component: NginxConf },
   { key: 'php', label: t('serviceConf.php'), component: PhpConf },

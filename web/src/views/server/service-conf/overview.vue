@@ -23,76 +23,83 @@
       :description="t('servicesOverview.empty')"
     />
 
-    <div v-else class="ov-grid">
-      <el-card
-        v-for="item in overview.items"
-        :key="item.key"
-        shadow="never"
-        class="ov-card"
-      >
-        <div class="ov-card-head">
-          <div class="ov-title">
-            <span class="ov-name">{{ item.name }}</span>
-            <el-tag v-if="item.version" size="small" type="info">{{ item.version }}</el-tag>
-            <el-tag size="small" effect="plain">{{ item.category }}</el-tag>
-            <el-tag v-if="item.instance && item.instance !== '-'" size="small" effect="plain">
-              {{ item.instance }}
+    <el-table
+      v-else
+      v-loading="loading"
+      :data="overview.items"
+      size="small"
+      stripe
+      class="ov-table"
+      :default-expand-all="false"
+    >
+      <el-table-column :label="t('servicesOverview.colService')" min-width="260">
+        <template #default="{ row }">
+          <div class="ov-svc">
+            <span class="ov-name">{{ row.name }}</span>
+            <el-tag v-if="row.version" size="small" type="info">{{ row.version }}</el-tag>
+            <el-tag size="small" effect="plain">{{ row.category }}</el-tag>
+            <el-tag v-if="row.instance && row.instance !== '-'" size="small" effect="plain">
+              {{ row.instance }}
             </el-tag>
           </div>
-          <el-tag size="small" :type="stateType(item.state)">
-            {{ stateText(item.state) }}
-          </el-tag>
-        </div>
-
-        <div class="ov-unit">
-          <span class="mono">{{ item.svc }}</span>
-          <el-tag v-if="!item.exists" size="small" type="danger" effect="plain">
-            {{ t('servicesOverview.unitMissing') }}
-          </el-tag>
-        </div>
-
-        <div class="ov-foot">
-          <div class="ov-boot">
-            <span class="ov-boot-label">{{ t('servicesOverview.autostart') }}</span>
-            <el-switch
-              size="small"
-              :model-value="item.enabled"
-              :disabled="!overview.systemd || acting === item.svc"
-              @change="(v: string | number | boolean) => toggleBoot(item, !!v)"
-            />
+          <div class="ov-unit mono">
+            {{ row.svc }}
+            <el-tag v-if="!row.exists" size="small" type="danger" effect="plain">
+              {{ t('servicesOverview.unitMissing') }}
+            </el-tag>
           </div>
-          <div class="ov-actions">
-            <el-button
-              size="small"
-              type="success"
-              plain
-              :disabled="item.state === 'running' || busy(item)"
-              @click="doControl(item, 'start')"
-            >
-              {{ t('servicesOverview.start') }}
-            </el-button>
-            <el-button
-              size="small"
-              type="warning"
-              plain
-              :disabled="item.state !== 'running' || busy(item)"
-              @click="doControl(item, 'stop')"
-            >
-              {{ t('servicesOverview.stop') }}
-            </el-button>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :disabled="busy(item)"
-              @click="doControl(item, 'restart')"
-            >
-              {{ t('servicesOverview.restart') }}
-            </el-button>
-          </div>
-        </div>
-      </el-card>
-    </div>
+        </template>
+      </el-table-column>
+
+      <el-table-column :label="t('servicesOverview.colState')" width="120">
+        <template #default="{ row }">
+          <el-tag size="small" :type="stateType(row.state)">{{ stateText(row.state) }}</el-tag>
+        </template>
+      </el-table-column>
+
+      <el-table-column :label="t('servicesOverview.autostart')" width="130">
+        <template #default="{ row }">
+          <el-switch
+            size="small"
+            :model-value="row.enabled"
+            :disabled="!overview.systemd || acting === row.svc"
+            @change="(v: string | number | boolean) => toggleBoot(row, !!v)"
+          />
+        </template>
+      </el-table-column>
+
+      <el-table-column :label="t('common.operation')" width="220" fixed="right">
+        <template #default="{ row }">
+          <el-button
+            size="small"
+            type="success"
+            plain
+            :disabled="row.state === 'running' || busy(row)"
+            @click="doControl(row, 'start')"
+          >
+            {{ t('servicesOverview.start') }}
+          </el-button>
+          <el-button
+            size="small"
+            type="warning"
+            plain
+            :disabled="row.state !== 'running' || busy(row)"
+            @click="doControl(row, 'stop')"
+          >
+            {{ t('servicesOverview.stop') }}
+          </el-button>
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            :disabled="busy(row)"
+            @click="doControl(row, 'restart')"
+          >
+            {{ t('servicesOverview.restart') }}
+          </el-button>
+        </template>
+      </el-table-column>
+    </el-table>
   </div>
 </template>
 
@@ -198,32 +205,18 @@ onMounted(load)
   margin-bottom: 12px;
 }
 
-.ov-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 12px;
+.ov-table {
+  margin-top: 4px;
 }
 
-.ov-card {
-  border-radius: 8px;
-}
-
-.ov-card-head {
+.ov-svc {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.ov-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .ov-name {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -231,33 +224,9 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 8px 0 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
-}
-
-.ov-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
   flex-wrap: wrap;
-}
-
-.ov-boot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.ov-boot-label {
-  font-size: 13px;
-  color: var(--el-text-color-regular);
-}
-
-.ov-actions {
-  display: flex;
-  gap: 6px;
 }
 
 .mono {

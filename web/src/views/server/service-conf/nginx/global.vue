@@ -389,14 +389,18 @@ const previewData = ref<NginxGlobalPreviewData | null>(null)
 const revisions = ref<NginxGlobalRevision[]>([])
 const seeded = ref(false)
 
-const spec = ref<NginxGlobalSpec>({
-  ver: 1,
-  general: {},
-  events: {},
-  http: {},
-  load_modules: [],
-  top_includes: [],
-})
+// 初始值也必须过 ensureShape：el-tabs 首帧就渲染全部 pane，
+// 若 http.security / proxy_cache 等缺壳，会在接口返回前直接抛 TypeError
+const spec = ref<NginxGlobalSpec>(
+  ensureShape({
+    ver: 1,
+    general: {},
+    events: {},
+    http: {},
+    load_modules: [],
+    top_includes: [],
+  }),
+)
 
 const http = computed(() => spec.value.http as Record<string, any>)
 // ensureShape 已保证对象壳，模板里直接当对象用

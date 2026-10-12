@@ -7,7 +7,7 @@
         type="button"
         class="nginx-pill"
         :class="{ 'is-active': page === 'conf' }"
-        @click="page = 'conf'"
+        @click="setPage('conf')"
       >
         {{ t('servicesNginx.pageConf') }}
       </button>
@@ -15,7 +15,7 @@
         type="button"
         class="nginx-pill"
         :class="{ 'is-active': page === 'stream' }"
-        @click="page = 'stream'"
+        @click="setPage('stream')"
       >
         {{ t('servicesNginx.pageStream') }}
       </button>
@@ -23,7 +23,7 @@
         type="button"
         class="nginx-pill"
         :class="{ 'is-active': page === 'global' }"
-        @click="page = 'global'"
+        @click="setPage('global')"
       >
         {{ t('servicesNginx.pageGlobal') }}
       </button>
@@ -456,7 +456,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document } from '@/icons'
 import CodeEditor from '@/components/CodeEditor.vue'
@@ -494,14 +494,27 @@ import {
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const bootLoading = ref(true)
 const busy = ref(false)
 const acting = ref('')
 const installed = ref<boolean | null>(null)
 const status = ref<NginxStatus>({})
 /** conf = nginx 自身配置；stream = 四层转发规则；global = 主配置可视化（全量生成 nginx.conf） */
-const page = ref<'conf' | 'stream' | 'global'>('conf')
+const PAGE_KEYS = ['conf', 'stream', 'global'] as const
+type NginxPage = (typeof PAGE_KEYS)[number]
+/** 初始子页：优先 ?page=（配合 ?tab=nginx，刷新后停留在原子页） */
+const page = ref<NginxPage>(
+  (PAGE_KEYS as readonly string[]).includes(String(route.query.page))
+    ? (String(route.query.page) as NginxPage)
+    : 'conf',
+)
 const mode = ref('visual')
+
+function setPage(p: NginxPage) {
+  page.value = p
+  router.replace({ query: { ...route.query, tab: 'nginx', page: p } })
+}
 
 const running = computed(() => !!status.value.running)
 const versionText = computed(() => {
