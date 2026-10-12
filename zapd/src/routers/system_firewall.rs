@@ -303,7 +303,7 @@ pub async fn firewall_blacklist_add(
         ));
     }
     // 白名单优先：命中白名单的 IP 一律拒绝加入黑名单
-    let protected = crate::zap::ssh_ban::protected_ips().await;
+    let protected = crate::zap::ip_ban::protected_ips().await;
     if protected.iter().any(|w| w == &ip) {
         return Err(ZapError::New(
             -1,
@@ -616,9 +616,9 @@ pub async fn firewall_whitelist_delete(
 /// GET /system/config/firewall/ban/status
 pub async fn firewall_ban_status(claims: ValidatedClaims) -> ZapJsonResult {
     require_admin(&claims)?;
-    let s = crate::zap::ssh_ban::settings().await;
-    let st = crate::zap::ssh_ban::state().await;
-    let bans = crate::zap::ssh_ban::records().await;
+    let s = crate::zap::ip_ban::settings().await;
+    let st = crate::zap::ip_ban::state().await;
+    let bans = crate::zap::ip_ban::records().await;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -627,7 +627,7 @@ pub async fn firewall_ban_status(claims: ValidatedClaims) -> ZapJsonResult {
         .hits
         .iter()
         .map(|(k, (n, at))| {
-            let (rule, ip) = crate::zap::ssh_ban::split_hit_key(k);
+            let (rule, ip) = crate::zap::ip_ban::split_hit_key(k);
             json!({ "rule": rule, "ip": ip, "hits": n, "last": at })
         })
         .collect();
@@ -635,7 +635,7 @@ pub async fn firewall_ban_status(claims: ValidatedClaims) -> ZapJsonResult {
         .ignored
         .iter()
         .map(|(k, (n, reason, _))| {
-            let (rule, ip) = crate::zap::ssh_ban::split_hit_key(k);
+            let (rule, ip) = crate::zap::ip_ban::split_hit_key(k);
             json!({ "rule": rule, "ip": ip, "hits": n, "reason": reason })
         })
         .collect();
@@ -666,10 +666,10 @@ pub async fn firewall_ban_status(claims: ValidatedClaims) -> ZapJsonResult {
 pub async fn firewall_ban_settings_save(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
-    Json(payload): Json<crate::zap::ssh_ban::BanSettings>,
+    Json(payload): Json<crate::zap::ip_ban::BanSettings>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
-    crate::zap::ssh_ban::save_settings(&payload).await;
+    crate::zap::ip_ban::save_settings(&payload).await;
     audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
@@ -699,7 +699,7 @@ pub async fn firewall_ban_unban(
     Json(payload): Json<FirewallBanUnbanPayload>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
-    match crate::zap::ssh_ban::unban(&payload.ip).await {
+    match crate::zap::ip_ban::unban(&payload.ip).await {
         Ok(()) => {
             audit::log(
                 Some(&claims),

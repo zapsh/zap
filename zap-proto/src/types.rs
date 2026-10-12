@@ -1656,6 +1656,15 @@ pub enum Request {
         #[serde(default)]
         unlock: bool,
     },
+    /// IP Ban 读取日志（journal / 文件）。
+    /// 由 zapexec 以 root 读取，避免面板进程无 systemd-journal 权限时静默读不到。
+    #[serde(rename = "ban.log_read")]
+    BanLogRead {
+        /// 来源：auto（自动探测 sshd 日志）| journal:<units> | file:<path>
+        source: String,
+        /// 增量游标：journal 为 __CURSOR；file 为字节偏移字符串。空 = 首次（定位到最新）
+        cursor: String,
+    },
 
     /// 移除站点 Nginx vhost（站点删除时清理，幂等）
     #[serde(rename = "site.vhost_remove")]

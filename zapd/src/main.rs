@@ -251,7 +251,7 @@ async fn main() {
     // 自动更新（zapd/zapexec 系统升级）定时调度
     zap::auto_update::start();
     // IP Ban（内置 fail2ban，默认关闭，面板开启后生效）
-    zap::ssh_ban::start();
+    zap::ip_ban::start();
     // 插件定时任务（cron）调度：Webhook 触发不走这里，由请求直接命中
     zap::plugin_schedule::start();
     // 回收上次运行遗留的僵死 ACME 订单（重启会丢掉内存里的签发任务）

@@ -316,6 +316,7 @@ pub async fn unban(ip: &str) -> Result<(), String> {
 // ── 日志来源解析 ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum Src {
     /// sshd 自动探测：有文件走文件，否则走 journal（unit: ssh / sshd）
     Auto,
@@ -323,6 +324,7 @@ enum Src {
     File(String),
 }
 
+#[allow(dead_code)]
 fn resolve_source(source: &str) -> Src {
     let t = source.trim();
     if t.is_empty() || t.eq_ignore_ascii_case("auto") {
@@ -351,17 +353,8 @@ fn resolve_source(source: &str) -> Src {
     Src::File(t.to_string())
 }
 
-fn journal_available() -> bool {
-    std::process::Command::new("journalctl")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 /// 显式要求走 journal（Debian 默认不装 rsyslog，auth.log 不存在）。
+#[allow(dead_code)]
 fn wants_journal(configured: &str) -> bool {
     matches!(
         configured.trim().to_ascii_lowercase().as_str(),
@@ -369,69 +362,8 @@ fn wants_journal(configured: &str) -> bool {
     )
 }
 
-/// 读 journal 里指定 units 的新条目，返回 `(消息行, 新游标)`。
-///
-/// 用游标增量读，等价于文件模式的字节偏移；首次（无游标）只取最近若干条，
-/// 避免开机以来全部历史被重放导致误封。
-fn read_journal(units: &[String], cursor: &str, limit: usize) -> Result<(Vec<String>, String), String> {
-    let mut cmd = std::process::Command::new("journalctl");
-    for u in units {
-        cmd.arg("-u").arg(u);
-    }
-    cmd.args([
-        "-o",
-        "json",
-        "--no-pager",
-        "-n",
-        &limit.to_string(),
-    ]);
-    cmd.env("LC_ALL", "C");
-    if !cursor.is_empty() {
-        cmd.arg("--after-cursor").arg(cursor);
-    }
-    let out = cmd
-        .output()
-        .map_err(|e| format!("执行 journalctl 失败: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        // 游标失效（日志被 vacuum / 轮转清掉）时丢游标重试一次，取最近若干条
-        if !cursor.is_empty() {
-            return read_journal(units, "", limit);
-        }
-        return Err(if err.is_empty() {
-            "journalctl 返回非零".to_string()
-        } else {
-            err
-        });
-    }
-    let mut lines = Vec::new();
-    let mut new_cursor = cursor.to_string();
-    for raw in String::from_utf8_lossy(&out.stdout).lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
-            continue;
-        };
-        if let Some(c) = v.get("__CURSOR").and_then(|x| x.as_str()) {
-            new_cursor = c.to_string();
-        }
-        // 多行消息 journal 会拆成数组，这里拼回来，保证解析看到完整一行
-        let msg = match v.get("MESSAGE") {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(serde_json::Value::Array(a)) => a
-                .iter()
-                .filter_map(|x| x.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => continue,
-        };
-        if !msg.is_empty() {
-            lines.push(msg);
-        }
-    }
-    Ok((lines, new_cursor))
-}
-
-/// 探测 sshd 文本日志（RHEL / 装了 rsyslog 的 Debian）。
-/// 留空时按常见路径探测；填了路径但不存在则返回 None（交给调用方报错）。
+/// 探测 sshd 文本日志路径（仅用于「来源自动探测」的诊断展示，实际读取走 zapexec）。
+#[allow(dead_code)]
 fn detect_log_file(configured: &str) -> Option<String> {
     if !configured.trim().is_empty() {
         let p = std::path::Path::new(configured.trim());
@@ -664,6 +596,41 @@ async fn remove_firewall_rule(ip: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 通过 zapexec（root）读取一条规则的日志增量，返回 (行, 新游标, 来源描述)。
+/// 游标对 zapexec 是透明字符串（journal = __CURSOR；file = 字节偏移），原样回存。
+async fn read_source_via_zapexec(
+    source: &str,
+    cursor: &str,
+) -> Result<(Vec<String>, String, String), String> {
+    let resp = zapexec::call(Request::BanLogRead {
+        source: source.to_string(),
+        cursor: cursor.to_string(),
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if resp.code != 0 {
+        return Err(resp.message);
+    }
+    let d = resp
+        .data
+        .ok_or_else(|| "ban.log_read 未返回数据".to_string())?;
+    let lines: Vec<String> = d
+        .get("lines")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let new_cursor = d
+        .get("cursor")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let label = d
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or(source)
+        .to_string();
+    Ok((lines, new_cursor, label))
+}
+
 // ── 主循环 ─────────────────────────────────────────────────────
 
 /// 启动 IP Ban 循环（后台任务）。默认关闭，用户在面板开启后生效。
@@ -695,26 +662,6 @@ fn rule_find_time(r: &BanRule) -> u64 {
 }
 
 /// 读一个文件来源的新行（按字节偏移增量），返回 (行, 是否出错)
-fn read_file_source(path: &str, st: &mut BanState) -> Result<Vec<String>, String> {
-    // 日志轮转 / 文件被清空：偏移比文件还大就从头读
-    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let offset = st.offsets.get(path).copied().unwrap_or(0);
-    let offset = if offset > len { 0 } else { offset };
-    let content = std::fs::File::open(path)
-        .and_then(|mut f| {
-            use std::io::{Read, Seek, SeekFrom};
-            f.seek(SeekFrom::Start(offset))?;
-            let mut buf = String::new();
-            f.read_to_string(&mut buf)?;
-            Ok(buf)
-        })
-        .map_err(|e| format!("读取 {path} 失败: {e}"))?;
-    // 只按完整行推进偏移，避免半行被截断后下一轮解析出错
-    let consumed = content.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    st.offsets.insert(path.to_string(), offset + consumed as u64);
-    Ok(content[..consumed].lines().map(|l| l.to_string()).collect())
-}
-
 async fn tick(s: &BanSettings) {
     let mut st = state().await;
     let ts = now();
@@ -774,43 +721,14 @@ async fn tick(s: &BanSettings) {
             continue;
         }
 
-        // 日志来源
-        let lines = match resolve_source(&rule.source) {
-            Src::Auto => {
-                if let Some(path) = detect_log_file("") {
-                    st.sources.insert(rule.id.clone(), path.clone());
-                    read_file_source(&path, &mut st)
-                } else if journal_available() {
-                    let units = vec!["ssh".to_string(), "sshd".to_string()];
-                    st.sources
-                        .insert(rule.id.clone(), "journalctl -u ssh".to_string());
-                    read_journal(&units, st.cursors.get("auto").map(|s| s.as_str()).unwrap_or(""), 500)
-                        .map(|(ls, cur)| {
-                            st.cursors.insert("auto".to_string(), cur);
-                            ls
-                        })
-                } else {
-                    Err("未找到 sshd 日志（auth.log / secure），系统也没有 journalctl".to_string())
-                }
-            }
-            Src::Journal(units) => {
-                let key = format!("journal:{}", units.join(","));
-                st.sources
-                    .insert(rule.id.clone(), format!("journalctl -u {}", units.join(" -u ")));
-                read_journal(&units, st.cursors.get(&key).map(|s| s.as_str()).unwrap_or(""), 500)
-                    .map(|(ls, cur)| {
-                        st.cursors.insert(key, cur);
-                        ls
-                    })
-            }
-            Src::File(path) => {
-                st.sources.insert(rule.id.clone(), path.clone());
-                read_file_source(&path, &mut st)
-            }
-        };
-
-        match lines {
-            Ok(ls) => {
+        // 日志来源：统一走 zapexec（root）读取，避免面板进程无权读 journal 时静默失败。
+        // 把来源串作为游标键；zapd 进程本身不再直接 spawn journalctl / 开日志文件。
+        let src_key = rule.source.trim().to_string();
+        let cursor = st.cursors.get(&src_key).cloned().unwrap_or_default();
+        match read_source_via_zapexec(&src_key, &cursor).await {
+            Ok((ls, new_cursor, label)) => {
+                st.cursors.insert(src_key, new_cursor);
+                st.sources.insert(rule.id.clone(), label);
                 for line in ls {
                     if let Some(ip) = apply_line(re.as_ref(), &line) {
                         new_failures.push((rule.id.clone(), ip));

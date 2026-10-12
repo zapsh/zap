@@ -34,7 +34,7 @@ pub mod script_cron;
 pub mod security_check;
 pub mod server_env;
 pub mod session;
-pub mod ssh_ban;
+pub mod ip_ban;
 pub mod system_info;
 pub mod task;
 pub mod totp;

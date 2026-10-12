@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 mod acme;
+mod ban_log;
 mod app;
 mod appstore;
 mod backup;
@@ -586,6 +587,7 @@ pub async fn dispatch(req: Request) -> Response {
         Request::FirewallLockdown { panel_port, unlock } => {
             firewall::lockdown(unlock, panel_port).await
         }
+        Request::BanLogRead { source, cursor } => ban_log::read(source, cursor).await,
         Request::EnvDetect => env::detect().await,
         Request::UserHomeInit { home_dir, owner } => user::home_init(&home_dir, &owner).await,
         Request::UserHomeMigrate {
