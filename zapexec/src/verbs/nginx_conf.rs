@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use zap_proto::Response;
 use zap_proto::{
-    NginxCacheZone, NginxGlobalSpec, NginxHttpSpec, NGINX_LOG_FORMAT_MAIN, NGINX_GLOBAL_SPEC_VER,
+    NGINX_GLOBAL_SPEC_VER, NGINX_LOG_FORMAT_MAIN, NginxCacheZone, NginxGlobalSpec, NginxHttpSpec,
 };
 
 use super::root_cmd;
@@ -55,12 +55,7 @@ impl RenderCtx {
 
         let conf_d = conf_dir.join("conf.d");
         let conf_d_include = if conf_d.is_dir() {
-            Some(
-                conf_d
-                    .join("*.conf")
-                    .to_string_lossy()
-                    .to_string(),
-            )
+            Some(conf_d.join("*.conf").to_string_lossy().to_string())
         } else {
             None
         };
@@ -207,7 +202,12 @@ pub fn render(spec: &NginxGlobalSpec, ctx: &RenderCtx) -> String {
         }
     }
     push_num(&mut o, "", "worker_rlimit_nofile", g.worker_rlimit_nofile);
-    push_val(&mut o, "", "worker_shutdown_timeout", &g.worker_shutdown_timeout);
+    push_val(
+        &mut o,
+        "",
+        "worker_shutdown_timeout",
+        &g.worker_shutdown_timeout,
+    );
     push_val(&mut o, "", "timer_resolution", &g.timer_resolution);
     push_bool(&mut o, "", "pcre_jit", g.pcre_jit);
     push_val(&mut o, "", "pid", &g.pid);
@@ -254,13 +254,33 @@ fn emit_http_body(o: &mut String, h: &NginxHttpSpec, i: &str) {
     push_val(o, i, "send_timeout", &b.send_timeout);
     push_val(o, i, "client_header_timeout", &b.client_header_timeout);
     push_val(o, i, "client_body_timeout", &b.client_body_timeout);
-    push_bool(o, i, "reset_timedout_connection", b.reset_timedout_connection);
+    push_bool(
+        o,
+        i,
+        "reset_timedout_connection",
+        b.reset_timedout_connection,
+    );
     push_val(o, i, "client_max_body_size", &b.client_max_body_size);
     push_val(o, i, "client_body_buffer_size", &b.client_body_buffer_size);
-    push_val(o, i, "large_client_header_buffers", &b.large_client_header_buffers);
+    push_val(
+        o,
+        i,
+        "large_client_header_buffers",
+        &b.large_client_header_buffers,
+    );
     push_num(o, i, "types_hash_max_size", b.types_hash_max_size);
-    push_num(o, i, "server_names_hash_max_size", b.server_names_hash_max_size);
-    push_num(o, i, "server_names_hash_bucket_size", b.server_names_hash_bucket_size);
+    push_num(
+        o,
+        i,
+        "server_names_hash_max_size",
+        b.server_names_hash_max_size,
+    );
+    push_num(
+        o,
+        i,
+        "server_names_hash_bucket_size",
+        b.server_names_hash_bucket_size,
+    );
     push_num(o, i, "variables_hash_max_size", b.variables_hash_max_size);
     push_bool(o, i, "server_tokens", b.server_tokens);
 
@@ -676,7 +696,10 @@ enum Ctx {
 /// - 能识别的指令回填到对应字段；
 /// - **识别不了的行原样保留**到 `preserve_top_raw` / `preserve_http_raw`，保证不丢配置。
 pub fn parse_conf_text(text: &str) -> NginxGlobalSpec {
-    let mut spec = NginxGlobalSpec { ver: NGINX_GLOBAL_SPEC_VER, ..Default::default() };
+    let mut spec = NginxGlobalSpec {
+        ver: NGINX_GLOBAL_SPEC_VER,
+        ..Default::default()
+    };
 
     let mut ctx = Ctx::Main;
     let mut depth = 0isize;
@@ -1247,11 +1270,19 @@ fn apply_inner(spec_json: &str) -> Response {
         let _ = std::fs::remove_file(&tmp);
         return Response::err(-1, format!("替换主配置失败: {e}"));
     }
-    let _ = std::fs::set_permissions(&ctx.conf_path, std::os::unix::fs::PermissionsExt::from_mode(0o644));
+    let _ = std::fs::set_permissions(
+        &ctx.conf_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o644),
+    );
 
     let reloaded = site::reload_nginx(&bin);
-    let old = std::fs::read_to_string(&backup.as_ref().map(|p| p.as_path()).unwrap_or(Path::new("")))
-        .unwrap_or_default();
+    let old = std::fs::read_to_string(
+        &backup
+            .as_ref()
+            .map(|p| p.as_path())
+            .unwrap_or(Path::new("")),
+    )
+    .unwrap_or_default();
 
     Response::ok(
         "已应用并重载 Nginx",
@@ -1365,11 +1396,13 @@ mod tests {
         let out = render(&s, &c);
         // 真正的防线：去掉 `;` `{}` 后无法拼出新的指令行，注入内容只能留在同一条指令的值里
         assert!(
-            out.lines().all(|l| !l.trim_start().starts_with("proxy_pass")),
+            out.lines()
+                .all(|l| !l.trim_start().starts_with("proxy_pass")),
             "{out}"
         );
         assert!(
-            out.lines().all(|l| !l.trim_start().starts_with("location ")),
+            out.lines()
+                .all(|l| !l.trim_start().starts_with("location ")),
             "{out}"
         );
         assert!(out.contains("client_max_body_size 100m location"), "{out}");
@@ -1408,19 +1441,26 @@ http {
         assert_eq!(s.http.proxy_cache[0].name, "z1");
         assert_eq!(s.http.proxy_cache[0].keys_zone_size, "10m");
         // 不认识的行必须原样保留
-        assert!(s
-            .preserve_top_raw
-            .iter()
-            .any(|l| l.contains("custom_top_directive")), "{:?}", s.preserve_top_raw);
-        assert!(s
-            .preserve_http_raw
-            .iter()
-            .any(|l| l.contains("my_unknown_http_directive")), "{:?}", s.preserve_http_raw);
+        assert!(
+            s.preserve_top_raw
+                .iter()
+                .any(|l| l.contains("custom_top_directive")),
+            "{:?}",
+            s.preserve_top_raw
+        );
+        assert!(
+            s.preserve_http_raw
+                .iter()
+                .any(|l| l.contains("my_unknown_http_directive")),
+            "{:?}",
+            s.preserve_http_raw
+        );
         // server 整块保留
-        assert!(s
-            .preserve_http_raw
-            .iter()
-            .any(|l| l.contains("listen 80")), "{:?}", s.preserve_http_raw);
+        assert!(
+            s.preserve_http_raw.iter().any(|l| l.contains("listen 80")),
+            "{:?}",
+            s.preserve_http_raw
+        );
 
         // 再渲染：保留的内容不能丢
         let c = ctx();
@@ -1440,9 +1480,15 @@ http {
         s.http.cache_purge.enabled = true;
         s.http.cache_purge.allowed_ips = vec!["10.0.0.1".to_string()];
         let out = render(&s, &c);
-        assert!(out.contains("load_module modules/ngx_http_modsecurity_module.so;"), "{out}");
+        assert!(
+            out.contains("load_module modules/ngx_http_modsecurity_module.so;"),
+            "{out}"
+        );
         assert!(out.contains("modsecurity on;"), "{out}");
-        assert!(out.contains("map $request_method $zap_purge_method"), "{out}");
+        assert!(
+            out.contains("map $request_method $zap_purge_method"),
+            "{out}"
+        );
         assert!(out.contains("10.0.0.1 1;"), "{out}");
     }
 

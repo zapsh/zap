@@ -486,7 +486,10 @@ pub async fn config_save(
         let Ok(conf) = validate_conf_path(path.as_deref().unwrap_or(DEFAULT_SSHD_CONF)) else {
             return Response::err(-1, "配置文件路径非法".to_string());
         };
-        let parent = conf.parent().unwrap_or(std::path::Path::new("/etc/ssh")).to_path_buf();
+        let parent = conf
+            .parent()
+            .unwrap_or(std::path::Path::new("/etc/ssh"))
+            .to_path_buf();
         if let Err(e) = validate_content(&content, &parent) {
             return Response::err(-1, format!("配置校验未通过,已中止保存：\n{e}"));
         }
@@ -506,10 +509,13 @@ pub async fn config_save(
                     let re = do_restart();
                     (
                         false,
-                        Some(format!("重启失败已回滚配置：{e}{}", match re {
-                            Ok(()) => String::new(),
-                            Err(e2) => format!("（回滚后重启仍失败：{e2}）"),
-                        })),
+                        Some(format!(
+                            "重启失败已回滚配置：{e}{}",
+                            match re {
+                                Ok(()) => String::new(),
+                                Err(e2) => format!("（回滚后重启仍失败：{e2}）"),
+                            }
+                        )),
                     )
                 }
             }
@@ -557,7 +563,10 @@ mod tests {
         let c = "Port 22\n\nMatch User alice\n    PasswordAuthentication no\n";
         let out = apply_directives(c, &[("LoginGraceTime".into(), "60".into())]);
         // 新键必须在 Match 之前（全局段）
-        assert!(out.find("LoginGraceTime 60").unwrap() < out.find("Match User").unwrap(), "{out}");
+        assert!(
+            out.find("LoginGraceTime 60").unwrap() < out.find("Match User").unwrap(),
+            "{out}"
+        );
         // Match 块内容原样保留
         assert!(out.contains("Match User alice"), "{out}");
         assert!(out.contains("    PasswordAuthentication no"), "{out}");
@@ -575,7 +584,10 @@ mod tests {
     fn apply_is_case_insensitive_and_only_first_hit() {
         let c = "PermitRootLogin yes\nPermitRootLogin no\n";
         let out = apply_directives(c, &[("permitrootlogin".into(), "prohibit-password".into())]);
-        assert!(out.starts_with("PermitRootLogin prohibit-password"), "{out}");
+        assert!(
+            out.starts_with("PermitRootLogin prohibit-password"),
+            "{out}"
+        );
         // 第二处同名保持原样（sshd 取首次出现的值,改第二处没有意义反而误导）
         assert!(out.ends_with("PermitRootLogin no"), "{out}");
     }
@@ -583,7 +595,10 @@ mod tests {
     #[test]
     fn directive_of_parses_commented_and_plain() {
         assert_eq!(directive_of("#Port 22"), Some("Port"));
-        assert_eq!(directive_of("   Subsystem sftp internal-sftp"), Some("Subsystem"));
+        assert_eq!(
+            directive_of("   Subsystem sftp internal-sftp"),
+            Some("Subsystem")
+        );
         assert_eq!(directive_of(""), None);
         assert_eq!(directive_of("# only comment"), Some("only"));
     }

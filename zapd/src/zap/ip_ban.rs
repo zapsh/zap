@@ -347,7 +347,11 @@ fn resolve_source(source: &str) -> Src {
     }
     if let Some(p) = t.strip_prefix("file:") {
         let p = p.trim();
-        return if p.is_empty() { Src::Auto } else { Src::File(p.into()) };
+        return if p.is_empty() {
+            Src::Auto
+        } else {
+            Src::File(p.into())
+        };
     }
     // 兼容：直接填了路径
     Src::File(t.to_string())
@@ -464,7 +468,10 @@ fn apply_line(re: Option<&Regex>, line: &str) -> Option<String> {
             let caps = re.captures(line)?;
             if let Some(m) = caps.name("ip") {
                 let ip = m.as_str();
-                return ip.parse::<std::net::IpAddr>().is_ok().then(|| ip.to_string());
+                return ip
+                    .parse::<std::net::IpAddr>()
+                    .is_ok()
+                    .then(|| ip.to_string());
             }
             first_ip_in_line(line)
         }
@@ -504,19 +511,30 @@ fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
     let Ok(bits) = bits.parse::<u32>() else {
         return false;
     };
-    match (ip.parse::<std::net::IpAddr>(), net.parse::<std::net::IpAddr>()) {
+    match (
+        ip.parse::<std::net::IpAddr>(),
+        net.parse::<std::net::IpAddr>(),
+    ) {
         (Ok(std::net::IpAddr::V4(a)), Ok(std::net::IpAddr::V4(b))) => {
             if bits > 32 {
                 return false;
             }
-            let mask: u32 = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+            let mask: u32 = if bits == 0 {
+                0
+            } else {
+                u32::MAX << (32 - bits)
+            };
             u32::from(a) & mask == u32::from(b) & mask
         }
         (Ok(std::net::IpAddr::V6(a)), Ok(std::net::IpAddr::V6(b))) => {
             if bits > 128 {
                 return false;
             }
-            let mask: u128 = if bits == 0 { 0 } else { u128::MAX << (128 - bits) };
+            let mask: u128 = if bits == 0 {
+                0
+            } else {
+                u128::MAX << (128 - bits)
+            };
             u128::from(a) & mask == u128::from(b) & mask
         }
         _ => false,
@@ -561,11 +579,9 @@ async fn remove_firewall_rule(ip: &str) -> Result<(), String> {
         .read()
         .map(|c| c.server.port)
         .unwrap_or(0);
-    let resp = zapexec::call(Request::FirewallStatus {
-        panel_port,
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    let resp = zapexec::call(Request::FirewallStatus { panel_port })
+        .await
+        .map_err(|e| e.to_string())?;
     if resp.code != 0 {
         return Err(resp.message);
     }
@@ -762,17 +778,16 @@ async fn tick(s: &BanSettings) {
     });
 
     // 被策略跳过的来源单独记账，面板据此解释「为什么没封它」
-    st.ignored
-        .retain(|k, (_, _, at)| {
-            let (rid, _) = split_key(k);
-            let ft = s
-                .rules
-                .iter()
-                .find(|r| r.id == rid)
-                .map(rule_find_time)
-                .unwrap_or(600);
-            ts.saturating_sub(*at) <= ft
-        });
+    st.ignored.retain(|k, (_, _, at)| {
+        let (rid, _) = split_key(k);
+        let ft = s
+            .rules
+            .iter()
+            .find(|r| r.id == rid)
+            .map(rule_find_time)
+            .unwrap_or(600);
+        ts.saturating_sub(*at) <= ft
+    });
     for (key, (count, _)) in st.hits.clone() {
         let (_, ip) = split_key(&key);
         if let Some(reason) = skip_reason(ip, s, &wl).await {
@@ -806,7 +821,10 @@ async fn tick(s: &BanSettings) {
         };
         let threshold = rule_max_retry(rule);
         if count < threshold {
-            debug!("IP Ban：{ip} 失败 {count} 次，未达规则 {} 阈值 {threshold}", rule.name);
+            debug!(
+                "IP Ban：{ip} 失败 {count} 次，未达规则 {} 阈值 {threshold}",
+                rule.name
+            );
             continue;
         }
         if already.contains(&ip) || skip_reason(&ip, s, &wl).await.is_some() {
@@ -865,11 +883,17 @@ mod tests {
             Some("8.8.8.8"),
         );
         assert_eq!(
-            parse_failure("Connection closed by authenticating user root 9.9.9.9 port 5555 [preauth]").as_deref(),
+            parse_failure(
+                "Connection closed by authenticating user root 9.9.9.9 port 5555 [preauth]"
+            )
+            .as_deref(),
             Some("9.9.9.9"),
         );
         assert_eq!(
-            parse_failure("Disconnected from authenticating user admin 10.1.2.3 port 4444 [preauth]").as_deref(),
+            parse_failure(
+                "Disconnected from authenticating user admin 10.1.2.3 port 4444 [preauth]"
+            )
+            .as_deref(),
             Some("10.1.2.3"),
         );
     }
@@ -911,11 +935,15 @@ mod tests {
             Some("10.0.0.9"),
         );
         assert_eq!(
-            parse_failure("Timeout before authentication for connection from 8.8.4.4 to 8.8.4.4 port 4310").as_deref(),
+            parse_failure(
+                "Timeout before authentication for connection from 8.8.4.4 to 8.8.4.4 port 4310"
+            )
+            .as_deref(),
             Some("8.8.4.4"),
         );
         assert_eq!(
-            parse_failure("Failed keyboard-interactive/pam for zap from 2001:db8::9 port 22 ssh2").as_deref(),
+            parse_failure("Failed keyboard-interactive/pam for zap from 2001:db8::9 port 22 ssh2")
+                .as_deref(),
             Some("2001:db8::9"),
         );
     }
@@ -949,7 +977,11 @@ mod tests {
     #[test]
     fn empty_pattern_uses_builtin_sshd_parser() {
         assert_eq!(
-            apply_line(None, "Failed password for zap from 192.168.11.134 port 60602 ssh2").as_deref(),
+            apply_line(
+                None,
+                "Failed password for zap from 192.168.11.134 port 60602 ssh2"
+            )
+            .as_deref(),
             Some("192.168.11.134"),
         );
     }
@@ -962,7 +994,10 @@ mod tests {
             resolve_source("journal:ssh,sshd"),
             Src::Journal(vec!["ssh".into(), "sshd".into()])
         );
-        assert_eq!(resolve_source("journal"), Src::Journal(vec!["ssh".into(), "sshd".into()]));
+        assert_eq!(
+            resolve_source("journal"),
+            Src::Journal(vec!["ssh".into(), "sshd".into()])
+        );
         assert_eq!(
             resolve_source("file:/var/log/nginx/error.log"),
             Src::File("/var/log/nginx/error.log".into())
@@ -1005,7 +1040,9 @@ mod tests {
     fn skip_reason_explains_why_not_banned() {
         // 默认 ignore_private=false：内网也会封，只有白名单 / 环回才跳过
         let mut s = BanSettings::default();
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         rt.block_on(async {
             // 默认不开忽略内网：内网 → 不跳过
             assert!(skip_reason("192.168.1.11", &s, &[]).await.is_none());

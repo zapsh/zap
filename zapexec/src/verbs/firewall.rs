@@ -285,11 +285,12 @@ fn nft_rules() -> Vec<Rule> {
                 .filter_map(|s| s.trim().parse().ok())
                 .collect()
         } else {
-            vec![rest
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0)]
+            vec![
+                rest.split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+            ]
         };
         let proto = if l.contains("udp dport") {
             "udp"
@@ -340,12 +341,13 @@ fn iptables_rules() -> Vec<Rule> {
                 .map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect())
                 .unwrap_or_default()
         } else if l.contains("dpt:") {
-            vec![l
-                .split("dpt:")
-                .nth(1)
-                .and_then(|s| s.split_whitespace().next())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0)]
+            vec![
+                l.split("dpt:")
+                    .nth(1)
+                    .and_then(|s| s.split_whitespace().next())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+            ]
         } else {
             continue;
         };
@@ -571,20 +573,27 @@ fn ensure_ip_forward() {
         .output();
     let conf = "/etc/sysctl.d/99-zap-firewall.conf";
     if !std::path::Path::new(conf).exists() {
-        let _ = std::fs::write(conf, "# Created by zap panel (firewall forwarding)\nnet.ipv4.ip_forward = 1\n");
+        let _ = std::fs::write(
+            conf,
+            "# Created by zap panel (firewall forwarding)\nnet.ipv4.ip_forward = 1\n",
+        );
     }
 }
 
 /// 端口转发是否被当前后端支持（ufw 需改写 before.rules，不做）
 fn forward_supported(b: Backend) -> bool {
-    matches!(b, Backend::Firewalld | Backend::Nftables | Backend::Iptables)
+    matches!(
+        b,
+        Backend::Firewalld | Backend::Nftables | Backend::Iptables
+    )
 }
 
 /// 是否已处于「锁服」状态（封禁全部、仅白名单放通）。由各后端的加固标记判定。
 fn locked_down(b: Backend) -> bool {
     match b {
-        Backend::Nftables => cmd_out("nft", &["list", "chain", "inet", "zap_fw", "input"])
-            .contains("zap:lock:drop"),
+        Backend::Nftables => {
+            cmd_out("nft", &["list", "chain", "inet", "zap_fw", "input"]).contains("zap:lock:drop")
+        }
         Backend::Iptables => {
             cmd_out("iptables", &["-S", "INPUT"]).contains("zap:lock:drop")
                 || cmd_out("ip6tables", &["-S", "INPUT"]).contains("zap:lock:drop")
@@ -628,19 +637,39 @@ fn list_whitelist(b: Backend) -> Vec<White> {
 
 /// 确保 zap_fw 表与 input / dstnat / srcnat 链存在（已存在时 nft 返回错误，忽略即可）。
 fn nft_ensure_chains() {
-    let _ = root_cmd("nft").args(["add", "table", "inet", "zap_fw"]).output();
-    let _ = root_cmd("nft").args([
-        "add", "chain", "inet", "zap_fw", "input",
-        "{ type filter hook input priority 0 ; }",
-    ]).output();
-    let _ = root_cmd("nft").args([
-        "add", "chain", "inet", "zap_fw", "dstnat",
-        "{ type nat hook prerouting priority dstnat ; }",
-    ]).output();
-    let _ = root_cmd("nft").args([
-        "add", "chain", "inet", "zap_fw", "srcnat",
-        "{ type nat hook postrouting priority srcnat ; }",
-    ]).output();
+    let _ = root_cmd("nft")
+        .args(["add", "table", "inet", "zap_fw"])
+        .output();
+    let _ = root_cmd("nft")
+        .args([
+            "add",
+            "chain",
+            "inet",
+            "zap_fw",
+            "input",
+            "{ type filter hook input priority 0 ; }",
+        ])
+        .output();
+    let _ = root_cmd("nft")
+        .args([
+            "add",
+            "chain",
+            "inet",
+            "zap_fw",
+            "dstnat",
+            "{ type nat hook prerouting priority dstnat ; }",
+        ])
+        .output();
+    let _ = root_cmd("nft")
+        .args([
+            "add",
+            "chain",
+            "inet",
+            "zap_fw",
+            "srcnat",
+            "{ type nat hook postrouting priority srcnat ; }",
+        ])
+        .output();
 }
 
 fn nft_forwards() -> Vec<Forward> {
@@ -656,7 +685,11 @@ fn nft_forwards() -> Vec<Forward> {
         let Some((left, target)) = main.split_once("dnat to ") else {
             continue;
         };
-        let proto = if left.contains("udp dport") { "udp" } else { "tcp" };
+        let proto = if left.contains("udp dport") {
+            "udp"
+        } else {
+            "tcp"
+        };
         let Some(listen_port) = left
             .split("dport ")
             .nth(1)
@@ -719,7 +752,11 @@ fn nft_forward_add(f: &Forward) -> Result<(), String> {
     }
     // 回程 masquerade：同目标仅加一条（内核较老不支持 inet nat masquerade 时静默忽略）
     if !nft_has_masq(&f.target_addr) {
-        let fam_kw = if is_ipv4_cidr(&f.target_addr) { "ip" } else { "ip6" };
+        let fam_kw = if is_ipv4_cidr(&f.target_addr) {
+            "ip"
+        } else {
+            "ip6"
+        };
         let masq = format!(
             "{fam_kw} daddr {ta} masquerade comment \"zap:masq:{ta}\"",
             ta = f.target_addr
@@ -739,7 +776,10 @@ fn nft_has_masq(addr: &str) -> bool {
 }
 
 fn nft_forward_delete(id: &str) -> Result<(), String> {
-    if !cmd_ok("nft", &["delete", "rule", "inet", "zap_fw", "dstnat", "handle", id]) {
+    if !cmd_ok(
+        "nft",
+        &["delete", "rule", "inet", "zap_fw", "dstnat", "handle", id],
+    ) {
         return Err("nft 删除转发规则失败".to_string());
     }
     // 目标已无任何转发规则时，顺手清掉回程 masquerade（按 srcnat 的 comment 反查）
@@ -770,7 +810,9 @@ fn nft_cleanup_masq() {
             let handle = h.split_whitespace().next().unwrap_or("");
             if !handle.is_empty() {
                 let _ = root_cmd("nft")
-                    .args(["delete", "rule", "inet", "zap_fw", "srcnat", "handle", handle])
+                    .args([
+                        "delete", "rule", "inet", "zap_fw", "srcnat", "handle", handle,
+                    ])
                     .output();
             }
         }
@@ -901,11 +943,7 @@ fn iptables_forwards() -> Vec<Forward> {
             None => (to.clone(), 0),
         };
         out.push(Forward {
-            id: format!(
-                "{proto}:{lp}:{addr}:{tp}",
-                lp = listen_port,
-                tp = port
-            ),
+            id: format!("{proto}:{lp}:{addr}:{tp}", lp = listen_port, tp = port),
             proto,
             listen_port,
             target_addr: addr,
@@ -920,9 +958,18 @@ fn iptables_forward_add(f: &Forward) -> Result<(), String> {
     ensure_ip_forward();
     let to = format!("{}:{}", f.target_addr, f.target_port);
     let refs: Vec<String> = vec![
-        "-t".into(), "nat".into(), "-A".into(), "PREROUTING".into(),
-        "-p".into(), f.proto.clone(), "--dport".into(), f.listen_port.to_string(),
-        "-j".into(), "DNAT".into(), "--to-destination".into(), to,
+        "-t".into(),
+        "nat".into(),
+        "-A".into(),
+        "PREROUTING".into(),
+        "-p".into(),
+        f.proto.clone(),
+        "--dport".into(),
+        f.listen_port.to_string(),
+        "-j".into(),
+        "DNAT".into(),
+        "--to-destination".into(),
+        to,
     ];
     let srefs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
     let (ok, out) = run_capture("iptables", &srefs);
@@ -935,7 +982,16 @@ fn iptables_forward_add(f: &Forward) -> Result<(), String> {
         .any(|l| l.contains(&format!("-d {} ", f.target_addr)) && l.contains("MASQUERADE"))
     {
         let _ = root_cmd("iptables")
-            .args(["-t", "nat", "-A", "POSTROUTING", "-d", &f.target_addr, "-j", "MASQUERADE"])
+            .args([
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-d",
+                &f.target_addr,
+                "-j",
+                "MASQUERADE",
+            ])
             .output();
     }
     Ok(())
@@ -948,12 +1004,26 @@ fn iptables_forward_delete(id: &str) -> Result<(), String> {
         return Err("转发规则 id 不合法".to_string());
     }
     let (proto, lp, ta, tp) = (parts[0], parts[1], parts[2], parts[3]);
-    let to = if tp == "0" { ta.to_string() } else { format!("{ta}:{tp}") };
+    let to = if tp == "0" {
+        ta.to_string()
+    } else {
+        format!("{ta}:{tp}")
+    };
     let ok = cmd_ok(
         "iptables",
         &[
-            "-t", "nat", "-D", "PREROUTING", "-p", proto, "--dport", lp, "-j", "DNAT",
-            "--to-destination", &to,
+            "-t",
+            "nat",
+            "-D",
+            "PREROUTING",
+            "-p",
+            proto,
+            "--dport",
+            lp,
+            "-j",
+            "DNAT",
+            "--to-destination",
+            &to,
         ],
     );
     if !ok {
@@ -962,7 +1032,16 @@ fn iptables_forward_delete(id: &str) -> Result<(), String> {
     // 同目标已无其它转发规则时清掉 masquerade
     if !iptables_forwards().iter().any(|f| f.target_addr == ta) {
         let _ = root_cmd("iptables")
-            .args(["-t", "nat", "-D", "POSTROUTING", "-d", ta, "-j", "MASQUERADE"])
+            .args([
+                "-t",
+                "nat",
+                "-D",
+                "POSTROUTING",
+                "-d",
+                ta,
+                "-j",
+                "MASQUERADE",
+            ])
             .output();
     }
     Ok(())
@@ -977,7 +1056,11 @@ fn iptables_blacklist() -> Vec<Black> {
             if !l.starts_with("-A INPUT") || !l.contains("-j DROP") || l.contains("--dport") {
                 continue;
             }
-            let Some(ip) = l.split(" -s ").nth(1).and_then(|s| s.split_whitespace().next()) else {
+            let Some(ip) = l
+                .split(" -s ")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+            else {
                 continue;
             };
             out.push(Black {
@@ -992,7 +1075,11 @@ fn iptables_blacklist() -> Vec<Black> {
 
 fn iptables_blacklist_add(ip: &str) -> Result<(), String> {
     // IPv6 来源必须写 ip6tables，否则规则落错族、封禁无效
-    let bin = if is_ipv4_cidr(ip) { "iptables" } else { "ip6tables" };
+    let bin = if is_ipv4_cidr(ip) {
+        "iptables"
+    } else {
+        "ip6tables"
+    };
     let (ok, out) = run_capture(bin, &["-I", "INPUT", "1", "-s", ip, "-j", "DROP"]);
     if !ok {
         return Err(format!("{bin} 添加黑名单失败：{out}"));
@@ -1009,7 +1096,11 @@ fn iptables_whitelist() -> Vec<White> {
             if !l.starts_with("-A INPUT") || !l.contains("-j ACCEPT") || l.contains("--dport") {
                 continue;
             }
-            let Some(ip) = l.split(" -s ").nth(1).and_then(|s| s.split_whitespace().next()) else {
+            let Some(ip) = l
+                .split(" -s ")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+            else {
                 continue;
             };
             if ip.contains('/') && (ip.starts_with("0.0.0.0") || ip == "::/0") {
@@ -1026,7 +1117,11 @@ fn iptables_whitelist() -> Vec<White> {
 }
 
 fn iptables_whitelist_add(ip: &str) -> Result<(), String> {
-    let bin = if is_ipv4_cidr(ip) { "iptables" } else { "ip6tables" };
+    let bin = if is_ipv4_cidr(ip) {
+        "iptables"
+    } else {
+        "ip6tables"
+    };
     let (ok, out) = run_capture(bin, &["-I", "INPUT", "1", "-s", ip, "-j", "ACCEPT"]);
     if !ok {
         return Err(format!("{bin} 添加白名单失败：{out}"));
@@ -1082,7 +1177,10 @@ fn firewalld_forward_add(f: &Forward) -> Result<(), String> {
         ta = f.target_addr
     );
     let _ = run_capture("firewall-cmd", &["--permanent", "--add-masquerade"]);
-    let (ok, out) = run_capture("firewall-cmd", &["--permanent", "--add-forward-port", &spec]);
+    let (ok, out) = run_capture(
+        "firewall-cmd",
+        &["--permanent", "--add-forward-port", &spec],
+    );
     if !ok {
         return Err(format!("firewall-cmd --add-forward-port 执行失败：{out}"));
     }
@@ -1099,7 +1197,9 @@ fn firewalld_forward_delete(id: &str) -> Result<(), String> {
         &["--permanent", "--remove-forward-port", id],
     );
     if !ok {
-        return Err(format!("firewall-cmd --remove-forward-port 执行失败：{out}"));
+        return Err(format!(
+            "firewall-cmd --remove-forward-port 执行失败：{out}"
+        ));
     }
     let _ = run_capture("firewall-cmd", &["--reload"]);
     Ok(())
@@ -1176,7 +1276,10 @@ fn firewalld_whitelist_add(ip: &str) -> Result<(), String> {
     let family = if is_ipv4_cidr(ip) { "ipv4" } else { "ipv6" };
     // 先摘掉同源的 drop，再加 accept，避免顺序问题导致白名单失效
     let drop_rule = format!("rule family=\"{family}\" source address=\"{ip}\" drop");
-    let _ = run_capture("firewall-cmd", &["--permanent", "--remove-rich-rule", &drop_rule]);
+    let _ = run_capture(
+        "firewall-cmd",
+        &["--permanent", "--remove-rich-rule", &drop_rule],
+    );
     let rule = format!("rule family=\"{family}\" source address=\"{ip}\" accept");
     let (ok, out) = run_capture("firewall-cmd", &["--permanent", "--add-rich-rule", &rule]);
     if !ok {
@@ -1226,10 +1329,7 @@ fn ufw_blacklist() -> Vec<Black> {
 fn ufw_blacklist_add(ip: &str) -> Result<(), String> {
     // insert 1 保证黑名单优先于既有放行规则；带注释标记便于列表识别（老 ufw 不支持则退化）
     let tag = format!("zap:bl_{ip}");
-    let (ok, _) = run_capture(
-        "ufw",
-        &["insert", "1", "deny", "from", ip, "comment", &tag],
-    );
+    let (ok, _) = run_capture("ufw", &["insert", "1", "deny", "from", ip, "comment", &tag]);
     if ok {
         return Ok(());
     }
@@ -1279,7 +1379,15 @@ fn ufw_whitelist() -> Vec<White> {
 fn ufw_whitelist_add(ip: &str) -> Result<(), String> {
     let (ok, _) = run_capture(
         "ufw",
-        &["insert", "1", "allow", "from", ip, "comment", &format!("zap:wl_{ip}")],
+        &[
+            "insert",
+            "1",
+            "allow",
+            "from",
+            ip,
+            "comment",
+            &format!("zap:wl_{ip}"),
+        ],
     );
     if ok {
         return Ok(());
@@ -1653,20 +1761,20 @@ pub async fn status(panel_port: u16) -> Response {
         return Response::ok(
             "未检测到受支持的防火墙（firewalld / ufw / nftables / iptables）",
             Some(json!({
-                "backend": "none",
-                "detected": "none",
-                "active": false,
-                "enabled": false,
-                "wsl": wsl,
-                "panel_port": panel_port,
-                "rules": [],
-                "forwards": [],
-                "blacklist": [],
-                "whitelist": [],
-                "ip_forward": false,
-                "forward_supported": false,
-                "locked_down": false,
-                })),
+            "backend": "none",
+            "detected": "none",
+            "active": false,
+            "enabled": false,
+            "wsl": wsl,
+            "panel_port": panel_port,
+            "rules": [],
+            "forwards": [],
+            "blacklist": [],
+            "whitelist": [],
+            "ip_forward": false,
+            "forward_supported": false,
+            "locked_down": false,
+            })),
         );
     }
     let active = backend_active(b);
@@ -1770,10 +1878,19 @@ fn nft_repin_drop_if_locked(b: Backend) {
         return;
     }
     let _ = root_cmd("nft")
-        .args(["delete", "rule", "inet", "zap_fw", "input", "handle", &handle])
+        .args([
+            "delete", "rule", "inet", "zap_fw", "input", "handle", &handle,
+        ])
         .output();
     let _ = root_cmd("nft")
-        .args(["add", "rule", "inet", "zap_fw", "input", "drop comment \"zap:lock:drop\""])
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "zap_fw",
+            "input",
+            "drop comment \"zap:lock:drop\"",
+        ])
         .output();
 }
 
@@ -1816,7 +1933,10 @@ pub async fn rule_update(
                 || r.comment.starts_with("zap:lock:drop"))
     });
     if protected {
-        return Response::err(-1, "加固基础设施规则（已建连接 / ICMP / 兜底丢弃）不可单独修改".to_string());
+        return Response::err(
+            -1,
+            "加固基础设施规则（已建连接 / ICMP / 兜底丢弃）不可单独修改".to_string(),
+        );
     }
     // 先删后加
     if let Err(e) = delete_rule(b, &id) {
@@ -1890,7 +2010,10 @@ fn delete_forward(b: Backend, id: &str) -> Result<(), String> {
         Backend::Firewalld => firewalld_forward_delete(id),
         Backend::Nftables => nft_forward_delete(id),
         Backend::Iptables => iptables_forward_delete(id),
-        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+        _ => Err(format!(
+            "当前系统（{}）暂不支持该操作",
+            std::env::consts::OS
+        )),
     }
 }
 
@@ -1900,7 +2023,10 @@ fn apply_blacklist(b: Backend, ip: &str) -> Result<(), String> {
         Backend::Nftables => nft_blacklist_add(ip),
         Backend::Iptables => iptables_blacklist_add(ip),
         Backend::Ufw => ufw_blacklist_add(ip),
-        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+        _ => Err(format!(
+            "当前系统（{}）暂不支持该操作",
+            std::env::consts::OS
+        )),
     }
 }
 
@@ -1910,14 +2036,20 @@ fn apply_whitelist(b: Backend, ip: &str) -> Result<(), String> {
         Backend::Nftables => nft_whitelist_add(ip),
         Backend::Iptables => iptables_whitelist_add(ip),
         Backend::Ufw => ufw_whitelist_add(ip),
-        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+        _ => Err(format!(
+            "当前系统（{}）暂不支持该操作",
+            std::env::consts::OS
+        )),
     }
 }
 
 fn delete_whitelist(b: Backend, id: &str) -> Result<(), String> {
     match b {
         Backend::Nftables => {
-            if cmd_ok("nft", &["delete", "rule", "inet", "zap_fw", "input", "handle", id]) {
+            if cmd_ok(
+                "nft",
+                &["delete", "rule", "inet", "zap_fw", "input", "handle", id],
+            ) {
                 Ok(())
             } else {
                 Err("nft 删除白名单失败".to_string())
@@ -1925,7 +2057,11 @@ fn delete_whitelist(b: Backend, id: &str) -> Result<(), String> {
         }
         Backend::Iptables => {
             // id 即 IP；IPv6 来源走 ip6tables
-            let bin = if is_ipv4_cidr(id) { "iptables" } else { "ip6tables" };
+            let bin = if is_ipv4_cidr(id) {
+                "iptables"
+            } else {
+                "ip6tables"
+            };
             if cmd_ok(bin, &["-D", "INPUT", "-s", id, "-j", "ACCEPT"]) {
                 Ok(())
             } else {
@@ -1949,7 +2085,10 @@ fn delete_whitelist(b: Backend, id: &str) -> Result<(), String> {
                 Err("ufw 删除白名单失败".to_string())
             }
         }
-        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+        _ => Err(format!(
+            "当前系统（{}）暂不支持该操作",
+            std::env::consts::OS
+        )),
     }
 }
 
@@ -1966,7 +2105,10 @@ fn delete_blacklist(b: Backend, id: &str) -> Result<(), String> {
             Ok(())
         }
         Backend::Nftables => {
-            if cmd_ok("nft", &["delete", "rule", "inet", "zap_fw", "input", "handle", id]) {
+            if cmd_ok(
+                "nft",
+                &["delete", "rule", "inet", "zap_fw", "input", "handle", id],
+            ) {
                 Ok(())
             } else {
                 Err("nft 删除黑名单失败".to_string())
@@ -1986,7 +2128,10 @@ fn delete_blacklist(b: Backend, id: &str) -> Result<(), String> {
                 Err("ufw 删除黑名单失败".to_string())
             }
         }
-        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+        _ => Err(format!(
+            "当前系统（{}）暂不支持该操作",
+            std::env::consts::OS
+        )),
     }
 }
 
@@ -2000,7 +2145,9 @@ pub async fn forward_add(
 ) -> Response {
     let proto = proto.trim().to_lowercase();
     let target_addr = target_addr.trim().to_string();
-    if let Err(e) = validate_forward_input(&proto, listen_port, &target_addr, target_port, panel_port) {
+    if let Err(e) =
+        validate_forward_input(&proto, listen_port, &target_addr, target_port, panel_port)
+    {
         return Response::err(-1, e);
     }
     let f = Forward {
@@ -2204,21 +2351,29 @@ pub async fn import(payload: Value, panel_port: u16) -> Response {
             .unwrap_or("tcp")
             .trim()
             .to_lowercase();
-        let listen_port = item.get("listen_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+        let listen_port = item
+            .get("listen_port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u16;
         let target_addr = item
             .get("target_addr")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim()
             .to_string();
-        let target_port = item.get("target_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+        let target_port = item
+            .get("target_port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u16;
         let comment = item
             .get("comment")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim()
             .to_string();
-        if let Err(e) = validate_forward_input(&proto, listen_port, &target_addr, target_port, panel_port) {
+        if let Err(e) =
+            validate_forward_input(&proto, listen_port, &target_addr, target_port, panel_port)
+        {
             failed.push(format!("转发 {listen_port}: {e}"));
             continue;
         }
@@ -2320,7 +2475,9 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
             let handle = h.split_whitespace().next().unwrap_or("");
             if !handle.is_empty() {
                 let _ = root_cmd("nft")
-                    .args(["delete", "rule", "inet", "zap_fw", "input", "handle", handle])
+                    .args([
+                        "delete", "rule", "inet", "zap_fw", "input", "handle", handle,
+                    ])
                     .output();
             }
         }
@@ -2331,7 +2488,11 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
     // 1) 已建连接放通（置顶，防自锁）
     let _ = root_cmd("nft")
         .args([
-            "insert", "rule", "inet", "zap_fw", "input",
+            "insert",
+            "rule",
+            "inet",
+            "zap_fw",
+            "input",
             "ct state established,related accept comment \"zap:lock:established\"",
         ])
         .output();
@@ -2339,16 +2500,34 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
     //      否则锁服的兜底 drop 会一并拦掉本地回环流量
     let _ = root_cmd("nft")
         .args([
-            "insert", "rule", "inet", "zap_fw", "input",
+            "insert",
+            "rule",
+            "inet",
+            "zap_fw",
+            "input",
             "iifname \"lo\" accept comment \"zap:lock:lo\"",
         ])
         .output();
     // 2) ICMP（诊断 / PMTU，常规放开）
     let _ = root_cmd("nft")
-        .args(["add", "rule", "inet", "zap_fw", "input", "ip protocol icmp accept comment \"zap:lock:icmp\""])
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "zap_fw",
+            "input",
+            "ip protocol icmp accept comment \"zap:lock:icmp\"",
+        ])
         .output();
     let _ = root_cmd("nft")
-        .args(["add", "rule", "inet", "zap_fw", "input", "ip6 nexthdr icmpv6 accept comment \"zap:lock:icmp6\""])
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "zap_fw",
+            "input",
+            "ip6 nexthdr icmpv6 accept comment \"zap:lock:icmp6\"",
+        ])
         .output();
     // 3) 白名单端口（逐端口，便于单独编辑 / 限制来源；备注 Ssh/http/https/zap）
     for p in lock_allow_ports(panel_port) {
@@ -2370,7 +2549,14 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
     }
     // 4) 最后追加「全部丢弃」兜底（位于已建连接 / 白名单之后）
     let _ = root_cmd("nft")
-        .args(["add", "rule", "inet", "zap_fw", "input", "drop comment \"zap:lock:drop\""])
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "zap_fw",
+            "input",
+            "drop comment \"zap:lock:drop\"",
+        ])
         .output();
     Ok(())
 }
@@ -2401,15 +2587,35 @@ fn iptables_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
     for bin in ["iptables", "ip6tables"] {
         let _ = root_cmd(bin)
             .args([
-                "-I", "INPUT", "1", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
-                "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:established",
+                "-I",
+                "INPUT",
+                "1",
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "ESTABLISHED,RELATED",
+                "-j",
+                "ACCEPT",
+                "-m",
+                "comment",
+                "--comment",
+                "zap:lock:established",
             ])
             .output();
         // 1.5) 回环（loopback）放通：本地 127.0.0.1 / ::1 服务依赖它，否则锁服会拦掉回环流量
         let _ = root_cmd(bin)
             .args([
-                "-I", "INPUT", "1", "-i", "lo", "-j", "ACCEPT", "-m", "comment",
-                "--comment", "zap:lock:lo",
+                "-I",
+                "INPUT",
+                "1",
+                "-i",
+                "lo",
+                "-j",
+                "ACCEPT",
+                "-m",
+                "comment",
+                "--comment",
+                "zap:lock:lo",
             ])
             .output();
     }
@@ -2425,8 +2631,18 @@ fn iptables_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
             let ok = cmd_ok(
                 bin,
                 &[
-                    "-A", "INPUT", "-p", "tcp", "--dport", &p.to_string(),
-                    "-j", "ACCEPT", "-m", "comment", "--comment", &comment,
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &p.to_string(),
+                    "-j",
+                    "ACCEPT",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
                 ],
             );
             if !ok {
@@ -2434,15 +2650,52 @@ fn iptables_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
             }
         }
     }
-    let _ = cmd_ok("iptables", &["-A", "INPUT", "-p", "icmp", "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:icmp"]);
-    let _ = cmd_ok("ip6tables", &["-A", "INPUT", "-p", "icmpv6", "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:icmp6"]);
+    let _ = cmd_ok(
+        "iptables",
+        &[
+            "-A",
+            "INPUT",
+            "-p",
+            "icmp",
+            "-j",
+            "ACCEPT",
+            "-m",
+            "comment",
+            "--comment",
+            "zap:lock:icmp",
+        ],
+    );
+    let _ = cmd_ok(
+        "ip6tables",
+        &[
+            "-A",
+            "INPUT",
+            "-p",
+            "icmpv6",
+            "-j",
+            "ACCEPT",
+            "-m",
+            "comment",
+            "--comment",
+            "zap:lock:icmp6",
+        ],
+    );
     // 3) 默认丢弃（放在放通规则之后；失败则保持放开，不锁死）
     let _ = root_cmd("iptables").args(["-P", "INPUT", "DROP"]).output();
     let _ = root_cmd("ip6tables").args(["-P", "INPUT", "DROP"]).output();
     // 4) 兜底 drop 规则（便于状态检测，且与 nftables 语义一致）
     let _ = cmd_ok(
         "iptables",
-        &["-A", "INPUT", "-j", "DROP", "-m", "comment", "--comment", "zap:lock:drop"],
+        &[
+            "-A",
+            "INPUT",
+            "-j",
+            "DROP",
+            "-m",
+            "comment",
+            "--comment",
+            "zap:lock:drop",
+        ],
     );
     Ok(())
 }
@@ -2457,7 +2710,13 @@ fn firewalld_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
         if panel_port != 0 {
             let _ = run_capture(
                 "firewall-cmd",
-                &["--permanent", "--zone", "public", "--remove-port", &format!("{panel_port}/tcp")],
+                &[
+                    "--permanent",
+                    "--zone",
+                    "public",
+                    "--remove-port",
+                    &format!("{panel_port}/tcp"),
+                ],
             );
         }
         let _ = run_capture("firewall-cmd", &["--reload"]);
@@ -2516,7 +2775,10 @@ fn apply_lockdown(b: Backend, unlock: bool, panel_port: u16) -> Result<(), Strin
         Backend::Nftables => nft_lockdown(unlock, panel_port),
         Backend::Iptables => iptables_lockdown(unlock, panel_port),
         Backend::Ufw => ufw_lockdown(unlock, panel_port),
-        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+        _ => Err(format!(
+            "当前系统（{}）暂不支持该操作",
+            std::env::consts::OS
+        )),
     }
 }
 
@@ -2528,7 +2790,14 @@ pub async fn lockdown(unlock: bool, panel_port: u16) -> Response {
             let msg = if unlock {
                 "已恢复默认放行（移除锁服规则）".to_string()
             } else {
-                format!("已锁服：仅开放端口 {}", ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" / "))
+                format!(
+                    "已锁服：仅开放端口 {}",
+                    ports
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                )
             };
             Response::ok(msg, None)
         }

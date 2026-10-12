@@ -131,14 +131,14 @@ pub async fn ssh_config_get(
 }
 
 /// 统一收口：非 0 直接转成 ZapError,保留原始报错（含 `sshd -t` 输出）。
-async fn ssh_exec(
-    resp: Result<zap_proto::Response, ZapError>,
-) -> ZapJsonResult {
+async fn ssh_exec(resp: Result<zap_proto::Response, ZapError>) -> ZapJsonResult {
     let resp = resp?;
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

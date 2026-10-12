@@ -252,8 +252,7 @@ pub struct NginxLogSpec {
 }
 
 /// 默认 log_format（Nginx 官方 main / combined）。
-pub const NGINX_LOG_FORMAT_MAIN: &str =
-    "'$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent \"$http_referer\" \"$http_user_agent\" \"$http_x_forwarded_for\"'";
+pub const NGINX_LOG_FORMAT_MAIN: &str = "'$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent \"$http_referer\" \"$http_user_agent\" \"$http_x_forwarded_for\"'";
 
 /// 反代默认参数（可被站点 location 级覆盖）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
