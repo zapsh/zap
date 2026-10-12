@@ -352,6 +352,14 @@
                 clearable
               />
             </el-form-item>
+            <el-form-item :label="t('common.remark')">
+              <el-input
+                v-model="blackForm.comment"
+                :placeholder="t('serverFirewall.commentPlaceholder')"
+                style="width: 160px"
+                clearable
+              />
+            </el-form-item>
             <el-form-item>
               <el-button type="danger" :loading="savingBlack" @click="addBlack">
                 {{ t('serverFirewall.addBlack') }}
@@ -359,8 +367,13 @@
             </el-form-item>
           </el-form>
 
-          <el-table :data="status.blacklist" size="small" stripe>
+          <el-table :data="blacklistRows" size="small" stripe>
             <el-table-column prop="ip" :label="t('serverFirewall.ipLabel')" min-width="200" />
+            <el-table-column :label="t('common.remark')" min-width="140">
+              <template #default="{ row }">
+                <span class="dim">{{ row.comment || '-' }}</span>
+              </template>
+            </el-table-column>
             <el-table-column :label="t('common.operation')" width="120" fixed="right">
               <template #default="{ row }">
                 <el-button
@@ -787,6 +800,7 @@ import {
   exportFirewall,
   getBanStatus,
   getFirewallStatus,
+  getFirewallBlacklist,
   getFirewallWhitelist,
   importFirewall,
   lockdownFirewall,
@@ -909,7 +923,26 @@ const forwardForm = reactive({
   target_port: 80,
 })
 
-const blackForm = reactive({ ip: '' })
+const blackForm = reactive({ ip: '', comment: '' })
+
+// ── IP 黑名单（备注存面板侧清单，按 IP 与防火墙规则合并） ─────
+const blackPanel = ref<Array<{ ip: string; comment?: string }>>([])
+
+const blacklistRows = computed(() =>
+  status.blacklist.map((b) => ({
+    ...b,
+    comment: blackPanel.value.find((p) => p.ip === b.ip)?.comment || '',
+  })),
+)
+
+async function loadBlacklist() {
+  try {
+    const res = await getFirewallBlacklist()
+    blackPanel.value = res.data?.blacklist || []
+  } catch {
+    /* handled */
+  }
+}
 
 // ── IP 白名单（放行优先） ────────────────────────────────────
 const whiteForm = reactive({ ip: '', comment: '' })
@@ -1252,10 +1285,12 @@ async function addBlack() {
   }
   savingBlack.value = true
   try {
-    const res = await addFirewallBlacklist(ip)
+    const res = await addFirewallBlacklist(ip, blackForm.comment.trim())
     ElMessage.success(res.message || t('serverFirewall.blackAdded'))
     blackForm.ip = ''
+    blackForm.comment = ''
     await load()
+    await loadBlacklist()
   } catch {
     /* handled */
   } finally {
@@ -1275,9 +1310,10 @@ async function removeBlack(row: FirewallBlackEntry) {
   }
   deletingId.value = `bl:${row.id}`
   try {
-    const res = await deleteFirewallBlacklist(row.id)
+    const res = await deleteFirewallBlacklist(row.id, row.ip)
     ElMessage.success(res.message || t('serverFirewall.blackDeleted'))
     await load()
+    await loadBlacklist()
   } catch {
     /* handled */
   } finally {
@@ -1424,6 +1460,7 @@ async function doLockdown(unlock: boolean) {
 onMounted(() => {
   load()
   loadWhitelist()
+  loadBlacklist()
   loadBan()
 })
 </script>

@@ -435,6 +435,11 @@ fn api_routers() -> Router {
             "/system/config/firewall/blacklist/delete",
             post(system_firewall::firewall_blacklist_delete),
         )
+        // 黑名单面板清单（备注存面板侧，按 IP 与防火墙 drop 规则合并展示）
+        .route(
+            "/system/config/firewall/blacklist",
+            get(system_firewall::firewall_blacklist_list),
+        )
         // IP 白名单（放行优先；命中后黑名单 / IP Ban 都不再封它）
         .route(
             "/system/config/firewall/whitelist",

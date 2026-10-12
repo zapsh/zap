@@ -2335,6 +2335,14 @@ fn nft_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
             "ct state established,related accept comment \"zap:lock:established\"",
         ])
         .output();
+    // 1.5) 回环（loopback）放通：本地 127.0.0.1 / ::1 服务（如 127.0.0.1:10000）依赖它，
+    //      否则锁服的兜底 drop 会一并拦掉本地回环流量
+    let _ = root_cmd("nft")
+        .args([
+            "insert", "rule", "inet", "zap_fw", "input",
+            "iifname \"lo\" accept comment \"zap:lock:lo\"",
+        ])
+        .output();
     // 2) ICMP（诊断 / PMTU，常规放开）
     let _ = root_cmd("nft")
         .args(["add", "rule", "inet", "zap_fw", "input", "ip protocol icmp accept comment \"zap:lock:icmp\""])
@@ -2395,6 +2403,13 @@ fn iptables_lockdown(unlock: bool, panel_port: u16) -> Result<(), String> {
             .args([
                 "-I", "INPUT", "1", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
                 "-j", "ACCEPT", "-m", "comment", "--comment", "zap:lock:established",
+            ])
+            .output();
+        // 1.5) 回环（loopback）放通：本地 127.0.0.1 / ::1 服务依赖它，否则锁服会拦掉回环流量
+        let _ = root_cmd(bin)
+            .args([
+                "-I", "INPUT", "1", "-i", "lo", "-j", "ACCEPT", "-m", "comment",
+                "--comment", "zap:lock:lo",
             ])
             .output();
     }

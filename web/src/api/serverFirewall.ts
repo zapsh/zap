@@ -64,6 +64,13 @@ export interface FirewallBlackEntry {
   comment: string
 }
 
+/** 黑名单面板清单条目（备注存面板侧，按 IP 与防火墙规则合并） */
+export interface FirewallBlackPanelEntry {
+  ip: string
+  comment?: string
+  created_at?: number
+}
+
 /** IP 白名单条目：放行优先，命中后黑名单 / IP Ban 都不再封它 */
 export interface FirewallWhiteEntry {
   ip: string
@@ -200,14 +207,21 @@ export function deleteFirewallForward(id: string) {
   return http.post<ApiResponse>('/system/config/firewall/forward/delete', { id })
 }
 
+/** 读取黑名单面板清单（备注） */
+export function getFirewallBlacklist() {
+  return http.get<ApiResponse<{ blacklist: FirewallBlackPanelEntry[] }>>(
+    '/system/config/firewall/blacklist',
+  )
+}
+
 /** IP 黑名单：封禁 IP / CIDR */
 export function addFirewallBlacklist(ip: string, comment = '') {
   return http.post<ApiResponse>('/system/config/firewall/blacklist/add', { ip, comment })
 }
 
-/** 删除黑名单条目（id 来自状态接口） */
-export function deleteFirewallBlacklist(id: string) {
-  return http.post<ApiResponse>('/system/config/firewall/blacklist/delete', { id })
+/** 删除黑名单条目（id 来自状态接口；ip 用于同步清理面板备注清单） */
+export function deleteFirewallBlacklist(id: string, ip = '') {
+  return http.post<ApiResponse>('/system/config/firewall/blacklist/delete', { id, ip })
 }
 
 /** 导出全部规则（返回导出 JSON 结构） */

@@ -310,6 +310,7 @@ pub async fn firewall_blacklist_add(
             format!("{ip} 在 IP 白名单中，已拒绝封禁（如需封禁请先移出白名单）"),
         ));
     }
+    let comment = payload.comment.trim().to_string();
     let resp = crate::zapexec::call(zap_proto::Request::FirewallBlacklistAdd {
         ip: payload.ip,
         comment: payload.comment,
@@ -328,14 +329,53 @@ pub async fn firewall_blacklist_add(
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
+
+    // 备注记入面板侧黑名单清单（防火墙规则本身多数后端不携带备注）
+    if !comment.is_empty() {
+        let mut list = bl_load().await;
+        if let Some(e) = list
+            .iter_mut()
+            .find(|e| e.get("ip").and_then(|v| v.as_str()) == Some(ip.as_str()))
+        {
+            e["comment"] = json!(comment);
+        } else {
+            list.push(json!({
+                "ip": ip,
+                "comment": comment,
+                "created_at": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            }));
+        }
+        bl_save(&list).await;
+    }
     Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+/// GET /system/config/firewall/blacklist —— 面板侧黑名单清单（含备注）
+pub async fn firewall_blacklist_list(claims: ValidatedClaims) -> ZapJsonResult {
+    require_admin(&claims)?;
+    Ok(Json(json!({
+        "code": 0,
+        "message": "ok",
+        "data": { "blacklist": bl_load().await },
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FirewallBlacklistDeletePayload {
+    pub id: String,
+    /// 面板清单按 IP 记录备注，删除时一并清理
+    #[serde(default)]
+    pub ip: String,
 }
 
 /// POST /system/config/firewall/blacklist/delete
 pub async fn firewall_blacklist_delete(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
-    Json(payload): Json<FirewallRuleDeletePayload>,
+    Json(payload): Json<FirewallBlacklistDeletePayload>,
 ) -> ZapJsonResult {
     require_admin(&claims)?;
     let resp = crate::zapexec::call(zap_proto::Request::FirewallBlacklistDelete {
@@ -354,6 +394,16 @@ pub async fn firewall_blacklist_delete(
 
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
+    }
+    // 同步清理面板侧清单（备注）
+    if !payload.ip.trim().is_empty() {
+        let ip = payload.ip.trim().to_string();
+        let mut list = bl_load().await;
+        let before = list.len();
+        list.retain(|e| e.get("ip").and_then(|v| v.as_str()) != Some(ip.as_str()));
+        if list.len() != before {
+            bl_save(&list).await;
+        }
     }
     Ok(Json(json!({ "code": 0, "message": resp.message })))
 }
@@ -447,6 +497,37 @@ pub struct FirewallLockdownPayload {
 // ── IP 白名单（放行优先，命中后不再被封禁）────────────────────
 
 const WL_KEY: &str = "firewall.whitelist";
+
+/// 面板侧黑名单存储（`[{ip, comment, created_at}]`）。
+///
+/// 防火墙后端的 drop 规则多数不携带备注，备注存在这份清单里，
+/// 列表时按 IP 合并展示；IP Ban 的自动封禁（zap:ban:*）不进清单。
+const BL_KEY: &str = "firewall.blacklist";
+
+async fn bl_load() -> Vec<serde_json::Value> {
+    let pool = crate::db::get_db_pool().await;
+    let raw: Option<(String,)> = sqlx::query_as("SELECT value FROM global_settings WHERE key=?")
+        .bind(BL_KEY)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    raw.and_then(|r| serde_json::from_str(&r.0).ok())
+        .unwrap_or_default()
+}
+
+async fn bl_save(list: &[serde_json::Value]) {
+    let pool = crate::db::get_db_pool().await;
+    let v = serde_json::to_string(list).unwrap_or_else(|_| "[]".to_string());
+    let _ = sqlx::query(
+        "INSERT INTO global_settings (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    )
+    .bind(BL_KEY)
+    .bind(v)
+    .execute(pool)
+    .await;
+}
 
 /// 面板侧白名单存储（`[{ip, comment, created_at}]`）。
 ///
