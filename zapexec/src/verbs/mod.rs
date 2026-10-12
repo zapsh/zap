@@ -31,6 +31,7 @@ mod ssh;
 mod ssh_key;
 mod ssh_user_key;
 mod svc;
+mod sys_log;
 mod time;
 mod upgrade;
 mod user;
@@ -585,6 +586,13 @@ pub async fn dispatch(req: Request) -> Response {
             firewall::lockdown(unlock, panel_port).await
         }
         Request::BanLogRead { source, cursor } => ban_log::read(source, cursor).await,
+        Request::SysLogSources => sys_log::sources().await,
+        Request::SysLogRead {
+            source,
+            cursor,
+            lines,
+            keyword,
+        } => sys_log::read(source, cursor, lines, keyword).await,
         Request::EnvDetect => env::detect().await,
         Request::UserHomeInit { home_dir, owner } => user::home_init(&home_dir, &owner).await,
         Request::UserHomeMigrate {

@@ -205,6 +205,8 @@ export default {
     'server-monitor': 'Server Monitor',
     process: '进程管理',
     'system-service': '系统服务',
+    // 日志查看器（后端 menus name=server-status-logs，位于「服务器状态」下）
+    'server-status-logs': '日志查看器',
     // 服务配置（后端 menus id=82，位于「服务器配置」下，页面内 nav pill 切换各服务）
     'server-service-conf': '服务配置',
     runtime: '运行环境',
@@ -1510,6 +1512,25 @@ export default {
     termConfirm: '确认终止进程 {pid}（{cmd}）？',
     killConfirm: '确认强制终止进程 {pid}（{cmd}）？该操作不可恢复。',
     actionSuccess: '{label}成功',
+  },
+
+  /** 服务器 - 日志查看器（服务器状态 → 日志查看器） */
+  serverLogs: {
+    sources: '日志源',
+    filterSource: '搜索日志源…',
+    noSource: '暂无可查看的日志',
+    noJournal: '本机没有 journalctl，只能查看文件型日志',
+    pickSource: '请从左侧选择一个日志源',
+    lines: '行',
+    keyword: '关键字过滤',
+    follow: '自动滚动',
+    autoRefresh: '自动刷新',
+    download: '下载',
+    clearView: '清空视图',
+    empty: '暂无日志内容',
+    lineCount: '共 {n} 行',
+    loadSourcesFailed: '获取日志源失败',
+    readFailed: '读取日志失败',
   },
 
   /** 服务器 - 系统服务 */

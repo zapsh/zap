@@ -72,6 +72,7 @@ pub mod system_firewall;
 pub mod system_info;
 pub mod system_ip;
 pub mod system_job;
+pub mod system_log;
 pub mod system_menu;
 pub mod system_migrate;
 pub mod system_nginx;
@@ -901,6 +902,9 @@ fn api_routers() -> Router {
         )
         .route("/system/files/info", get(system_file::file_info))
         .route("/system/files/dir_size", get(system_file::file_dir_size))
+        // 系统日志查看器（服务器状态 → 日志查看器，admin only）
+        .route("/system/logs/sources", get(system_log::sources))
+        .route("/system/logs/read", get(system_log::read))
         // 云存储（多套配置 + 对象浏览/传输）
         .route("/system/cloud/stores", get(cloud::store_list))
         .route("/system/cloud/store/save", post(cloud::store_save))

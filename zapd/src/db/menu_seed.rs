@@ -492,6 +492,18 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server-status")
     .icon("material-symbols:miscellaneous-services")
     .affix(),
+    MenuSeed::new(
+        "server-status-logs",
+        "日志查看器",
+        "menu",
+        "logs",
+        "server-status/logs/index",
+        R_ADMIN,
+        5,
+    )
+    .parent("server-status")
+    .icon("material-symbols:article")
+    .affix(),
     // ── 团队成员：入口已并入「个人中心」，整组隐藏 ──────────────
     MenuSeed::new(
         "team",

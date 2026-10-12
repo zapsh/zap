@@ -340,6 +340,12 @@ export const asyncRoutes: Array<RouteRecordRaw> = [
         component: () => import('@/views/server-status/services/index.vue'),
         meta: { title: '系统服务', icon: 'material-symbols:miscellaneous-services', affix: true },
       },
+      {
+        path: 'logs',
+        name: 'ServerStatusLogs',
+        component: () => import('@/views/server-status/logs/index.vue'),
+        meta: { title: '日志查看器', icon: 'material-symbols:article', affix: true },
+      },
     ],
   },
   // 终端管理（Layout 包裹 + 一级直链）

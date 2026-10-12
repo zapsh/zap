@@ -186,6 +186,8 @@ const enUS: Messages = {
     'server-monitor': 'Server Monitor',
     process: 'Processes',
     'system-service': 'System Services',
+    // Log viewer (backend menus name=server-status-logs, under Server status)
+    'server-status-logs': 'Log Viewer',
     // Service config (backend menus id=82, under Server config; nav pills per service)
     'server-service-conf': 'Service Config',
     runtime: 'Runtime',
@@ -1496,6 +1498,25 @@ const enUS: Messages = {
     termConfirm: 'Terminate process {pid} ({cmd})?',
     killConfirm: 'Force kill process {pid} ({cmd})? This cannot be undone.',
     actionSuccess: '{label} succeeded',
+  },
+
+  /** Server - log viewer (Server Status → Log Viewer) */
+  serverLogs: {
+    sources: 'Sources',
+    filterSource: 'Search log sources…',
+    noSource: 'No viewable logs',
+    noJournal: 'journalctl is unavailable — only file-based logs are listed',
+    pickSource: 'Select a log source on the left',
+    lines: 'lines',
+    keyword: 'Keyword filter',
+    follow: 'Auto-scroll',
+    autoRefresh: 'Auto refresh',
+    download: 'Download',
+    clearView: 'Clear view',
+    empty: 'No log content',
+    lineCount: '{n} lines',
+    loadSourcesFailed: 'Failed to load log sources',
+    readFailed: 'Failed to read log',
   },
 
   /** Server - system services */

@@ -1665,6 +1665,29 @@ pub enum Request {
         cursor: String,
     },
 
+    /// 系统日志查看器：列出可查看的日志源（内核 / 系统 / nginx / php / mysql / 面板 / 服务单元）。
+    /// 由 zapexec 以 root 探测 —— 面板进程通常没有 systemd-journal 与 /var/log 的读权限，
+    /// 直接 spawn journalctl 会静默返回空，所以探测与读取都走特权侧。
+    #[serde(rename = "syslog.sources")]
+    SysLogSources,
+    /// 系统日志查看器：按游标读取某个日志源的内容。
+    ///
+    /// `source` 取值见 [`SysLogSources`] 返回的 id：`journal:<unit>` / `journal:`（全部系统日志）/
+    /// `kernel:`（内核环，journald 不可用时退化为 dmesg）/ `file:<path>`。
+    #[serde(rename = "syslog.read")]
+    SysLogRead {
+        /// 日志源 id
+        source: String,
+        /// 增量游标：journal 为 `__CURSOR`；file 为字节偏移。空 = 首次，取末尾 `lines` 行
+        cursor: String,
+        /// 首次（cursor 空）取末尾的行数；上限 5000
+        #[serde(default)]
+        lines: u32,
+        /// 关键字过滤（大小写不敏感），空 = 不过滤
+        #[serde(default)]
+        keyword: String,
+    },
+
     /// 移除站点 Nginx vhost（站点删除时清理，幂等）
     #[serde(rename = "site.vhost_remove")]
     SiteVhostRemove { site_id: i64, name: String },
