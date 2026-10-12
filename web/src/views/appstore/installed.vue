@@ -206,7 +206,7 @@
             fmtTime(current.installed_at)
           }}</el-descriptions-item>
           <el-descriptions-item :label="t('appstoreInstalled.lastRun')">{{
-            current.task_id || '-'
+            current.run_id || '-'
           }}</el-descriptions-item>
         </el-descriptions>
 

@@ -175,12 +175,10 @@ pub async fn read(source: String, cursor: String) -> Response {
                 );
             }
         }
-        Src::Journal(units) => {
-            match read_journal(&units, &cursor) {
-                Ok((ls, c)) => (ls, c, format!("journalctl -u {}", units.join(" -u "))),
-                Err(e) => return Response::err(-1, e),
-            }
-        }
+        Src::Journal(units) => match read_journal(&units, &cursor) {
+            Ok((ls, c)) => (ls, c, format!("journalctl -u {}", units.join(" -u "))),
+            Err(e) => return Response::err(-1, e),
+        },
         Src::File(path) => match read_file(&path, &cursor) {
             Ok((ls, c)) => (ls, c, path),
             Err(e) => return Response::err(-1, e),

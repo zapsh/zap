@@ -20,6 +20,10 @@
 #                               # 指定初始管理员用户名/密码（默认 admin / 123456），
 #                               # 仅在数据库不存在、首次建库时生效
 #   ./rundev.sh --check         # 只检查 Rust 格式(fmt)与代码(clippy)，不构建、不启动服务
+#   ./rundev.sh --fmt            # 只自动格式化（cargo fmt --all）并退出，不检查/构建/启动服务
+#                               # （与 --check 相对：--check 只读检查，--fmt 直接改文件修复）
+#   ./rundev.sh --clippy-fix     # 只自动修复 clippy 告警（cargo clippy --fix）并退出，不构建/启动
+#                               # （机器可自动应用的建议会被直接改写；其余告警仍需手动处理）
 #
 # 注意：zapexec 需要 root 权限，脚本通过 sudo 启动（首次可能提示输入密码）。
 #
@@ -37,9 +41,13 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 # 帮助文本取自文件头注释块（# 开头，直到第一行非注释为止）
 usage() { awk 'NR>2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
+if [ ! -d "zappro" ]; then
+  mkdir -p "zappro/src"
+  echo '// placehlder' > "zappro/src/mod.rs"
+fi
+
 # ── arguments parsing ────────────────────────────────────────────────
-# 默认不做 fmt / clippy：日常改一行代码只想快点跑起来，检查交给 --check / --check-code
-RELEASE=false; SKIP_WEB=false; SKIP_BUILD=false; SKIP_INSTALL=false; CHECK_CODE=false; RESET_DB=false; CHECK=false
+RELEASE=false; SKIP_WEB=false; SKIP_BUILD=false; SKIP_INSTALL=false; CHECK_CODE=false; RESET_DB=false; CHECK=false; FMT_ONLY=false; CLIPPY_FIX=false
 WITH_PRO=false
 ADMIN_USER=""; ADMIN_PASS=""
 while [ $# -gt 0 ]; do
@@ -53,6 +61,8 @@ while [ $# -gt 0 ]; do
     --skip-check)   shift ;;
     --reset-db|--fresh-db) RESET_DB=true; shift ;;
     --check)        CHECK=true; shift ;;
+    --fmt|--format)  FMT_ONLY=true; shift ;;
+    --clippy-fix|--lint-fix) CLIPPY_FIX=true; shift ;;
     --admin-user)   ADMIN_USER="${2:-}"
                     [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
                     shift 2 ;;
@@ -82,19 +92,14 @@ cd "$ROOT_DIR"
 
 # --with-pro 是手动开关（同 build.sh）：不带就是开源构建，产物与现在完全一致
 if [ "$WITH_PRO" = true ]; then
-  # 模块源码不在本仓库，没 clone 就直接失败：开着开关编出「假 Pro 版」更危险
-  [ -f "$ROOT_DIR/zappro/src/mod.rs" ] \
+  [ -f "$ROOT_DIR/zappro/pro.sh" ] \
     || die "指定 --with-pro 但未找到 $ROOT_DIR/zappro（先 clone 商业模块仓库）"
-  # Pro 页面不在本仓库（在 zappro/web/views）：每次都同步一次，页面改了不用记着手动跑
-  # setup 是 rm -rf + 全量拷贝，幂等，几毫秒的事
-  info "同步 Pro 页面 (zappro/pro.sh setup) ..."
+  info "sync pro page ..."
   bash "$ROOT_DIR/zappro/pro.sh" setup || die "同步 Pro 页面失败"
-  info "启用商业模块 Zap Pro（--features zapd/commercial）"
+  info "enable Zap Pro(-features zapd/commercial)"
 fi
 
-# clippy 用 --all-features 会把 zapd 的 commercial 也打开 —— 开源检出（没有 zappro/）
-# 会直接编不过。模块在就用全 feature，不在就按默认 feature 检查。
-if [ -f "$ROOT_DIR/zappro/src/mod.rs" ]; then
+if [ -f "$ROOT_DIR/zappro/pro.sh" ]; then
   CLIPPY_FEATURES=(--all-features)
 else
   CLIPPY_FEATURES=()
@@ -117,6 +122,30 @@ if [ "$CHECK" = true ]; then
   info "检查代码 (cargo clippy --all-targets --all-features -- -D warnings) ..."
   cargo clippy --all-targets "${CLIPPY_FEATURES[@]}" -- -D warnings || die "代码检查未通过（详见上方 clippy 输出）"
   ok "代码检查通过，一切正常"
+  exit 0
+fi
+
+# ── --fmt：只自动格式化（cargo fmt --all），不检查/构建/启动服务 ──
+# 改完代码随手跑一下，把全 workspace 格式统一；与 --check 互补：
+# --check 只读检查（不改动文件），--fmt 直接改文件修复。
+if [ "$FMT_ONLY" = true ]; then
+  command -v cargo >/dev/null 2>&1 || die "未找到 cargo，请先安装 Rust"
+  info "格式化代码 (cargo fmt --all) ..."
+  cargo fmt --all || die "格式化失败"
+  ok "代码已格式化"
+  exit 0
+fi
+
+# ── --clippy-fix：只自动修复 clippy 告警（cargo clippy --fix），不构建/启动服务 ──
+# 与 --check 互补：--check 只读检查（不改动文件），--clippy-fix 应用机器可自动修复的建议。
+if [ "$CLIPPY_FIX" = true ]; then
+  command -v cargo >/dev/null 2>&1 || die "未找到 cargo，请先安装 Rust"
+  info "自动修复 clippy 告警 (cargo clippy --fix) ..."
+  # --all-targets 覆盖全部 target，复用 --check 同一套 feature 选择（有 zappro 才开
+  # --all-features，否则默认 feature）；工作区有未提交改动时需要 --allow-dirty 才能改文件。
+  cargo clippy --fix "${CLIPPY_FEATURES[@]}" --all-targets --allow-dirty \
+    || warn "clippy 自动修复未全部完成（部分告警需手动修复，或存在编译错误）"
+  ok "clippy 自动修复完成"
   exit 0
 fi
 

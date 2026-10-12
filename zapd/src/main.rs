@@ -24,12 +24,6 @@ pub mod zap;
 pub mod zapexec;
 
 /// Zap Pro（商业模块）。
-///
-/// 源码不在本仓库：clone 到仓库根目录的 `zappro/` 后，用 `#[path]` 以 zapd 的
-/// 一个模块身份编译进来 —— 模块内可以像内置业务模块一样 `use crate::db::…`，
-/// 不需要任何额外的 trait / 门面抽象。
-///
-/// 未 clone 时目录不存在，只要不开 `commercial`，这段声明不会参与编译。
 #[cfg(feature = "commercial")]
 #[path = "../../zappro/src/mod.rs"]
 mod pro;
@@ -39,8 +33,6 @@ struct Cli {
     #[clap(short, long, action)]
     version: bool,
 
-    /// 打印本二进制编译期确定的发行线（`pro` / `community`）后退出；不启动服务。
-    /// 供安装 / 升级工具判断该跟哪条发行线，替代原先的 `/etc/zap/edition` 文件。
     #[clap(long, action)]
     edition: bool,
 
@@ -86,29 +78,20 @@ struct Cli {
     unjoin: bool,
 }
 
-/// 默认日志级别（可用环境变量 `RUST_LOG` 覆盖）：
-/// - debug 构建：保留详细日志（含 tower_http、axum rejection），便于本地联调
-/// - release 构建：只输出 info 及以上，避免线上 journal 被 debug 日志刷屏
+/// Default Log Level（ENV `RUST_LOG` Override）：
+/// - debug ：tower_http、axum rejection
+/// - release ：info+
 #[cfg(debug_assertions)]
 const DEFAULT_LOG: &str = "zapd=debug,tower_http=debug,axum::rejection=trace";
 #[cfg(not(debug_assertions))]
 const DEFAULT_LOG: &str = "zapd=info,tower_http=info";
 
-/// 等待 TLS ClientHello 首字节的上限。
-///
-/// 探测扫描、浏览器预连接、被中间设备掐断的握手都会出现「TCP 连上了却不发数据」，
-/// 而 `peek` 会一直等到有数据或对方关闭。留一点余量后直接断开，避免这类连接
-/// 长期占着 fd（配合下面的「每连接独立任务」，单个坏连接不会拖慢其它连接）。
+/// TLS ClientHello
 const PEEK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() {
-    // rustls 0.23 的 CryptoProvider 必须在第一次用到 TLS 前确定。
-    // 依赖树里 ring（本仓声明的 rustls feature，jsonwebtoken / russh / rcgen 同源）
-    // 与 aws-lc-rs（instant-acme → hyper-rustls 的默认 feature）同时存在，
-    // rustls 拒绝自动二选一 —— 不显式安装的话，任何走 rustls 的路径
-    // （--join-url、ACME、reqwest）都会直接 panic。
-    // 这里统一选 ring（纯 Rust、无 C 工具链要求）；install 已被占用时静默跳过。
+    // rustls ring
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let cli = Cli::parse();
@@ -136,21 +119,14 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // 打印实际生效的配置文件：生产环境 /etc/zap/zap.yaml 优先于 conf/zap.yaml，
-    // rundev.sh 则通过 ZAP_CONFIG 指向 data/run/zap.dev.yaml。
-    // 显示绝对路径 + 存在性，便于排查"改了配置但没生效"。
     let cfg_path = config::config_path();
     let cfg_display = cfg_path.canonicalize().unwrap_or_else(|_| cfg_path.clone());
     if cfg_path.exists() {
         info!("using config file: {}", cfg_display.display());
     } else {
-        warn!(
-            "配置文件不存在，将使用内置默认值（url_prefix 等设置不会生效）: {}",
-            cfg_display.display()
-        );
+        warn!("default config file : {}", cfg_display.display());
     }
 
-    // 一次性读取配置并转为 owned 值：配置读写锁不跨 await 持有
     let (cert_file, key_file, bind, web_port) = {
         let cfg = config::get_config().read().unwrap();
         (
@@ -160,7 +136,7 @@ async fn main() {
             cfg.server.port,
         )
     };
-    // 统一 URL 前缀（server.url_prefix）：留空则不启用
+    // server.url_prefix
     let url_prefix = config::url_prefix();
 
     // `zapd --init-admin <用户> [--admin-password <密码>]`：建库 + 写初始管理员后退出，
@@ -173,32 +149,24 @@ async fn main() {
 
     // init db
     db::init_db::init_schema().await;
-    // Zap Pro：读取授权文件、定下「是否生效」（必须在路由组装之前定论）
+
     #[cfg(feature = "commercial")]
     pro::init().await;
 
-    // Zap Pro 集群的一次性命令（--join / --join-status / --unjoin）：做完就退出。
-    // 必须排在**绑端口之前**：面板正在跑时这些命令仍要能用（`--join-status` 就是在
-    // 服务运行中查状态的），先 bind 会因为端口已被自己占用而 panic。
     #[cfg(feature = "commercial")]
     if let Some(code) = pro::cluster::cli::run_cli(&cli).await {
         std::process::exit(code)
     }
 
-    // fail-closed：JWT 签名密钥若为内置默认值/空，或轮换后无法落盘，拒绝启动，
-    // 避免以已知默认密钥或临时随机密钥（重启即失效）提供服务。
     if let Err(e) = config::init_config() {
-        error!("配置初始化失败，zapd 拒绝启动：{e}");
+        error!("Configuration initialization failed. Zapd start failed : {e}");
         std::process::exit(1);
     }
 
-    // Ensure TLS certificates exist (generate self-signed if missing)
-    // 面板只提供 HTTPS（HTTP 请求一律 301 跳转），没有证书就无法建立 TLS acceptor，
-    // 因此这里直接以明确错误退出，而不是带着坏证书继续跑成崩溃重启循环。
     if !zap::certmgr::ensure_certs(&cert_file, &key_file) {
         error!(
-            "面板 HTTPS 证书不可用（{} / {}）：请确认 zapd 运行用户（zapd.service 的 User=）\
-             对证书文件所在目录有写权限，或手工放置证书后重启 zapd",
+            "HTTPS certificate unavailable ({} / {}) , Please confirm that the Zapd running user (zapd.service User=)\
+             has write permissions for the directory where the certificate files are located, or place the certificate manually and restart.",
             cert_file, key_file
         );
         std::process::exit(1);
@@ -209,18 +177,9 @@ async fn main() {
     let primary_ip = local_ip_address::local_ip()
         .unwrap_or_else(|_| std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
     info!("listening on https://{}:{}", primary_ip, web_port);
-    info!("Zap server listening on https://{}.", bind);
-    if url_prefix.is_empty() {
-        info!("URL prefix: (none) — 页面在 / ，接口在 /api/");
-    } else {
-        info!(
-            "URL prefix: /{} — 页面在 /{}/ ，接口在 /{}/api/",
-            url_prefix, url_prefix, url_prefix
-        );
-    }
+    info!("Zap server listening on https://{}/{}.", bind, url_prefix);
 
-    // 全新库还没有管理员时补一条（默认 admin / 123456；安装脚本会在此之前用
-    // `zapd --init-admin` 指定实际凭据，那时这里什么也不做）
+    // `zapd --init-admin` , init admin account if not exist, admin / 123456
     db::init_db::ensure_initial_admin().await;
     // 会话版本号全量入内存：否则老库里已「下线过所有设备」的用户会被当成 0，
     // 签发出立刻失效的 token（见 zap::session）
@@ -250,7 +209,7 @@ async fn main() {
     zap::backup_scheduler::start();
     // 自动更新（zapd/zapexec 系统升级）定时调度
     zap::auto_update::start();
-    // IP Ban（内置 fail2ban，默认关闭，面板开启后生效）
+    // IP Ban（默认关闭，面板开启后生效）
     zap::ip_ban::start();
     // 插件定时任务（cron）调度：Webhook 触发不走这里，由请求直接命中
     zap::plugin_schedule::start();
@@ -278,16 +237,10 @@ async fn main() {
             }
         };
 
-        // SO_LINGER 非零值会阻塞线程，tokio 因此标记了废弃，但这里是刻意保留的：
-        // 关闭连接时若接收缓冲里还有没读完的数据，内核会直接发 RST，客户端看到的是
-        // 「连接被重置」而不是响应内容（POST 被拒的 4xx 响应最容易踩到）；设了 linger
-        // 才会走正常的四次挥手把已写数据送完。tokio 承诺该 API 不会被移除。
+        // SO_LINGER
         #[allow(deprecated)]
         stream.set_linger(Some(Duration::from_secs(30))).ok();
 
-        // 「读首字节 + 分发」必须放进独立任务：peek 会一直等到对端发来第一个字节，
-        // 若放在 accept 循环里，一个只建 TCP 不发数据的连接（端口探测、预连接、
-        // 被中断的握手）就会把整个 accept 循环挂住，表现为所有请求一起超时。
         let tls_acceptor = tls_acceptor.clone();
         let app = app.clone();
         tokio::spawn(async move {
@@ -296,10 +249,6 @@ async fn main() {
     }
 }
 
-/// 单连接的分发：先看首字节区分 HTTPS / 明文 HTTP，再交给对应的处理函数。
-///
-/// 在独立任务里执行（见 main 的 accept 循环），因此某个连接卡在 `peek` 上
-/// 不会影响其它连接；`peek` 超时（对端始终不发数据）则直接断开。
 async fn serve_connection(
     stream: tokio::net::TcpStream,
     client_addr: std::net::SocketAddr,

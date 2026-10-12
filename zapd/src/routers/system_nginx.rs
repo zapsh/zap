@@ -367,7 +367,9 @@ pub async fn nginx_global_adopt(
         "按现有 nginx.conf 重新接管主配置模型",
     )
     .await;
-    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "spec": spec } })))
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": { "spec": spec } }),
+    ))
 }
 
 /// GET /system/nginx/global/revisions
@@ -385,7 +387,9 @@ pub async fn nginx_global_revisions(claims: ValidatedClaims) -> ZapJsonResult {
             json!({ "id": id, "actor": actor, "ok": ok == 1, "created_at": created_at })
         })
         .collect();
-    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "items": items } })))
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": { "items": items } }),
+    ))
 }
 
 /// GET /system/nginx/global/revisions/:id —— 取回某一版全文
@@ -403,7 +407,9 @@ pub async fn nginx_global_revision_get(
     let Some((content,)) = row else {
         return Err(ZapError::New(-1, "该历史版本不存在".to_string()));
     };
-    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "content": content } })))
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": { "content": content } }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -464,5 +470,7 @@ pub async fn nginx_global_zones(claims: ValidatedClaims) -> ZapJsonResult {
                 .collect()
         })
         .unwrap_or_default();
-    Ok(Json(json!({ "code": 0, "message": "ok", "data": { "zones": zones } })))
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": { "zones": zones } }),
+    ))
 }

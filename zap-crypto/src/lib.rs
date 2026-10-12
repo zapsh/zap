@@ -66,10 +66,7 @@ fn dev_key_path() -> PathBuf {
 ///
 /// 不做旧路径兼容：早期按 CWD 相对的 `zapd/conf/secret.key` 等位置不再读取。
 fn key_paths() -> Vec<PathBuf> {
-    vec![
-        PathBuf::from("/etc/zap/secret.key"),
-        dev_key_path(),
-    ]
+    vec![PathBuf::from("/etc/zap/secret.key"), dev_key_path()]
 }
 
 /// 当前生效的密钥文件路径（按生产 → 开发优先级探测），不存在返回 `None`。

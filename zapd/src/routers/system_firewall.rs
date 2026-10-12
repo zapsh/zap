@@ -650,28 +650,25 @@ pub async fn firewall_whitelist_delete(
         panel_port: panel_port(),
     })
     .await;
-    if let Ok(r) = st {
-        if r.code == 0 {
-            if let Some(rules) = r
-                .data
-                .as_ref()
-                .and_then(|d| d.get("whitelist"))
-                .and_then(|v| v.as_array())
-            {
-                if let Some(found) = rules.iter().find(|x| {
-                    x.get("ip").and_then(|v| v.as_str()) == Some(ip.as_str())
-                }) {
-                    rule_id = found
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&ip)
-                        .to_string();
-                }
-            }
-        }
+    if let Ok(r) = st
+        && r.code == 0
+        && let Some(rules) = r
+            .data
+            .as_ref()
+            .and_then(|d| d.get("whitelist"))
+            .and_then(|v| v.as_array())
+        && let Some(found) = rules
+            .iter()
+            .find(|x| x.get("ip").and_then(|v| v.as_str()) == Some(ip.as_str()))
+    {
+        rule_id = found
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&ip)
+            .to_string();
     }
-    let resp = crate::zapexec::call(zap_proto::Request::FirewallWhitelistDelete { id: rule_id })
-        .await?;
+    let resp =
+        crate::zapexec::call(zap_proto::Request::FirewallWhitelistDelete { id: rule_id }).await?;
     audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),

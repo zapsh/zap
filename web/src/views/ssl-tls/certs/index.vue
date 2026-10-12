@@ -1667,7 +1667,6 @@ function trackOrder(row: AcmeOrder) {
   leForm.domains = (row.domains || []).join(', ')
   leForm.validation = row.challenge_type === 'http-01' ? 'http' : 'dns'
   leForm.dns_mode = row.dns_mode
-  ordersVisible.value = false
   maybeAutoAdvance(row)
   if (row.status === 'processing') startPoll(row.id)
   leVisible.value = true

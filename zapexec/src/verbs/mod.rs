@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 mod acme;
-mod ban_log;
 mod app;
 mod appstore;
 mod backup;
+mod ban_log;
 mod cred;
 mod cron;
 mod docker;
@@ -571,19 +571,16 @@ pub async fn dispatch(req: Request) -> Response {
             .await
         }
         Request::FirewallForwardDelete { id } => firewall::forward_delete(id).await,
-        Request::FirewallBlacklistAdd { ip, comment } => {
-            firewall::blacklist_add(ip, comment).await
-        }
+        Request::FirewallBlacklistAdd { ip, comment } => firewall::blacklist_add(ip, comment).await,
         Request::FirewallBlacklistDelete { id } => firewall::blacklist_delete(id).await,
         Request::FirewallWhitelistList => firewall::whitelist_list().await,
-        Request::FirewallWhitelistAdd { ip, comment } => {
-            firewall::whitelist_add(ip, comment).await
-        }
+        Request::FirewallWhitelistAdd { ip, comment } => firewall::whitelist_add(ip, comment).await,
         Request::FirewallWhitelistDelete { id } => firewall::whitelist_delete(id).await,
         Request::FirewallExport { panel_port } => firewall::export(panel_port).await,
-        Request::FirewallImport { payload, panel_port } => {
-            firewall::import(payload, panel_port).await
-        }
+        Request::FirewallImport {
+            payload,
+            panel_port,
+        } => firewall::import(payload, panel_port).await,
         Request::FirewallLockdown { panel_port, unlock } => {
             firewall::lockdown(unlock, panel_port).await
         }

@@ -516,7 +516,8 @@ fn api_routers() -> Router {
         .route(
             "/system/config/ssh/config",
             get(system_config::ssh_config_get),
-        )        .route(
+        )
+        .route(
             "/system/config/ssh/config/save",
             post(system_config::ssh_config_save),
         )

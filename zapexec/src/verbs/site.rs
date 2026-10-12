@@ -2278,10 +2278,7 @@ fn validate_vhost_cfg(
                 // 名字非法在这里拦下；引用了不存在的 zone 则由 `nginx -t` 报 zone not found。
                 let cz = l.cache.trim();
                 if !cz.is_empty()
-                    && (cz.len() > 64
-                        || !cz
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                    && (cz.len() > 64 || !cz.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
                 {
                     return Err("缓存区名非法（仅支持字母数字与下划线，最长 64）".to_string());
                 }
