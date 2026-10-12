@@ -72,8 +72,7 @@ type AuthFailRecord = (u32, Instant);
 type AuthFailMap = HashMap<AuthKey, AuthFailRecord>;
 
 /// 认证失败计数：`(user_id, conn_id) -> (失败次数, 首次失败时刻)`
-static SSH_AUTH_FAILS: LazyLock<Mutex<AuthFailMap>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static SSH_AUTH_FAILS: LazyLock<Mutex<AuthFailMap>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // static SSH_AUTH_FAILS: LazyLock<Mutex<HashMap<(i64, i64), (u32, Instant)>>> =
 //     LazyLock::new(|| Mutex::new(HashMap::new()));

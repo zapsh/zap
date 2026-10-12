@@ -727,9 +727,10 @@ async fn tick(s: &BanSettings) {
                     continue;
                 }
                 if let Some(re) = &re
-                    && !re.is_match(&line) {
-                        continue;
-                    }
+                    && !re.is_match(&line)
+                {
+                    continue;
+                }
                 new_failures.push((rule.id.clone(), ip));
             }
             st.sources.insert(rule.id.clone(), "面板登录".to_string());

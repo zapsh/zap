@@ -1109,9 +1109,10 @@ pub async fn control(action: &str) -> Response {
         // 启停 / 重载前先校验配置：让真实的 nginx 报错（行号、指令）直接返回前端，
         // 而非只拿到 systemctl 的笼统失败（nginx 真实错误在 journald 中取不到）。
         if matches!(action.as_str(), "start" | "restart" | "reload")
-            && let Err(e) = site::nginx_test(&bin) {
-                return Err(format!("Nginx 配置校验未通过，已中止 {action}：\n{e}"));
-            }
+            && let Err(e) = site::nginx_test(&bin)
+        {
+            return Err(format!("Nginx 配置校验未通过，已中止 {action}：\n{e}"));
+        }
 
         // 优先走服务管理器
         let sysd = super::svc::exists("nginx");
