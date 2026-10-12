@@ -64,6 +64,47 @@ export interface FirewallBlackEntry {
   comment: string
 }
 
+/** IP 白名单条目：放行优先，命中后黑名单 / 爆破防护都不再封它 */
+export interface FirewallWhiteEntry {
+  ip: string
+  comment?: string
+  created_at?: number
+}
+
+/** 爆破防护（fail2ban）设置 */
+export interface BanSettings {
+  enabled: boolean
+  max_retry: number
+  find_time: number
+  ban_time: number
+  interval: number
+  ignore_private: boolean
+  ignored_ips: string[]
+  log_file: string
+}
+
+/** 当前生效的封禁 */
+export interface BanRecord {
+  ip: string
+  reason: string
+  hits: number
+  created_at: number
+  expires_at: number
+  /** 剩余秒数（后端计算） */
+  remaining: number
+}
+
+export interface BanStatus {
+  settings: BanSettings
+  bans: BanRecord[]
+  /** 窗口内正在累计失败次数的 IP */
+  watching: Array<{ ip: string; hits: number; last: number }>
+  log_file: string
+  last_run: number
+  total_banned: number
+  last_error: string
+}
+
 export interface FirewallRuleAddPayload {
   port: number
   proto?: 'tcp' | 'udp'
@@ -170,4 +211,40 @@ export function importFirewall(data: FirewallExport) {
 /** 一键锁服：封禁全部入站，仅开放 SSH(22) / 80 / 443 / 面板端口 */
 export function lockdownFirewall(unlock = false) {
   return http.post<ApiResponse>('/system/config/firewall/lockdown', { unlock })
+}
+
+// ── IP 白名单 ────────────────────────────────────────────────
+
+/** 白名单列表（面板策略清单 + 防火墙后端实际 accept 规则） */
+export function getFirewallWhitelist() {
+  return http.get<ApiResponse<{ whitelist: FirewallWhiteEntry[]; rules: Array<{ id: string; ip: string }> }>>(
+    '/system/config/firewall/whitelist',
+  )
+}
+
+/** 加入白名单：同时写面板清单与防火墙 accept 规则 */
+export function addFirewallWhitelist(ip: string, comment = '') {
+  return http.post<ApiResponse>('/system/config/firewall/whitelist/add', { ip, comment })
+}
+
+/** 移出白名单 */
+export function deleteFirewallWhitelist(ip: string) {
+  return http.post<ApiResponse>('/system/config/firewall/whitelist/delete', { ip })
+}
+
+// ── SSH 爆破防护（内置 fail2ban）─────────────────────────────
+
+/** 爆破防护状态：设置 + 生效封禁 + 正在计数的 IP */
+export function getBanStatus() {
+  return http.get<ApiResponse<BanStatus>>('/system/config/firewall/ban/status')
+}
+
+/** 保存爆破防护设置 */
+export function saveBanSettings(data: BanSettings) {
+  return http.post<ApiResponse>('/system/config/firewall/ban/settings', data)
+}
+
+/** 手动提前解封某个 IP */
+export function unbanIp(ip: string) {
+  return http.post<ApiResponse>('/system/config/firewall/ban/unban', { ip })
 }

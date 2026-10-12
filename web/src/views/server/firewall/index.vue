@@ -379,6 +379,222 @@
           </el-table>
         </el-tab-pane>
 
+        <!-- ── IP 白名单 ────────────────────────────────── -->
+        <el-tab-pane :label="t('serverFirewall.whitelistTab')" name="whitelist">
+          <div class="tab-desc">{{ t('serverFirewall.whitelistDesc') }}</div>
+          <el-form :inline="true" :model="whiteForm" class="rule-form" @submit.prevent>
+            <el-form-item :label="t('serverFirewall.ipLabel')">
+              <el-input
+                v-model="whiteForm.ip"
+                :placeholder="t('serverFirewall.ipPlaceholder')"
+                style="width: 240px"
+                clearable
+              />
+            </el-form-item>
+            <el-form-item :label="t('common.remark')">
+              <el-input
+                v-model="whiteForm.comment"
+                :placeholder="t('serverFirewall.commentPlaceholder')"
+                style="width: 160px"
+                clearable
+              />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="success" :loading="savingWhite" @click="addWhite">
+                {{ t('serverFirewall.addWhite') }}
+              </el-button>
+            </el-form-item>
+          </el-form>
+
+          <el-alert type="info" :closable="false" show-icon :title="t('serverFirewall.whiteTip')" style="margin-bottom: 12px" />
+
+          <el-table :data="whitelist" size="small" stripe>
+            <el-table-column prop="ip" :label="t('serverFirewall.ipLabel')" min-width="200" />
+            <el-table-column :label="t('common.remark')" min-width="140">
+              <template #default="{ row }">
+                <span class="dim">{{ row.comment || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('serverFirewall.whiteRuleCol')" width="110">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.inRules ? 'success' : 'info'" effect="plain">
+                  {{ row.inRules ? t('serverFirewall.whiteRuleOk') : t('serverFirewall.whiteRuleMissing') }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('common.operation')" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  link
+                  type="danger"
+                  :loading="deletingId === `wl:${row.ip}`"
+                  @click="removeWhite(row)"
+                >
+                  {{ t('common.delete') }}
+                </el-button>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <el-empty :description="t('serverFirewall.whitelistEmpty')" :image-size="70" />
+            </template>
+          </el-table>
+        </el-tab-pane>
+
+        <!-- ── SSH 爆破防护（fail2ban） ─────────────────── -->
+        <el-tab-pane :label="t('serverFirewall.banTab')" name="ban">
+          <div class="tab-desc">{{ t('serverFirewall.banDesc') }}</div>
+
+          <el-alert
+            v-if="!ban.settings.enabled"
+            type="info"
+            :closable="false"
+            show-icon
+            :title="t('serverFirewall.banOffTip')"
+            style="margin-bottom: 12px"
+          />
+          <el-alert
+            v-else-if="ban.log_file"
+            type="success"
+            :closable="false"
+            show-icon
+            :title="t('serverFirewall.banOnTip', { log: ban.log_file, n: ban.bans.length })"
+            style="margin-bottom: 12px"
+          />
+          <el-alert
+            v-if="ban.settings.enabled && !ban.log_file"
+            type="warning"
+            :closable="false"
+            show-icon
+            :title="t('serverFirewall.banNoLogTip')"
+            style="margin-bottom: 12px"
+          />
+          <el-alert
+            v-if="ban.ignored.length"
+            type="warning"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 12px"
+          >
+            <template #title>
+              <span>{{ t('serverFirewall.banIgnoredTip', { n: ban.ignored.length }) }}</span>
+              <el-button link type="primary" size="small" @click="ban.settings.ignore_private = false; saveBan()">
+                {{ t('serverFirewall.banDisableIgnorePrivate') }}
+              </el-button>
+            </template>
+          </el-alert>
+
+          <el-form :model="ban.settings" label-width="180px" class="ban-form">
+            <el-form-item :label="t('serverFirewall.banEnable')">
+              <el-switch v-model="ban.settings.enabled" />
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banMaxRetry')">
+              <el-input-number v-model="ban.settings.max_retry" :min="1" :max="100" controls-position="right" />
+              <span class="hint">{{ t('serverFirewall.banMaxRetryTip') }}</span>
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banFindTime')">
+              <el-input-number v-model="ban.settings.find_time" :min="30" :max="86400" controls-position="right" />
+              <span class="hint">{{ t('serverFirewall.seconds') }}</span>
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banTime')">
+              <el-input-number v-model="ban.settings.ban_time" :min="60" :max="604800" controls-position="right" />
+              <span class="hint">{{ t('serverFirewall.banTimeTip') }}</span>
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banInterval')">
+              <el-input-number v-model="ban.settings.interval" :min="10" :max="3600" controls-position="right" />
+              <span class="hint">{{ t('serverFirewall.seconds') }}</span>
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banIgnorePrivate')">
+              <el-switch v-model="ban.settings.ignore_private" />
+              <span class="hint">{{ t('serverFirewall.banIgnorePrivateTip') }}</span>
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banIgnoredIps')">
+              <el-input
+                v-model="banIgnoredText"
+                :placeholder="t('serverFirewall.banIgnoredIpsTip')"
+                style="width: 380px"
+                clearable
+              />
+            </el-form-item>
+            <el-form-item :label="t('serverFirewall.banLogFile')">
+              <el-input
+                v-model="ban.settings.log_file"
+                :placeholder="t('serverFirewall.banLogFileTip')"
+                style="width: 380px"
+                clearable
+              />
+              <span class="hint">{{ t('serverFirewall.banLogFileHint') }}</span>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="savingBan" @click="saveBan">
+                {{ t('serverFirewall.banSave') }}
+              </el-button>
+              <el-button :loading="banLoading" @click="loadBan">{{ t('common.refresh') }}</el-button>
+              <span v-if="ban.last_error" class="ban-err">{{ ban.last_error }}</span>
+            </el-form-item>
+          </el-form>
+
+          <el-divider content-position="left">{{ t('serverFirewall.banListTitle') }}</el-divider>
+          <el-table :data="ban.bans" size="small" stripe>
+            <el-table-column prop="ip" :label="t('serverFirewall.ipLabel')" min-width="170" />
+            <el-table-column :label="t('serverFirewall.banReason')" min-width="200">
+              <template #default="{ row }">{{ row.reason }}</template>
+            </el-table-column>
+            <el-table-column :label="t('serverFirewall.banHits')" width="90">
+              <template #default="{ row }">{{ row.hits }}</template>
+            </el-table-column>
+            <el-table-column :label="t('serverFirewall.banRemaining')" width="120">
+              <template #default="{ row }">{{ fmtRemaining(row.remaining) }}</template>
+            </el-table-column>
+            <el-table-column :label="t('common.operation')" width="110" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  link
+                  type="primary"
+                  :loading="unbanning === row.ip"
+                  @click="doUnban(row.ip)"
+                >
+                  {{ t('serverFirewall.banUnban') }}
+                </el-button>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <el-empty :description="t('serverFirewall.banEmpty')" :image-size="70" />
+            </template>
+          </el-table>
+
+          <template v-if="ban.watching.length">
+            <el-divider content-position="left">{{ t('serverFirewall.banWatchTitle') }}</el-divider>
+            <el-table :data="ban.watching" size="small" stripe>
+              <el-table-column prop="ip" :label="t('serverFirewall.ipLabel')" min-width="170" />
+              <el-table-column :label="t('serverFirewall.banHits')" width="90">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.hits >= ban.settings.max_retry ? 'danger' : 'info'" effect="plain">
+                    {{ row.hits }} / {{ ban.settings.max_retry }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('serverFirewall.banLastSeen')" min-width="160">
+                <template #default="{ row }">{{ fmtTime(row.last) }}</template>
+              </el-table-column>
+            </el-table>
+          </template>
+
+          <template v-if="ban.ignored.length">
+            <el-divider content-position="left">{{ t('serverFirewall.banIgnoredTitle') }}</el-divider>
+            <el-table :data="ban.ignored" size="small" stripe>
+              <el-table-column prop="ip" :label="t('serverFirewall.ipLabel')" min-width="170" />
+              <el-table-column :label="t('serverFirewall.banHits')" width="90">
+                <template #default="{ row }">{{ row.hits }}</template>
+              </el-table-column>
+              <el-table-column :label="t('serverFirewall.banSkipReason')" min-width="220">
+                <template #default="{ row }">
+                  <el-tag size="small" type="warning" effect="plain">{{ row.reason }}</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </el-tab-pane>
+
         <!-- ── 导入导出 ─────────────────────────────────── -->
         <el-tab-pane :label="t('serverFirewall.backupTab')" name="backup">
           <div class="backup-pane">
@@ -474,15 +690,23 @@ import {
   addFirewallBlacklist,
   addFirewallForward,
   addFirewallRule,
+  addFirewallWhitelist,
   deleteFirewallBlacklist,
   deleteFirewallForward,
   deleteFirewallRule,
+  deleteFirewallWhitelist,
   updateFirewallRule,
   exportFirewall,
+  getBanStatus,
   getFirewallStatus,
+  getFirewallWhitelist,
   importFirewall,
   lockdownFirewall,
+  saveBanSettings,
   toggleFirewall,
+  unbanIp,
+  type BanRecord,
+  type BanSettings,
   type FirewallBlackEntry,
   type FirewallExport,
   type FirewallForward,
@@ -598,6 +822,165 @@ const forwardForm = reactive({
 })
 
 const blackForm = reactive({ ip: '' })
+
+// ── IP 白名单（放行优先） ────────────────────────────────────
+const whiteForm = reactive({ ip: '', comment: '' })
+const whitelist = ref<Array<{ ip: string; comment?: string; inRules: boolean }>>([])
+const savingWhite = ref(false)
+
+async function loadWhitelist() {
+  try {
+    const res = await getFirewallWhitelist()
+    const rules = res.data?.rules || []
+    whitelist.value = (res.data?.whitelist || []).map((x) => ({
+      ip: x.ip,
+      comment: x.comment,
+      // 面板清单里有、但防火墙后端没有对应 accept 规则时给出提示
+      inRules: rules.some((r) => r.ip === x.ip),
+    }))
+  } catch {
+    /* handled */
+  }
+}
+
+async function addWhite() {
+  const ip = whiteForm.ip.trim()
+  if (!ip) {
+    ElMessage.warning(t('serverFirewall.ipPlaceholder'))
+    return
+  }
+  savingWhite.value = true
+  try {
+    const res = await addFirewallWhitelist(ip, whiteForm.comment.trim())
+    ElMessage.success(res.message || t('serverFirewall.whiteAdded'))
+    whiteForm.ip = ''
+    whiteForm.comment = ''
+    await loadWhitelist()
+  } catch {
+    /* handled */
+  } finally {
+    savingWhite.value = false
+  }
+}
+
+async function removeWhite(row: { ip: string }) {
+  try {
+    await ElMessageBox.confirm(
+      t('serverFirewall.deleteWhiteConfirm', { ip: row.ip }),
+      t('serverFirewall.deleteTitle'),
+      { type: 'warning', confirmButtonText: t('common.delete') },
+    )
+  } catch {
+    return
+  }
+  deletingId.value = `wl:${row.ip}`
+  try {
+    const res = await deleteFirewallWhitelist(row.ip)
+    ElMessage.success(res.message || t('serverFirewall.whiteDeleted'))
+    await loadWhitelist()
+  } catch {
+    /* handled */
+  } finally {
+    deletingId.value = ''
+  }
+}
+
+// ── SSH 爆破防护（内置 fail2ban） ────────────────────────────
+const banLoading = ref(false)
+const savingBan = ref(false)
+const unbanning = ref('')
+const banIgnoredText = ref('')
+
+const ban = reactive<{
+  settings: BanSettings
+  bans: BanRecord[]
+  watching: Array<{ ip: string; hits: number; last: number }>
+  ignored: Array<{ ip: string; hits: number; reason: string }>
+  log_file: string
+  last_run: number
+  total_banned: number
+  last_error: string
+}>({
+  settings: {
+    enabled: false,
+    max_retry: 5,
+    find_time: 600,
+    ban_time: 3600,
+    interval: 60,
+    ignore_private: true,
+    ignored_ips: [],
+    log_file: '',
+  },
+  bans: [],
+  watching: [],
+  ignored: [],
+  log_file: '',
+  last_run: 0,
+  total_banned: 0,
+  last_error: '',
+})
+
+async function loadBan() {
+  banLoading.value = true
+  try {
+    const res = await getBanStatus()
+    const d = res.data
+    if (!d) return
+    Object.assign(ban, d)
+    banIgnoredText.value = (d.settings?.ignored_ips || []).join(',')
+  } catch {
+    /* handled */
+  } finally {
+    banLoading.value = false
+  }
+}
+
+async function saveBan() {
+  savingBan.value = true
+  try {
+    await saveBanSettings({
+      ...ban.settings,
+      ignored_ips: banIgnoredText.value
+        .split(/[,;\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    })
+    ElMessage.success(t('serverFirewall.banSaved'))
+    await loadBan()
+  } catch {
+    /* handled */
+  } finally {
+    savingBan.value = false
+  }
+}
+
+async function doUnban(ip: string) {
+  unbanning.value = ip
+  try {
+    const res = await unbanIp(ip)
+    ElMessage.success(res.message || t('serverFirewall.banUnbanned'))
+    await loadBan()
+  } catch {
+    /* handled */
+  } finally {
+    unbanning.value = ''
+  }
+}
+
+function fmtRemaining(sec: number): string {
+  if (sec <= 0) return '-'
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m ${sec % 60}s`
+}
+
+function fmtTime(ts: number): string {
+  if (!ts) return '-'
+  const d = new Date(ts * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
 
 async function load() {
   loading.value = true
@@ -913,7 +1296,11 @@ async function doLockdown(unlock: boolean) {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadWhitelist()
+  loadBan()
+})
 </script>
 
 <style scoped>
@@ -972,5 +1359,18 @@ onMounted(load)
 }
 .harden-block .allow-list {
   margin-top: 10px;
+}
+.ban-form {
+  max-width: 720px;
+}
+.ban-form .hint {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.ban-err {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--el-color-danger);
 }
 </style>

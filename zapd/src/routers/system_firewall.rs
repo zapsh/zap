@@ -302,6 +302,14 @@ pub async fn firewall_blacklist_add(
             "不能封禁当前登录 IP，否则会把自己锁在外面".to_string(),
         ));
     }
+    // 白名单优先：命中白名单的 IP 一律拒绝加入黑名单
+    let protected = crate::zap::ssh_ban::protected_ips().await;
+    if protected.iter().any(|w| w == &ip) {
+        return Err(ZapError::New(
+            -1,
+            format!("{ip} 在 IP 白名单中，已拒绝封禁（如需封禁请先移出白名单）"),
+        ));
+    }
     let resp = crate::zapexec::call(zap_proto::Request::FirewallBlacklistAdd {
         ip: payload.ip,
         comment: payload.comment,
@@ -436,6 +444,267 @@ pub struct FirewallLockdownPayload {
     pub unlock: bool,
 }
 
+// ── IP 白名单（放行优先，命中后不再被封禁）────────────────────
+
+const WL_KEY: &str = "firewall.whitelist";
+
+/// 面板侧白名单存储（`[{ip, comment, created_at}]`）。
+///
+/// 与防火墙后端的 accept 规则是两回事：
+/// - 后端规则决定「流量放行」；
+/// - 这份清单决定「面板绝不允许把它加进黑名单 / 爆破防护不封它」。
+async fn wl_load() -> Vec<serde_json::Value> {
+    let pool = crate::db::get_db_pool().await;
+    let raw: Option<(String,)> = sqlx::query_as("SELECT value FROM global_settings WHERE key=?")
+        .bind(WL_KEY)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    raw.and_then(|r| serde_json::from_str(&r.0).ok())
+        .unwrap_or_default()
+}
+
+async fn wl_save(list: &[serde_json::Value]) {
+    let pool = crate::db::get_db_pool().await;
+    let v = serde_json::to_string(list).unwrap_or_else(|_| "[]".to_string());
+    let _ = sqlx::query(
+        "INSERT INTO global_settings (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    )
+    .bind(WL_KEY)
+    .bind(v)
+    .execute(pool)
+    .await;
+}
+
+/// GET /system/config/firewall/whitelist
+pub async fn firewall_whitelist_list(claims: ValidatedClaims) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallWhitelistList).await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    let backend_rules = resp
+        .data
+        .as_ref()
+        .and_then(|d| d.get("whitelist"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    Ok(Json(json!({
+        "code": 0,
+        "message": "ok",
+        "data": { "whitelist": wl_load().await, "rules": backend_rules },
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FirewallWhitelistAddPayload {
+    pub ip: String,
+    #[serde(default)]
+    pub comment: String,
+}
+
+/// POST /system/config/firewall/whitelist/add —— 同时写面板清单与防火墙 accept 规则
+pub async fn firewall_whitelist_add(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<FirewallWhitelistAddPayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let ip = payload.ip.trim().to_string();
+    // 合法性校验交给后端白名单动词（IPv4 / IPv6 均支持）
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallWhitelistAdd {
+        ip: ip.clone(),
+        comment: payload.comment.clone(),
+    })
+    .await?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "firewall_whitelist_add",
+        "firewall",
+        &format!("ip={ip} -> {}", resp.message),
+    )
+    .await;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+
+    let mut list = wl_load().await;
+    if !list
+        .iter()
+        .any(|x| x.get("ip").and_then(|v| v.as_str()) == Some(ip.as_str()))
+    {
+        list.push(json!({
+            "ip": ip,
+            "comment": payload.comment,
+            "created_at": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        }));
+        wl_save(&list).await;
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FirewallWhitelistDeletePayload {
+    pub ip: String,
+}
+
+/// POST /system/config/firewall/whitelist/delete —— 删面板清单 + 防火墙 accept 规则
+pub async fn firewall_whitelist_delete(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<FirewallWhitelistDeletePayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let ip = payload.ip.trim().to_string();
+    // 防火墙规则 id：多数后端就是 IP 本身；nft 是 handle、firewalld 带前缀，
+    // 因此从 status 里按 IP 反查真实 id 再删。
+    let mut rule_id = ip.clone();
+    let st = crate::zapexec::call(zap_proto::Request::FirewallStatus {
+        panel_port: panel_port(),
+    })
+    .await;
+    if let Ok(r) = st {
+        if r.code == 0 {
+            if let Some(rules) = r
+                .data
+                .as_ref()
+                .and_then(|d| d.get("whitelist"))
+                .and_then(|v| v.as_array())
+            {
+                if let Some(found) = rules.iter().find(|x| {
+                    x.get("ip").and_then(|v| v.as_str()) == Some(ip.as_str())
+                }) {
+                    rule_id = found
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&ip)
+                        .to_string();
+                }
+            }
+        }
+    }
+    let resp = crate::zapexec::call(zap_proto::Request::FirewallWhitelistDelete { id: rule_id })
+        .await?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "firewall_whitelist_delete",
+        "firewall",
+        &format!("ip={ip} -> {}", resp.message),
+    )
+    .await;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    let list: Vec<serde_json::Value> = wl_load()
+        .await
+        .into_iter()
+        .filter(|x| x.get("ip").and_then(|v| v.as_str()) != Some(ip.as_str()))
+        .collect();
+    wl_save(&list).await;
+    Ok(Json(json!({ "code": 0, "message": resp.message })))
+}
+
+// ── SSH 爆破防护（fail2ban）─────────────────────────────────────
+
+/// GET /system/config/firewall/ban/status
+pub async fn firewall_ban_status(claims: ValidatedClaims) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let s = crate::zap::ssh_ban::settings().await;
+    let st = crate::zap::ssh_ban::state().await;
+    let bans = crate::zap::ssh_ban::records().await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let watching: Vec<serde_json::Value> = st
+        .hits
+        .iter()
+        .map(|(ip, (n, at))| json!({ "ip": ip, "hits": n, "last": at }))
+        .collect();
+    let ignored: Vec<serde_json::Value> = st
+        .ignored
+        .iter()
+        .map(|(ip, (n, reason, _))| json!({ "ip": ip, "hits": n, "reason": reason }))
+        .collect();
+    Ok(Json(json!({
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "settings": s,
+            "bans": bans.iter().map(|b| json!({
+                "ip": b.ip,
+                "reason": b.reason,
+                "hits": b.hits,
+                "created_at": b.created_at,
+                "expires_at": b.expires_at,
+                "remaining": b.expires_at.saturating_sub(now),
+            })).collect::<Vec<_>>(),
+            "watching": watching,
+            "ignored": ignored,
+            "log_file": st.log_file,
+            "last_run": st.last_run,
+            "total_banned": st.total_banned,
+            "last_error": st.last_error,
+        },
+    })))
+}
+
+/// POST /system/config/firewall/ban/settings
+pub async fn firewall_ban_settings_save(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<crate::zap::ssh_ban::BanSettings>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    crate::zap::ssh_ban::save_settings(&payload).await;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "firewall_ban_settings",
+        "firewall",
+        &format!(
+            "enabled={} max_retry={} find_time={} ban_time={} interval={}",
+            payload.enabled, payload.max_retry, payload.find_time, payload.ban_time, payload.interval
+        ),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "已保存" })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FirewallBanUnbanPayload {
+    pub ip: String,
+}
+
+/// POST /system/config/firewall/ban/unban —— 手动提前解封
+pub async fn firewall_ban_unban(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<FirewallBanUnbanPayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    match crate::zap::ssh_ban::unban(&payload.ip).await {
+        Ok(()) => {
+            audit::log(
+                Some(&claims),
+                Some(client_addr.ip().to_string().as_str()),
+                "firewall_ban_unban",
+                "firewall",
+                &format!("ip={}", payload.ip),
+            )
+            .await;
+            Ok(Json(json!({ "code": 0, "message": "已解封" })))
+        }
+        Err(e) => Err(ZapError::New(-1, e)),
+    }
+}
 #[derive(Debug, Deserialize)]
 pub struct FirewallTogglePayload {
     /// start | stop | enable | disable

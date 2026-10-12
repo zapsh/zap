@@ -1623,6 +1623,18 @@ pub enum Request {
     /// 删除黑名单条目（id 由 firewall.status 返回）
     #[serde(rename = "firewall.blacklist_delete")]
     FirewallBlacklistDelete { id: String },
+    /// IP 白名单：放行优先，命中后不再被黑名单 / 爆破防护封禁
+    #[serde(rename = "firewall.whitelist_list")]
+    FirewallWhitelistList,
+    #[serde(rename = "firewall.whitelist_add")]
+    FirewallWhitelistAdd {
+        ip: String,
+        #[serde(default)]
+        comment: String,
+    },
+    /// 删除白名单条目（id 由 firewall.status 返回）
+    #[serde(rename = "firewall.whitelist_delete")]
+    FirewallWhitelistDelete { id: String },
     /// 导出防火墙规则（端口规则 + 转发 + 黑名单）为 JSON
     #[serde(rename = "firewall.export")]
     FirewallExport {

@@ -1870,6 +1870,62 @@ const enUS: Messages = {
     blackAdded: 'Added to blacklist',
     blackDeleted: 'Removed from blacklist',
     deleteBlackConfirm: 'Remove {ip} from the blacklist?',
+    // ── IP whitelist (takes precedence over blacklist & ban) ──
+    whitelistTab: 'IP Whitelist',
+    whitelistDesc:
+      'Whitelisted IPs / CIDRs are always allowed: never blacklisted and never auto-banned by brute-force protection.',
+    addWhite: 'Whitelist',
+    whitelistEmpty: 'Whitelist is empty',
+    whiteAdded: 'Added to whitelist',
+    whiteDeleted: 'Removed from whitelist',
+    deleteWhiteConfirm: 'Remove {ip} from the whitelist?',
+    whiteTip:
+      'Whitelisting writes both the firewall accept rule (inserted at chain head, ahead of drops) and the panel policy list. IPv4 and IPv6 are supported.',
+    whiteRuleCol: 'Firewall rule',
+    whiteRuleOk: 'Active',
+    whiteRuleMissing: 'Not synced',
+    // ── SSH brute-force protection (built-in fail2ban) ──
+    banTab: 'Brute-force',
+    banDesc:
+      'Periodically parses sshd auth-failure logs: an IP that fails max_retry times inside the window is blacklisted automatically and released when the ban expires.',
+    banOffTip:
+      'Brute-force protection is disabled. Before enabling it, make sure your fixed IP is in the whitelist.',
+    banOnTip: 'Protection running, watching {log}, currently banning {n} IP(s).',
+    banEnable: 'Enable brute-force protection',
+    banMaxRetry: 'Failure threshold',
+    banMaxRetryTip: 'failures inside the window that trigger a ban',
+    banFindTime: 'Counting window',
+    banTime: 'Ban duration',
+    banTimeTip: 'auto-released on expiry',
+    banInterval: 'Scan interval',
+    seconds: 's',
+    banIgnorePrivate: 'Ignore private ranges',
+    banIgnorePrivateTip: 'on by default, avoids banning jump hosts / container nets',
+    banIgnoredIps: 'Extra ignored IPs',
+    banIgnoredIpsTip: 'comma separated, IP or CIDR, e.g. 8.8.8.8, 192.168.1.0/24',
+    banLogFile: 'Log file',
+    banLogFileTip:
+      'leave empty to auto-detect (/var/log/auth.log, /var/log/secure or journalctl -u ssh)',
+    banLogFileHint:
+      'Debian has no auth.log by default, so journalctl -u ssh is used; enter "journal" to force it',
+    banNoLogTip:
+      'No log has been read yet: make sure sshd is running and producing auth failures, or set a log source above.',
+    banSave: 'Save settings',
+    banSaved: 'Settings saved',
+    banListTitle: 'Active bans',
+    banReason: 'Reason',
+    banHits: 'Failures',
+    banRemaining: 'Remaining',
+    banUnban: 'Unban now',
+    banUnbanned: 'Unbanned',
+    banEmpty: 'No IP is currently banned',
+    banWatchTitle: 'Counting now (failures inside the window)',
+    banLastSeen: 'Last failure',
+    banIgnoredTitle: 'Ignored sources (never banned)',
+    banSkipReason: 'Skip reason',
+    banIgnoredTip:
+      'Failures from {n} source(s) are ignored, so they will not be banned. Private ranges are ignored by default; you can turn that off below.',
+    banDisableIgnorePrivate: 'Stop ignoring private ranges',
     backupTab: 'Import / Export',
     exportTip:
       'Export port rules, forwards and the IP blacklist to a JSON file, which can be imported on other servers.',

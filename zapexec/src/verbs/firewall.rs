@@ -528,6 +528,23 @@ fn black_json(x: &Black) -> Value {
     })
 }
 
+/// 白名单（放行优先于一切）：命中后既不被黑名单封禁，也不会被 fail2ban 封禁。
+#[derive(Debug, Clone)]
+struct White {
+    /// 删除标识：nftables=input 链 handle；iptables=IP；firewalld=`wl:<rich rule>`；ufw=IP
+    id: String,
+    ip: String,
+    comment: String,
+}
+
+fn white_json(x: &White) -> Value {
+    json!({
+        "id": x.id,
+        "ip": x.ip,
+        "comment": x.comment,
+    })
+}
+
 /// 目标地址是否为 IPv4（用于选择 nft 的 ip / ip6 关键字与 rich rule family）
 fn is_ipv4_cidr(s: &str) -> bool {
     let addr = s.split('/').next().unwrap_or("");
@@ -593,6 +610,16 @@ fn list_blacklist(b: Backend) -> Vec<Black> {
         Backend::Iptables => iptables_blacklist(),
         Backend::Firewalld => firewalld_blacklist(),
         Backend::Ufw => ufw_blacklist(),
+        _ => Vec::new(),
+    }
+}
+
+fn list_whitelist(b: Backend) -> Vec<White> {
+    match b {
+        Backend::Nftables => nft_whitelist(),
+        Backend::Iptables => iptables_whitelist(),
+        Backend::Firewalld => firewalld_whitelist(),
+        Backend::Ufw => ufw_whitelist(),
         _ => Vec::new(),
     }
 }
@@ -791,6 +818,57 @@ fn nft_blacklist_add(ip: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// nft 白名单：accept 规则必须插到链首，否则排在 drop 之后等于没放。
+/// 老版本 nft 没有 `insert rule` 时退化为 add（此时优先级依赖链内既有顺序）。
+fn nft_whitelist() -> Vec<White> {
+    let mut out = Vec::new();
+    for line in cmd_out("nft", &["-a", "list", "chain", "inet", "zap_fw", "input"]).lines() {
+        let l = line.trim();
+        if !l.contains("accept") || !l.contains("comment \"zap:wl:") {
+            continue;
+        }
+        let Some((_, h)) = l.split_once("# handle ") else {
+            continue;
+        };
+        let handle = h.split_whitespace().next().unwrap_or("").to_string();
+        let ip = l
+            .split("saddr ")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .unwrap_or("")
+            .to_string();
+        out.push(White {
+            id: handle,
+            ip,
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn nft_whitelist_add(ip: &str) -> Result<(), String> {
+    nft_ensure_chains();
+    let fam = if is_ipv4_cidr(ip) { "ip" } else { "ip6" };
+    let rule = format!("{fam} saddr {ip} accept comment \"zap:wl:{ip}\"");
+    let refs: Vec<&str> = ["insert", "rule", "inet", "zap_fw", "input", &rule]
+        .iter()
+        .copied()
+        .collect();
+    let (ok, out) = run_capture("nft", &refs);
+    if !ok {
+        // 老版本 nft 不支持 insert rule：退化为追加
+        let refs: Vec<&str> = ["add", "rule", "inet", "zap_fw", "input", &rule]
+            .iter()
+            .copied()
+            .collect();
+        let (ok2, out2) = run_capture("nft", &refs);
+        if !ok2 {
+            return Err(format!("nft 添加白名单失败: {out} / {out2}"));
+        }
+    }
+    Ok(())
+}
+
 // ── iptables：nat 表 PREROUTING / POSTROUTING ──────────────
 
 fn iptables_forwards() -> Vec<Forward> {
@@ -892,27 +970,66 @@ fn iptables_forward_delete(id: &str) -> Result<(), String> {
 
 fn iptables_blacklist() -> Vec<Black> {
     let mut out = Vec::new();
-    for line in cmd_out("iptables", &["-S", "INPUT"]).lines() {
-        let l = line.trim();
-        if !l.starts_with("-A INPUT") || !l.contains("-j DROP") || l.contains("--dport") {
-            continue;
+    // iptables(IPv4) 与 ip6tables(IPv6) 都要扫：封禁来源两种族都可能有
+    for bin in ["iptables", "ip6tables"] {
+        for line in cmd_out(bin, &["-S", "INPUT"]).lines() {
+            let l = line.trim();
+            if !l.starts_with("-A INPUT") || !l.contains("-j DROP") || l.contains("--dport") {
+                continue;
+            }
+            let Some(ip) = l.split(" -s ").nth(1).and_then(|s| s.split_whitespace().next()) else {
+                continue;
+            };
+            out.push(Black {
+                id: ip.to_string(),
+                ip: ip.to_string(),
+                comment: String::new(),
+            });
         }
-        let Some(ip) = l.split(" -s ").nth(1).and_then(|s| s.split_whitespace().next()) else {
-            continue;
-        };
-        out.push(Black {
-            id: ip.to_string(),
-            ip: ip.to_string(),
-            comment: String::new(),
-        });
     }
     out
 }
 
 fn iptables_blacklist_add(ip: &str) -> Result<(), String> {
-    let (ok, out) = run_capture("iptables", &["-I", "INPUT", "1", "-s", ip, "-j", "DROP"]);
+    // IPv6 来源必须写 ip6tables，否则规则落错族、封禁无效
+    let bin = if is_ipv4_cidr(ip) { "iptables" } else { "ip6tables" };
+    let (ok, out) = run_capture(bin, &["-I", "INPUT", "1", "-s", ip, "-j", "DROP"]);
     if !ok {
-        return Err(format!("iptables 添加黑名单失败：{out}"));
+        return Err(format!("{bin} 添加黑名单失败：{out}"));
+    }
+    Ok(())
+}
+
+/// iptables 白名单：插到链首，优先于黑名单与既有放行规则。
+fn iptables_whitelist() -> Vec<White> {
+    let mut out = Vec::new();
+    for bin in ["iptables", "ip6tables"] {
+        for line in cmd_out(bin, &["-S", "INPUT"]).lines() {
+            let l = line.trim();
+            if !l.starts_with("-A INPUT") || !l.contains("-j ACCEPT") || l.contains("--dport") {
+                continue;
+            }
+            let Some(ip) = l.split(" -s ").nth(1).and_then(|s| s.split_whitespace().next()) else {
+                continue;
+            };
+            if ip.contains('/') && (ip.starts_with("0.0.0.0") || ip == "::/0") {
+                continue;
+            }
+            out.push(White {
+                id: ip.to_string(),
+                ip: ip.to_string(),
+                comment: String::new(),
+            });
+        }
+    }
+    out
+}
+
+fn iptables_whitelist_add(ip: &str) -> Result<(), String> {
+    let bin = if is_ipv4_cidr(ip) { "iptables" } else { "ip6tables" };
+    let (ok, out) = run_capture(bin, &["-I", "INPUT", "1", "-s", ip, "-j", "ACCEPT"]);
+    if !ok {
+        return Err(format!("{bin} 添加白名单失败：{out}"));
     }
     Ok(())
 }
@@ -1028,6 +1145,50 @@ fn firewalld_blacklist_add(ip: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// firewalld 富规则按配置顺序匹配：白名单 accept 若加在 drop 之后就不生效，
+/// 因此这里加 accept 的同时删掉同源的 drop，确保该 IP 一定放通。
+fn firewalld_whitelist() -> Vec<White> {
+    let mut out = Vec::new();
+    for line in cmd_out("firewall-cmd", &["--list-rich-rules"]).lines() {
+        let raw = line.trim().trim_matches('\'').to_string();
+        if raw.is_empty() || !raw.contains("accept") || raw.contains("port port=") {
+            continue;
+        }
+        let ip = raw
+            .split("source address=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("")
+            .to_string();
+        if ip.is_empty() {
+            continue;
+        }
+        out.push(White {
+            id: format!("wl:{raw}"),
+            ip,
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn firewalld_whitelist_add(ip: &str) -> Result<(), String> {
+    let family = if is_ipv4_cidr(ip) { "ipv4" } else { "ipv6" };
+    // 先摘掉同源的 drop，再加 accept，避免顺序问题导致白名单失效
+    let drop_rule = format!("rule family=\"{family}\" source address=\"{ip}\" drop");
+    let _ = run_capture("firewall-cmd", &["--permanent", "--remove-rich-rule", &drop_rule]);
+    let rule = format!("rule family=\"{family}\" source address=\"{ip}\" accept");
+    let (ok, out) = run_capture("firewall-cmd", &["--permanent", "--add-rich-rule", &rule]);
+    if !ok {
+        return Err(format!("firewall-cmd --add-rich-rule 执行失败：{out}"));
+    }
+    let (ok, out) = run_capture("firewall-cmd", &["--reload"]);
+    if !ok {
+        return Err(format!("firewall-cmd --reload 执行失败：{out}"));
+    }
+    Ok(())
+}
+
 // ── ufw：黑名单用 deny from（端口转发不支持） ───────────────
 
 fn ufw_blacklist() -> Vec<Black> {
@@ -1075,6 +1236,57 @@ fn ufw_blacklist_add(ip: &str) -> Result<(), String> {
     let (ok, out) = run_capture("ufw", &["insert", "1", "deny", "from", ip]);
     if !ok {
         return Err(format!("ufw 添加黑名单失败：{out}"));
+    }
+    Ok(())
+}
+
+/// ufw 白名单：`ufw insert 1 allow from <ip>`（IPv4 / IPv6 通吃，ufw 自行分族）。
+fn ufw_whitelist() -> Vec<White> {
+    let mut out = Vec::new();
+    for line in cmd_out("ufw", &["status", "numbered"]).lines() {
+        let l = line.trim();
+        let Some(rest) = l.strip_prefix('[') else {
+            continue;
+        };
+        let Some((_, body)) = rest.split_once(']') else {
+            continue;
+        };
+        let body = body.trim();
+        if !body.contains("ALLOW") {
+            continue;
+        }
+        let after = body.split("ALLOW").nth(1).unwrap_or("");
+        let from = after
+            .split_whitespace()
+            .find(|t| *t != "IN" && *t != "OUT")
+            .unwrap_or("");
+        if from.is_empty() || from == "Anywhere" || from.contains('/') {
+            continue;
+        }
+        // 只认 IP 形态的 allow（端口放行规则不是白名单）
+        if from.parse::<std::net::IpAddr>().is_err() {
+            continue;
+        }
+        out.push(White {
+            id: from.to_string(),
+            ip: from.to_string(),
+            comment: String::new(),
+        });
+    }
+    out
+}
+
+fn ufw_whitelist_add(ip: &str) -> Result<(), String> {
+    let (ok, _) = run_capture(
+        "ufw",
+        &["insert", "1", "allow", "from", ip, "comment", &format!("zap:wl_{ip}")],
+    );
+    if ok {
+        return Ok(());
+    }
+    let (ok, out) = run_capture("ufw", &["insert", "1", "allow", "from", ip]);
+    if !ok {
+        return Err(format!("ufw 添加白名单失败：{out}"));
     }
     Ok(())
 }
@@ -1450,6 +1662,7 @@ pub async fn status(panel_port: u16) -> Response {
                 "rules": [],
                 "forwards": [],
                 "blacklist": [],
+                "whitelist": [],
                 "ip_forward": false,
                 "forward_supported": false,
                 "locked_down": false,
@@ -1474,6 +1687,7 @@ pub async fn status(panel_port: u16) -> Response {
         .collect();
     let forwards: Vec<Value> = list_forwards(b).iter().map(forward_json).collect();
     let blacklist: Vec<Value> = list_blacklist(b).iter().map(black_json).collect();
+    let whitelist: Vec<Value> = list_whitelist(b).iter().map(white_json).collect();
     Response::ok(
         "OK",
         Some(json!({
@@ -1488,6 +1702,7 @@ pub async fn status(panel_port: u16) -> Response {
             "rules": rules,
             "forwards": forwards,
             "blacklist": blacklist,
+            "whitelist": whitelist,
             "ip_forward": ip_forward_enabled(),
             "forward_supported": forward_supported(b),
             "locked_down": locked_down(b),
@@ -1689,6 +1904,55 @@ fn apply_blacklist(b: Backend, ip: &str) -> Result<(), String> {
     }
 }
 
+fn apply_whitelist(b: Backend, ip: &str) -> Result<(), String> {
+    match b {
+        Backend::Firewalld => firewalld_whitelist_add(ip),
+        Backend::Nftables => nft_whitelist_add(ip),
+        Backend::Iptables => iptables_whitelist_add(ip),
+        Backend::Ufw => ufw_whitelist_add(ip),
+        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+    }
+}
+
+fn delete_whitelist(b: Backend, id: &str) -> Result<(), String> {
+    match b {
+        Backend::Nftables => {
+            if cmd_ok("nft", &["delete", "rule", "inet", "zap_fw", "input", "handle", id]) {
+                Ok(())
+            } else {
+                Err("nft 删除白名单失败".to_string())
+            }
+        }
+        Backend::Iptables => {
+            // id 即 IP；IPv6 来源走 ip6tables
+            let bin = if is_ipv4_cidr(id) { "iptables" } else { "ip6tables" };
+            if cmd_ok(bin, &["-D", "INPUT", "-s", id, "-j", "ACCEPT"]) {
+                Ok(())
+            } else {
+                Err(format!("{bin} 删除白名单失败"))
+            }
+        }
+        Backend::Firewalld => {
+            let Some(raw) = id.strip_prefix("wl:") else {
+                return Err("白名单 id 不合法".to_string());
+            };
+            if !cmd_ok("firewall-cmd", &["--permanent", "--remove-rich-rule", raw]) {
+                return Err("firewall-cmd 删除白名单失败".to_string());
+            }
+            let _ = run_capture("firewall-cmd", &["--reload"]);
+            Ok(())
+        }
+        Backend::Ufw => {
+            if cmd_ok("ufw", &["delete", "allow", "from", id]) {
+                Ok(())
+            } else {
+                Err("ufw 删除白名单失败".to_string())
+            }
+        }
+        _ => Err(format!("当前系统（{}）暂不支持该操作", std::env::consts::OS)),
+    }
+}
+
 fn delete_blacklist(b: Backend, id: &str) -> Result<(), String> {
     match b {
         Backend::Firewalld => {
@@ -1786,6 +2050,36 @@ pub async fn blacklist_delete(id: String) -> Response {
     }
     match delete_blacklist(detect(), &id) {
         Ok(()) => Response::ok("黑名单已删除", None),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+/// 白名单列表（放行优先，命中后不再被黑名单 / fail2ban 封禁）。
+pub async fn whitelist_list() -> Response {
+    let b = detect();
+    let list: Vec<Value> = list_whitelist(b).iter().map(white_json).collect();
+    Response::ok("ok", Some(json!({ "whitelist": list })))
+}
+
+pub async fn whitelist_add(ip: String, _comment: String) -> Response {
+    let ip = ip.trim().to_string();
+    if let Err(e) = validate_source(&ip) {
+        return Response::err(-1, e);
+    }
+    let b = detect();
+    match apply_whitelist(b, &ip) {
+        Ok(()) => Response::ok("白名单已添加", None),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+pub async fn whitelist_delete(id: String) -> Response {
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Response::err(-1, "缺少白名单 id".to_string());
+    }
+    match delete_whitelist(detect(), &id) {
+        Ok(()) => Response::ok("白名单已删除", None),
         Err(e) => Response::err(-1, e),
     }
 }
