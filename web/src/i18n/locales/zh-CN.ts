@@ -1947,6 +1947,8 @@ export default {
       '修改端口 / 关闭密码登录前请先确认新方式可用，否则可能把自己锁在服务器外。保存前会自动跑 sshd -t 校验，失败不会写入。',
     keep: '不改动',
     current: '当前值：',
+    commentedValue: '已注释：',
+    unset: '未设置',
     checkOnly: '校验',
     saveFailed: '保存失败',
   },

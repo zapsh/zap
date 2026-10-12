@@ -1947,6 +1947,8 @@ const enUS: Messages = {
       'Before changing the port or disabling password login, make sure the new method works — otherwise you can lock yourself out. Every save runs sshd -t first; invalid configs are never written.',
     keep: 'unchanged',
     current: 'Current: ',
+    commentedValue: 'commented: ',
+    unset: 'not set',
     checkOnly: 'Validate',
     saveFailed: 'Save failed',
     saveAndRestart: 'Save & Restart',

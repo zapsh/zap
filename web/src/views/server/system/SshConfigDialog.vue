@@ -64,7 +64,20 @@
                 :placeholder="t('serverSsh.keep')"
               />
               <span class="cur-value">
-                {{ t('serverSsh.current') }}<b class="mono">{{ current[d.key] ?? '—' }}</b>
+                <template v-if="current[d.key] !== undefined">
+                  {{ t('serverSsh.current') }}<b class="mono">{{ current[d.key] }}</b>
+                </template>
+                <el-tooltip
+                  v-else-if="commented[d.key] !== undefined"
+                  :content="commented[d.key]"
+                  placement="top"
+                >
+                  <el-tag size="small" type="info" class="commented-tag">
+                    {{ t('serverSsh.commentedValue') }}
+                    <b class="mono">{{ commented[d.key] }}</b>
+                  </el-tag>
+                </el-tooltip>
+                <span v-else class="unset">{{ t('serverSsh.unset') }}</span>
               </span>
             </el-form-item>
           </el-form>
@@ -136,32 +149,61 @@ const GROUPS: Group[] = [
         options: ['yes', 'no', 'prohibit-password', 'forced-commands-only'],
         tip: '禁止 root 直登前请先确认有可用的普通账号',
       },
-      { key: 'PasswordAuthentication', type: 'yesno', tip: '关闭前必须确认密钥登录可用,否则会被锁在外面' },
+      {
+        key: 'PasswordAuthentication',
+        type: 'yesno',
+        tip: '关闭前必须确认密钥登录可用,否则会被锁在外面',
+      },
       { key: 'PubkeyAuthentication', type: 'yesno' },
+      { key: 'AuthorizedKeysFile', type: 'text', tip: '如 .ssh/authorized_keys,可多个空格分隔' },
+      { key: 'KbdInteractiveAuthentication', type: 'yesno' },
+      {
+        key: 'ChallengeResponseAuthentication',
+        type: 'yesno',
+        tip: '旧名,新版等价于 KbdInteractiveAuthentication',
+      },
+      { key: 'HostbasedAuthentication', type: 'yesno' },
+      { key: 'IgnoreRhosts', type: 'yesno' },
       { key: 'PermitEmptyPasswords', type: 'yesno' },
       { key: 'UsePAM', type: 'yesno' },
+      { key: 'StrictModes', type: 'yesno' },
       { key: 'MaxAuthTries', type: 'num' },
       { key: 'LoginGraceTime', type: 'num' },
-      { key: 'AuthorizedKeysFile', type: 'text' },
     ],
   },
   {
-    title: '会话保持',
+    title: '日志与提示',
+    items: [
+      { key: 'SyslogFacility', type: 'text', options: ['AUTH', 'AUTHPRIV', 'DAEMON', 'USER', 'LOCAL0'] },
+      { key: 'LogLevel', type: 'text', options: ['QUIET', 'FATAL', 'ERROR', 'INFO', 'VERBOSE', 'DEBUG'] },
+      { key: 'PrintLastLog', type: 'yesno' },
+      { key: 'PrintMotd', type: 'yesno' },
+      { key: 'Banner', type: 'text', tip: '登录前展示的横幅文件路径,如 /etc/issue.net' },
+      { key: 'AcceptEnv', type: 'text', tip: '如 LANG LC_*' },
+    ],
+  },
+  {
+    title: '会话与转发',
     items: [
       { key: 'ClientAliveInterval', type: 'num', tip: '秒,0 表示不主动探测' },
       { key: 'ClientAliveCountMax', type: 'num' },
-      { key: 'PrintMotd', type: 'yesno' },
+      { key: 'MaxSessions', type: 'num' },
+      { key: 'MaxStartups', type: 'text', tip: '如 10:30:60' },
+      { key: 'AllowTcpForwarding', type: 'yesno' },
+      { key: 'AllowAgentForwarding', type: 'yesno' },
+      { key: 'GatewayPorts', type: 'yesno' },
+      { key: 'X11Forwarding', type: 'yesno' },
+      { key: 'PermitTunnel', type: 'yesno' },
+      { key: 'PermitUserEnvironment', type: 'yesno' },
       { key: 'Compression', type: 'text', options: ['yes', 'no', 'delayed'] },
     ],
   },
   {
-    title: '转发与子系统',
+    title: '高级',
     items: [
-      { key: 'AllowTcpForwarding', type: 'yesno' },
-      { key: 'GatewayPorts', type: 'yesno' },
-      { key: 'X11Forwarding', type: 'yesno' },
-      { key: 'PermitTunnel', type: 'yesno' },
       { key: 'Subsystem', type: 'text', tip: '如 sftp /usr/lib/openssh/sftp-server' },
+      { key: 'PidFile', type: 'text' },
+      { key: 'HostKey', type: 'text', tip: '私钥路径,多个空格分隔' },
     ],
   },
 ]
@@ -181,24 +223,32 @@ const preview = ref('')
 
 const valid = ref(true)
 
-/** 当前文件里的生效值（用于展示“当前值”,空 = 未设置/被注释） */
-const current = computed(() => {
-  const map: Record<string, string> = {}
+/** 文件里的指令取值：active = 生效值（sshd 取首次出现）；commented = 仅被注释的写法 */
+function parseDirectives() {
+  const active: Record<string, string> = {}
+  const commented: Record<string, string> = {}
   for (const raw of content.value.split('\n')) {
     const line = raw.trim()
-    if (!line || line.startsWith('#')) continue
-    const sp = line.indexOf(' ')
-    const spTab = line.indexOf('\t')
-    const p = [sp, spTab].filter((x) => x > 0)
-    if (!p.length) continue
-    const at = Math.min(...p)
-    const key = line.slice(0, at)
-    const val = line.slice(at + 1).trim()
-    // sshd 对多数关键字取首次出现的值
-    if (!(key in map)) map[key] = val
+    if (!line) continue
+    const isCommented = line.startsWith('#')
+    const body = (isCommented ? line.slice(1).trim() : line).trim()
+    if (!body) continue
+    const sp = body.search(/[ \t]/)
+    if (sp <= 0) continue
+    const key = body.slice(0, sp)
+    const val = body.slice(sp + 1).trim()
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key)) continue
+    if (isCommented) {
+      if (!(key in commented)) commented[key] = val
+    } else if (!(key in active)) {
+      active[key] = val
+    }
   }
-  return map
-})
+  return { active, commented }
+}
+
+const current = computed(() => parseDirectives().active)
+const commented = computed(() => parseDirectives().commented)
 
 async function loadCfg() {
   loading.value = true
@@ -335,6 +385,13 @@ async function doSave(restart: boolean) {
 .cur-value b {
   margin-left: 3px;
   color: var(--el-text-color-primary);
+}
+.commented-tag b {
+  margin-left: 4px;
+  font-weight: 500;
+}
+.unset {
+  color: var(--el-text-color-disabled);
 }
 .check-out {
   max-height: 140px;
