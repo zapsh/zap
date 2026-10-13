@@ -4,7 +4,7 @@
 
 **现代化 Linux 服务器 / VPS 控制面板**
 
-轻量级 · 高性能 · 特权分离 · 单文件部署
+A simple, lightweight, high-performance, and secure control panel written in Rust.
 
 [![Rust](https://img.shields.io/badge/Rust-2024%20Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen?logo=vue.js)](https://vuejs.org)
@@ -31,13 +31,20 @@ ZAP 将**网站、SSL 证书、数据库、Docker、文件与服务器运维**�
 
 ## 快速开始
 
-支持 CentOS Stream 9+、RHEL / Rocky / AlmaLinux 8+、Ubuntu 22/24 LTS、Debian 12+。
-
 ```bash
 wget -O install.sh https://mirrors.zap.cn/zap/install.sh && bash install.sh
 ```
 
-装完访问 `https://<服务器IP>:2600`，用安装结束时输出的账号密码登录。
+## 支持的操作系统
+
+- CentOS Stream 9+
+- RHEL / 
+- Rocky 8/9/10 LTS
+- AlmaLinux 8+ LTS
+- Ubuntu 22/24/26 LTS
+- Debian 12+ LTS
+
+装完访问 `https://<服务器IP>:2663`，用安装结束时输出的账号密码登录。
 内网离线安装与升级见 [安装指南](./docs/guide/install.md)。
 
 ## 文档
@@ -52,16 +59,6 @@ wget -O install.sh https://mirrors.zap.cn/zap/install.sh && bash install.sh
 | [常见问题](./docs/guide/faq.md) | FAQ 与排障 |
 | [API 参考](./docs/api/) | 116+ 个 REST 接口（由后端 `api_docs.json` 自动生成） |
 
-命令行运维速查：
-
-```bash
-zapctl start|stop|restart|status   # 服务管理
-zapctl logs                        # 运行日志
-zapctl backup|restore              # 备份还原
-zapupgrade upgrade                 # 升级到最新版（自动备份，可回滚）
-zapctl cred gen|show|set|ls        # 服务密码托管（AES-256-GCM 加密）
-```
-
 ## 目录结构
 
 ```
@@ -75,24 +72,6 @@ zap/
 ├── docs/           # 文档站（VuePress 2：使用指南 + API 参考）
 └── scripts/        # 安装/卸载脚本、离线打包、systemd 单元
 ```
-
-## 开发
-
-```bash
-git clone https://github.com/zapsh/zap.git && cd zap
-./rundev.sh                 # 构建并启动（https://127.0.0.1:2600）
-./rundev.sh --check         # fmt / clippy 检查（提交前跑）
-```
-
-发布打包：`COS_ID=xxx COS_KEY=xxx ./build.sh`。
-
-## Roadmap
-
-- [x] 站点、SSL、应用商店、Web 终端、文件管理、计划任务、防火墙
-- [x] 多用户 / 角色 / 套餐 / 分销、TOTP、审计日志
-- [x] 集群管理（Zap Pro）：多机纳管、一键 SSH、主控主动拉取
-- [x] Docker 容器管理：镜像 / 容器 / 网络 / Compose 编排，Docker 与 Podman 运行时感知
-- [x] 应用商店插件生态：GitHub 一键上架应用、可配下载源
 
 ## 参与贡献
 
