@@ -1245,7 +1245,7 @@ pub async fn read_repos_value() -> Option<Value> {
         Some(json!({
             "repos": [{
                 "id": "appstore",
-                "name": "Zap 官方应用商店",
+                "name": "Zap AppStore",
                 "url": "https://github.com/zapsh/appstore.git",
                 "builtin": true,
                 "enabled": true,
