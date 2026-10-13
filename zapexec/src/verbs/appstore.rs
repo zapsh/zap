@@ -27,7 +27,7 @@ use zap_proto::Response;
 // ── 内置源（跟随 zap 发行包发布）────────────────────────────
 
 pub const BUILTIN_REPO_ID: &str = "appstore";
-pub const BUILTIN_REPO_NAME: &str = "Zap 官方应用商店";
+pub const BUILTIN_REPO_NAME: &str = "Zap AppStore";
 pub const BUILTIN_REPO_URL: &str = "https://github.com/zapsh/appstore.git";
 
 // ── 目录定位 ───────────────────────────────────────────────

@@ -1,9 +1,9 @@
 repos:
 - id: appstore
-  name: Zap 官方应用商店
+  name: Zap AppStore
   url: https://github.com/zapsh/appstore.git
   builtin: true
   enabled: true
   version: 9e6870f
   commit: 9e6870f57f13e254b881677159cd5fbc0af49ef2
-  updated_at: 1791801614
+  updated_at: 1791870725
