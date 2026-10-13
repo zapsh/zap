@@ -78,6 +78,8 @@ wget -O install.sh https://mirrors.zap.cn/zap/install.sh && bash install.sh
 
 欢迎提交 Issue 与 PR。提交前请运行 `cargo fmt --all && cargo clippy --all-targets` 与 `cd web && npm run type-check`；涉及系统级变更请通过 `zapexec` 白名单动词实现，不要新增任意 shell 执行入口。
 
+完整流程（fork 搭建、分支模型、本地运行、发布打包）见 [参与贡献 / 开发文档](./CONTRIBUTING_zh-CN.md)。
+
 提交 PR 即视为同意以 [AGPL-3.0](./LICENSE) 授权，或（如适用）以 [商业许可](./COMMERCIAL-LICENSE.md) 授权。
 
 ## 许可证

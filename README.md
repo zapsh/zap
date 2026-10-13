@@ -78,6 +78,8 @@ Full documentation lives in [`docs/`](./docs/) (VitePress, available in Chinese 
 
 Issues and pull requests are welcome. Before submitting, run `cargo fmt --all && cargo clippy --all-targets` and `cd web && npm run type-check`. System-level changes must go through `zapexec`'s whitelisted verbs — never introduce an arbitrary shell execution entry point.
 
+For the full workflow (fork setup, branch model, local development, release packaging) see [Contributing / Development Guide](./CONTRIBUTING.md).
+
 By submitting a PR you agree to license your contribution under [AGPL-3.0](./LICENSE), or (where applicable) under the [Commercial License](./COMMERCIAL-LICENSE.md).
 
 ## License
