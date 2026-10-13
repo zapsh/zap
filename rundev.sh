@@ -27,8 +27,8 @@
 #
 # 注意：zapexec 需要 root 权限，脚本通过 sudo 启动（首次可能提示输入密码）。
 #
-# 软件安装根目录默认 /usr/local/apps（第三方软件安装位置，与面板数据解耦）；
-# 需要自定义时，先 export ZAP_APPS_DIR=/你的/安装/目录 再运行本脚本即可。
+# Software Default Install Path: /usr/local/apps
+# export ZAP_APPS_DIR=custom path
 set -euo pipefail
 
 # ── terminal colors ────────────────────────────────────────────────
@@ -38,7 +38,6 @@ ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
-# 帮助文本取自文件头注释块（# 开头，直到第一行非注释为止）
 usage() { awk 'NR>2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
 if [ ! -d "zappro" ]; then
@@ -204,39 +203,38 @@ fi
 
 # ── 1. 构建前端 ─────────────────────────────────────────────
 if [ "$SKIP_WEB" = true ]; then
-  warn "跳过前端构建"
+  warn "Skip web build (use --skip-web to skip)"
 else
   if [ ! -d "$WEB_DIR/node_modules" ] && [ "$SKIP_INSTALL" != true ]; then
     info "未检测到 node_modules，执行 npm install ..."
-    (cd "$WEB_DIR" && npm install) || die "npm install 失败"
+    (cd "$WEB_DIR" && npm install) || die "npm install error"
   fi
   info "构建前端 (npm run build:prod) ..."
   (cd "$WEB_DIR" && npm run build:prod) || die "前端构建失败"
   ok "前端构建完成 -> $WEB_DIR/dist"
 fi
 
-# ── 2. 构建后端 ─────────────────────────────────────────────
+# ── 2. Build Backend ─────────────────────────────────────────────
 if [ "$SKIP_BUILD" = true ]; then
-  warn "跳过后端构建"
+  warn "Skip cargo build (use --skip-build to skip)"
 else
   if [ "$CHECK_CODE" = true ]; then
-    info "格式化代码 (cargo fmt --all) ..."
+    info "Format Code (cargo fmt --all) ..."
     cargo fmt --all
-    info "检查代码 (cargo clippy --all-targets --all-features -- -D warnings) ..."
-    cargo clippy --all-targets "${CLIPPY_FEATURES[@]}" -- -D warnings || die "代码检查失败"
+    info "Clippy Check Code (cargo clippy --all-targets --all-features -- -D warnings) ..."
+    cargo clippy --all-targets "${CLIPPY_FEATURES[@]}" -- -D warnings || die "Code Check Failed (see clippy output above)"
   else
-    # 构建照做：能编译就能跑，只是少了规范把关；提交前跑一次 ./rundev.sh --check 补上
-    warn "跳过 fmt / clippy 检查（要跑加 --check-code）"
+    warn "Skip fmt / clippy check (add --check-code to run)"
   fi
-  info "构建后端 (cargo build ${CARGO_FLAGS[*]} --bin zapd --bin zapexec --bin zapctl --bin zapupgrade) ..."
-  cargo build "${CARGO_FLAGS[@]}" --bin zapd --bin zapexec --bin zapctl --bin zapupgrade || die "后端构建失败"
-  ok "后端构建完成 -> $BIN_DIR"
+  info "Build Backend (cargo build ${CARGO_FLAGS[*]} --bin zapd --bin zapexec --bin zapctl --bin zapupgrade) ..."
+  cargo build "${CARGO_FLAGS[@]}" --bin zapd --bin zapexec --bin zapctl --bin zapupgrade || die "Build Failed"
+  ok "Zapd/Zapexec/Zapctl/Zapupgrade Build Success-> $BIN_DIR"
 fi
 
-# ── 3. 准备开发运行时目录与配置 ─────────────────────────────
+# ── 3. configuration ─────────────────────────────
 mkdir -p "$RUN_DIR"
 if [ ! -f "$DEV_CONF" ]; then
-  info "生成开发配置 $DEV_CONF"
+  info "Generating dev config : $DEV_CONF"
   cat > "$DEV_CONF" <<EOF
 server:
   address: 0.0.0.0
@@ -256,20 +254,7 @@ EOF
   ok "开发配置已生成"
 fi
 
-# 已存在的开发配置（首次生成后不再重建）：同步 conf/zap.yaml 的 url_prefix，
-# 否则在 conf/zap.yaml 里改前缀不会生效。
-if [ -f "$DEV_CONF" ]; then
-  if grep -qE '^[[:space:]]*url_prefix:' "$DEV_CONF"; then
-    sed -i "s|^[[:space:]]*url_prefix:.*|  url_prefix: \"$CONF_URL_PREFIX\"|" "$DEV_CONF"
-  else
-    sed -i "0,\|^[[:space:]]*key_file:.*|s||&\n  url_prefix: \"$CONF_URL_PREFIX\"|" "$DEV_CONF"
-  fi
-  if [ -n "$CONF_URL_PREFIX" ]; then
-    ok "URL 前缀: /$CONF_URL_PREFIX/ （同步自 conf/zap.yaml）"
-  fi
-fi
-
-# ── 3.5 删除数据库（--reset-db）──────────────────────────────
+# ── 3.5 remove zap.db（--reset-db）──────────────────────────────
 if [ "$RESET_DB" = true ]; then
   if [ -f "$ROOT_DIR/data/zap.db" ]; then
     warn "删除数据库 $ROOT_DIR/data/zap.db ..."
@@ -280,7 +265,7 @@ if [ "$RESET_DB" = true ]; then
   fi
 fi
 
-# ── 清理与退出 ──────────────────────────────────────────────
+# ── cleanup and exit ──────────────────────────────────────────────
 ZAPEXEC_PID=""
 ZAPD_PID=""
 
@@ -329,7 +314,7 @@ ZAPD_PID=$!
 
 echo ""
 ok "全部服务已启动"
-info "  zapd    : https://127.0.0.1:2600"
+info "  zapd    : https://127.0.0.1:2663"
 info "  管理员  : ${ADMIN_USER} / ${ADMIN_PASS}（仅全新数据库生效）"
 if [ "$RESET_DB" = true ]; then
   info "  家目录  : /home/${ADMIN_USER}（不存在时由 zapexec 自动创建）"
