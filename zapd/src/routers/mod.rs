@@ -907,7 +907,10 @@ fn api_routers() -> Router {
         .route("/system/logs/read", get(system_log::read))
         .route("/system/logs/custom", get(system_log::custom_list))
         .route("/system/logs/custom/add", post(system_log::custom_add))
-        .route("/system/logs/custom/remove", post(system_log::custom_remove))
+        .route(
+            "/system/logs/custom/remove",
+            post(system_log::custom_remove),
+        )
         // 云存储（多套配置 + 对象浏览/传输）
         .route("/system/cloud/stores", get(cloud::store_list))
         .route("/system/cloud/store/save", post(cloud::store_save))

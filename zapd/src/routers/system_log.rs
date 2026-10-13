@@ -53,7 +53,9 @@ pub async fn sources(claims: ValidatedClaims) -> ZapJsonResult {
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": "OK", "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": "OK", "data": resp.data }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -80,7 +82,9 @@ pub async fn custom_list(claims: ValidatedClaims) -> ZapJsonResult {
     if resp.code != 0 {
         return Err(zapexec_err(resp));
     }
-    Ok(Json(json!({ "code": 0, "message": "OK", "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": "OK", "data": resp.data }),
+    ))
 }
 
 /// POST /system/logs/custom/add
@@ -114,10 +118,7 @@ pub async fn custom_remove(
 }
 
 /// GET /system/logs/read?source=...&cursor=...&lines=...&keyword=...
-pub async fn read(
-    claims: ValidatedClaims,
-    Query(q): Query<LogReadQuery>,
-) -> ZapJsonResult {
+pub async fn read(claims: ValidatedClaims, Query(q): Query<LogReadQuery>) -> ZapJsonResult {
     require_admin(&claims)?;
     let source = q.source.unwrap_or_default().trim().to_string();
     if source.is_empty() {
@@ -133,5 +134,7 @@ pub async fn read(
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": "OK", "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": "OK", "data": resp.data }),
+    ))
 }

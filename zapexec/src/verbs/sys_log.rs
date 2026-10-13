@@ -170,15 +170,38 @@ fn journal_available() -> bool {
 
 /// 值得单独列出来的服务 unit 关键字（其余服务不逐个罗列，避免列表爆炸）。
 const UNIT_KEYWORDS: &[&str] = &[
-    "nginx", "openresty", "apache", "httpd", "php", "mysql", "mariadb", "postgres", "redis",
-    "memcached", "mongodb", "ssh", "docker", "zap", "cron", "fail2ban", "supervisor", "tomcat",
-    "rabbitmq", "elasticsearch", "minio",
+    "nginx",
+    "openresty",
+    "apache",
+    "httpd",
+    "php",
+    "mysql",
+    "mariadb",
+    "postgres",
+    "redis",
+    "memcached",
+    "mongodb",
+    "ssh",
+    "docker",
+    "zap",
+    "cron",
+    "fail2ban",
+    "supervisor",
+    "tomcat",
+    "rabbitmq",
+    "elasticsearch",
+    "minio",
 ];
 
 /// 从 `systemctl list-unit-files` 里挑出已安装的相关服务 unit。
 fn systemd_units() -> Vec<String> {
     let Ok(out) = std::process::Command::new("systemctl")
-        .args(["list-unit-files", "--type=service", "--no-legend", "--plain"])
+        .args([
+            "list-unit-files",
+            "--type=service",
+            "--no-legend",
+            "--plain",
+        ])
         .env("LC_ALL", "C")
         .output()
     else {
@@ -191,9 +214,7 @@ fn systemd_units() -> Vec<String> {
         .lines()
         .filter_map(|l| l.split_whitespace().next())
         .map(|n| n.strip_suffix(".service").unwrap_or(n).to_string())
-        .filter(|u| {
-            !u.is_empty() && UNIT_KEYWORDS.iter().any(|k| u.to_lowercase().contains(k))
-        })
+        .filter(|u| !u.is_empty() && UNIT_KEYWORDS.iter().any(|k| u.to_lowercase().contains(k)))
         .collect();
     v.sort();
     v.dedup();
@@ -359,7 +380,13 @@ fn discover() -> Vec<Source> {
                 .parent()
                 .and_then(|p| p.parent())
                 .and_then(|p| p.file_name())
-                .map(|d| format!("{} {}", d.to_string_lossy(), f.file_name().unwrap_or_default().to_string_lossy()))
+                .map(|d| {
+                    format!(
+                        "{} {}",
+                        d.to_string_lossy(),
+                        f.file_name().unwrap_or_default().to_string_lossy()
+                    )
+                })
                 .unwrap_or_else(|| path.clone());
             if let Some(s) = Source::file(&path, &name, "服务") {
                 push(s, &mut out);
@@ -370,7 +397,10 @@ fn discover() -> Vec<Source> {
     // ── PHP ──
     for f in glob_files("/var/log/zap/php/*.log") {
         let path = f.to_string_lossy().to_string();
-        let name = format!("PHP 错误日志 · {}", f.file_name().unwrap_or_default().to_string_lossy());
+        let name = format!(
+            "PHP 错误日志 · {}",
+            f.file_name().unwrap_or_default().to_string_lossy()
+        );
         if let Some(s) = Source::file(&path, &name, "PHP") {
             push(s, &mut out);
         }
@@ -397,7 +427,10 @@ fn discover() -> Vec<Source> {
     }
     for f in glob_files("/var/log/zap/*.log") {
         let path = f.to_string_lossy().to_string();
-        let name = format!("面板日志 · {}", f.file_name().unwrap_or_default().to_string_lossy());
+        let name = format!(
+            "面板日志 · {}",
+            f.file_name().unwrap_or_default().to_string_lossy()
+        );
         if let Some(s) = Source::file(&path, &name, "面板") {
             push(s, &mut out);
         }
@@ -432,7 +465,10 @@ fn discover() -> Vec<Source> {
     // ── 已安装服务（systemd journal）──
     if journal {
         for u in systemd_units() {
-            push(Source::journal(&u, &format!("服务 · {u}"), "服务"), &mut out);
+            push(
+                Source::journal(&u, &format!("服务 · {u}"), "服务"),
+                &mut out,
+            );
         }
     }
 
@@ -633,7 +669,10 @@ fn read_dmesg(lines: u32) -> Result<(Vec<String>, String), String> {
     let all: Vec<&str> = text.lines().collect();
     let n = lines.max(1) as usize;
     let start = all.len().saturating_sub(n);
-    Ok((all[start..].iter().map(|s| s.to_string()).collect(), String::new()))
+    Ok((
+        all[start..].iter().map(|s| s.to_string()).collect(),
+        String::new(),
+    ))
 }
 
 /// 列出手动添加的自定义日志路径。
@@ -684,43 +723,48 @@ pub async fn custom_remove(path: String) -> Response {
 
 /// 读取某个日志源。
 pub async fn read(source: String, cursor: String, lines: u32, keyword: String) -> Response {
-    let n = if lines == 0 { DEFAULT_LINES } else { lines.min(MAX_LINES) };
-    let result = tokio::task::spawn_blocking(move || -> Result<(Vec<String>, String, String), String> {
-        let s = source.trim();
-        if s.starts_with("kernel:") {
-            if journal_available() {
-                let (ls, c) = read_journal(&[], true, &cursor, n)?;
-                Ok((ls, c, "journalctl -k".to_string()))
+    let n = if lines == 0 {
+        DEFAULT_LINES
+    } else {
+        lines.min(MAX_LINES)
+    };
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<(Vec<String>, String, String), String> {
+            let s = source.trim();
+            if s.starts_with("kernel:") {
+                if journal_available() {
+                    let (ls, c) = read_journal(&[], true, &cursor, n)?;
+                    Ok((ls, c, "journalctl -k".to_string()))
+                } else {
+                    let (ls, c) = read_dmesg(n)?;
+                    Ok((ls, c, "dmesg".to_string()))
+                }
+            } else if let Some(units) = s.strip_prefix("journal:") {
+                let units: Vec<String> = units
+                    .split(',')
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty())
+                    .collect();
+                let label = if units.is_empty() {
+                    "journalctl".to_string()
+                } else {
+                    format!("journalctl -u {}", units.join(" -u "))
+                };
+                let (ls, c) = read_journal(&units, false, &cursor, n)?;
+                Ok((ls, c, label))
+            } else if let Some(p) = s.strip_prefix("file:") {
+                let p = p.trim();
+                if p.is_empty() {
+                    return Err("日志路径为空".to_string());
+                }
+                let (ls, c) = read_file_source(p, &cursor, n)?;
+                Ok((ls, c, p.to_string()))
             } else {
-                let (ls, c) = read_dmesg(n)?;
-                Ok((ls, c, "dmesg".to_string()))
+                Err(format!("无法识别的日志源: {s}"))
             }
-        } else if let Some(units) = s.strip_prefix("journal:") {
-            let units: Vec<String> = units
-                .split(',')
-                .map(|u| u.trim().to_string())
-                .filter(|u| !u.is_empty())
-                .collect();
-            let label = if units.is_empty() {
-                "journalctl".to_string()
-            } else {
-                format!("journalctl -u {}", units.join(" -u "))
-            };
-            let (ls, c) = read_journal(&units, false, &cursor, n)?;
-            Ok((ls, c, label))
-        } else if let Some(p) = s.strip_prefix("file:") {
-            let p = p.trim();
-            if p.is_empty() {
-                return Err("日志路径为空".to_string());
-            }
-            let (ls, c) = read_file_source(p, &cursor, n)?;
-            Ok((ls, c, p.to_string()))
-        } else {
-            Err(format!("无法识别的日志源: {s}"))
-        }
-    })
-    .await
-    .unwrap_or_else(|e| Err(format!("读取日志失败: {e}")));
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("读取日志失败: {e}")));
 
     match result {
         Ok((mut ls, new_cursor, label)) => {
