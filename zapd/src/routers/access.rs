@@ -1046,6 +1046,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     // 不挂权限点（None）：否则 user / reseller 角色还得先被授予 system.update:view。
     ("/system/update/status", Required::User, None),
     ("/system/update/log", Required::User, None),
+    // ── 系统日志查看器（服务器状态 → 日志查看器）──
+    (
+        "/system/logs",
+        Required::Admin,
+        Some(Perm::module("system.log")),
+    ),
     (
         "/system/migrate",
         Required::Admin,
