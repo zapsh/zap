@@ -1,4 +1,10 @@
 node_modules/
-.vuepress/cache/
-.vuepress/dist/
-.vuepress/api-sidebar.json
+
+# VitePress 构建产物与缓存
+.vitepress/cache/
+.vitepress/dist/
+
+# 由 scripts/gen-api.mjs 从后端 api_docs.json 生成（不入库）
+# 注：api/ 与 en/api/ 下生成的页面仍然入库，与迁移前的约定保持一致
+.vitepress/api-sidebar.json
+.vitepress/api-sidebar.en.json

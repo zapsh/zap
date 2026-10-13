@@ -1,0 +1,66 @@
+---
+title: System Status & Audit
+---
+
+# System Status & Audit
+
+> 监控大盘 / 操作审计
+
+## GET `/system/info`
+
+主机基础信息（CPU / 内存 / 磁盘 / 网络等）
+
+```bash
+curl -X GET "https://<host>/api/system/info" \
+  -H "Authorization: Bearer <token>"
+```
+
+## GET `/system/status`
+
+运行状态快照与历史曲线数据
+
+```bash
+curl -X GET "https://<host>/api/system/status" \
+  -H "Authorization: Bearer <token>"
+```
+
+| Parameter | Type | Required | Description |
+| --- | --- | :-: | --- |
+| range | string | No | 时间范围：live（默认，近 5 分钟原始点）/ 1h / 6h / 24h / 7d / 30d（按时间桶 AVG 降采样，返回 ~120-180 点） |
+
+## GET `/system/overview`
+
+大盘概览（图表数据源）
+
+```bash
+curl -X GET "https://<host>/api/system/overview" \
+  -H "Authorization: Bearer <token>"
+```
+
+## GET `/system/job/stop`
+
+停止监控采集任务
+
+```bash
+curl -X GET "https://<host>/api/system/job/stop" \
+  -H "Authorization: Bearer <token>"
+```
+
+## GET `/system/job/start`
+
+启动监控采集任务
+
+```bash
+curl -X GET "https://<host>/api/system/job/start" \
+  -H "Authorization: Bearer <token>"
+```
+
+## GET `/system/audit/list`
+
+操作审计日志（分页 / 按动作与用户过滤）
+
+```bash
+curl -X GET "https://<host>/api/system/audit/list" \
+  -H "Authorization: Bearer <token>"
+```
+

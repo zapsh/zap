@@ -2,13 +2,13 @@
 
 # ZAP
 
-**现代化 Linux 服务器 / VPS 控制面板**
+**Modern Linux Server / VPS Control Panel**
 
-A simple, lightweight, high-performance, and secure control panel written in Rust.
+A lightweight, high-performance Linux server control panel written in Rust.
 
 [![Rust](https://img.shields.io/badge/Rust-2024%20Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen?logo=vue.js)](https://vuejs.org)
-[![Version](https://img.shields.io/badge/version-1.0.3-blue)](https://github.com/zapsh/zap)
+[![Version](https://img.shields.io/badge/version-1.3.1-blue)](https://github.com/zapsh/zap)
 [![Platform](https://img.shields.io/badge/platform-Linux%20amd64%20%7C%20arm64-lightgrey?logo=linux)](https://www.kernel.org)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
 
@@ -16,74 +16,77 @@ A simple, lightweight, high-performance, and secure control panel written in Rus
 
 ---
 
-## 简介
+## Overview
 
-ZAP 将**网站、SSL 证书、数据库、Docker、文件与服务器运维**集中到一个简洁的 Web 面板，面向个人开发者、团队与服务商。后端 Rust（Axum + Tokio + SQLx），前端 Vue 3 + Element Plus，特权分离（`zapd` 业务 / `zapexec` root 守护），单文件部署、资源占用低。
+ZAP is a modern, lightweight and security-focused control panel built for Linux servers and VPS instances, designed to make day-to-day administration and security maintenance simple and efficient. Our mission is to make Linux servers easier to use, and to bring powerful yet approachable server management tools to more users.
 
-## 核心特性
+## Supported Stacks
 
-- **站点与域名**：站点全生命周期管理、多域名 / 多 IP 绑定、Nginx 配置在线编辑、PHP-FPM 多版本
-- **SSL / TLS**：手动导入、一键自签、Let's Encrypt 自动签发（HTTP-01 / DNS-01 含泛域名）、到期预警
-- **服务器运维**：实时监控、文件管理、Web SSH 终端、计划任务、防火墙统一抽象（firewalld / ufw / nftables / iptables）
-- **数据库与 Docker**：MySQL / MariaDB 可视化管理；Docker 容器 / 镜像 / 网络 / Compose 编排一站式操作（Docker 与 Podman 运行时感知）
-- **多用户体系**：RBAC 角色、套餐与分销、TOTP 两步验证、审计日志
-- **升级与备份**：面板 / 命令行 / 安装脚本三种升级入口，备份 → 原子替换 → 自动回滚
+| Stack | Description |
+| --- | --- |
+| Nginx + PHP-FPM | Classic PHP runtime |
+| Nginx + Python app | Reverse proxy for Python applications |
+| Nginx + Node.js app | Reverse proxy for Node.js applications |
+| Nginx + Go app | Reverse proxy for Go applications |
+| Nginx + Rust web app | Reverse proxy for Rust web applications |
+| Nginx + generic app | Custom startup commands (PHP Swoole and similar) |
+| Nginx + Docker | Reverse proxy for containerized services |
 
-## 快速开始
+## Features
+
+- **Sites**: multi-domain / multi-IP binding, rewrite rules, multiple PHP-FPM versions, app deployment
+- **SSL / TLS**: manual import, self-signed certificates, automated Let's Encrypt issuance (HTTP-01 / DNS-01, wildcards included), expiry alerts
+- **WAF**: integrated ModSecurity
+- **Server operations**: real-time monitoring, file manager, web SSH terminal, cron jobs, firewall (firewalld / ufw / nftables / iptables)
+- **Databases**: visual MySQL / MariaDB management
+- **Docker**: all-in-one management of containers, images, networks and Compose
+- **Multi-tenant**: Admin / Reseller / User roles, plans and reselling, TOTP two-factor authentication, audit log
+- **Upgrade & backup**: three upgrade entry points (panel / CLI / install script), backup → atomic replace → automatic rollback on failure
+
+## Quick Start
 
 ```bash
 wget -O install.sh https://mirrors.zap.cn/zap/install.sh && bash install.sh
 ```
 
-## 支持的操作系统
+When installation finishes, visit `https://<server-ip>:2663` and log in with the credentials printed at the end of the installation.
 
-- CentOS Stream 9+
-- RHEL / 
-- Rocky 8/9/10 LTS
-- AlmaLinux 8+ LTS
-- Ubuntu 22/24/26 LTS
-- Debian 12+ LTS
+**Supported systems**
 
-装完访问 `https://<服务器IP>:2663`，用安装结束时输出的账号密码登录。
-内网离线安装与升级见 [安装指南](./docs/guide/install.md)。
-
-## 文档
-
-完整文档在 [`docs/`](./docs/)（VuePress 2，`npm run dev` 本地预览）：
-
-| 文档 | 内容 |
+| Distribution | Versions |
 | --- | --- |
-| [安装](./docs/guide/install.md) | 在线 / 离线安装、参数说明、离线升级 |
-| [升级](./docs/guide/upgrade.md) | 三种升级方式、回滚、脚本化 |
-| [用户手册](./docs/guide/user-manual.md) | 面板功能详解 |
-| [常见问题](./docs/guide/faq.md) | FAQ 与排障 |
-| [API 参考](./docs/api/) | 116+ 个 REST 接口（由后端 `api_docs.json` 自动生成） |
+| RHEL / Rocky Linux / AlmaLinux | 8+ |
+| CentOS Stream | 9+ |
+| Ubuntu LTS | 22.04 / 24.04 / 26.04 |
+| Debian | 12+ |
 
-## 目录结构
+For offline installation and upgrades in isolated networks, see the [Installation Guide](./docs/guide/install.md).
 
-```
-zap/
-├── zapd/           # 面板主服务（Axum 路由、业务内核、调度器）
-├── zapexec/        # root 特权守护进程（白名单动词执行）
-├── zap-proto/      # zapd ↔ zapexec 共享协议（帧编解码 + HMAC 认证）
-├── zapctl/         # 命令行运维工具
-├── zapupgrade/     # 系统升级器（upgrade / rollback）
-├── web/            # Vue 3 前端
-├── docs/           # 文档站（VuePress 2：使用指南 + API 参考）
-└── scripts/        # 安装/卸载脚本、离线打包、systemd 单元
-```
+## Documentation
 
-## 参与贡献
+Full documentation lives in [`docs/`](./docs/) (VitePress, available in Chinese and English; preview locally with `npm run dev`):
 
-欢迎提交 Issue 与 PR。提交前请跑 `cargo fmt --all && cargo clippy --all-targets` 与 `cd web && npm run type-check`；系统级变更请通过 `zapexec` 白名单动词实现。提交 PR 即视为同意以 [AGPL-3.0](./LICENSE) 授权，或（如适用）以 [商业许可](./COMMERCIAL-LICENSE.md) 授权。
+| Document | Contents |
+| --- | --- |
+| [Installation](./docs/guide/install.md) | Online / offline installation and parameters |
+| [Upgrade](./docs/guide/upgrade.md) | Three upgrade paths, rollback, scripting |
+| [User Manual](./docs/guide/user-manual.md) | Panel features in detail |
+| [FAQ](./docs/guide/faq.md) | FAQ and troubleshooting |
+| [API Reference](./docs/api/) | REST endpoints (generated from the backend `api_docs.json`) |
 
-## 许可证
+## Contributing
 
-ZAP 采用**双重许可（Dual Licensing）**：
+Issues and pull requests are welcome. Before submitting, run `cargo fmt --all && cargo clippy --all-targets` and `cd web && npm run type-check`. System-level changes must go through `zapexec`'s whitelisted verbs — never introduce an arbitrary shell execution entry point.
 
-- **AGPL-3.0（开源版）**：任何人可依据 [GNU Affero 通用公共许可证 v3.0](./LICENSE) 免费使用、修改与分发。由于 AGPL 的「网络使用条款」（第 13 条），若你以 SaaS / 网络服务方式向他人提供 ZAP 功能，必须向用户提供对应的完整源代码。
-- **商业许可（Zap Pro）**：若你希望在**闭源**产品中集成、修改或再分发 ZAP，或希望免除 AGPL 的源代码披露义务、使用 Zap Pro 的企业版功能（如集群管理），必须购买 [商业许可](./COMMERCIAL-LICENSE.md)。未获商业许可而闭源集成即构成对 AGPL-3.0 的违约。
+By submitting a PR you agree to license your contribution under [AGPL-3.0](./LICENSE), or (where applicable) under the [Commercial License](./COMMERCIAL-LICENSE.md).
 
-简而言之：**开源且依规披露源码 → 免费使用 AGPL-3.0；闭源集成 / 企业商用 → 购买商业许可。**
+## License
 
-如需商业授权，请联系 <sales@zap.cn>（请替换为实际联系方式）。
+ZAP is **dual licensed**:
+
+- **AGPL-3.0 (open source)**: free to use, modify and distribute. Under AGPL §13, if you offer ZAP's functionality to others over a network (e.g. as SaaS), you must also provide the complete corresponding source code.
+- **Commercial License (Zap Pro)**: required for closed-source integration, modification or redistribution, or for enterprise features such as cluster management.
+
+In short: **open source with proper disclosure → free under AGPL-3.0; closed-source integration / commercial use → purchase a commercial license.**
+
+For commercial licensing, contact <sales@zap.cn>.
