@@ -3,7 +3,12 @@
 set -euo pipefail
 
 PROJECT_NAME="${PROJECT_NAME:-zap-rs}"
-VERSION="${GITHUB_REF_NAME:-${VERSION:-dev}}"
+# 显式传入的 VERSION 优先（CI 可从根 Cargo.toml 解析后传入，与 build.sh 同源），
+# 其次才是 GitHub Actions 注入的 GITHUB_REF_NAME（tag / 分支名）；都没有时兜底 dev。
+# 注意：顺序不能反，否则 GITHUB_REF_NAME 会盖掉调用方显式指定的版本号
+# （workflow_dispatch 时它等于分支名，会打出 zap-vmain-... 这种包名）。
+# 打包处统一用 ${VERSION#v} 去掉前导 v。
+VERSION="${VERSION:-${GITHUB_REF_NAME:-dev}}"
 
 usage() {
   cat <<EOF
@@ -105,6 +110,11 @@ package_full() {
   [[ -n "$version" ]] || version="dev"
 
   mkdir -p "$outdir"
+  # 下面 tar 前会 cd 到 "$outdir/.pkg"，此时相对路径的 "$outdir/$name" 会被解析成
+  # <outdir>/.pkg/<outdir>/<name>（该目录不存在）导致 tar 失败。
+  # 故先把 outdir 归一成绝对路径，使调用方传相对路径也能正常出包。
+  outdir="$(cd "$outdir" && pwd)"
+
   local zap_dir="${outdir}/.pkg/zap"
   rm -rf "$zap_dir"
   mkdir -p "$zap_dir"
