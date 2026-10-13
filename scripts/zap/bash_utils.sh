@@ -3,20 +3,26 @@
 #=============================================================================
 # bash_utils.sh — ZAP 应用商店脚本公共函数库
 #
-# 用法:在应用脚本中 source 后调用其函数:
+# usage:
 #     source "${ZAP_PATH}/scripts/zap/bash_utils.sh"
 #
-# 说明:
-#   * 本文件是纯函数库,被 source 时不会改动调用方 shell 选项(不设置
-#     set -e/-u/-o pipefail),也不会强制退出;请勿直接运行。
-#   * 调用方通常由 zapexec 以 root 执行,并已注入如下环境变量:
-#       ZAP_PATH ZAPCTL APPS_DIR PKG_PATH APP_ID APP_NAME APP_PATH
+#   * Executed by zapexec, and inject these variables:
+#       ZAP_PATH    /usr/local/zap
+#       ZAPCTL      /usr/local/zap/zapctl
+#       APPS_DIR 
+#       PKG_PATH 
+#       APP_ID 
+#       APP_NAME 
+#       APP_PATH
 #       BUILD_PATH ZAP_DATA_PATH APP_VERSION MAJOR_VERSION MINOR_VERSION
-#       APP_OLD_VERSION CPU_NUM ACTION ...(选项同名变量)
-#   * 若未运行在 root 下,请自行调用 assert_root 做前置校验。
+#       APP_OLD_VERSION CPU_NUM ACTION
 #
-# 函数清单:
-#   assert_root ensure_dir ensure_user ensure_group ensure_usergroup
+# functions:
+#   assert_root 
+#   ensure_dir 
+#   ensure_user 
+#   ensure_group 
+#   ensure_usergroup
 #   log_info/log_ok/log_warn/log_error
 #   os_detect is_os is_os_strict is_os_ge os_version_major os_version_ge os_version_lt
 #   is_deb_family is_rpm_family pkg_manager normalize_arch cpu_count
@@ -29,41 +35,41 @@
 #   db_data_initialized(安装残局处理 / 失败重跑)
 #   prepare_install_env(汇总:运行用户/关键目录/首次系统编译依赖)
 #
-# 顶层变量(被 source 后立即可用):
+# OS DETECH:
 #   OS_NAME(发行版小写 ID) OS_VERSION(版本号) OS_PRETTY OS_ID_LIKE
 #   OS_MACHINE(uname -s) OS_ARCH(uname -m) OS_ARCH_ALIAS(amd64/arm64/...)
 #=============================================================================
 
-# 直接运行本文件(非 source)时仅打印帮助
 if [ "${BASH_SOURCE[0]:-}" = "$0" ]; then
-  echo "bash_utils.sh 是一个函数库,请勿直接运行。" >&2
-  echo "在应用脚本中使用: source \"\${ZAP_PATH}/scripts/zap/bash_utils.sh\"" >&2
+  echo "bash_utils.sh It is a function library, please do not run it directly." >&2
+  echo "Used in appstore scripts: source \"\${ZAP_PATH}/scripts/zap/bash_utils.sh\"" >&2
   exit 0
 fi
 
-# ── 日志 ──────────────────────────────────────────────────────────────────
-# 统一输出格式;安装日志(含 stderr)会被实时写入 run-<run_id>.log
+# ── log ──────────────────────────────────────────────────────────────────
+# log to run-<run_id>.log
 _log_ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log_info()  { printf '[%s] [ INFO ] %s\n' "$(_log_ts)" "$*"; }
 log_ok()    { printf '[%s] [  OK  ] %s\n' "$(_log_ts)" "$*"; }
 log_warn()  { printf '[%s] [ WARN ] %s\n' "$(_log_ts)" "$*" >&2; }
 log_error() { printf '[%s] [ERROR ] %s\n' "$(_log_ts)" "$*" >&2; }
 
-# ── 基础工具 ──────────────────────────────────────────────────────────────
-# 检查是否以 root 运行(应用脚本依赖;仅在必要时调用,失败返回 1)
+# ── utils ──────────────────────────────────────────────────────────────
+# Must be run as root
 assert_root() {
   if [ "$(id -u)" -ne 0 ]; then
-    log_error "需要 root 权限运行(当前 uid=$(id -u))"
+    log_error "Must be run as root (current uid=$(id -u))"
     return 1
   fi
 }
 
-# 确保目录存在,支持一次传入多个路径;任一创建失败返回 1
+# ensure dir
+# ensure_dir /www /web
 ensure_dir() {
   local d
   for d in "$@"; do
     if [ -n "$d" ] && [ ! -d "$d" ]; then
-      mkdir -p "$d" || { log_error "创建目录失败: $d"; return 1; }
+      mkdir -p "$d" || { log_error "Failed to create directory: $d"; return 1; }
     fi
   done
 }
@@ -114,22 +120,22 @@ ensure_group() {
   log_ok "已创建运行组: ${group}"
 }
 
-# 确保用户属于指定组:组不存在先创建,已是成员则跳过(幂等)
-# 用法: ensure_usergroup <user> <group> [group2 ...]
+# Ensure that the user is in this group; if exists, skip
+# usage: ensure_usergroup <user> <group> [group2 ...]
 ensure_usergroup() {
   local user="${1:-}" group
   if [ -z "$user" ]; then
-    log_error "ensure_usergroup: 缺少用户名"
+    log_error "ensure_usergroup: Username is missing"
     return 1
   fi
   shift
   if [ "$#" -eq 0 ]; then
-    log_error "ensure_usergroup: 至少需要一个组名(用法: ensure_usergroup <user> <group> [group2 ...])"
+    log_error "ensure_usergroup: group name is required (usage: ensure_usergroup <user> <group> [group2 ...])"
     return 1
   fi
-  # 用户必须已存在:请先 ensure_user,避免拼错用户名被静默创建
+  
   if ! id "${user}" >/dev/null 2>&1; then
-    log_error "ensure_usergroup: 用户 ${user} 不存在(请先调用 ensure_user)"
+    log_error "ensure_usergroup: The user ${user} does not exist (please call ensure_user first)"
     return 1
   fi
 
@@ -140,23 +146,20 @@ ensure_usergroup() {
       continue
     fi
     if command -v usermod >/dev/null 2>&1; then
-      # -aG 追加附加组,不动主组
       usermod -aG "${group}" "${user}" >/dev/null 2>&1 \
-        || { log_error "将用户 ${user} 加入组 ${group} 失败(usermod)"; return 1; }
+        || { log_error "Failed to add user ${user} to group ${group} (usermod)"; return 1; }
     elif command -v addgroup >/dev/null 2>&1; then
       addgroup "${user}" "${group}" >/dev/null 2>&1 \
-        || { log_error "将用户 ${user} 加入组 ${group} 失败(addgroup)"; return 1; }
+        || { log_error "Failed to add user ${user} to group ${group} (addgroup)"; return 1; }
     else
-      log_error "系统缺少 usermod/addgroup,无法将用户 ${user} 加入组 ${group}"
+      log_error "Unable to add user ${user} to group ${group}, the usermod/addgroup command does not exist"
       return 1
     fi
-    log_ok "已将用户 ${user} 加入组: ${group}"
+    log_ok "${user} has been added to the group: ${group}"
   done
 }
 
-# 创建运行用户(默认 www);已存在直接成功;无 useradd 时退回 adduser(Alpine)
-# 可选附加组: ensure_user www www / ensure_user php-fpm www zap
-#   —— 组不存在会自动创建,用户会被加进去(用户已存在时也会补齐附加组)
+# create user (default www)
 ensure_user() {
   local user="${1:-www}"
   [ "$#" -gt 0 ] && shift
@@ -169,21 +172,21 @@ ensure_user() {
   if command -v useradd >/dev/null 2>&1; then
     useradd -r -s /sbin/nologin -M "${user}" >/dev/null 2>&1 \
       || useradd --no-create-home --shell /bin/false "${user}" >/dev/null 2>&1 \
-      || { log_error "创建用户 ${user} 失败(useradd)"; return 1; }
+      || { log_error "Failed to create user ${user} (useradd)"; return 1; }
   elif command -v adduser >/dev/null 2>&1; then
     adduser -S -D -H -s /sbin/nologin "${user}" >/dev/null 2>&1 \
-      || { log_error "创建用户 ${user} 失败(adduser)"; return 1; }
+      || { log_error "Failed to create user ${user} (adduser)"; return 1; }
   else
-    log_error "系统缺少 useradd/adduser,无法创建用户 ${user}"
+    log_error "useradd/adduser Command not found, unable to create user ${user}"
     return 1
   fi
-  log_ok "已创建运行用户: ${user}"
+  log_ok "user has been created: ${user}"
   if [ "$#" -gt 0 ]; then
     ensure_usergroup "${user}" "$@" || return 1
   fi
 }
 
-# ── 系统 / 架构探测 ───────────────────────────────────────────────────────
+# ── os and arch detech ───────────────────────────────────────────────────────
 # x86_64 -> amd64;aarch64 -> arm64;x86 -> i386;其余原样
 normalize_arch() {
   case "${1:-$(uname -m)}" in
@@ -194,7 +197,7 @@ normalize_arch() {
   esac
 }
 
-# 探测发行版 / 内核 / 架构,设置顶层变量(可随时重跑刷新)
+# detech os arch
 os_detect() {
   local id="" version_id="" pretty="" id_like=""
   if [ -r /etc/os-release ]; then
@@ -213,8 +216,7 @@ os_detect() {
   OS_ARCH_ALIAS="$(normalize_arch "${OS_ARCH}")"
 }
 
-# 判断发行版:is_os ubuntu debian / is_os centos rocky alma ...
-# 同时匹配 ID 与 ID_LIKE(如 ubuntu 的 ID_LIKE 含 debian)
+# check os:is_os ubuntu debian / is_os centos rocky alma ...
 is_os() {
   local id
   for id in "$@"; do
@@ -245,9 +247,7 @@ is_os_ge() {
 }
 is_deb_family() { is_os ubuntu debian raspbian linuxmint pop neon kali deepin; }
 is_rpm_family() { is_os centos rhel rocky alma almalinux ol oracle amazon fedora opensuse sles suse; }
-# 系统包管理器:apt / dnf / yum / apk / zypper,未识别返回 1。
-# 只认 Linux 发行版的那几家;部分 Linux 上也有叫 pkg 的零散命令(如 pkgsrc 的
-# 包装脚本),只按命令名认会误判。
+# system pkg:apt / dnf / yum / apk / zypper,Unrecognized, returning 1
 pkg_manager() {
   if command -v apt-get >/dev/null 2>&1; then echo apt
   elif command -v dnf >/dev/null 2>&1; then echo dnf
@@ -258,7 +258,7 @@ pkg_manager() {
   fi
 }
 
-# 可用 CPU 核数(带容错;若注入 CPU_NUM 则以其为上限)
+# Number of available CPU cores (env CPU_NUM)
 cpu_count() {
   local n
   if command -v nproc >/dev/null 2>&1; then
@@ -275,24 +275,24 @@ cpu_count() {
   printf '%s' "$n"
 }
 
-# ── 下载 ──────────────────────────────────────────────────────────────────
-# 包下载源:AppStore 安装脚本取源码包的 base(由 pkg_mirror 给出)。
-#   取值优先 ZAP_PKG_MIRROR(zapexec 按 /etc/zap/mirror.conf 注入),未配置时回落国内镜像。
-#   既可以是 http(s):// 远端镜像,也可以是**本地目录**(绝对路径 / file:// 开头),
-#   后者用于离线环境:fetch_file 直接拷贝,不发任何网络请求。
+# ── download ──────────────────────────────────────────────────────────────────
+# zap pkg mirror
+# 1. ZAP_PKG_MIRROR 
+# 2. /etc/zap/mirror.conf
+# 3. zap mirror
+# 4. file:///opt/zap-pkg
 pkg_mirror() {
   local base="${ZAP_PKG_MIRROR:-https://mirrors.zap.cn/pkg}"
   printf '%s' "${base}" | sed 's:/*$::'
 }
 
-# 下载缓存目录（持久化，跨运行复用）：缺省 $ZAP_PATH/data/appstore/cache，
-# 可由 ZAP_PKG_CACHE 覆盖。命中即跳过网络下载。
-# 说明：zapexec 全局串行执行脚本任务，不会出现并发写同一缓存的竞态。
+# download cache (default) : $ZAP_PATH/data/appstore/cache，
+# ZAP_PKG_CACHE override
 _pkg_cache_dir() {
   printf '%s' "${ZAP_PKG_CACHE:-$ZAP_PATH/data/appstore/cache}"
 }
 
-# 计算缓存文件路径：<sha256前16位>_<URL基名>，基名去查询串避免 ?v=1 干扰。
+# cache path：<sha256 first 16 bit>_<URL base name>
 _pkg_cache_path() {
   local url="$1" base key
   base="$(basename "${url%%\?*}")"
@@ -300,34 +300,34 @@ _pkg_cache_path() {
   printf '%s/%s_%s' "$(_pkg_cache_dir)" "$key" "$base"
 }
 
-# 私有下载器:curl 优先,回退 wget;自动重试;成功返回 0
-# 进度输出:curl --progress-bar / wget --show-progress 强制在非 TTY(日志文件)下
-# 也以 `\r` 刷新同一行进度,面板日志(xterm 渲染)中表现为一条实时进度条。
-# 本地源(/path 或 file:///path)直接 cp:离线环境下没有网络,但目录里有同样的包。
-# 远程源优先查持久化缓存(见 _pkg_cache_path)，命中复用；未命中则下载并回填缓存。
+# fetch_file
+# curl > wget. auto retry.   success : 0
+# progress bar: curl --progress-bar / wget --show-progress. force in non-tty(log file) with `\r` 
+# local mirror (/path or file:///path) cp -f to dest.
+# For remote sources, first check the download cache, and if it is hit, skip the download.
 fetch_file() {
-  # fetch_file <url> <dest> [重试次数,默认3]
+  # fetch_file <url> <dest> [retry,default 3]
   local url="$1" dest="$2" retries="${3:-3}" i=0
   case "$url" in
     /*|file://*)
       local src="${url#file://}"
       if [ -f "$src" ] && cp -f "$src" "$dest"; then
-        log_info "本地源取包: ${src}"
+        log_info "local mirror: ${src}"
         return 0
       fi
-      log_error "本地源取包失败(文件不存在或不可读): ${src}"
+      log_error "Failed to retrieve the package from the local source (file does not exist or is unreadable): ${src}"
       return 1
       ;;
   esac
 
-  # 远程源：先查下载缓存，命中即复用，不重复下载
+  # Remote source: First check the download cache. If it's found, reuse it; otherwise, do not download it again
   local cache_dir cachefile
   cache_dir="$(_pkg_cache_dir)"
   if [ -n "$cache_dir" ]; then
     ensure_dir "$cache_dir"
     cachefile="$(_pkg_cache_path "$url")"
     if [ -f "$cachefile" ]; then
-      log_info "命中下载缓存，跳过重复下载: ${cachefile}"
+      log_info "If the download is cached, skip: ${cachefile}"
       cp -f "$cachefile" "$dest" && return 0
     fi
   fi
@@ -360,14 +360,15 @@ fetch_file() {
 download_file() {
   local url="$1" dest="$2"
   if fetch_file "$url" "$dest"; then
-    log_info "下载完成: ${dest}"
+    log_info "download success: ${dest}"
     return 0
   fi
-  log_error "下载失败,中止: ${url}"
+  log_error "Download failed, aborted: ${url}"
   exit 1
 }
 
-# http_fetch <url> <dest>(旧版兼容):失败即中止
+# http_fetch <url> <dest> 
+# Abort if failed
 http_fetch() {
   local url="$1" dest="$2"
   fetch_file "$url" "$dest" || {
@@ -376,9 +377,9 @@ http_fetch() {
   }
 }
 
-# 解压 tar.*/zip 到目标目录(自动识别格式;依赖系统 tar/unzip)
+# Extract tar.*/zip files to the target directory (automatically recognizing the format; dependent on the system tar/unzip)
+# extract_archive <archive file> [destination directory, default current directory]
 extract_archive() {
-  # extract_archive <归档文件> [目标目录,默认当前目录]
   local archive="$1" dest="${2:-.}" ok=0
   ensure_dir "$dest" || return 1
   case "$archive" in
@@ -390,27 +391,24 @@ extract_archive() {
       if command -v unzip >/dev/null 2>&1; then
         unzip -qo "$archive" -d "$dest" && ok=1
       else
-        log_error "缺少 unzip,无法解压: ${archive}"
+        log_error "Missing unzip, unable to decompress: ${archive}"
       fi ;;
-    *) log_error "不支持的文件格式: ${archive}" ;;
+    *) log_error "Unsupported file format: ${archive}" ;;
   esac
   [ "$ok" -eq 1 ] && return 0
-  log_error "解压失败: ${archive}"
+  log_error "Decompression failed: ${archive}"
   return 1
 }
 
-# download_extract <url> <本地归档名> <目标目录>:下载并解压一步到位
+# download_extract <url> <local_archive_name> <target_directory>: Download and extract in one step
 download_extract() {
   local url="$1" name="$2" dir="$3"
-  fetch_file "$url" "$name" || { log_error "下载失败: ${url}"; return 1; }
+  fetch_file "$url" "$name" || { log_error "download failed: ${url}"; return 1; }
   extract_archive "$name" "$dir"
 }
 
-# ── 编译 ──────────────────────────────────────────────────────────────────
-# GNU make 可执行文件名：发行版自带的 make 未必是 GNU make，优先用包管理器装的 gmake。
-# 判定看 `make --version` 的自报家门而不是管道 grep -q —— GNU make 输出多行时
-# grep -q 命中即退会让 make 收到 SIGPIPE，pipefail 下反把「是 GNU make」判成不是。
-# 优先级：ZAP_MAKE 覆盖 > gmake > make；都遇不上 GNU make 时回退第一个能用的那个。
+# compile
+# ZAP_MAKE > gmake > make
 make_bin() {
   local m first="" ver
   for m in "${ZAP_MAKE:-}" gmake make; do
@@ -420,13 +418,14 @@ make_bin() {
     ver="$("$m" --version 2>/dev/null || printf '')"
     case "$ver" in *"GNU Make"*) printf '%s\n' "$m"; return 0 ;; esac
   done
-  [ -n "$first" ] || { log_error "系统缺少 make / gmake，无法编译"; return 1; }
-  log_warn "未找到 GNU make，回退 ${first}：非 GNU make 不认 GNU Makefile，建议先装 gmake"
+  [ -n "$first" ] || { log_error "make / gmake not found , can't compile"; return 1; }
+  log_warn "GNU make not found , use ${first}"
   printf '%s\n' "$first"
 }
 
-# 并行编译 + 安装，失败自动退回串行；可传并行数，缺省 CPU_NUM -> cpu_count
-# make 一律走 make_bin：直接敲 make 可能撞上非 GNU 的那份。
+# cpu number :  CPU_NUM -> cpu_count
+# parallel make : make -j${jobs}
+# make install
 MakeInstall() {
   local jobs="${1:-}" mb
   [ -n "$jobs" ] || jobs="${CPU_NUM:-}"
@@ -435,14 +434,14 @@ MakeInstall() {
   if "${mb}" -j "${jobs}"; then
     "${mb}" install
   else
-    log_warn "并行 ${mb} -j${jobs} 失败，退回串行编译"
+    log_warn "parallel ${mb} -j${jobs} failed, use ${mb} install"
     "${mb}"
     "${mb}" install
   fi
 }
 
-# 版本比较(点分数字,忽略字母段,如 1.24.0p1 视为 1.24.0):
-#   version_compare <a> <b> -> 0 相等 / 1 a>b / 2 a<b
+# version compare (1.24.0p1 => 1.24.0):
+# version_compare <a> <b> -> 0 equal / 1 a>b  / 2 a<b
 version_compare() {
   local va vb i n ai bi
   IFS='.' read -ra va <<< "$(printf '%s' "${1:-}" | sed 's/[^0-9.]//g')"
@@ -461,9 +460,9 @@ version_ge() { version_compare "$1" "$2"; [ $? -ne 2 ]; }
 version_gt() { version_compare "$1" "$2"; [ $? -eq 1 ]; }
 version_lt() { version_compare "$1" "$2"; [ $? -eq 2 ]; }
 
-# ── 版本分段解析(与 version_compare 同样忽略字母后缀) ────────────────────
-# 取版本号第 N 段(从 1 开始),自动去掉字母后缀:1.1.1w → 第1段=1 第2段=1 第3段=1
-# 用法: version_field <版本> <段号>
+# ── Version Segmentation Analysis (ignoring suffixes of letters in the same way as version_compare) ────────────────────
+# Extract the Nth segment of the version number (starting from 1), automatically removing the suffixes of letters: 1.1.1w → The 1st segment = 1, the 2nd segment = 1, the 3rd segment = 1
+# Usage: version_field <version> <segment number>
 version_field() {
   local ver="${1:-}" idx="${2:-1}" parts v
   [ -n "$ver" ] || return 1
@@ -475,14 +474,14 @@ version_field() {
   printf '%s' "$v"
 }
 
-# 主版本号:version_major 1.1.1w → 1
+# Major Version Number: version_major 1.1.1w → 1
 version_major() { version_field "${1:-}" 1; }
 
-# 次版本号:version_minor 1.1.1w → 1
+# minor number: version_minor 1.1.1w → 1
 version_minor() { version_field "${1:-}" 2; }
 
-# 一次取出主次版本,输出 "major minor"(缺失的段为空串)
-# 典型用法: read -r MAJOR MINOR <<<"$(version_major_minor "${APP_OLD_VERSION}")"
+# Extract both major and minor versions and output "major minor" (the missing section is an empty string)
+# Typical usage: read -r MAJOR MINOR <<< "$(version_major_minor "${APP_OLD_VERSION}")"
 version_major_minor() {
   local major minor
   major="$(version_field "${1:-}" 1 || printf '')"
@@ -490,7 +489,7 @@ version_major_minor() {
   printf '%s %s\n' "$major" "$minor"
 }
 
-# 生成随机密码(默认 16 位字母数字)
+# Generate a random password (default 16-character alphanumeric)
 random_password() {
   local len="${1:-16}"
   if command -v openssl >/dev/null 2>&1; then
@@ -507,8 +506,8 @@ has_git() {
   command -v git >/dev/null 2>&1
 }
 
-# ── 属性文件 / 配置读写 ───────────────────────────────────────────────────
-# 读取 key=value 属性文件中的值(允许前导空格/行内注释值),无匹配返回空
+# ── Attribute file / Configuration reading and writing ─────────────────────────────────────────────────────
+# Read the values from the key=value attribute file (allowing leading spaces / inline comment values), return empty if no match is found
 getPropsValue() {
   # getPropsValue <文件> <key>
   local file="$1" key="$2" esc v
@@ -518,10 +517,10 @@ getPropsValue() {
   printf '%s' "$v"
 }
 
-# ── YAML 键值读取 / 目录安全校验(应用商店通用) ──────────────────────────
+# ── YAML Key-Value Reading / Directory Security Check (Common for App Stores) ──────────────────────────
 
-# 读取 yaml 顶层键值(仅支持 `key: value` 简单形式),无匹配返回空
-# 用法: yaml_value <文件> <key>
+# Read the top-level key-value in YAML (only supports the simple form of `key: value`), return empty if no match
+# Usage: yaml_value <file> <key>
 yaml_value() {
   local file="${1:-}" key="${2:-}" v
   [ -n "$key" ] || return 1
@@ -530,8 +529,8 @@ yaml_value() {
   printf '%s' "$v"
 }
 
-# 规范化目录:去掉末尾多余斜杠(保留根目录 "/",不解析软链)
-# 用法: normalize_dir <路径>;路径为空返回非 0
+# Normalized Directory: Remove redundant slashes at the end (retain root directory "/", do not resolve symbolic links)
+# Usage: normalize_dir <path>; returns non-zero value if the path is empty
 normalize_dir() {
   local p="${1:-}"
   [ -n "$p" ] || return 1
@@ -609,7 +608,7 @@ wzap_conf() {
 # 用法: ZAP_UBUNTU_DEPS="..." 自定义后再调用 prepare_install_env / install_system_deps
 UBUNTU_DEPS="${ZAP_UBUNTU_DEPS:-wget curl git ca-certificates build-essential gcc g++ autoconf automake libtool bison re2c pkg-config libxml2-dev libssl-dev libsqlite3-dev libcurl4-openssl-dev libpcre3-dev libbz2-dev zlib1g-dev libpq-dev libzip-dev libonig-dev libpng-dev libjpeg-dev libwebp-dev libavif-dev libicu-dev libreadline-dev libffi-dev libxslt1-dev libfreetype6-dev libgd-dev libsodium-dev}"
 RH_DEPS="${ZAP_RH_DEPS:-wget curl git make gcc gcc-c++ autoconf automake libtool bison re2c pkgconfig openssl-devel libxml2-devel sqlite-devel libcurl-devel libpcre-devel bzip2-devel zlib-devel ncurses-devel libpng-devel libjpeg-turbo-devel libwebp-devel}"
-RH_DNF_EXTRA="${ZAP_RH_DNF_EXTRA:-libzip-devel oniguruma-devel libicu-devel libffi-devel libxslt-devel gd-devel libsodium-devel}"
+RH_DNF_EXTRA="${ZAP_RH_DNF_EXTRA:-libzip-devel oniguruma-devel libicu-devel libffi-devel libxslt-devel gd-devel libsodium-devel perl-core}"
 ALPINE_DEPS="${ZAP_ALPINE_DEPS:-build-base autoconf automake libtool bison re2c pkgconf curl wget git openssl-dev libxml2-dev zlib-dev ncurses-dev bzip2-dev libpng-dev libjpeg-turbo-dev}"
 
 # ── 运行时库 / 系统包(发行版与版本间包名不同) ──────────────────────
@@ -759,12 +758,6 @@ pkg_install_any() {
   return 1
 }
 
-# ── 安装残局处理(失败后重跑) ─────────────────────────────────
-# 系统只在脚本【成功退出】后才写 apps/<cat>/<name>/meta.yaml(面板据此显示「已安装」),
-# 而脚本自己常以「安装目录在不在」做守卫。一旦中途失败(mysqld 初始化缺 libaio 等),
-# 就形成死锁:面板说没装(不给卸载)+ 脚本说装了(不给重装)。
-# 约定:以脚本末尾登记的 APP_PATH/info.yaml 为「装完了」的唯一依据;
-# 目录还在但没登记 = 装了一半的残局 → 清理后继续装,而不是报错退出。
 app_install_complete() { [ -n "${APP_PATH:-}" ] && [ -f "${APP_PATH}/info.yaml" ]; }
 
 # 路径是否在指定前缀下(删除前的围栏):path_under ${APPS_DIR}/mysql-8.0 ${APPS_DIR}
@@ -799,53 +792,49 @@ service_stop_disable() {
   return "$rc"
 }
 
-# 数据目录是否已完成初始化(MySQL / MariaDB 通用:有 mysql 系统库或 InnoDB 系统表空间)
-# 未初始化(或半初始化)的数据目录里不会有用户数据,可随残局安全清掉;
-# 已初始化的目录必须留给人工确认,绝不自动删。
 db_data_initialized() {
   local d="${1:-}"
   [ -n "$d" ] || return 1
   [ -d "${d}/mysql" ] || [ -f "${d}/ibdata1" ] || [ -f "${d}/mysql.ibd" ]
 }
 
-# 安装系统编译依赖:批量失败后自动逐项补装(单项失败仅告警,不中断脚本);
-# 因为依赖缺失会在 configure/make 阶段暴露,不应因个别包名差异中止整个安装
+
 install_system_deps() {
   local p pm deps="" rc=0
   if is_os ubuntu debian; then
-    log_info "apt 安装编译依赖 ..."
-    apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update 失败(继续尝试安装)"
+    log_info "apt install build-dependencies ..."
+    apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update failed (continuing to attempt installation)"
     deps="${UBUNTU_DEPS}"
     # shellcheck disable=SC2086
     if ! apt-get install -y --no-install-recommends ${deps} >/dev/null 2>&1; then
-      log_warn "批量安装失败,逐项补装(个别包缺失忽略) ..."
+      log_warn "Now installing missing packages ..."
       # shellcheck disable=SC2086
       for p in ${deps}; do
         apt-get install -y --no-install-recommends "$p" >/dev/null 2>&1 \
-          || { log_warn "  跳过(安装失败): ${p}"; rc=1; }
+          || { log_warn "  Skip (Installation failed): ${p}"; rc=1; }
       done
     fi
   elif is_os centos rhel rocky alma ol amazon fedora; then
     if command -v dnf >/dev/null 2>&1; then pm="dnf"; deps="${RH_DEPS} ${RH_DNF_EXTRA}"; else pm="yum"; deps="${RH_DEPS}"; fi
-    log_info "${pm} 安装编译依赖 ..."
+    log_info "${pm} Install compilation dependencies..."
     # shellcheck disable=SC2086
     if ! ${pm} install -y ${deps} >/dev/null 2>&1; then
-      log_warn "批量安装失败,逐项补装(个别包缺失忽略) ..."
+      log_warn "Now installing missing packages ..."
       # shellcheck disable=SC2086
       for p in ${deps}; do
-        ${pm} install -y "$p" >/dev/null 2>&1 || { log_warn "  跳过(安装失败): ${p}"; rc=1; }
+        ${pm} install -y "$p" >/dev/null 2>&1 || { log_warn "  Skip (Installation failed): ${p}"; rc=1; }
       done
     fi
   elif is_os alpine; then
-    log_info "apk 安装编译依赖 ..."
+    log_info "apk install build-dependencies ..."
     # shellcheck disable=SC2086
     apk add --no-cache ${ALPINE_DEPS} >/dev/null 2>&1 || rc=1
   else
-    log_warn "暂不支持自动安装依赖的发行版(${OS_NAME:-unknown}),跳过;请手动安装编译依赖"
+    log_warn "The distribution (${OS_NAME:-unknown}) that supports automatic installation of dependencies is not supported temporarily, skipping; please manually install the compilation dependencies"
     rc=1
   fi
-  if [ "$rc" -eq 0 ]; then log_ok "系统编译依赖就绪"; else log_warn "部分依赖安装失败,如编译报缺头文件/库请手动补装"; fi
-  # 返回真实结果(0=全部就绪),供 prepare_install_env 决定是否写依赖锁
+  if [ "$rc" -eq 0 ]; then log_ok "System compilation dependencies are ready"; else log_warn "Some dependencies failed to install. If there are compilation errors reporting missing header files/libraries, please manually install them"; fi
+  # 0 = all ready
   return "$rc"
 }
 
@@ -862,33 +851,32 @@ install_system_deps() {
 prepare_install_env() {
   local user="${1:-www}" lock_dir lock
   [ "$#" -gt 0 ] && shift
-  # 未显式给组时补一个同名组(www→www),跨发行版保证组一定存在
+  # If a group is not explicitly provided, add a group with the same name (www→www)
   if [ "$#" -eq 0 ]; then
     ensure_user "${user}" "${user}" || return 1
   else
     ensure_user "${user}" "$@" || return 1
   fi
 
-  # 依赖锁写到持久化的 data/state(不落在 data/tmp 临时区,避免被系统清理误删)
+  # deps lock : ZAP_PATH/data/state
   lock_dir="${ZAP_DATA_PATH:-/tmp}/state"
   ensure_dir "${PKG_PATH:-/tmp/pkg}" "${BUILD_PATH:-/tmp/build}" "${lock_dir}" \
-    || log_warn "部分运行目录创建失败(PKG_PATH/BUILD_PATH 由执行器确保)"
+    || log_warn "Directory creation failed"
 
-  log_info "系统: ${OS_PRETTY:-${OS_NAME:-unknown}}, arch: ${OS_ARCH:-unknown} (alias: ${OS_ARCH_ALIAS:-unknown})"
+  log_info "OS Name: ${OS_PRETTY:-${OS_NAME:-unknown}}, arch: ${OS_ARCH:-unknown} (alias: ${OS_ARCH_ALIAS:-unknown})"
 
   lock="${lock_dir}/system_deps.lock"
   if [ "${ZAP_FORCE_DEPS:-0}" != "1" ] && [ -f "$lock" ]; then
-    log_info "检测到依赖锁 ${lock},系统编译依赖已就绪,跳过安装"
+    log_info "Dependency lock ${lock} detected, system compilation dependencies ready, skipping installation"
     return 0
   fi
   if install_system_deps && touch "$lock" 2>/dev/null; then
-    log_ok "系统编译依赖就绪(已记录 ${lock})"
+    log_ok "System compilation dependencies are ready (${lock} has been recorded)"
   else
-    # 装了一半(断网 / 源不可用)时不写锁,下次运行会重试,而不是带着残缺依赖去编译
-    log_warn "系统编译依赖未完全就绪,未写锁 ${lock},下次运行会重试"
+    log_warn "Failed, try again next time"
   fi
   return 0
 }
 
-# ── 顶层一次性探测(被 source 时执行;放在函数定义之后以保证可用) ──────────
+
 os_detect
