@@ -18,6 +18,14 @@ export interface LogSource {
   desc: string
   /** 文件大小（仅 file；其余为 0） */
   size: number
+  /** 管理员手动添加的自定义路径（前端据此允许删除） */
+  custom?: boolean
+}
+
+/** 手动添加的自定义日志路径 */
+export interface CustomLogSource {
+  name: string
+  path: string
 }
 
 export interface LogSourcesData {
@@ -54,4 +62,19 @@ export function readSystemLog(params: {
   keyword?: string
 }) {
   return http.get<ApiResponse<LogReadData>>('/system/logs/read', { params })
+}
+
+/** 列出手动添加的自定义日志路径 */
+export function getCustomLogSources() {
+  return http.get<ApiResponse<{ sources: CustomLogSource[] }>>('/system/logs/custom')
+}
+
+/** 添加自定义日志路径（name 留空则用文件名） */
+export function addCustomLogSource(name: string, path: string) {
+  return http.post<ApiResponse<null>>('/system/logs/custom/add', { name, path })
+}
+
+/** 删除自定义日志路径（只删登记，不删日志文件） */
+export function removeCustomLogSource(path: string) {
+  return http.post<ApiResponse<null>>('/system/logs/custom/remove', { path })
 }

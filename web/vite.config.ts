@@ -10,22 +10,10 @@ import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 // import { visualizer } from "rollup-plugin-visualizer";
 import Icons from 'unplugin-icons/vite'
 
-/**
- * Zap 版本（唯一来源）：根 Cargo.toml [workspace.package] 的 version。
- * zapd / zapctl / zap-proto / zapexec / zapupgrade 均通过 version.workspace 继承该版本，
- * 前端的 VITE_APP_VERSION 也用它。
- *
- * 取值顺序：
- * 1) 环境变量 ZAP_VERSION —— build.sh 解析 Cargo.toml 后显式传入（发布路径，推荐）；
- * 2) 自行解析根 Cargo.toml  —— 单独执行 `npm run build*` 时的回退路径。
- *
- * 注意：Web 版本（VITE_WEB_VERSION）是前端包自身版本，来自 web/package.json，
- * 与本函数无关 —— 两个版本号各自独立展示。
- */
+// zapd - footer version
 function workspaceVersion(): string {
   const fromEnv = process.env.ZAP_VERSION?.trim()
   if (fromEnv) return fromEnv
-  // 注：不再回退到 package.json 版本 —— Zap 版本与 Web 版本来源不同，不能混用
   try {
     const cargo = readFileSync(
       fileURLToPath(new URL('../Cargo.toml', import.meta.url)),
@@ -46,9 +34,6 @@ export default defineConfig(({ mode }) => {
   const useProxy = env.VITE_USE_PROXY === 'true'
 
   return {
-    // 静态资源用相对路径：面板支持通过 zap.yaml 的 server.url_prefix
-    // 部署在任意前缀下（如 /zap/），写死 /assets 会在子路径下 404。
-    // 后端会在 index.html 注入 <base href="/zap/">，保证相对路径解析正确。
     base: './',
     plugins: [
       vue(),
@@ -93,7 +78,7 @@ export default defineConfig(({ mode }) => {
       proxy: useProxy
         ? {
             '/api': {
-              target: 'https://127.0.0.1:2600',
+              target: 'https://127.0.0.1:2663',
               changeOrigin: true,
               secure: false,
               // rewrite: (path) => path.replace(/^\/api/, ''),

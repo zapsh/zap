@@ -55,6 +55,8 @@ struct Source {
     desc: String,
     /// 文件大小（仅 file；其余为 0）
     size: u64,
+    /// 是否管理员手动添加的自定义路径（前端据此显示"删除"按钮）
+    custom: bool,
 }
 
 impl Source {
@@ -70,6 +72,7 @@ impl Source {
             kind: "file",
             desc: path.to_string(),
             size: p.metadata().map(|m| m.len()).unwrap_or(0),
+            custom: false,
         })
     }
 
@@ -81,6 +84,7 @@ impl Source {
             kind: "journal",
             desc: unit.to_string(),
             size: 0,
+            custom: false,
         }
     }
 
@@ -92,6 +96,7 @@ impl Source {
             "kind": self.kind,
             "desc": self.desc,
             "size": self.size,
+            "custom": self.custom,
         })
     }
 }
@@ -230,6 +235,45 @@ fn mysql_error_log() -> Option<String> {
     .find(|p| Path::new(p).is_file())
 }
 
+// ── 自定义日志源（管理员手动添加的路径）──────────────────────
+
+/// 持久化位置：`{ZAP_PATH}/data/logs/custom_sources.json`。
+///
+/// 走文件而不是加表：这份清单只是"查看器里多几个入口"，没有查询 / 关联需求，
+/// 单独建表要写迁移，收益不抵成本。文件由 zapexec（root）读写，面板账号
+/// 是否可写 `{ZAP_PATH}/data` 都不影响。
+fn custom_file() -> PathBuf {
+    zap_path().join("data/logs/custom_sources.json")
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct CustomSource {
+    name: String,
+    path: String,
+}
+
+fn load_custom() -> Vec<CustomSource> {
+    std::fs::read_to_string(custom_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<CustomSource>>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_custom(list: &[CustomSource]) -> Result<(), String> {
+    let p = custom_file();
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    let s = serde_json::to_string_pretty(list).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&p, s).map_err(|e| format!("写入 {} 失败: {e}", p.display()))?;
+    Ok(())
+}
+
+/// 路径合法性：绝对路径，且不含 `..` 段（防目录穿越）。
+fn valid_path(p: &str) -> bool {
+    p.starts_with('/') && !p.split('/').any(|seg| seg == "..")
+}
+
 // ── 日志源清单 ───────────────────────────────────────────────
 
 fn discover() -> Vec<Source> {
@@ -255,6 +299,7 @@ fn discover() -> Vec<Source> {
                 "dmesg".to_string()
             },
             size: 0,
+            custom: false,
         },
         &mut out,
     );
@@ -274,6 +319,7 @@ fn discover() -> Vec<Source> {
                 kind: "journal",
                 desc: "journalctl（全部）".to_string(),
                 size: 0,
+                custom: false,
             },
             &mut out,
         );
@@ -365,6 +411,22 @@ fn discover() -> Vec<Source> {
         if let Some(s) = Source::file(p, n, "安全") {
             push(s, &mut out);
         }
+    }
+
+    // ── 自定义（手动添加；文件此刻不存在也照样列出，读取时才报"打不开"）──
+    for c in load_custom() {
+        push(
+            Source {
+                id: format!("file:{}", c.path),
+                name: c.name.clone(),
+                group: "自定义".to_string(),
+                kind: "file",
+                desc: c.path.clone(),
+                size: Path::new(&c.path).metadata().map(|m| m.len()).unwrap_or(0),
+                custom: true,
+            },
+            &mut out,
+        );
     }
 
     // ── 已安装服务（systemd journal）──
@@ -572,6 +634,52 @@ fn read_dmesg(lines: u32) -> Result<(Vec<String>, String), String> {
     let n = lines.max(1) as usize;
     let start = all.len().saturating_sub(n);
     Ok((all[start..].iter().map(|s| s.to_string()).collect(), String::new()))
+}
+
+/// 列出手动添加的自定义日志路径。
+pub async fn custom_list() -> Response {
+    let list = load_custom();
+    Response::ok("ok", Some(json!({ "sources": list })))
+}
+
+/// 添加一个自定义日志路径（只登记，不校验文件此刻存在）。
+pub async fn custom_add(name: String, path: String) -> Response {
+    let path = path.trim().to_string();
+    if !valid_path(&path) {
+        return Response::err(-1, "路径必须是绝对路径，且不能包含 ..".to_string());
+    }
+    let mut list = load_custom();
+    if list.iter().any(|c| c.path == path) {
+        return Response::err(-1, "该路径已在列表中".to_string());
+    }
+    let name = if name.trim().is_empty() {
+        Path::new(&path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone())
+    } else {
+        name.trim().to_string()
+    };
+    list.push(CustomSource { name, path });
+    match save_custom(&list) {
+        Ok(()) => Response::ok("ok", None),
+        Err(e) => Response::err(-1, e),
+    }
+}
+
+/// 删除一个自定义日志路径（只删登记，不动日志文件本身）。
+pub async fn custom_remove(path: String) -> Response {
+    let path = path.trim().to_string();
+    let mut list = load_custom();
+    let before = list.len();
+    list.retain(|c| c.path != path);
+    if list.len() == before {
+        return Response::err(-1, "该路径不在列表中".to_string());
+    }
+    match save_custom(&list) {
+        Ok(()) => Response::ok("ok", None),
+        Err(e) => Response::err(-1, e),
+    }
 }
 
 /// 读取某个日志源。

@@ -56,6 +56,63 @@ pub async fn sources(claims: ValidatedClaims) -> ZapJsonResult {
     Ok(Json(json!({ "code": 0, "message": "OK", "data": resp.data })))
 }
 
+#[derive(Deserialize)]
+pub struct CustomAddPayload {
+    /// 展示名；留空则用文件名
+    #[serde(default)]
+    name: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
+pub struct CustomRemovePayload {
+    path: String,
+}
+
+fn zapexec_err(resp: zap_proto::Response) -> ZapError {
+    ZapError::New(resp.code, resp.message)
+}
+
+/// GET /system/logs/custom —— 手动添加的自定义日志路径
+pub async fn custom_list(claims: ValidatedClaims) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = zapexec::call(Request::SysLogCustomList).await?;
+    if resp.code != 0 {
+        return Err(zapexec_err(resp));
+    }
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": resp.data })))
+}
+
+/// POST /system/logs/custom/add
+pub async fn custom_add(
+    claims: ValidatedClaims,
+    Json(payload): Json<CustomAddPayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = zapexec::call(Request::SysLogCustomAdd {
+        name: payload.name,
+        path: payload.path,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(zapexec_err(resp));
+    }
+    Ok(Json(json!({ "code": 0, "message": "OK" })))
+}
+
+/// POST /system/logs/custom/remove
+pub async fn custom_remove(
+    claims: ValidatedClaims,
+    Json(payload): Json<CustomRemovePayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let resp = zapexec::call(Request::SysLogCustomRemove { path: payload.path }).await?;
+    if resp.code != 0 {
+        return Err(zapexec_err(resp));
+    }
+    Ok(Json(json!({ "code": 0, "message": "OK" })))
+}
+
 /// GET /system/logs/read?source=...&cursor=...&lines=...&keyword=...
 pub async fn read(
     claims: ValidatedClaims,

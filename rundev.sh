@@ -1,31 +1,38 @@
 #!/usr/bin/env bash
 #
-# ZAP 开发一键运行脚本
+# ZAP Development One-Click Run Script
 #
-# 用法：
-#   ./rundev.sh                 # 构建前端 + 后端，启动 zapexec(root) 和 zapd
-#                               # （默认不跑 fmt / clippy：clippy 会用自己的 driver 把整个
-#                               #  workspace 重编一遍，改一行代码等几分钟不值得）
-#   ./rundev.sh --release       # 使用 release 构建
-#   ./rundev.sh --with-pro      # 启用商业模块 Zap Pro（cargo --features zapd/commercial）；
-#                               # 需要 zappro/ 已 clone 到仓库根目录（见 zappro/README.md），
-#                               # 构建前自动跑 zappro/pro.sh setup 同步页面
-#   ./rundev.sh --skip-web      # 跳过前端构建
-#   ./rundev.sh --skip-build    # 跳过 cargo 构建
-#   ./rundev.sh --skip-install  # 缺 node_modules 时不自动 npm install
-#   ./rundev.sh --check-code    # 构建前先跑 fmt / clippy（提交前用，等价于旧版默认行为）
-#   ./rundev.sh --skip-check    # 已默认跳过检查，保留此参数仅为兼容旧用法
-#   ./rundev.sh --reset-db      # 删除 data/zap.db 重建全新数据库
+# Usage:
+#   ./rundev.sh                 # Build frontend + backend, start zapexec (root) and zapd
+#                               # (fmt / clippy are skipped by default: clippy uses its own
+#                               #  driver to recompile the entire workspace, so waiting several
+#                               #  minutes after changing one line isn't worth it)
+#   ./rundev.sh --release       # Use a release build
+#   ./rundev.sh --with-pro      # Enable the commercial module Zap Pro (cargo --features zapd/commercial);
+#                               # requires zappro/ to be cloned into the repo root (see zappro/README.md),
+#                               # automatically runs zappro/pro.sh setup to sync pages before building
+#   ./rundev.sh --skip-web      # Skip frontend build
+#   ./rundev.sh --skip-build    # Skip cargo build
+#   ./rundev.sh --skip-install  # Skip nodejs install (node_modules)
+#   ./rundev.sh --check-code    # Run fmt / clippy before building
+#   ./rundev.sh --skip-check    # Checks are skipped by default; this flag is kept only for
+#                               # backward compatibility with old usage
+#   ./rundev.sh --reset-db      # Delete data/zap.db and rebuild a fresh database
 #   ./rundev.sh --admin-user zapops --admin-pass secret
-#                               # 指定初始管理员用户名/密码（默认 admin / 123456），
-#                               # 仅在数据库不存在、首次建库时生效
-#   ./rundev.sh --check         # 只检查 Rust 格式(fmt)与代码(clippy)，不构建、不启动服务
-#   ./rundev.sh --fmt            # 只自动格式化（cargo fmt --all）并退出，不检查/构建/启动服务
-#                               # （与 --check 相对：--check 只读检查，--fmt 直接改文件修复）
-#   ./rundev.sh --clippy-fix     # 只自动修复 clippy 告警（cargo clippy --fix）并退出，不构建/启动
-#                               # （机器可自动应用的建议会被直接改写；其余告警仍需手动处理）
+#                               # Specify the initial admin username/password (default admin / 123456),
+#                               # only takes effect when the database doesn't exist and is being
+#                               # created for the first time
+#   ./rundev.sh --check         # Only check Rust formatting (fmt) and code (clippy); don't build
+#                               # or start services
+#   ./rundev.sh --fmt            # Only auto-format (cargo fmt --all) and exit; don't check/build/start
+#                               # services (opposite of --check: --check is read-only inspection,
+#                               # --fmt directly modifies files to fix them)
+#   ./rundev.sh --clippy-fix     # Only auto-fix clippy warnings (cargo clippy --fix) and exit;
+#                               # don't build/start (suggestions the machine can apply automatically
+#                               # are rewritten directly; remaining warnings still need manual handling)
 #
-# 注意：zapexec 需要 root 权限，脚本通过 sudo 启动（首次可能提示输入密码）。
+# Note: zapexec requires root privileges; the script starts it via sudo (may prompt for a
+#       password the first time).
 #
 # Software Default Install Path: /usr/local/apps
 # export ZAP_APPS_DIR=custom path
@@ -63,21 +70,21 @@ while [ $# -gt 0 ]; do
     --fmt|--format)  FMT_ONLY=true; shift ;;
     --clippy-fix|--lint-fix) CLIPPY_FIX=true; shift ;;
     --admin-user)   ADMIN_USER="${2:-}"
-                    [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
+                    [ -n "$ADMIN_USER" ] || die "--admin-user requires a username"
                     shift 2 ;;
     --admin-user=*) ADMIN_USER="${1#*=}"
-                    [ -n "$ADMIN_USER" ] || die "--admin-user 缺少用户名"
+                    [ -n "$ADMIN_USER" ] || die "--admin-user requires a username"
                     shift ;;
     --admin-pass|--admin-password)
                     ADMIN_PASS="${2:-}"
-                    [ -n "$ADMIN_PASS" ] || die "--admin-pass 缺少密码"
+                    [ -n "$ADMIN_PASS" ] || die "--admin-pass requires a password"
                     shift 2 ;;
     --admin-pass=*|--admin-password=*)
                     ADMIN_PASS="${1#*=}"
-                    [ -n "$ADMIN_PASS" ] || die "--admin-pass 缺少密码"
+                    [ -n "$ADMIN_PASS" ] || die "--admin-pass requires a password"
                     shift ;;
     -h|--help)      usage; exit 0 ;;
-    *)              die "未知参数: $1（--help 查看用法）" ;;
+    *)              die "unknown option: $1 (--help for usage)" ;;
   esac
 done
 
@@ -92,9 +99,9 @@ cd "$ROOT_DIR"
 # --with-pro 是手动开关（同 build.sh）：不带就是开源构建，产物与现在完全一致
 if [ "$WITH_PRO" = true ]; then
   [ -f "$ROOT_DIR/zappro/pro.sh" ] \
-    || die "指定 --with-pro 但未找到 $ROOT_DIR/zappro（先 clone 商业模块仓库）"
+    || die "specified --with-pro but failed to find $ROOT_DIR/zappro (please clone the commercial module repository first)"
   info "sync pro page ..."
-  bash "$ROOT_DIR/zappro/pro.sh" setup || die "同步 Pro 页面失败"
+  bash "$ROOT_DIR/zappro/pro.sh" setup || die "failed to sync Pro pages"
   info "enable Zap Pro(-features zapd/commercial)"
 fi
 
@@ -104,13 +111,11 @@ else
   CLIPPY_FEATURES=()
 fi
 
-# --check 是"只做检查"模式：再要求跳过构建（--skip-build）就没有意义了
 if [ "$CHECK" = true ] && [ "$SKIP_BUILD" = true ]; then
   die "--check 与 --skip-build 互斥（--check 本就不构建，只做 fmt / clippy 检查）"
 fi
 
-# ── --check：只做静态检查（fmt + clippy），不构建、不启动服务 ──
-# 提交前 / CI 用：纯只读检查（不会自动改写代码），失败以非零码退出。
+# ── --check： Only check Rust code formatting (fmt) and code (clippy); do not build or start services.
 if [ "$CHECK" = true ]; then
   command -v cargo >/dev/null 2>&1 || die "未找到 cargo，请先安装 Rust"
   info "检查格式 (cargo fmt --all -- --check) ..."
@@ -124,9 +129,7 @@ if [ "$CHECK" = true ]; then
   exit 0
 fi
 
-# ── --fmt：只自动格式化（cargo fmt --all），不检查/构建/启动服务 ──
-# 改完代码随手跑一下，把全 workspace 格式统一；与 --check 互补：
-# --check 只读检查（不改动文件），--fmt 直接改文件修复。
+# ── --fmt：format code (cargo fmt --all) and exit; 
 if [ "$FMT_ONLY" = true ]; then
   command -v cargo >/dev/null 2>&1 || die "未找到 cargo，请先安装 Rust"
   info "格式化代码 (cargo fmt --all) ..."
@@ -135,13 +138,10 @@ if [ "$FMT_ONLY" = true ]; then
   exit 0
 fi
 
-# ── --clippy-fix：只自动修复 clippy 告警（cargo clippy --fix），不构建/启动服务 ──
-# 与 --check 互补：--check 只读检查（不改动文件），--clippy-fix 应用机器可自动修复的建议。
+# ── --clippy-fix：auto-fix clippy warnings (cargo clippy --fix) and exit; 
 if [ "$CLIPPY_FIX" = true ]; then
   command -v cargo >/dev/null 2>&1 || die "未找到 cargo，请先安装 Rust"
   info "自动修复 clippy 告警 (cargo clippy --fix) ..."
-  # --all-targets 覆盖全部 target，复用 --check 同一套 feature 选择（有 zappro 才开
-  # --all-features，否则默认 feature）；工作区有未提交改动时需要 --allow-dirty 才能改文件。
   cargo clippy --fix "${CLIPPY_FEATURES[@]}" --all-targets --allow-dirty \
     || warn "clippy 自动修复未全部完成（部分告警需手动修复，或存在编译错误）"
   ok "clippy 自动修复完成"
@@ -155,8 +155,7 @@ EXEC_SECRET="$RUN_DIR/exec.key"
 DEV_CONF="$RUN_DIR/zap.dev.yaml"
 DEV_USER="$(id -un)"
 
-# URL 前缀：优先沿用已有开发配置里的值；仅首次生成时才从 conf/zap.yaml 带入。
-# 开发配置是自洽的（配置与证书都在 data/run/ 下），运行期不依赖 conf/ 目录。
+
 CONF_URL_PREFIX=""
 if [ -f "$DEV_CONF" ]; then
   CONF_URL_PREFIX=$(sed -n 's/^[[:space:]]*url_prefix:[[:space:]]*"\{0,1\}\([^"#]*\)"\{0,1\}[[:space:]]*$/\1/p' \
@@ -166,7 +165,7 @@ elif [ -f "$ROOT_DIR/conf/zap.yaml" ]; then
     "$ROOT_DIR/conf/zap.yaml" | head -1 | sed 's/[[:space:]]*$//')
 fi
 
-# 开发用自签证书（与配置同目录，首次启动自动生成，不进 git）
+# development mode: use self-signed certs (zap.crt / zap.key) in the repo root
 DEV_CRT="$RUN_DIR/zap.crt"
 DEV_KEY="$RUN_DIR/zap.key"
 
@@ -178,26 +177,26 @@ else
   CARGO_FLAGS=()
 fi
 
-# 商业模块：只有 zapd 吃这个 feature，其余二进制照旧
+# commercial mode
 if [ "$WITH_PRO" = true ]; then
   CARGO_FLAGS+=(--features zapd/commercial)
 fi
 
-# ── 依赖检查 ────────────────────────────────────────────────
-command -v cargo >/dev/null 2>&1 || die "未找到 cargo，请先安装 Rust"
+# ── dependencies check ────────────────────────────────────────────────
+command -v cargo >/dev/null 2>&1 || die "not found cargo, please install Rust"
 if [ "$SKIP_WEB" != true ]; then
-  command -v npm >/dev/null 2>&1 || die "未找到 npm，请先安装 Node.js"
+  command -v npm >/dev/null 2>&1 || die "not found npm, please install Node.js"
 fi
 
 # ── sudo 授权（zapexec 需要 root）───────────────────────────
 if [ "$(id -u)" -eq 0 ]; then
   SUDO_CMD=()
 else
-  command -v sudo >/dev/null 2>&1 || die "未找到 sudo，请以 root 运行或安装 sudo"
+  command -v sudo >/dev/null 2>&1 || die "not found sudo, please install sudo"
   SUDO_CMD=(sudo -n)
   if ! sudo -n true 2>/dev/null; then
-    info "zapexec 需要 root 权限，请在提示时输入 sudo 密码"
-    sudo -v || die "sudo 授权失败"
+    info "zapexec requires root privileges, please enter your sudo password"
+    sudo -v || die "sudo authorization failed"
   fi
 fi
 
@@ -206,12 +205,12 @@ if [ "$SKIP_WEB" = true ]; then
   warn "Skip web build (use --skip-web to skip)"
 else
   if [ ! -d "$WEB_DIR/node_modules" ] && [ "$SKIP_INSTALL" != true ]; then
-    info "未检测到 node_modules，执行 npm install ..."
+    info "not found node_modules, executing npm install ..."
     (cd "$WEB_DIR" && npm install) || die "npm install error"
   fi
-  info "构建前端 (npm run build:prod) ..."
-  (cd "$WEB_DIR" && npm run build:prod) || die "前端构建失败"
-  ok "前端构建完成 -> $WEB_DIR/dist"
+  info "building frontend (npm run build:prod) ..."
+  (cd "$WEB_DIR" && npm run build:prod) || die "frontend build failed"
+  ok "frontend build completed -> $WEB_DIR/dist"
 fi
 
 # ── 2. Build Backend ─────────────────────────────────────────────
@@ -251,17 +250,17 @@ exec:
 db:
   path: $ROOT_DIR/data/zap.db
 EOF
-  ok "开发配置已生成"
+  ok "development config generated"
 fi
 
 # ── 3.5 remove zap.db（--reset-db）──────────────────────────────
 if [ "$RESET_DB" = true ]; then
   if [ -f "$ROOT_DIR/data/zap.db" ]; then
-    warn "删除数据库 $ROOT_DIR/data/zap.db ..."
+    warn "deleting database $ROOT_DIR/data/zap.db ..."
     rm -f "$ROOT_DIR/data/zap.db" "$ROOT_DIR/data/zap.db-wal" "$ROOT_DIR/data/zap.db-shm"
-    ok "数据库已删除，启动时将重建全新数据库"
+    ok "database deleted, will be rebuilt on startup"
   else
-    info "数据库不存在，跳过删除"
+    info "database does not exist, skipping deletion"
   fi
 fi
 

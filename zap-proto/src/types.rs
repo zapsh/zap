@@ -1688,6 +1688,25 @@ pub enum Request {
         keyword: String,
     },
 
+    /// 系统日志查看器：列出**手动添加**的自定义日志路径。
+    /// 存在 `{ZAP_PATH}/data/logs/custom_sources.json`（zapexec 以 root 读写）。
+    #[serde(rename = "syslog.custom_list")]
+    SysLogCustomList,
+    /// 系统日志查看器：添加一个自定义日志路径。
+    ///
+    /// `path` 必须是绝对路径且不含 `..`（由 zapexec 校验）；管理员加的路径不额外做
+    /// 白名单限制 —— 能看全部系统日志本就是管理员的职责范围。
+    #[serde(rename = "syslog.custom_add")]
+    SysLogCustomAdd {
+        /// 展示名（可为空，缺省用文件名）
+        name: String,
+        /// 日志文件绝对路径
+        path: String,
+    },
+    /// 系统日志查看器：删除一个自定义日志路径（只删记录，不删日志文件）。
+    #[serde(rename = "syslog.custom_remove")]
+    SysLogCustomRemove { path: String },
+
     /// 移除站点 Nginx vhost（站点删除时清理，幂等）
     #[serde(rename = "site.vhost_remove")]
     SiteVhostRemove { site_id: i64, name: String },

@@ -34,6 +34,9 @@
             <el-icon><Timer /></el-icon>
             {{ t('statusNginx.updatedAt', { time: lastUpdated }) }}
           </span>
+          <el-button size="small" :icon="Document" @click="viewLogs">
+            {{ t('statusNginx.viewLogs') }}
+          </el-button>
           <el-button size="small" :loading="refreshing" circle @click="refresh">
             <el-icon><Refresh /></el-icon>
           </el-button>
@@ -520,6 +523,17 @@ async function toggleStub(v: boolean | string | number) {
 
 function goAppstore() {
   router.push('/appstore')
+}
+
+/**
+ * 跳到日志查看器并直达 nginx 错误日志。
+ *
+ * 用 `pick=nginx-error` 而不是写死路径：nginx 装在哪、错误日志叫什么由 zapexec
+ * 探测决定（可能是 /var/log/nginx/error.log，也可能是应用商店装的
+ * {apps}/nginx-<版本>/logs/error.log），这里写死就会跳到不存在的源。
+ */
+function viewLogs() {
+  router.push('/server-status/logs?pick=nginx-error')
 }
 
 onMounted(async () => {

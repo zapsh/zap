@@ -593,6 +593,9 @@ pub async fn dispatch(req: Request) -> Response {
             lines,
             keyword,
         } => sys_log::read(source, cursor, lines, keyword).await,
+        Request::SysLogCustomList => sys_log::custom_list().await,
+        Request::SysLogCustomAdd { name, path } => sys_log::custom_add(name, path).await,
+        Request::SysLogCustomRemove { path } => sys_log::custom_remove(path).await,
         Request::EnvDetect => env::detect().await,
         Request::UserHomeInit { home_dir, owner } => user::home_init(&home_dir, &owner).await,
         Request::UserHomeMigrate {

@@ -22,7 +22,4 @@ debug = "line-tables-only"
 incremental = true
 codegen-units = 256
 
-[profile.dev.package."*"]
-opt-level = 1
-
 
