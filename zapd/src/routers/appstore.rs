@@ -740,14 +740,6 @@ pub async fn uninstall(
     };
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
-    ast::register_run(
-        &run_id,
-        "uninstall",
-        &payload.pkg_path,
-        &claims.sub,
-        &log_path,
-    )
-    .await?;
 
     // 注入操作者上下文：面板登录用户与虚拟主机运行模式（固定为独立系统用户）
     let user = claims.sub.clone();
@@ -755,7 +747,7 @@ pub async fn uninstall(
 
     // 回传安装时的编排结果（站点 / 数据库），供 uninstall.sh 先备份数据再删文件
     let provision = load_provision(&payload.pkg_path, payload.instance.as_deref()).await;
-    let resp = zapexec::call(Request::AppstoreUninstall {
+    let req = Request::AppstoreUninstall {
         pkg_path: payload.pkg_path.clone(),
         options,
         instance: payload.instance.clone(),
@@ -763,13 +755,23 @@ pub async fn uninstall(
         user: Some(user),
         run_mode: Some(run_mode),
         run_id: run_id.clone(),
-    })
+    };
+    // 与应用商店 install / upgrade 共用同一并发组（appstore:compile）：同一时刻只允许一个
+    // 商店动作在跑；卸载排到 install/upgrade 后面，由调度器在前一个结束后自动放行。
+    // 脚本 / 仓库同步等走 register_run，不限制并发。
+    let run = ast::enqueue_compile(
+        &run_id,
+        "uninstall",
+        &payload.pkg_path,
+        &claims.sub,
+        &log_path,
+        &serde_json::to_string(&req).unwrap_or_default(),
+    )
     .await?;
-    if resp.code != 0 {
-        ast::finish_run(&run_id, "failed", resp.code as i64).await;
-        return Err(ZapError::New(resp.code, resp.message));
+    // 拿到槽位就立即启动；排队中的留给调度器（等前一个结束后自动跑）
+    if run.status == task::STATUS_RUNNING {
+        task::launch(&run).await?;
     }
-    ast::watch_log(run_id.clone(), log_path.clone());
     audit::log(
         Some(&claims),
         Some(client_addr.ip().to_string().as_str()),
@@ -791,7 +793,13 @@ pub async fn uninstall(
     Ok(Json(json!({
         "code": 0,
         "message": "卸载已启动",
-        "data": { "task_id": run_id, "log": log_path }
+        "data": {
+            "task_id": run_id,
+            "log": log_path,
+            "status": run.status,
+            "queued": run.status == task::STATUS_PENDING,
+            "position": task::queue_position(&run).await,
+        }
     })))
 }
 

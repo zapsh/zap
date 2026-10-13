@@ -36,13 +36,17 @@
 
 - 套餐：`packages` 表已有 `allow_ssh` / `allow_proxy` 两个能力开关，加列走 `ensure_column` 幂等补列：
 
-```67:87:zapd/src/db/init_db.rs
+*zapd/src/db/init_db.rs:67*
+
+```rust
 /// 幂等补列：列已存在则跳过，否则 `ALTER TABLE ... ADD COLUMN`。
 ```
 
 - 站点能力门禁的现成写法（`allow_proxy` 的门禁，admin/reseller 恒放行）：
 
-```779:789:zapd/src/routers/site.rs
+*zapd/src/routers/site.rs:779*
+
+```rust
 async fn gates_for(claims: &jwt::Claims) -> bool {
     if is_operator(claims) {
         return true;
@@ -56,7 +60,9 @@ async fn gates_for(claims: &jwt::Claims) -> bool {
 
 - 站点类型：`php` / `static` / `proxy`，`site_add` 里归一化后落库：
 
-```1836:1839:zapd/src/routers/site.rs
+*zapd/src/routers/site.rs:1836*
+
+```rust
     let site_type = {
         let t = payload.site_type.trim().to_lowercase();
         norm_site_type(if t.is_empty() { "php" } else { &t })?
@@ -65,7 +71,9 @@ async fn gates_for(claims: &jwt::Claims) -> bool {
 
 - 容器命令全部走一个构造函数（硬编码 `docker`，共 9 处 `"docker"` 字面量），这是运行时抽象的改造中心：
 
-```1586:1598:zapexec/src/verbs/docker.rs
+*zapexec/src/verbs/docker.rs:1586*
+
+```rust
 fn docker_cmd<I, S>(args: I) -> Command
 where
     I: IntoIterator<Item = S>,

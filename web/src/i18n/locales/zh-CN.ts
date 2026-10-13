@@ -205,6 +205,8 @@ export default {
     'server-monitor': 'Server Monitor',
     process: '进程管理',
     'system-service': '系统服务',
+    // 日志查看器（后端 menus name=server-status-logs，位于「服务器状态」下）
+    'server-status-logs': '日志查看器',
     // 服务配置（后端 menus id=82，位于「服务器配置」下，页面内 nav pill 切换各服务）
     'server-service-conf': '服务配置',
     runtime: '运行环境',
@@ -1512,6 +1514,40 @@ export default {
     actionSuccess: '{label}成功',
   },
 
+  /** 服务器 - 日志查看器（服务器状态 → 日志查看器） */
+  serverLogs: {
+    sources: '日志源',
+    filterSource: '搜索日志源…',
+    noSource: '暂无可查看的日志',
+    noJournal: '本机没有 journalctl，只能查看文件型日志',
+    pickSource: '请从左侧选择一个日志源',
+    lines: '行',
+    keyword: '关键字过滤',
+    filterMode: '仅显示匹配行',
+    filterModeTip: '勾选=只保留命中行（服务端过滤）；取消=全部照常显示、命中处高亮',
+    hitCount: '命中 {n} 行',
+    follow: '自动滚动',
+    autoRefresh: '自动刷新',
+    download: '下载',
+    clearView: '清空视图',
+    empty: '暂无日志内容',
+    lineCount: '共 {n} 行',
+    loadSourcesFailed: '获取日志源失败',
+    readFailed: '读取日志失败',
+    addCustom: '添加自定义路径',
+    customPath: '日志路径',
+    customPathTip: '必须是绝对路径（如 /var/log/myapp/app.log），不支持 ..',
+    customPathRequired: '请填写日志路径',
+    customName: '显示名',
+    customNameTip: '留空则使用文件名',
+    addCustomOk: '已添加',
+    addCustomFailed: '添加失败',
+    removeCustom: '删除自定义源',
+    removeConfirm: '确认移除日志源 {path}？（只移除记录，不删除日志文件）',
+    removeCustomOk: '已移除',
+    removeCustomFailed: '移除失败',
+  },
+
   /** 服务器 - 系统服务 */
   serverServices: {
     title: '系统服务',
@@ -2268,6 +2304,7 @@ export default {
     notInstalled: 'Nginx 未安装',
     installTip: '请在应用商店安装 Nginx 后，再来这里查看运行状态',
     goAppstore: '前往应用商店',
+    viewLogs: '查看日志',
     titleRunning: 'Nginx 正在运行',
     titleStopped: 'Nginx 未运行',
     systemdUnit: 'systemd: nginx.service',

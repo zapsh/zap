@@ -186,6 +186,8 @@ const enUS: Messages = {
     'server-monitor': 'Server Monitor',
     process: 'Processes',
     'system-service': 'System Services',
+    // Log viewer (backend menus name=server-status-logs, under Server status)
+    'server-status-logs': 'Log Viewer',
     // Service config (backend menus id=82, under Server config; nav pills per service)
     'server-service-conf': 'Service Config',
     runtime: 'Runtime',
@@ -1498,6 +1500,41 @@ const enUS: Messages = {
     actionSuccess: '{label} succeeded',
   },
 
+  /** Server - log viewer (Server Status → Log Viewer) */
+  serverLogs: {
+    sources: 'Sources',
+    filterSource: 'Search log sources…',
+    noSource: 'No viewable logs',
+    noJournal: 'journalctl is unavailable — only file-based logs are listed',
+    pickSource: 'Select a log source on the left',
+    lines: 'lines',
+    keyword: 'Keyword filter',
+    filterMode: 'Matching lines only',
+    filterModeTip:
+      'On = keep only matching lines (server-side); Off = show everything and highlight matches',
+    hitCount: '{n} matched',
+    follow: 'Auto-scroll',
+    autoRefresh: 'Auto refresh',
+    download: 'Download',
+    clearView: 'Clear view',
+    empty: 'No log content',
+    lineCount: '{n} lines',
+    loadSourcesFailed: 'Failed to load log sources',
+    readFailed: 'Failed to read log',
+    addCustom: 'Add custom path',
+    customPath: 'Log path',
+    customPathTip: 'Must be an absolute path (e.g. /var/log/myapp/app.log); ".." is not allowed',
+    customPathRequired: 'Log path is required',
+    customName: 'Display name',
+    customNameTip: 'Defaults to the file name',
+    addCustomOk: 'Added',
+    addCustomFailed: 'Failed to add',
+    removeCustom: 'Remove custom source',
+    removeConfirm: 'Remove log source {path}? (Only the entry is removed, the file is kept)',
+    removeCustomOk: 'Removed',
+    removeCustomFailed: 'Failed to remove',
+  },
+
   /** Server - system services */
   serverServices: {
     title: 'System Services',
@@ -2276,6 +2313,7 @@ const enUS: Messages = {
     notInstalled: 'Nginx is not installed',
     installTip: 'Install Nginx from the App Store, then come back here to view its status',
     goAppstore: 'Go to App Store',
+    viewLogs: 'View Logs',
     titleRunning: 'Nginx is running',
     titleStopped: 'Nginx is not running',
     systemdUnit: 'systemd: nginx.service',

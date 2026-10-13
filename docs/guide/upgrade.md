@@ -143,9 +143,9 @@ zapupgrade rollback --to 1712345678-v1.0.12    # 回滚到指定备份
 适合 cron 或批量运维，需要面板「开发 → API Token」签发的 token：
 
 ```bash
-curl -k -X POST https://127.0.0.1:2600/api/system/update/apply \
+curl -k -X POST https://127.0.0.1:2663/api/system/update/apply \
   -H "Authorization: Bearer $ZAP_TOKEN"
-curl -k https://127.0.0.1:2600/api/system/update/log/<run_id> \
+curl -k https://127.0.0.1:2663/api/system/update/log/<run_id> \
   -H "Authorization: Bearer $ZAP_TOKEN"
 ```
 

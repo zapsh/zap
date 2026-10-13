@@ -430,7 +430,7 @@ pub async fn register_run(
     register_run_with_key(run_id, action, pkg, username, log_path, "").await
 }
 
-/// 登记一条**编译型**任务（安装 / 升级）。
+/// 登记一条应用商店动作任务（安装 / 升级 / 卸载）。
 ///
 /// 返回里带着准入结论：
 /// - `status = running`：拿到槽位了，调用方立刻 [`crate::zap::task::launch`]；

@@ -11,7 +11,7 @@ title: 安装
 | 操作系统 | Linux（systemd 作为服务管理器） |
 | 架构 | amd64 / arm64（另有 ppc64le、s390x 包） |
 | 权限 | root |
-| 端口 | 2600（面板，可自行调整） |
+| 端口 | 2663（面板，可自行调整） |
 
 ## 在线安装
 
@@ -28,7 +28,7 @@ sudo bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
 sudo bash install.sh latest --pro
 ```
 
-装完会打印访问地址 `https://<服务器 IP>:2600` 与管理员凭据。
+装完会打印访问地址 `https://<服务器 IP>:2663` 与管理员凭据。
 
 ### 常用参数
 
