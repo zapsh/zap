@@ -8,7 +8,7 @@
 
 [![Rust](https://img.shields.io/badge/Rust-2024%20Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen?logo=vue.js)](https://vuejs.org)
-[![Version](https://img.shields.io/badge/version-1.3.1-blue)](https://github.com/zapsh/zap)
+[![Version](https://img.shields.io/badge/version-1.3.11-blue)](https://github.com/zapsh/zap)
 [![Platform](https://img.shields.io/badge/platform-Linux%20amd64%20%7C%20arm64-lightgrey?logo=linux)](https://www.kernel.org)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
 
@@ -42,6 +42,7 @@ ZAP 是一款面向 Linux 服务器与 VPS 打造的现代化、轻量级、高�
 - **Docker**: Docker 容器、镜像、网络与 Compose 一站式管理
 - **多用户体系**：Admin/Reseller/User、套餐与分销、TOTP 两步验证、审计日志
 - **升级与备份**：面板 / 命令行 / 安装脚本三种升级入口，备份 → 原子替换 → 失败自动回滚
+- **云存储**：集成 OpenDAL，并支持与 S3 兼容的云存储。
 
 ## 快速开始
 

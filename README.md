@@ -8,7 +8,7 @@ A lightweight, high-performance Linux server control panel written in Rust.
 
 [![Rust](https://img.shields.io/badge/Rust-2024%20Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen?logo=vue.js)](https://vuejs.org)
-[![Version](https://img.shields.io/badge/version-1.3.1-blue)](https://github.com/zapsh/zap)
+[![Version](https://img.shields.io/badge/version-1.3.11-blue)](https://github.com/zapsh/zap)
 [![Platform](https://img.shields.io/badge/platform-Linux%20amd64%20%7C%20arm64-lightgrey?logo=linux)](https://www.kernel.org)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
 
@@ -40,8 +40,9 @@ ZAP is a modern, lightweight and security-focused control panel built for Linux 
 - **Server operations**: real-time monitoring, file manager, web SSH terminal, cron jobs, firewall (firewalld / ufw / nftables / iptables)
 - **Databases**: visual MySQL / MariaDB management
 - **Docker**: all-in-one management of containers, images, networks and Compose
-- **Multi-tenant**: Admin / Reseller / User roles, plans and reselling, TOTP two-factor authentication, audit log
+- **Multi-tenant**: Admin / Reseller / User roles, packages and reselling, TOTP two-factor authentication, audit log
 - **Upgrade & backup**: three upgrade entry points (panel / CLI / install script), backup → atomic replace → automatic rollback on failure
+- **Cloud Storage**: Integrates OpenDAL and supports cloud storage compatible with S3.
 
 ## Quick Start
 

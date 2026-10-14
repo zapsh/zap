@@ -1,25 +1,16 @@
-# FAQ
+# Frequently Asked Questions (FAQ)
 
-> Source: `FAQ.md` (repo root).  
-> Copied to `data/www/html/FAQ.md` by `build.sh`,  
-> rendered to HTML by `GET /api/docs/faq`.
+> Source document: `FAQ_zh-CN.md` (located at the root of the repository).
+> Copied by `build.sh` to `data/www/html/FAQ_zh-CN.md`.
+> The backend `GET /api/docs/faq?lang=zh-CN` is rendered into HTML and displayed.
 
-## Q1: Login fails / token expired
+## Q1: How to modify the port
 
-- Make sure cookies are not disabled in the browser.
-- Confirm `data/zapd.yaml`'s `jwt_secret` was not reset on restart.
-
-## Q2: New site returns 502
-
-- Confirm PHP-FPM is running.
-- Confirm the site `path` exists with the right permissions.
-
-## Q3: Some menu items vanished after upgrade
-
-- Check whether `data/zap.db` was touched by the migration script; during
-  development, just rebuild the database from the seeds in `init_db.rs`.
-
-## Q4: API CORS returns 401
-
-- Either turn off `cookie_only` in **System → Zap → JWT**, or set
-  `Access-Control-Allow-Credentials` properly on the reverse proxy.
+- Modify the zap.yaml file
+  ```yaml
+  server:
+  address: 0.0.0.0
+  port: 2663
+  # If set to 'zap', the backend access must include the prefix: https://<server>:port/zap; otherwise 404 error
+  url_prefix: ""
+  ```
