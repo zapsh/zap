@@ -2392,6 +2392,47 @@ pub enum Request {
         #[serde(default)]
         dir: String,
     },
+
+    // ── 系统软件源管理（root 特权）────────────────────────────
+    // 只覆盖发行版约定的源目录，不做任意 shell：包管理器白名单在 exec 侧。
+    /// 列出当前系统的软件源文件（含发行版与包管理器识别）。
+    #[serde(rename = "os_repo.list")]
+    OsRepoList,
+    /// 读取一个源文件内容（路径须位于源目录内）。
+    #[serde(rename = "os_repo.read")]
+    OsRepoRead { path: String },
+    /// 保存源文件：先备份再原子替换，dry_run 只校验不落盘。
+    #[serde(rename = "os_repo.save")]
+    OsRepoSave {
+        path: String,
+        content: String,
+        #[serde(default)]
+        dry_run: bool,
+    },
+    /// 删除一个第三方源文件（删除前备份，主源文件不允许删）。
+    #[serde(rename = "os_repo.delete")]
+    OsRepoDelete { path: String },
+    /// 列出软件源的备份文件（`{ZAP_PATH}/data/backups/osrepo/`）。
+    #[serde(rename = "os_repo.backups")]
+    OsRepoBackups,
+    /// 读取一个备份文件的内容（仅文件名，防路径穿越）。
+    #[serde(rename = "os_repo.backup_read")]
+    OsRepoBackupRead { name: String },
+    /// 从备份还原源文件。
+    #[serde(rename = "os_repo.restore")]
+    OsRepoRestore {
+        /// 备份文件名（仅文件名，防路径穿越）
+        backup: String,
+        /// 还原目标路径（须位于源目录内）
+        path: String,
+    },
+    /// 更新包管理器缓存（apt-get update / dnf makecache / yum makecache）。
+    #[serde(rename = "os_repo.cache_update")]
+    OsRepoCacheUpdate {
+        /// 包管理器：apt / dnf / yum（留空则按系统自动选择）
+        #[serde(default)]
+        manager: String,
+    },
 }
 
 /// `zapexec` -> `zapd` 的响应。

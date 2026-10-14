@@ -76,6 +76,7 @@ pub mod system_log;
 pub mod system_menu;
 pub mod system_migrate;
 pub mod system_nginx;
+pub mod system_repo;
 pub mod system_role;
 pub mod system_service_conf;
 pub mod system_services;
@@ -655,6 +656,20 @@ fn api_routers() -> Router {
         .route("/system/services/overview", get(system_services::overview))
         .route("/system/services/control", post(system_services::control))
         .route("/system/services/boot", post(system_services::boot))
+        // 系统软件源管理（系统管理 → 软件源，admin only）：换源 / 第三方源 / 备份还原 / 更新缓存
+        .route("/system/repo/status", get(system_repo::status))
+        .route("/system/repo/catalog", get(system_repo::catalog))
+        .route("/system/repo/preview", post(system_repo::preview))
+        .route("/system/repo/apply", post(system_repo::apply))
+        .route(
+            "/system/repo/file",
+            get(system_repo::file_read).post(system_repo::file_save),
+        )
+        .route("/system/repo/delete", post(system_repo::file_delete))
+        .route("/system/repo/backups", get(system_repo::backups))
+        .route("/system/repo/backup", get(system_repo::backup_read))
+        .route("/system/repo/restore", post(system_repo::restore))
+        .route("/system/repo/cache", post(system_repo::cache))
         // ModSecurity（WAF，可选能力：未安装时除 status 外一律拒绝）
         .route("/system/waf/status", get(system_waf::status))
         .route("/system/waf/install", post(system_waf::install))

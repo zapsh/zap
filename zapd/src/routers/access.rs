@@ -1021,6 +1021,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::module("service.conf")),
     ),
     (
+        // 系统软件源管理：换源 / 第三方源 / 备份还原，误操作会让整机装不了包
+        "/system/repo",
+        Required::Admin,
+        Some(Perm::module("system.repo")),
+    ),
+    (
         "/system/package",
         Required::Reseller,
         Some(Perm::module("system.package")),

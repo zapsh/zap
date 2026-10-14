@@ -17,6 +17,7 @@ mod logs;
 mod network;
 mod nginx;
 mod nginx_conf;
+mod osrepo;
 mod php;
 mod php_ext;
 mod platform;
@@ -881,6 +882,18 @@ pub async fn dispatch(req: Request) -> Response {
             .await
         }
         Request::BackupDisk { dir } => backup::disk(dir).await,
+        Request::OsRepoList => osrepo::list().await,
+        Request::OsRepoRead { path } => osrepo::read(path).await,
+        Request::OsRepoSave {
+            path,
+            content,
+            dry_run,
+        } => osrepo::save(path, content, dry_run).await,
+        Request::OsRepoDelete { path } => osrepo::delete(path).await,
+        Request::OsRepoBackups => osrepo::backups().await,
+        Request::OsRepoBackupRead { name } => osrepo::backup_read(name).await,
+        Request::OsRepoRestore { backup, path } => osrepo::restore(backup, path).await,
+        Request::OsRepoCacheUpdate { manager } => osrepo::cache_update(manager).await,
     }
 }
 
