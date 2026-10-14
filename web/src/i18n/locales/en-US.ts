@@ -230,6 +230,7 @@ const enUS: Messages = {
     totpRequired: 'Please enter the 6-digit code',
     totpTip:
       'Two-factor authentication is enabled for this account. Enter the 6-digit code shown in your authenticator app.',
+    welcome: 'Welcome back',
     strengthLabel: 'Password strength: ',
     strengthWeak: 'Weak',
     strengthFair: 'Fair',

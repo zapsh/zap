@@ -249,6 +249,7 @@ export default {
     passwordTooLong: '密码长度不能超过128个字符',
     totpRequired: '请输入6位数字验证码',
     totpTip: '该账号已启用两步验证，请输入身份验证器中显示的 6 位动态码',
+    welcome: '欢迎回来',
     strengthLabel: '密码强度：',
     strengthWeak: '弱',
     strengthFair: '一般',

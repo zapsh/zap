@@ -1,14 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
-import { ref, reactive, computed, nextTick } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { useLocale } from '@/composables/useLocale'
-import type { FormInstance, FormRules } from 'element-plus'
+import type { FormInstance, FormRules, InputOtpInstance } from 'element-plus'
 import type { LoginForm } from '@/types/user'
-import { Key, Lock, Translate, User } from '@/icons'
+import { ElectricBoltOutline, Lock, User } from '@/icons'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -26,7 +26,7 @@ const loginForm = reactive<LoginForm>({
 
 // 两步验证（TOTP）第二步是否可见
 const showTotp = ref(false)
-const totpInputRef = ref()
+const totpInputRef = ref<InputOtpInstance>()
 
 // 密码强度计算
 const passwordStrength = computed(() => {
@@ -73,9 +73,15 @@ const loginRules = computed<FormRules>(() => ({
 const loginFormRef = ref<FormInstance>()
 const loading = ref(false)
 
+// 进入登录页自动聚焦用户名（登录过期跳转/刷新后重新挂载时，方便直接输入）
+const usernameInputRef = ref()
+onMounted(() => {
+  nextTick(() => usernameInputRef.value?.focus())
+})
+
 // 登录方法（两步验证：密码正确但未提交验证码时进入第二步）
 const handleLogin = async (formEl: FormInstance | undefined) => {
-  if (!formEl) return
+  if (!formEl || loading.value) return
 
   // 已进入第二步时必须先填写验证码
   if (showTotp.value && !/^\d{6}$/.test(loginForm.totp_code || '')) {
@@ -123,182 +129,255 @@ const handleLogin = async (formEl: FormInstance | undefined) => {
 </script>
 
 <template>
-  <div class="login-container">
-    <!-- 语言切换：登录是「第一眼」界面，英文用户第一次进来也能看懂 -->
-    <div class="locale-switch">
-      <span
-        v-for="item in localeOptions"
-        :key="item.value"
-        class="locale-item"
-        :class="{ active: locale === item.value }"
-        @click="changeLocale(item.value)"
-      >
-        {{ item.label }}
-      </span>
-    </div>
+  <div class="login-page">
+    <!-- 居中登录区 -->
+    <main class="login-main">
+      <section class="login-card">
+        <span class="card-logo">
+          <el-icon :size="24"><ElectricBoltOutline /></el-icon>
+        </span>
+        <h3 class="title">{{ t('login.welcome') }}</h3>
 
-    <el-form
-      ref="loginFormRef"
-      :model="loginForm"
-      :rules="loginRules"
-      class="login-form"
-      autocomplete="on"
-      label-position="top"
-      @submit.prevent
-    >
-      <div class="title-container">
-        <h3 class="title">ZAP</h3>
-      </div>
-
-      <el-form-item prop="username">
-        <el-input
-          v-model="loginForm.username"
-          :placeholder="t('login.username')"
-          type="text"
-          tabindex="1"
+        <el-form
+          ref="loginFormRef"
+          :model="loginForm"
+          :rules="loginRules"
+          class="login-form"
           autocomplete="on"
+          label-position="top"
+          @submit.prevent
         >
-          <template #prefix>
-            <el-icon><User /></el-icon>
-          </template>
-        </el-input>
-      </el-form-item>
+          <el-form-item prop="username">
+            <el-input
+              ref="usernameInputRef"
+              v-model="loginForm.username"
+              :placeholder="t('login.username')"
+              type="text"
+              size="large"
+              tabindex="1"
+              autocomplete="username"
+            >
+              <template #prefix>
+                <el-icon><User /></el-icon>
+              </template>
+            </el-input>
+          </el-form-item>
 
-      <el-form-item prop="password">
-        <el-input
-          v-model="loginForm.password"
-          :placeholder="t('login.password')"
-          type="password"
-          tabindex="2"
-          autocomplete="on"
-          show-password
-          @keyup.enter="handleLogin(loginFormRef)"
-        >
-          <template #prefix>
-            <el-icon><Lock /></el-icon>
-          </template>
-        </el-input>
-        <!-- 密码强度指示器 -->
-        <div v-if="loginForm.password" class="password-strength">
-          <span class="strength-label">{{ t('login.strengthLabel') }}</span>
-          <span :style="{ color: passwordStrength.color }" class="strength-text">
-            {{ passwordStrength.text }}
-          </span>
-          <div class="strength-bar">
-            <div
-              v-for="i in 5"
-              :key="i"
-              class="strength-segment"
-              :class="{ active: i <= passwordStrength.level }"
-              :style="{
-                backgroundColor:
-                  i <= passwordStrength.level
-                    ? passwordStrength.color
-                    : 'var(--el-border-color-lighter)',
-              }"
+          <el-form-item prop="password">
+            <el-input
+              v-model="loginForm.password"
+              :placeholder="t('login.password')"
+              type="password"
+              size="large"
+              tabindex="2"
+              autocomplete="current-password"
+              show-password
+              @keyup.enter="handleLogin(loginFormRef)"
+            >
+              <template #prefix>
+                <el-icon><Lock /></el-icon>
+              </template>
+            </el-input>
+            <!-- 密码强度指示器 -->
+            <div v-if="loginForm.password" class="password-strength">
+              <span class="strength-label">{{ t('login.strengthLabel') }}</span>
+              <span :style="{ color: passwordStrength.color }" class="strength-text">
+                {{ passwordStrength.text }}
+              </span>
+              <div class="strength-bar">
+                <div
+                  v-for="i in 5"
+                  :key="i"
+                  class="strength-segment"
+                  :class="{ active: i <= passwordStrength.level }"
+                  :style="{
+                    backgroundColor:
+                      i <= passwordStrength.level
+                        ? passwordStrength.color
+                        : 'var(--el-border-color-lighter)',
+                  }"
+                />
+              </div>
+            </div>
+          </el-form-item>
+
+          <el-form-item v-if="showTotp" prop="totp_code">
+            <el-input-otp
+              ref="totpInputRef"
+              v-model="loginForm.totp_code"
+              :maxlength="6"
+              format="number"
+              class="totp-input"
+              @complete="handleLogin(loginFormRef)"
             />
-          </div>
-        </div>
-      </el-form-item>
+            <div class="totp-tip">{{ t('login.totpTip') }}</div>
+          </el-form-item>
 
-      <el-form-item v-if="showTotp" prop="totp_code">
-        <el-input
-          ref="totpInputRef"
-          v-model="loginForm.totp_code"
-          :placeholder="t('login.totpCode')"
-          type="text"
-          maxlength="6"
-          tabindex="3"
-          autocomplete="one-time-code"
-          inputmode="numeric"
-          @keyup.enter="handleLogin(loginFormRef)"
+          <el-button
+            class="submit-btn"
+            :loading="loading"
+            type="primary"
+            size="large"
+            @click="handleLogin(loginFormRef)"
+          >
+            {{ t('login.submit') }}
+          </el-button>
+        </el-form>
+      </section>
+
+      <!-- 语言切换：放在登录卡片下方，英文用户第一次进来也能看懂 -->
+      <div class="locale-switch">
+        <span
+          v-for="item in localeOptions"
+          :key="item.value"
+          class="locale-item"
+          :class="{ active: locale === item.value }"
+          @click="changeLocale(item.value)"
         >
-          <template #prefix>
-            <el-icon><Key /></el-icon>
-          </template>
-        </el-input>
-        <div class="totp-tip">{{ t('login.totpTip') }}</div>
-      </el-form-item>
-
-      <el-button
-        :loading="loading"
-        type="primary"
-        style="width: 100%; margin-bottom: 30px"
-        @click="handleLogin(loginFormRef)"
-      >
-        {{ t('login.submit') }}
-      </el-button>
-    </el-form>
+          {{ item.label }}
+        </span>
+      </div>
+    </main>
   </div>
 </template>
 
 <style lang="scss" scoped>
-.login-container {
+.login-page {
   position: relative;
   min-height: 100vh;
   width: 100%;
-  background-color: var(--el-fill-color-light);
-  overflow: hidden;
   display: flex;
-  justify-content: center;
   align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  overflow: hidden;
+  background-color: var(--el-fill-color-light);
 
-  .locale-switch {
+  /* 主色柔光背景，让居中卡片更有层次、更「高级」 */
+  &::before {
+    content: '';
     position: absolute;
-    top: 20px;
-    right: 24px;
-    display: flex;
-    gap: 12px;
-    font-size: 13px;
+    width: 720px;
+    height: 720px;
+    top: -240px;
+    right: -160px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(64, 158, 255, 0.12) 0%, transparent 70%);
+    pointer-events: none;
+  }
 
-    .locale-item {
-      cursor: pointer;
-      color: var(--el-text-color-secondary);
-      user-select: none;
-      transition: color 0.2s;
+  &::after {
+    content: '';
+    position: absolute;
+    width: 640px;
+    height: 640px;
+    bottom: -260px;
+    left: -200px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(103, 194, 58, 0.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+}
 
-      &:hover {
-        color: var(--el-color-primary);
-      }
+/* ── 表单区 ─────────────────────────────────────── */
+.login-main {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+}
 
-      &.active {
-        color: var(--el-color-primary);
-        font-weight: 600;
-      }
+.locale-switch {
+  display: flex;
+  gap: 14px;
+  margin-top: 22px;
+  font-size: 13px;
+
+  .locale-item {
+    cursor: pointer;
+    color: var(--el-text-color-secondary);
+    user-select: none;
+    transition: color 0.2s;
+
+    &:hover {
+      color: var(--el-color-primary);
     }
+
+    &.active {
+      color: var(--el-color-primary);
+      font-weight: 600;
+    }
+  }
+}
+
+.login-card {
+  width: 420px;
+  max-width: 100%;
+  padding: 44px 40px 36px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+  text-align: center;
+  animation: card-in 0.35s ease-out;
+
+  .card-logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 52px;
+    margin-bottom: 18px;
+    border-radius: 14px;
+    color: #fff;
+    background: linear-gradient(140deg, var(--el-color-primary), #1b6ff0);
+    box-shadow: 0 8px 22px rgba(30, 111, 240, 0.3);
+  }
+
+  .title {
+    margin: 14px 0 28px;
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    color: var(--el-text-color-primary);
   }
 
   .login-form {
-    width: 420px;
-    max-width: 100%;
-    padding: 30px 35px;
-    background: var(--el-bg-color);
-    border-radius: 4px;
-    box-shadow: var(--el-box-shadow-light);
+    text-align: left;
+
+    :deep(.el-input__wrapper) {
+      border-radius: 8px;
+    }
   }
 
-  .title-container {
-    position: relative;
-    text-align: center;
-    margin-bottom: 30px;
+  .totp-input {
+    width: 100%;
 
-    .title {
-      font-size: 26px;
-      color: var(--el-text-color-primary);
-      margin: 0;
-      font-weight: bold;
+    :deep(.el-input__wrapper) {
+      justify-content: center;
     }
   }
 
   .totp-tip {
-    margin-top: 6px;
+    margin-top: 10px;
     font-size: 12px;
     color: var(--el-text-color-secondary);
     line-height: 1.5;
+    text-align: left;
+  }
+
+  .submit-btn {
+    width: 100%;
+    margin-top: 6px;
+    border-radius: 8px;
   }
 
   .password-strength {
     margin-top: 8px;
+    width: 100%;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -327,6 +406,17 @@ const handleLogin = async (formEl: FormInstance | undefined) => {
         transition: background-color 0.3s;
       }
     }
+  }
+}
+
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 </style>
