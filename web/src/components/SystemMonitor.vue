@@ -392,6 +392,10 @@ watch(range, (v) => {
   } else {
     stopTicker()
   }
+  // 切换范围后立刻重新拉取对应数据：历史范围不自动轮询，不主动 run()
+  // 就会停在旧范围的数据上、refreshing 一直是 false，点切换毫无反馈只能手动刷新。
+  // run() 置 refreshing=true 触发图表区与刷新按钮的 loading 状态。
+  run()
 })
 
 /** 倒计时 + 到点拉取（组件自行维护，父级无需关心） */
