@@ -71,7 +71,7 @@ pub enum ZapError {
     #[error("{1}")]
     New(i64, String),
 
-    /// 带 i18n key 的错误：前端用 key 命中 locale 翻译，`message` 作为中文兜底。
+    /// 带 i18n key 的错误：前端用 key 命中 locale 翻译，`message` 作为英文兜底（未翻译时显示）。
     #[error("{2}")]
     Key(i64, String, String),
 }
@@ -114,7 +114,7 @@ impl ZapError {
         Err(ZapError::New(code, message))
     }
 
-    /// 带 i18n key 的错误：前端按 key 命中 locale 翻译，`message` 作为中文兜底（未翻译时显示）。
+    /// 带 i18n key 的错误：前端按 key 命中 locale 翻译，`message` 作为英文兜底（未翻译时显示）。
     pub fn key(code: i64, key: impl Into<String>, message: impl Into<String>) -> ZapError {
         ZapError::Key(code, key.into(), message.into())
     }
@@ -144,7 +144,7 @@ pub fn api_err(code: i64, message: impl Into<String>) -> ZapJsonResult {
     ZapError::new(code, message.into())
 }
 
-/// 统一错误响应（带 i18n key）：`{ code, message, key }`，前端按 key 翻译，message 兜底。
+/// 统一错误响应（带 i18n key）：`{ code, message, key }`，前端按 key 翻译，message 作为英文兜底。
 pub fn api_err_key(code: i64, key: impl Into<String>, message: impl Into<String>) -> ZapJsonResult {
     Err(ZapError::key(code, key, message))
 }
