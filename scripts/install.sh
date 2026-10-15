@@ -786,7 +786,7 @@ init_admin_account() {
         [ -e "$ZAP_DIR/data/$f" ] && chown zapadm:zapadm "$ZAP_DIR/data/$f" || true
     done
     case "$out" in
-        *"未做修改"*) ADMIN_UNCHANGED=1 ;;
+        *"no changes made"*) ADMIN_UNCHANGED=1 ;;
     esac
     return 0
 }
