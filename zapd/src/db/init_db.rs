@@ -174,10 +174,6 @@ async fn init_system_user_table_schema() {
     )
     "#;
     get_db_pool().await.execute(create_sql).await.unwrap();
-<<<<<<< HEAD
-
-=======
->>>>>>> 488af4b (fix(security): stop path traversal in plugin log watch via filename allowlist + canonicalize)
 }
 
 /// 面板用户名合法性：Linux 账号名与家目录末段都派生自它，因此必须同时满足
