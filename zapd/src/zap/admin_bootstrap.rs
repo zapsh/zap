@@ -1,26 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+//! 
 //! 初始管理员的运行实体自愈 + `--init-admin` 子命令。
 //!
 //! 全新数据库只在 `user` 表里写了一条记录，真正的 Linux 账号与家目录要等
 //! zapexec(root) 去建。install.sh 在 Linux 上会先行建好，这里负责它没覆盖到的
 //! 场景：手动部署（没走 install.sh）、以及家目录被误删之后的重启恢复。
-//!
-//! 只在「家目录确实不存在」时才动手，且失败仅告警——root 侧不可用时面板本身
-//! 仍要能正常启动（登录、配置都可用，缺的只是站点/家目录能力）。
+
 
 use std::{path::Path, time::Duration};
 
 use tracing::{error, info, warn};
 
-/// `zapd --init-admin <用户名> [--admin-password <密码>]` 的实现。
+/// `zapd --init-admin <username> [--admin-password <password>]`
 ///
-/// 建库（库不存在时）→ 写入初始管理员 → 补齐 Linux 账号与家目录 → 退出。
-/// 凭据只经命令行传递，不写任何文件；已有管理员则原样不动（重跑安装脚本不会
-/// 把线上密码改回去）。返回进程退出码。
+/// 1. zap.db not exist → create admin user → exit. 
+/// only for first-time setup, or when the admin account is missing.
 pub async fn init_admin_cli(username: &str, password: Option<&str>) -> i32 {
     let username = username.trim().to_ascii_lowercase();
     if !crate::db::init_db::valid_admin_username(&username) {
-        error!("用户名 '{username}' 不合法：需小写字母或 _ 开头，只含 a-z 0-9 _ -，长度 ≤ 32");
+        error!("Username '{username}' is invalid: Start with [a-z_]; only [a-z0-9_-]; max 32 chars.");
         return 1;
     }
     let password = match password.map(str::trim).filter(|p| !p.is_empty()) {
@@ -28,7 +26,7 @@ pub async fn init_admin_cli(username: &str, password: Option<&str>) -> i32 {
         None => match zap_crypto::generate_password(16, false) {
             Ok(p) => p,
             Err(e) => {
-                error!("生成随机密码失败：{e}");
+                error!("Failed to generate a random password: {e}");
                 return 1;
             }
         },

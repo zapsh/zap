@@ -175,9 +175,6 @@ async fn init_system_user_table_schema() {
     "#;
     get_db_pool().await.execute(create_sql).await.unwrap();
 
-    // 注意：初始管理员不由这里插入，交给调用方在建表后调 ensure_initial_admin()
-    // —— 新建表的分支只在库还不存在时才会走到，而「已有库但管理员被删光」同样
-    // 需要补一条，两边统一由 ensure_initial_admin 的幂等判断覆盖。
 }
 
 /// 面板用户名合法性：Linux 账号名与家目录末段都派生自它，因此必须同时满足
@@ -192,10 +189,9 @@ pub fn valid_admin_username(u: &str) -> bool {
             .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
 }
 
-/// 初始管理员凭据：默认 `admin` / `123456`。
+/// Default admin credentials: `admin` / `123456`。
 ///
-/// install.sh 会在 zapd 首次启动前执行 `zapd --init-admin <用户> --admin-password <密码>`
-/// 覆盖它——凭据只经由命令行传递，不落任何文件。
+/// install.sh 会在 zapd 首次启动前执行 `zapd --init-admin <username> --admin-password <password>`
 static INITIAL_ADMIN: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
 
 /// 设定初始管理员凭据（`--init-admin` 用）。用户名同时派生 Linux 账号与家目录
