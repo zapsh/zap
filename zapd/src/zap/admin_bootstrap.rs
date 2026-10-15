@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 /// `zapd --init-admin <username> [--admin-password <password>]`
 ///
 /// 1. zap.db not exist → create admin user → exit.
+///
 /// only for first-time setup, or when the admin account is missing.
 pub async fn init_admin_cli(username: &str, password: Option<&str>) -> i32 {
     let username = username.trim().to_ascii_lowercase();
