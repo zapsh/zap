@@ -617,20 +617,15 @@ pub struct PluginCancelPayload {
 
 pub async fn plugin_cancel(Json(p): Json<PluginCancelPayload>) -> ZapJsonResult {
     let _claims = decode_verified(&p.token).ok_or_else(|| ZapError::New(-1, "未授权".into()))?;
-    // 校验 task_id，避免路径穿越（只允许字母数字及 -_.）
-    if !p
-        .task_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-    {
-        return Err(ZapError::New(-1, "非法 task_id".into()));
-    }
+    // 校验 task_id，避免路径穿越（复用 plugin_watch 的文件名白名单）
+    let task_id =
+        safe_log_file_name(&p.task_id).ok_or_else(|| ZapError::New(-1, "非法 task_id".into()))?;
     let base = std::env::var("ZAP_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"));
     let cancel_path = base
         .join("data/plugins/logs")
-        .join(format!("{}.log.cancel", p.task_id));
+        .join(format!("{task_id}.log.cancel"));
     std::fs::write(&cancel_path, "")
         .map_err(|e| ZapError::New(-1, format!("写取消哨兵失败: {e}")))?;
     Ok(Json(json!({ "ok": true })))
@@ -647,6 +642,54 @@ pub struct PluginWatchQuery {
     pub log_path: String,
 }
 
+/// 日志文件名白名单：只允许 `[A-Za-z0-9._-]`、不以 `.` 开头、不含 `..`。
+///
+/// 日志/哨兵路径由前端传入后拼在 `<ZAP_PATH>/data/plugins/logs/` 下。合法文件名固定为
+/// `<插件名>-<毫秒时间戳>.log(.cancel)`，上面的字符集完全覆盖；拒绝其余输入可以在
+/// canonicalize 之前就挡掉 `..`、绝对路径、反引号等畸形值，两个端点共用。
+fn safe_log_file_name(name: &str) -> Option<&str> {
+    if name.is_empty()
+        || name.starts_with('.')
+        || name.contains("..")
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// 校验客户端传入的日志路径，返回可直接使用的绝对路径。
+///
+/// 旧实现只做 `Path::starts_with` 的词法比较，`..` 不归一化，
+/// `logs/../../../etc/zap/secret.key` 即可通过校验读取任意文件。
+/// 现在：① 文件名过 `safe_log_file_name` 白名单；② 对日志目录做 canonicalize
+/// 后重新拼接（客户端传什么目录前缀都被丢弃）；③ 文件已存在时再 canonicalize
+/// 一次，确认它（或其符号链接目标）就落在日志目录内，防目录内被塞符号链接。
+async fn resolve_plugin_log_path(log_path: &str) -> Result<PathBuf, ZapError> {
+    let path = PathBuf::from(log_path);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(safe_log_file_name)
+        .ok_or_else(|| ZapError::New(-1, "非法日志路径".into()))?;
+
+    let base = std::env::var("ZAP_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"));
+    let dir = tokio::fs::canonicalize(base.join("data/plugins/logs"))
+        .await
+        .map_err(|_| ZapError::New(-1, "插件日志目录不存在".into()))?;
+    let path = dir.join(name);
+    if let Ok(real) = tokio::fs::canonicalize(&path).await
+        && real.parent() != Some(dir.as_path())
+    {
+        return Err(ZapError::New(-1, "非法日志路径".into()));
+    }
+    Ok(path)
+}
+
 pub async fn plugin_watch(
     Query(q): Query<PluginWatchQuery>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ZapError> {
@@ -654,14 +697,7 @@ pub async fn plugin_watch(
     let _claims = decode_verified(&q.token).ok_or_else(|| ZapError::New(-1, "未授权".into()))?;
 
     // 路径白名单：只允许订阅 <ZAP_PATH>/data/plugins/logs 下的日志，防止越权读取任意文件
-    let base = std::env::var("ZAP_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/usr/local/zap"));
-    let allowed = base.join("data/plugins/logs");
-    let path = PathBuf::from(&q.log_path);
-    if !path.starts_with(&allowed) {
-        return Err(ZapError::New(-1, "非法日志路径".into()));
-    }
+    let path = resolve_plugin_log_path(&q.log_path).await?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
     tokio::spawn(async move {
@@ -699,4 +735,42 @@ pub async fn plugin_watch(
         rx.recv().await.map(|item| (item, rx))
     });
     Ok(Sse::new(s).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+#[cfg(test)]
+mod plugin_log_path_tests {
+    use super::safe_log_file_name;
+
+    #[test]
+    fn accepts_legitimate_task_log_names() {
+        // 实际格式：<插件名>-<毫秒时间戳>(.log/.log.cancel)
+        for ok in [
+            "nginx-deploy-1730000000000.log",
+            "redis-check-1730000000000.log.cancel",
+            "my_plugin-1.log",
+            "a-b_c-9.d",
+        ] {
+            assert_eq!(safe_log_file_name(ok), Some(ok), "{ok} 应通过");
+        }
+    }
+
+    #[test]
+    fn rejects_traversal_and_malformed_names() {
+        for bad in [
+            "..",
+            "../secret.key",
+            "../../etc/zap/secret.key",
+            "logs/../../../etc/zap/secret.key",
+            "/etc/zap/secret.key",
+            "a/b.log",
+            "..a.log",
+            "a..b.log",
+            ".hidden.log",
+            "a b.log",
+            "a$(id).log",
+            "",
+        ] {
+            assert_eq!(safe_log_file_name(bad), None, "{bad} 应被拒绝");
+        }
+    }
 }
