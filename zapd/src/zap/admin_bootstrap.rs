@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+<<<<<<< HEAD
 //! 
+=======
+//!
+>>>>>>> 9d9e2db (fix(security): stop path traversal in plugin log watch via filename allowlist + canonicalize)
 //! 初始管理员的运行实体自愈 + `--init-admin` 子命令。
 //!
 //! 全新数据库只在 `user` 表里写了一条记录，真正的 Linux 账号与家目录要等
@@ -12,12 +16,22 @@ use tracing::{error, info, warn};
 
 /// `zapd --init-admin <username> [--admin-password <password>]`
 ///
+<<<<<<< HEAD
 /// 1. zap.db not exist → create admin user → exit. 
+=======
+/// 1. zap.db not exist → create admin user → exit.
+>>>>>>> 9d9e2db (fix(security): stop path traversal in plugin log watch via filename allowlist + canonicalize)
 /// only for first-time setup, or when the admin account is missing.
 pub async fn init_admin_cli(username: &str, password: Option<&str>) -> i32 {
     let username = username.trim().to_ascii_lowercase();
     if !crate::db::init_db::valid_admin_username(&username) {
+<<<<<<< HEAD
         error!("Username '{username}' is invalid: Start with [a-z_]; only [a-z0-9_-]; max 32 chars.");
+=======
+        error!(
+            "Username '{username}' is invalid: Start with [a-z_]; only [a-z0-9_-]; max 32 chars."
+        );
+>>>>>>> 9d9e2db (fix(security): stop path traversal in plugin log watch via filename allowlist + canonicalize)
         return 1;
     }
     let password = match password.map(str::trim).filter(|p| !p.is_empty()) {
