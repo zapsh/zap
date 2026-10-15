@@ -4,8 +4,10 @@
 //! 复用应用商店的鉴权与站点归属校验：列表/运行前确认操作者身份与站点归属，
 //! 再把解析后的上下文（家目录 / 站点 root / 站点 Linux 账号）通过白名单动词传给 zapexec。
 //!
-//! 插件统一装在系统级目录 `$ZAP_PATH/plugins/`，仅管理员可安装 / 卸载，所有用户共享、只能使用。
+//! 插件安装目录 `$ZAP_PATH/plugins/`，仅管理员可安装 / 卸载，所有用户共享、只能使用。
 //! 运行时身份由 manifest 的 `scope` 决定：`site`（站点账号）/ `user`（调用方面板用户账号）/ `system`（root）。
+//!
+//! Plugin 暂时不推荐用于生产环境
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -29,7 +31,7 @@ use crate::zap::ZapJsonResult;
 use crate::zap::audit;
 use crate::zap::jwt::{ValidatedClaims, decode_verified, is_admin};
 
-/// 上传插件包的大小上限（插件就是几个 Lua / YAML 文件，64 MB 绰绰有余）。
+/// maximum size limit for uploaded plugin file
 const PLUGIN_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 
 #[derive(Deserialize)]
