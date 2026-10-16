@@ -185,7 +185,6 @@
         }}</el-descriptions-item>
         <el-descriptions-item :label="t('database.connAddr')">
           <code>{{ status?.addr || '-' }}</code>
-          <span class="muted">{{ t('database.adminAccount', { user: status?.user || '-' }) }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="Socket">{{ status?.socket || '-' }}</el-descriptions-item>
         <el-descriptions-item :label="t('database.visibleScope')">

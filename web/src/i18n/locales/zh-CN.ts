@@ -4556,7 +4556,6 @@ export default {
     unavailable: '不可用',
     version: '版本',
     connAddr: '连接地址',
-    adminAccount: '（管理账号 {user}）',
     visibleScope: '可见范围',
     scopeAll: '全部（管理员）',
     scopePrefix: '仅 {prefix}* 前缀',

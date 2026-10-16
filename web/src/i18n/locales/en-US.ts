@@ -4664,7 +4664,6 @@ const enUS: Messages = {
     unavailable: 'Unavailable',
     version: 'Version',
     connAddr: 'Address',
-    adminAccount: ' (admin account {user})',
     visibleScope: 'Visibility',
     scopeAll: 'All (admin)',
     scopePrefix: 'Only the {prefix}* prefix',
