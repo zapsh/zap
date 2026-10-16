@@ -135,10 +135,10 @@ fn check_rate_limit(ip: IpAddr) -> Result<(), ZapError> {
     map.retain(|_, e| now.duration_since(e.window) <= RATE_LIMIT_WINDOW);
 
     // 硬上限：超过则淘汰最久未访问的 IP，防止伪造 IP 把表撑爆（DoS）
-    if map.len() >= MAX_RATE_LIMIT_ENTRIES {
-        if let Some(oldest) = map.iter().min_by_key(|(_, e)| e.seen).map(|(k, _)| *k) {
-            map.remove(&oldest);
-        }
+    if map.len() >= MAX_RATE_LIMIT_ENTRIES
+        && let Some(oldest) = map.iter().min_by_key(|(_, e)| e.seen).map(|(k, _)| *k)
+    {
+        map.remove(&oldest);
     }
 
     let entry = map.entry(ip).or_insert(RateLimitEntry {
