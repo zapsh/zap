@@ -21,14 +21,9 @@ async fn demo_readonly_guard(req: Request, next: Next) -> Result<Response, Respo
     if req.method() == Method::GET || req.uri().path().starts_with("/auth/") {
         return Ok(next.run(req).await);
     }
-    // 先拷贝 token 再异步解析（避免借用 req 跨 await）
-    let bearer = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-        .map(String::from);
-    if let Some(token) = bearer
+    // 与统一门禁一致地取令牌（头 + 查询串），否则 `?token=` 可绕过只读限制
+    let token = access::token_from_request(&req);
+    if let Some(token) = token
         && let Some(claims) = claims_from_token(&token).await
         && is_demo(&claims)
     {

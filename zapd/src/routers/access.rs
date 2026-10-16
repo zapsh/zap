@@ -1883,7 +1883,7 @@ async fn action_gate(claims: &Claims, path: &str, method: &Method) -> ActionGate
 /// 浏览器 WebSocket 无法自定义请求头，终端与实时日志端点只能把 token 放在
 /// query 里（见 `ssh_terminal::ws_terminal`、`appstore::ws_log`），
 /// 因此两种取值方式必须等价，否则 WebSocket 会被门禁挡在 401。
-fn token_from_request(req: &Request) -> Option<String> {
+pub(crate) fn token_from_request(req: &Request) -> Option<String> {
     if let Some(t) = req
         .headers()
         .get(header::AUTHORIZATION)
