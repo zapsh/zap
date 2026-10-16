@@ -8,13 +8,14 @@
  * 决定拉哪一份 md。入口在「系统设置 → About ZAP」(`/system/about`)，
  * 本路由在 constantRoutes 里以 hidden 常驻，只保证链接可达。
  *
- * 后端已经把 md 渲染为 HTML 片段，这里直接 `v-html` 展示。
- * 样式靠 `:deep(.docs-md ...)` 限制作用域，只对 Markdown 内容生效，
- * 避免污染全局。
+ * 后端把 md 渲染为 HTML 片段，这里经 DOMPurify 消毒后用 `v-html` 展示。
+ * .md 文件位于 data/www/html/，若被写入恶意内容（原始 HTML / javascript: 链接），
+ * 消毒可阻断存储型 XSS；样式仍靠 `:deep(.docs-md ...)` 限制作用域。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import DOMPurify from 'dompurify'
 import { ArrowBack } from '@/icons'
 import { getDocHtml, getDocsList, type DocMeta } from '@/api/docs'
 
@@ -53,7 +54,9 @@ async function load() {
   try {
     // locale 传给后端 → 多语言 md 回退（`_zh-CN` → `_zh` → 兜底）
     const resp = await getDocHtml(docId.value, locale.value)
-    html.value = resp.data || ''
+    // 后端把 .md 渲染成 HTML 后经 v-html 注入；.md 来自 data/www/html/（若该目录被写入，
+    // 可含恶意 HTML 或 javascript: 链接），故注入前用 DOMPurify 消毒，阻断存储型 XSS。
+    html.value = DOMPurify.sanitize(resp.data || '')
     if (!html.value) {
       error.value = t('docs.notFound')
     }
@@ -101,7 +104,8 @@ function back() {
     <el-card v-loading="loading" shadow="never" class="docs-doc__card">
       <!--
         后端返回的 HTML 是从 Markdown 渲染出来的，由后端 pulldown-cmark 控制。
-        前端不再二次处理，但通过 .docs-md 类给元素加 scoped 样式。
+        前端在 v-html 前用 DOMPurify 消毒（见 load()），阻断恶意 HTML / javascript: 链接；
+        样式靠 .docs-md 类加 scoped 样式。
       -->
       <article v-if="html" class="docs-md" v-html="html"></article>
       <el-empty v-else-if="!loading" :description="error || t('docs.notFound')" />
