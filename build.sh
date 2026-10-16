@@ -247,6 +247,23 @@ for pkg in "${PACKAGES[@]}"; do
     printf '%s' "$(sha256sum "$DIST_DIR/$pkg" | awk '{print $1}')" > "$DIST_DIR/$pkg.sha256"
     info "Uploading checksum ${pkg}.sha256 ..."
     zapfile upload zap/releases/ "$DIST_DIR/$pkg.sha256" || die "failed to upload checksum: ${pkg}"
+
+    # Ed25519 发布签名（{pkg}.sig）：私钥由 CI 以 ZAP_SIGN_KEY（Ed25519 PEM 路径）提供。
+    # 缺失时跳过（开发构建无签名，目标机需在 update_config.yaml 开启 allow_insecure_update 才能安装）。
+    if [ -n "${ZAP_SIGN_KEY:-}" ]; then
+        info "Signing ${pkg} ..."
+        openssl pkeyutl -sign -inkey "$ZAP_SIGN_KEY" -rawin \
+            -in "$DIST_DIR/$pkg" -out "$DIST_DIR/$pkg.sig.bin" \
+            || die "签名失败: ${pkg}"
+        # 导出 hex（去除空白与换行）
+        sig_hex=$(od -An -tx1 -v "$DIST_DIR/$pkg.sig.bin" | tr -d ' \n')
+        printf '%s' "$sig_hex" > "$DIST_DIR/$pkg.sig"
+        info "Uploading signature ${pkg}.sig ..."
+        zapfile upload zap/releases/ "$DIST_DIR/$pkg.sig" || die "failed to upload signature: ${pkg}"
+        rm -f "$DIST_DIR/$pkg.sig.bin"
+    else
+        warn "ZAP_SIGN_KEY 未设置，跳过发布签名（目标机需开启 allow_insecure_update 才能安装）"
+    fi
 done
 
 zapfile put "zap/releases/latest.txt" $VERSION || die "failed to update version file"

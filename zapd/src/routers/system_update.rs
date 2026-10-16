@@ -59,6 +59,7 @@ pub async fn status_get(_claims: ValidatedClaims) -> ZapJsonResult {
                 "auto": cfg.auto != 0,
                 "cron": cfg.cron,
                 "channel": cfg.channel,
+                "allow_insecure_update": cfg.allow_insecure_update != 0,
                 "last_check_at": cfg.last_check_at,
                 "last_check_version": cfg.last_check_version,
                 "last_check_has_update": cfg.last_check_has_update != 0,
@@ -91,10 +92,11 @@ pub async fn config_save(
     let cron = payload.cron.trim().to_string();
     auto_update::validate_cron(&cron).map_err(|msg| ZapError::New(-1, msg))?;
     let channel = payload.channel.trim().trim_end_matches('/').to_string();
-    if !(channel.starts_with("http://") || channel.starts_with("https://")) {
+    if !channel.starts_with("https://") {
         return Err(ZapError::New(
             -1,
-            "更新渠道需为 http(s):// 地址".to_string(),
+            "更新渠道需为 https:// 地址（离线 / 内网 http 源请在 update_config.yaml 设置 allow_insecure_update: 1）"
+                .to_string(),
         ));
     }
     updater::save_config(payload.auto, &cron, &channel)?;

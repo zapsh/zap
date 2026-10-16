@@ -51,6 +51,10 @@ pub struct UpdateConfigFile {
     pub last_check_has_update: i64,
     #[serde(default)]
     pub last_error: String,
+    /// 允许不安全的更新源（http 渠道 / 缺失签名与 sha256 时跳过校验）。
+    /// 仅用于离线 / 内网可信源；正常安装保持 0（关闭，强制 https + 强制校验）。
+    #[serde(default)]
+    pub allow_insecure_update: i64,
 }
 
 impl Default for UpdateConfigFile {
@@ -65,6 +69,7 @@ impl Default for UpdateConfigFile {
             last_check_version: String::new(),
             last_check_has_update: 0,
             last_error: String::new(),
+            allow_insecure_update: 0,
         }
     }
 }
@@ -152,6 +157,9 @@ fn normalize(mut f: UpdateConfigFile) -> UpdateConfigFile {
     }
     if f.channel.trim().is_empty() {
         f.channel = default_channel();
+    }
+    if f.allow_insecure_update != 0 && f.allow_insecure_update != 1 {
+        f.allow_insecure_update = 0;
     }
     f
 }

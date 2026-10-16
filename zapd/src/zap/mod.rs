@@ -32,6 +32,7 @@ pub mod mirror;
 pub mod notify;
 pub mod osrepo;
 pub mod plugin_schedule;
+pub mod release_key;
 pub mod script_cron;
 pub mod security_check;
 pub mod server_env;
