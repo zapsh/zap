@@ -518,7 +518,7 @@ fn check_password(pwd: &str) -> Result<(), ZapError> {
     }
     if !pwd.chars().all(|c| {
         let code = c as u32;
-        code >= 0x20 && code <= 0x7E && c != '\'' && c != '\\'
+        (0x20..=0x7E).contains(&code) && c != '\'' && c != '\\'
     }) {
         return Err(ZapError::New(
             -1,
