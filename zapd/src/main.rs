@@ -3,7 +3,11 @@
 
 use std::{env, sync::Arc, time::Duration};
 
-use axum::{Router, extract::Request, http::StatusCode};
+use axum::{
+    Router,
+    extract::Request,
+    http::{HeaderValue, StatusCode, header},
+};
 use clap::Parser;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::ServerConfig;
@@ -11,6 +15,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower_http::compression::CompressionLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tower_service::Service;
@@ -222,11 +227,44 @@ async fn main() {
     // 全局请求超时：文件上传/下载、云存储与本地互传都属于「一口气传完」的长任务，
     // 10 秒会误杀（响应还没生成就被判超时）。这里放宽到 30 分钟只做兜底，
     // 具体服务的连接/读取超时交给各自客户端（zapexec、opendal/reqwest）。
+    // 全局安全响应头：防点击劫持 / MIME 嗅探 / 传输降级 / XSS 注入。
+    // CSP 此处保留 `unsafe-inline`/`unsafe-eval` 以兼容 Vue SPA 的内联脚本与部分
+    // 运行时库；要更严格需先对前端做内联脚本审计（改用 nonce），否则会搞崩面板。
+    const SECURITY_CSP: &str = "default-src 'self'; \
+        script-src 'self' 'unsafe-inline' 'unsafe-eval'; \
+        style-src 'self' 'unsafe-inline'; \
+        img-src 'self' data: blob:; \
+        font-src 'self' data:; \
+        connect-src 'self'; \
+        frame-ancestors 'none'; \
+        base-uri 'self'; \
+        form-action 'self'; \
+        object-src 'none'";
     let app = Router::new().merge(routers::routers()).layer((
         TraceLayer::new_for_http(),
         // `TimeoutLayer::new` 已废弃，`with_status_code` 是它的等价写法（超时返回 408）
         TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(1800)),
         CompressionLayer::new(),
+        SetResponseHeaderLayer::overriding(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ),
+        SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ),
+        SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ),
+        SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(SECURITY_CSP),
+        ),
+        SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ),
     ));
 
     loop {
