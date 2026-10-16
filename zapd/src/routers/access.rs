@@ -998,6 +998,14 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Admin,
         Some(Perm::module("service.nginx")),
     ),
+    // 站点表单（location 反代缓存区下拉）用的只读字典：普通用户建站也要用。
+    // 比上面 `/system/nginx` 更具体的前缀，按最长前缀命中覆盖其 Admin 下限；
+    // 授权点与 /site/loc-directives 同款（site:view），只出缓存区名，无敏感配置。
+    (
+        "/system/nginx/global/zones",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
     // 四层转发：一条规则等于「把任意端口接到任意后端」，只给管理员
     (
         "/system/stream",
@@ -2447,6 +2455,9 @@ mod tests {
         assert_eq!(required_for("/ssl/cert/list"), Required::User);
         assert_eq!(required_for("/terminal/ws/1"), Required::User);
         assert_eq!(required_for("/appstore/packages"), Required::User);
+        // 站点表单的缓存区字典：更具体前缀覆盖 /system/nginx 的 Admin 下限
+        assert_eq!(required_for("/system/nginx/global/zones"), Required::User);
+        assert_eq!(required_for("/system/nginx/status"), Required::Admin);
         assert_eq!(required_for("/appstore/repos/add"), Required::Admin);
         assert_eq!(required_for("/appstore/script/run"), Required::Admin);
         assert_eq!(required_for("/appstore/scripts/tree"), Required::Admin);
@@ -2613,6 +2624,11 @@ mod tests {
         );
         assert_eq!(
             perm_key_for("/site/dirs", &Method::POST).as_deref(),
+            Some("site:view")
+        );
+        // 站点表单的缓存区字典：按 site:view 授权（与 /site/loc-directives 同款）
+        assert_eq!(
+            perm_key_for("/system/nginx/global/zones", &Method::GET).as_deref(),
             Some("site:view")
         );
         // GET 但会改系统状态的端点显式声明为 edit

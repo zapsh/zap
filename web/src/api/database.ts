@@ -23,8 +23,6 @@ export interface DbUser {
 export interface DbStatus {
   ok: boolean
   version: string
-  /** 管理账号（zapadm） */
-  user: string
   /** 展示用主机（127.0.0.1） */
   host?: string
   /** 服务监听端口 */

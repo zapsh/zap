@@ -698,7 +698,7 @@ pub async fn status(_claims: ValidatedClaims) -> ZapJsonResult {
     crate::zap::api_ok(json!({
         "ok": true,
         "version": version,
-        "user": CRED_USER,
+        // 不返回面板管理账号名（zapadm）：普通用户也能看状态页，避免泄露管理身份
         "host": DB_HOST,
         "port": port,
         "addr": format!("{DB_HOST}:{port}"),
