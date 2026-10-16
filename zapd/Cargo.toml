@@ -18,7 +18,9 @@ russh = { version = "0.63", default-features = false, features = [
 ] }
 futures-util = "0.3"
 tokio = { version = "1.0", features = ["full"] }
-tower-http = { version = "0.6.1", features = ["full"] }
+# 仅启用实际用到的模块：compression-gzip/deflate/br/zstd（保留 zstd）/ set-header / timeout / trace
+# 去掉 full 里 auth/cors/fs/catch-panic/metrics 等未使用的 feature，缩小依赖面与编译时间
+tower-http = { version = "0.6.1", features = ["compression-gzip", "compression-deflate", "compression-br", "compression-zstd", "set-header", "timeout", "trace"] }
 tokio-util = { version = "0.7", features = ["io"] }
 opendal = { version = "0.59", default-features = false, features = [
     "services-s3",
@@ -54,11 +56,9 @@ instant-acme = { version = "0.8", default-features = false, features = [
     "hyper-rustls",
     "ring",
     "rcgen",
-    # x509-parser：让 CertificateIdentifier 可直接从待续期证书算出（ARI 的 replaces 字段），
-    # 续期订单因此能被 Let's Encrypt 识别为续期，豁免所有频率限制
     "x509-parser",
 ] }
-# ARI 证书标识的载体类型（与 instant-acme 内部同一版本，不新增依赖树）
+# ARI acme cert
 rustls-pki-types = "1"
 # without OpenSSL
 reqwest = { version = "0.13", default-features = false, features = [
