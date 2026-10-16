@@ -15,6 +15,7 @@ data/appstore/tmp/*
 data/appstore/runs/*
 data/appstore/cache/*
 data/appstore/custom/*
+data/appstore/repos.yaml
 data/ssh_recordings/*
 data/services/*
 data/apps/*/
