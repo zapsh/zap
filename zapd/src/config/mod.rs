@@ -202,7 +202,18 @@ pub fn save_config(config: &ZapConfig) -> Result<(), String> {
     {
         return Err(format!("创建配置目录失败 {}: {e}", parent.display()));
     }
-    fs::write(&path, out).map_err(|e| format!("写入配置失败 {}: {e}", path.display()))
+    fs::write(&path, out).map_err(|e| format!("写入配置失败 {}: {e}", path.display()))?;
+
+    // 配置文件含 jwt.jwt_secure（签发管理员 JWT 的密钥）等敏感项，
+    // 收紧为仅属主读写、同组只读（0o640），避免本地用户读取后伪造管理员 JWT。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = fs::set_permissions(&path, fs::Permissions::from_mode(0o640)) {
+            warn!("设置配置文件权限失败 {}: {e}", path.display());
+        }
+    }
+    Ok(())
 }
 
 /// 在写锁内修改运行时配置并持久化到 zap.yaml（「Zap 设置」页面保存使用）。

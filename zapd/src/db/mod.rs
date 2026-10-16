@@ -9,7 +9,9 @@ use sqlx::{
     pool::Pool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
+use std::fs;
 use tokio::sync::OnceCell;
+use tracing::warn;
 
 pub static DB_POOL: OnceCell<Pool<Sqlite>> = OnceCell::const_new();
 
@@ -23,16 +25,28 @@ pub async fn get_db_pool_opt() -> Option<&'static SqlitePool> {
         .get_or_try_init(|| async {
             let filename = crate::config::get_config().read().unwrap().db.path.clone();
             let options = SqliteConnectOptions::new()
-                .filename(filename)
+                .filename(&filename)
                 .create_if_missing(true)
                 // 并发场景（部署任务频繁读写 + 面板高频读库）下，未设此项时 UPDATE
                 // 会直接报 "database is locked" 而失败；设超时让 sqlite 自旋等待而非报错，
                 // 否则 `set_app_deploy_status` 等更新可能被静默丢弃（状态卡在 deploying）。
                 .busy_timeout(std::time::Duration::from_secs(5));
-            SqlitePoolOptions::new()
+            let pool = SqlitePoolOptions::new()
                 .max_connections(50)
                 .connect_with(options)
-                .await
+                .await?;
+            // 数据库含用户凭据等敏感数据，收紧为仅属主读写、同组只读（0o640），
+            // 与 zap.yaml / secret.key 一致，避免本地用户直接读取库文件。
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(e) =
+                    tokio::fs::set_permissions(&filename, fs::Permissions::from_mode(0o640)).await
+                {
+                    warn!("设置数据库文件权限失败 {}: {e}", filename);
+                }
+            }
+            Ok::<_, sqlx::Error>(pool)
         })
         .await
         .ok()
