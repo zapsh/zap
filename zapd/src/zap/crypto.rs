@@ -50,6 +50,28 @@ pub fn decrypt_password(pwd: &str) -> String {
     }
 }
 
+/// 解密「可能为明文」的敏感字段：以 `v1:` 前缀则解密，否则原样返回。
+///
+/// 用于 TOTP secret / SSL 私钥等历史明文行尚未迁移的开发 / 过渡场景：
+/// 新写入一律走 [`encrypt`]（fail-closed，加密失败拒绝落库），旧明文行靠本函数
+/// 兜底继续可用，无需一次性迁移。解密失败（主密钥不可读等）按空值处理并告警。
+pub fn decrypt_at_rest(enc: &str) -> String {
+    if enc.is_empty() {
+        return String::new();
+    }
+    if enc.starts_with("v1:") {
+        match decrypt(enc) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("敏感字段解密失败，按空值处理: {e}");
+                String::new()
+            }
+        }
+    } else {
+        enc.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +121,19 @@ mod tests {
         assert_eq!(mask_secret("12345678"), "******");
         // 长值只留头尾各 2 位
         assert_eq!(mask_secret("MyP@ssw0rd123"), "My****23");
+    }
+
+    #[test]
+    fn decrypt_at_rest_legacy_passthrough() {
+        // 历史明文行（无 v1: 前缀）原样返回，开发/过渡期不强制迁移
+        assert_eq!(decrypt_at_rest("plain-secret"), "plain-secret");
+        assert_eq!(decrypt_at_rest(""), "");
+    }
+
+    #[test]
+    fn decrypt_at_rest_roundtrip() {
+        let enc = encrypt("my-key").unwrap();
+        assert_eq!(decrypt_at_rest(&enc), "my-key");
     }
 
     #[test]

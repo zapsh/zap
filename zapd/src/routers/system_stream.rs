@@ -1290,6 +1290,8 @@ async fn write_cert_files(rows: &[StreamRow]) -> Result<(), String> {
                 r.name, r.ssl_certificate_id
             ));
         };
+        // 私钥解密（历史明文行兼容）；磁盘/备份中始终为密文
+        let key = crate::zap::crypto::decrypt_at_rest(&key);
         if cert.trim().is_empty() || key.trim().is_empty() {
             return Err(format!(
                 "规则「{}」引用的证书（id={}）内容为空",

@@ -15,7 +15,7 @@ use tracing::warn;
 
 use crate::db;
 use crate::zap::{
-    self, ZapError, ZapJsonResult, audit, jwt::ValidatedClaims, login_history, session, totp,
+    self, ZapError, ZapJsonResult, audit, crypto, jwt::ValidatedClaims, login_history, session, totp,
 };
 
 /// 面板会话 Cookie 名。
@@ -273,7 +273,7 @@ pub async fn login(
                     "该账号已启用两步验证，请输入验证码".to_string(),
                 ));
             }
-            if !totp::verify(&row.totp_secret, &code) {
+            if !totp::verify(&crypto::decrypt_at_rest(&row.totp_secret), &code) {
                 audit::log(None, Some(&ip), "login_2fa_failed", &row.username, "").await;
                 login_history::record(
                     row.id as i64,
@@ -570,7 +570,7 @@ pub struct TotpCodePayload {
 /// GET /auth/totp/setup — 生成密钥与 otpauth URL（未启用时）。
 pub async fn totp_setup(claims: ValidatedClaims) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
-    let (enabled, existing): (i32, String) =
+    let (enabled, stored): (i32, String) =
         sqlx::query_as("SELECT totp_enabled, totp_secret FROM user WHERE id = ?")
             .bind(claims.id as i64)
             .fetch_one(pool)
@@ -582,17 +582,22 @@ pub async fn totp_setup(claims: ValidatedClaims) -> ZapJsonResult {
             "两步验证已启用，如需更换请先关闭".to_string(),
         ));
     }
-    // 复用已有未启用密钥，避免每次打开都更换
-    if existing.is_empty() {
+    // 复用已有未启用密钥（解密历史明文行），避免每次打开都更换
+    if stored.is_empty() {
         let secret = totp::generate_secret();
+        // 密钥材料加密落库（fail-closed：加密失败拒绝保存，绝不回退明文）
+        let enc = crypto::encrypt(&secret)
+            .map_err(|e| ZapError::New(-1, format!("TOTP 密钥加密失败，已拒绝保存：{e}")))?;
         let _ = sqlx::query("UPDATE user SET totp_secret = ? WHERE id = ?")
-            .bind(&secret)
+            .bind(&enc)
             .bind(claims.id as i64)
             .execute(pool)
             .await;
         let url = totp::otpauth_url(&secret, &claims.sub);
         return crate::zap::api_ok(json!({ "secret": secret, "otpauth_url": url }));
     }
+    // 已是密文存储，解密后回显给用户扫描（历史明文行也能兼容）
+    let existing = crypto::decrypt_at_rest(&stored);
     let url = totp::otpauth_url(&existing, &claims.sub);
     crate::zap::api_ok(json!({ "secret": existing, "otpauth_url": url }))
 }
@@ -604,7 +609,7 @@ pub async fn totp_verify(
     Json(payload): Json<TotpCodePayload>,
 ) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
-    let (enabled, secret): (i32, String) =
+    let (enabled, stored): (i32, String) =
         sqlx::query_as("SELECT totp_enabled, totp_secret FROM user WHERE id = ?")
             .bind(claims.id as i64)
             .fetch_one(pool)
@@ -612,9 +617,10 @@ pub async fn totp_verify(
     if enabled == 1 {
         return Err(ZapError::New(-1, "两步验证已启用".to_string()));
     }
-    if secret.is_empty() {
+    if stored.is_empty() {
         return Err(ZapError::New(-1, "请先获取验证密钥".to_string()));
     }
+    let secret = crypto::decrypt_at_rest(&stored);
     if !totp::verify(&secret, &payload.code) {
         return Err(ZapError::New(-1, "验证码错误或已失效".to_string()));
     }
@@ -641,7 +647,7 @@ pub async fn totp_disable(
     Json(payload): Json<TotpCodePayload>,
 ) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
-    let (enabled, secret): (i32, String) =
+    let (enabled, stored): (i32, String) =
         sqlx::query_as("SELECT totp_enabled, totp_secret FROM user WHERE id = ?")
             .bind(claims.id as i64)
             .fetch_one(pool)
@@ -649,6 +655,7 @@ pub async fn totp_disable(
     if enabled == 0 {
         return Err(ZapError::New(-1, "两步验证未启用".to_string()));
     }
+    let secret = crypto::decrypt_at_rest(&stored);
     if !totp::verify(&secret, &payload.code) {
         return Err(ZapError::New(-1, "验证码错误或已失效".to_string()));
     }
