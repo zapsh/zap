@@ -15,7 +15,8 @@ use tracing::warn;
 
 use crate::db;
 use crate::zap::{
-    self, ZapError, ZapJsonResult, audit, crypto, jwt::ValidatedClaims, login_history, session, totp,
+    self, ZapError, ZapJsonResult, audit, crypto, jwt::ValidatedClaims, login_history, session,
+    totp,
 };
 
 /// 面板会话 Cookie 名。
