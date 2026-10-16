@@ -1058,7 +1058,7 @@ async fn store_certificate(row: &AcmeOrderRow, chain: &str, key_pem: &str) -> Re
              WHERE id = ?",
         )
         .bind(&leaf)
-        .bind(key_pem)
+        .bind(crypto::encrypt(key_pem).map_err(|e| format!("续期私钥加密失败: {e}"))?)
         .bind(&ca)
         .bind(not_before)
         .bind(not_after)
@@ -1101,7 +1101,7 @@ async fn store_certificate(row: &AcmeOrderRow, chain: &str, key_pem: &str) -> Re
     .bind(&row.domains)
     .bind(&row.directory)
     .bind(&leaf)
-    .bind(key_pem)
+    .bind(crypto::encrypt(key_pem).map_err(|e| format!("私钥加密失败: {e}"))?)
     .bind(&ca)
     .bind(not_before)
     .bind(not_after)

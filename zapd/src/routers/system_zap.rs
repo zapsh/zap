@@ -384,6 +384,8 @@ async fn resolve_ssl(
             .await
             .map_err(|e| format!("读取证书失败: {e}"))?;
             let (cert, key, ca) = row.ok_or_else(|| "所选证书不存在".to_string())?;
+            // 私钥解密（历史明文行兼容）；磁盘/备份中始终为密文
+            let key = crate::zap::crypto::decrypt_at_rest(&key);
             if cert.trim().is_empty() {
                 return Err("所选证书缺少证书内容".to_string());
             }

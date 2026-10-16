@@ -3424,6 +3424,8 @@ async fn sync_one_site_inner(
         .await?;
         match cert {
             Some((leaf, key, ca)) if !leaf.trim().is_empty() && !key.trim().is_empty() => {
+                // 私钥解密（历史明文行兼容）；磁盘/备份中始终为密文
+                let key = crate::zap::crypto::decrypt_at_rest(&key);
                 // 归一化后再落盘：早期版本签发的证书存在 END 标记与 base64 粘连，
                 // 原样写出会让 `nginx -t` 失败（OpenSSL 要求 END 独立成行）
                 let mut chain = crate::routers::ssl::normalize_pem(leaf.trim());

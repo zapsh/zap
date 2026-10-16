@@ -231,6 +231,12 @@ pub struct CertDetailQuery {
     pub id: i64,
 }
 
+/// 私钥入库前加密（fail-closed：加密失败拒绝落库，绝不回退明文）。
+fn enc_key(raw: &str) -> Result<String, ZapError> {
+    crypto::encrypt(raw)
+        .map_err(|e| ZapError::New(-1, format!("私钥加密失败，已拒绝保存：{e}")))
+}
+
 pub async fn cert_detail(
     Query(q): Query<CertDetailQuery>,
     claims: ValidatedClaims,
@@ -242,7 +248,11 @@ pub async fn cert_detail(
         .fetch_optional(pool)
         .await?;
     match row {
-        Some(r) => Ok(Json(json!({ "code": 0, "message": "OK", "data": r }))),
+        Some(mut r) => {
+            // 私钥解密后回显（历史明文行也能兼容），磁盘/备份中始终为密文
+            r.key_content = crypto::decrypt_at_rest(&r.key_content);
+            Ok(Json(json!({ "code": 0, "message": "OK", "data": r })))
+        }
         None => Err(ZapError::Key(
             -1,
             "api.ssl.certNotFound".to_string(),
@@ -336,7 +346,7 @@ pub async fn cert_add(
     .bind(&name)
     .bind(&domains)
     .bind(payload.cert_content.trim())
-    .bind(payload.key_content.trim())
+    .bind(enc_key(payload.key_content.trim())?)
     .bind(payload.ca_bundle.trim())
     .bind(payload.csr.trim())
     .bind(not_before)
@@ -467,7 +477,7 @@ pub async fn cert_update(
         qb.push(", cert_content = ").push_bind(v.trim());
     }
     if let Some(v) = payload.key_content.as_deref() {
-        qb.push(", key_content = ").push_bind(v.trim());
+        qb.push(", key_content = ").push_bind(enc_key(v.trim())?);
     }
     if let Some(v) = payload.ca_bundle.as_deref() {
         qb.push(", ca_bundle = ").push_bind(v.trim());
@@ -1152,7 +1162,7 @@ pub async fn cert_self_sign(
     .bind(&name)
     .bind(&domains_str)
     .bind(&cert_pem)
-    .bind(&key_pem)
+    .bind(enc_key(key_pem.trim())?)
     .bind(&csr_pem)
     .bind(not_before)
     .bind(not_after)
