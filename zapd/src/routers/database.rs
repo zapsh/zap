@@ -333,6 +333,7 @@ async fn root_conn() -> Result<MySqlConnection, ZapError> {
 /// root 凭据与 zapadm 凭据同在一个凭据库（root 写、面板组读），这里只是把
 /// 安装脚本本来就该做的事补做一遍；root 也连不上就原样报错，不掩盖真实原因。
 async fn repair_zapadm(pwd: &str) -> Result<(), ZapError> {
+    check_password(pwd)?;
     let mut conn = root_conn().await?;
     let escaped = escape_literal(pwd);
     let mut sqls: Vec<String> = Vec::new();
@@ -457,7 +458,8 @@ async fn query_rows(sql: &str) -> Result<Vec<Vec<String>>, ZapError> {
 }
 
 /// 在已有连接上依次执行若干条语句（MySQL 不支持预编译参数化 DDL，
-/// 标识符与字面量仍由调用方按规则校验 / 转义后拼进 SQL）。
+/// 故账户密码先经 `check_password` 校验字符集、再用 `escape_literal` 转义后拼入；
+/// 标识符（库名/用户名/host）则由 check_ident / check_host 校验后再拼入）。
 async fn exec_on(conn: &mut MySqlConnection, sqls: &[String]) -> Result<(), ZapError> {
     for sql in sqls {
         sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
@@ -497,8 +499,33 @@ fn check_ident(name: &str, label: &str) -> Result<String, ZapError> {
 }
 
 /// 转义 SQL 字符串字面量（用于密码等）。
+///
+/// 仅对 `\` 与 `'` 做反斜杠转义，其正确性依赖 `sql_mode`：在 `NO_BACKSLASH_ESCAPES`
+/// 下 `\` 不再转义 `'`，故调用方**必须先经 `check_password` 校验密码字符集**，
+/// 保证密码不含 `'` / `\`，本函数才会安全（此时等价无操作）。
 fn escape_literal(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+/// 校验账户密码字符集：仅允许可打印 ASCII，且不得含单引号 `'` 或反斜杠 `\`。
+///
+/// 这是防 SQL 注入的主防线——`NO_BACKSLASH_ESCAPES` 模式下 `\'` 会被当作
+/// 「字面反斜杠 + 闭合引号」从而注入，因此直接禁止密码出现 `'` 与 `\`，
+/// 同时规避默认模式下 `\` 紧随 `'` 的转义歧义。长度限制由各入口另行校验。
+fn check_password(pwd: &str) -> Result<(), ZapError> {
+    if pwd.is_empty() {
+        return Err(ZapError::New(-1, "密码不能为空".to_string()));
+    }
+    if !pwd.chars().all(|c| {
+        let code = c as u32;
+        code >= 0x20 && code <= 0x7E && c != '\'' && c != '\\'
+    }) {
+        return Err(ZapError::New(
+            -1,
+            "密码只能包含可打印 ASCII 字符，且不能包含单引号 (') 或反斜杠 (\\)".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// 主机部分（用于 user@host）：允许 %、IP、localhost 与域名。
@@ -893,6 +920,7 @@ pub(crate) async fn create_schema(
         }
         _ => gen_db_password(),
     };
+    check_password(&password)?;
 
     // 逐个来源建号并授权：任何一个失败，只回滚**本次新建**的账号，
     // 不动同名的既有账号（那可能是用户自己建的，删掉会误伤）。
@@ -949,6 +977,8 @@ pub async fn create(claims: ValidatedClaims, Json(req): Json<CreateDbReq>) -> Za
 // ── AppStore provision：为建站包分配数据库 ──────────────────
 
 /// 库是否已存在（用于 provision 自动避让重名）。
+///
+/// `name` 已先经 `check_ident` 校验（allowlist），`escape_literal` 在此等价无操作。
 async fn schema_exists(name: &str) -> bool {
     let sql = format!(
         "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{}'",
@@ -1104,6 +1134,7 @@ pub async fn user_create(claims: ValidatedClaims, Json(req): Json<UserCreateReq>
     if req.password.len() < 8 {
         return Err(ZapError::New(-1, "密码长度不能少于 8 位".to_string()));
     }
+    check_password(&req.password)?;
     let pwd = escape_literal(&req.password);
 
     let mut sqls = vec![format!(
@@ -1202,6 +1233,7 @@ pub async fn remote_grant(
                 if p.len() < 8 {
                     return Err(ZapError::New(-1, "密码长度不能少于 8 位".to_string()));
                 }
+                check_password(p)?;
                 sqls.push(format!(
                     "CREATE USER {ident} IDENTIFIED BY '{}'",
                     escape_literal(p)
@@ -1258,6 +1290,45 @@ mod tests {
         assert_eq!(host_targets("::1"), all);
         // 大小写、两侧空白都归一
         assert_eq!(host_targets(" LocalHost "), all);
+    }
+
+    #[test]
+    fn check_password_rejects_dangerous_chars() {
+        // NO_BACKSLASH_ESCAPES 下可闭合字符串 / 注入的危险字符必须被拒
+        for bad in [
+            "x' OR '1'='1",
+            "a\\b",
+            "'; DROP USER zapadm@'%'; --",
+            "has'quote",
+            "has\\backslash",
+            "",
+        ] {
+            assert!(check_password(bad).is_err(), "应拒绝: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn check_password_accepts_safe_charset() {
+        for ok in [
+            "normal_pass_123",
+            "Abc123!@#",
+            "password with space",
+            "Az09",
+            "Mixed-Case_2024.",
+        ] {
+            assert!(check_password(ok).is_ok(), "应接受: {ok:?}");
+        }
+    }
+
+    #[test]
+    fn escape_literal_is_safe_on_validated_password() {
+        // 经 check_password 校验后不含 ' 与 \，escape_literal 不引入可闭合字符串的字符，
+        // 无论服务端是否开启 NO_BACKSLASH_ESCAPES 都安全。
+        let pwd = "Normal_Pass-123.ABC";
+        assert!(check_password(pwd).is_ok());
+        let lit = escape_literal(pwd);
+        assert!(!lit.contains('\''), "合法密码经转义后不得含引号: {lit}");
+        assert!(!lit.contains('\\'), "合法密码经转义后不得含反斜杠: {lit}");
     }
 
     #[tokio::test]
