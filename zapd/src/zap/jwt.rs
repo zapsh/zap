@@ -4,7 +4,7 @@ use std::time::{self, UNIX_EPOCH};
 use axum::{
     Json, RequestPartsExt,
     extract::FromRequestParts,
-    http::{StatusCode, request::Parts},
+    http::{StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
 use axum_extra::{
@@ -19,8 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use sha2::{Digest, Sha256};
+use std::net::SocketAddr;
 
-use crate::{config, db};
+use crate::{config, db, zap::audit};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
@@ -271,10 +272,15 @@ where
 }
 
 async fn extract_claims(parts: &mut Parts) -> Result<Claims, AuthError> {
-    let TypedHeader(Authorization(bearer)) = parts
-        .extract::<TypedHeader<Authorization<Bearer>>>()
-        .await
-        .map_err(|_| AuthError::MissingCredentials)?;
+    let TypedHeader(Authorization(bearer)) =
+        match parts.extract::<TypedHeader<Authorization<Bearer>>>().await {
+            Ok(h) => h,
+            Err(_) => {
+                // 门禁：缺失凭据也写审计，便于追溯（见 audit_auth_denied）
+                audit_auth_denied(parts, "missing_token").await;
+                return Err(AuthError::MissingCredentials);
+            }
+        };
 
     let raw = bearer.token();
 
@@ -282,29 +288,73 @@ async fn extract_claims(parts: &mut Parts) -> Result<Claims, AuthError> {
     if raw.starts_with(API_TOKEN_PREFIX) {
         return match resolve_api_token(raw).await {
             Some(claims) => Ok(claims),
-            None => Err(AuthError::InvalidToken),
+            None => {
+                audit_auth_denied(parts, "invalid_api_token").await;
+                Err(AuthError::InvalidToken)
+            }
         };
     }
 
-    let secure_key = &config::get_config().read().unwrap().jwt.jwt_secure;
-    let token_data = decode::<Claims>(
+    // 取出 owned 的密钥副本：read guard 立即释放，避免在非 Send 的 guard 跨 await 时
+    // 破坏 FromRequestParts 要求的 Send 约束（audit_auth_denied 在错误分支 await）
+    let secure_key = config::get_config().read().unwrap().jwt.jwt_secure.clone();
+    let token_data = match decode::<Claims>(
         raw,
         &DecodingKey::from_secret(secure_key.as_ref()),
         &Validation::default(),
-    )
-    .map_err(|e| {
-        if *e.kind() == ErrorKind::ExpiredSignature {
-            return AuthError::ExpiredSignature;
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            let reason = if *e.kind() == ErrorKind::ExpiredSignature {
+                "expired"
+            } else {
+                "invalid_token"
+            };
+            audit_auth_denied(parts, reason).await;
+            return Err(if *e.kind() == ErrorKind::ExpiredSignature {
+                AuthError::ExpiredSignature
+            } else {
+                AuthError::InvalidToken
+            });
         }
-        AuthError::InvalidToken
-    })?;
+    };
 
     let claims = token_data.claims;
     // 「下线所有设备」后，此前签发的 token 版本号落后，一律作废
     if crate::zap::session::version_of(claims.id) > claims.token_version {
+        audit_auth_denied(parts, "revoked").await;
         return Err(AuthError::TokenRevoked);
     }
     Ok(claims)
+}
+
+/// 门禁拒绝（令牌缺失 / 非法 / 过期 / 已吊销）写入审计，便于追溯越权尝试。
+///
+/// 在鉴权抽取阶段即落库：记录来源 IP、`user_agent`、被访问路径与拒绝原因（`result=failure`）。
+/// IP 由连接层写入请求的 `SocketAddr` 扩展（见 `main.rs` 的 `serve_connection`）。
+async fn audit_auth_denied(parts: &Parts, reason: &str) {
+    let ip = parts
+        .extensions
+        .get::<SocketAddr>()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_default();
+    let ua = parts
+        .headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let path = parts.uri.path().to_string();
+    audit::log_with(
+        None,
+        Some(&ip),
+        "auth_denied",
+        reason,
+        &format!("path={path}"),
+        "failure",
+        &ua,
+    )
+    .await;
 }
 
 impl IntoResponse for AuthError {
