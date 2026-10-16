@@ -154,6 +154,10 @@ EXEC_SOCKET="$RUN_DIR/sock/exec.sock"
 EXEC_SECRET="$RUN_DIR/exec.key"
 DEV_CONF="$RUN_DIR/zap.dev.yaml"
 DEV_USER="$(id -un)"
+# 面板运行组：凭据文件（/etc/zap/credentials）要 chgrp 给它，zapd 才读得到。
+# 生产默认组是 zapadm；dev 下 zapd 跑在当前用户上，组不存在时 chgrp 会静默跳过，
+# 凭据留在 root:root → 数据库菜单的环境门禁探测（zapadm 凭据可读性）永远 false。
+DEV_GROUP="$(id -gn "$DEV_USER")"
 
 
 CONF_URL_PREFIX=""
@@ -285,7 +289,7 @@ trap cleanup EXIT INT TERM
 
 # ── 4. 启动 zapexec (root) ──────────────────────────────────
 info "启动 zapexec (root)：socket=$EXEC_SOCKET client-user=$DEV_USER"
-ZAPEXEC_ENVS=(env ZAP_PATH="$ROOT_DIR")
+ZAPEXEC_ENVS=(env ZAP_PATH="$ROOT_DIR" ZAP_PANEL_GROUP="$DEV_GROUP")
 if [ -n "${ZAP_APPS_DIR:-}" ]; then
   ZAPEXEC_ENVS+=(ZAP_APPS_DIR="$ZAP_APPS_DIR")
 fi
@@ -308,7 +312,7 @@ fi
 # zapd 也要注入同一个 ZAP_PATH：否则其数据目录回退到默认 /usr/local/zap，
 # 与 zapexec（已注入 ZAP_PATH=$ROOT_DIR）错位 —— 典型表现就是异步插件日志流
 # 打开失败（「非法日志路径」：zapexec 把日志写到 $ROOT_DIR/...，zapd 却只白名单 /usr/local/zap/...）。
-ZAP_PATH="$ROOT_DIR" ZAP_CONFIG="$DEV_CONF" "$BIN_DIR/zapd" &
+ZAP_PATH="$ROOT_DIR" ZAP_CONFIG="$DEV_CONF" ZAP_PANEL_GROUP="$DEV_GROUP" "$BIN_DIR/zapd" &
 ZAPD_PID=$!
 
 echo ""

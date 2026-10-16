@@ -101,8 +101,19 @@ fn gid_of(group: &str) -> Option<u32> {
 /// 把文件/目录的属组改为面板组（保持属主不变）。非 root 时静默失败。
 #[cfg(unix)]
 fn chgrp_panel(path: &Path) {
-    if let Some(gid) = gid_of(&panel_group()) {
-        let _ = std::os::unix::fs::chown(path, None, Some(gid));
+    match gid_of(&panel_group()) {
+        Some(gid) => {
+            let _ = std::os::unix::fs::chown(path, None, Some(gid));
+        }
+        // 组不存在时 chgrp 必然失败，但绝不能静默跳过：凭据会留在 root:root，
+        // zapd 读不到，症状（如数据库菜单的环境门禁）离根因很远，极难排查。
+        None => eprintln!(
+            "[zap-crypto] warning: panel group '{}' not found; {} left root-owned \
+             and the panel process may be unable to read it \
+             (fix: create the group or set ZAP_PANEL_GROUP)",
+            panel_group(),
+            path.display()
+        ),
     }
 }
 
