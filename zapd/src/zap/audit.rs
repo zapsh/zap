@@ -18,16 +18,23 @@ pub struct AuditLogRow {
     pub target: String,
     pub detail: String,
     pub ip: String,
+    pub result: String,
+    pub user_agent: String,
     pub created_at: i64,
 }
 
-/// 写入一条审计日志（失败仅记录错误日志，不阻塞业务）。
-pub async fn log(
+/// 写入一条审计日志（含 `result` 与 `user_agent`，失败仅记录错误日志，不阻塞业务）。
+///
+/// `result` 记录操作结果（如 `success` / `failure`），`user_agent` 记录来源 UA，
+/// 用于补全审计字段、追溯越权 / 失败尝试。老调用点可用 [`log`] 默认留空。
+pub async fn log_with(
     claims: Option<&Claims>,
     ip: Option<&str>,
     action: &str,
     target: &str,
     detail: &str,
+    result: &str,
+    user_agent: &str,
 ) {
     let (user_id, username) = match claims {
         Some(c) => (c.id as i64, c.sub.clone()),
@@ -35,9 +42,9 @@ pub async fn log(
     };
     let pool = db::get_db_pool().await;
     let now = chrono::Utc::now().timestamp();
-    let result = sqlx::query(
-        "INSERT INTO audit_logs (user_id, username, action, target, detail, ip, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    let r = sqlx::query(
+        "INSERT INTO audit_logs (user_id, username, action, target, detail, ip, result, user_agent, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user_id)
     .bind(username)
@@ -45,12 +52,25 @@ pub async fn log(
     .bind(target)
     .bind(detail)
     .bind(ip.unwrap_or(""))
+    .bind(result)
+    .bind(user_agent)
     .bind(now)
     .execute(pool)
     .await;
-    if let Err(e) = result {
+    if let Err(e) = r {
         error!("写入审计日志失败 (action={action}): {e}");
     }
+}
+
+/// 兼容旧调用点：不填 `result` / `user_agent`（留空）。
+pub async fn log(
+    claims: Option<&Claims>,
+    ip: Option<&str>,
+    action: &str,
+    target: &str,
+    detail: &str,
+) {
+    log_with(claims, ip, action, target, detail, "", "").await;
 }
 
 /// 查询审计日志（按时间倒序，分页），返回 (行, 总数)。
@@ -86,7 +106,7 @@ pub async fn list_logs(
     let (total,) = count_q.fetch_one(pool).await?;
 
     let sql = format!(
-        "SELECT id, user_id, username, action, target, detail, ip, created_at
+        "SELECT id, user_id, username, action, target, detail, ip, result, user_agent, created_at
          FROM audit_logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?"
     );
     let mut q = sqlx::query_as::<_, AuditLogRow>(sqlx::AssertSqlSafe(sql.as_str()));

@@ -658,25 +658,34 @@ async fn sync_builtin_role_permissions() {
 // ── audit logs ─────────────────────────────────────────────
 
 async fn init_audit_table() {
-    if table_exists("audit_logs").await {
-        return;
+    if !table_exists("audit_logs").await {
+        let sql = r#"
+        CREATE TABLE audit_logs (
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            username VARCHAR(128) NOT NULL DEFAULT '',
+            action VARCHAR(64) NOT NULL DEFAULT '',
+            target TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '',
+            ip VARCHAR(64) NOT NULL DEFAULT '',
+            result VARCHAR(16) NOT NULL DEFAULT '',
+            user_agent VARCHAR(512) NOT NULL DEFAULT '',
+            created_at INTEGER
+        );
+        CREATE INDEX idx_audit_logs_action ON audit_logs(action);
+        CREATE INDEX idx_audit_logs_user ON audit_logs(username);
+        CREATE INDEX idx_audit_logs_created ON audit_logs(created_at);
+        "#;
+        let _ = get_db_pool().await.execute(sql).await;
     }
-    let sql = r#"
-    CREATE TABLE audit_logs (
-        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL DEFAULT 0,
-        username VARCHAR(128) NOT NULL DEFAULT '',
-        action VARCHAR(64) NOT NULL DEFAULT '',
-        target TEXT NOT NULL DEFAULT '',
-        detail TEXT NOT NULL DEFAULT '',
-        ip VARCHAR(64) NOT NULL DEFAULT '',
-        created_at INTEGER
-    );
-    CREATE INDEX idx_audit_logs_action ON audit_logs(action);
-    CREATE INDEX idx_audit_logs_user ON audit_logs(username);
-    CREATE INDEX idx_audit_logs_created ON audit_logs(created_at);
-    "#;
-    let _ = get_db_pool().await.execute(sql).await;
+    // 存量库补列（幂等：列已存在则跳过），补全审计的 result / user_agent 字段
+    ensure_column("audit_logs", "result", "VARCHAR(16) NOT NULL DEFAULT ''").await;
+    ensure_column(
+        "audit_logs",
+        "user_agent",
+        "VARCHAR(512) NOT NULL DEFAULT ''",
+    )
+    .await;
 }
 
 // ── login attempt lockout ──────────────────────────────────

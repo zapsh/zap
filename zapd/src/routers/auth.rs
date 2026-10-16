@@ -281,12 +281,14 @@ pub async fn login(
         // 账号状态校验：「正常(1)」与「暂停(-3)」可登录；
         // 禁用 / 封禁 / 欠费停用等硬禁用状态一律拒绝（暂停允许登录，仅停止其网站/服务）
         if crate::routers::user::is_login_blocked(row.status) {
-            audit::log(
+            audit::log_with(
                 None,
                 Some(&ip),
                 "login_blocked",
                 &row.username,
                 &format!("status={}", row.status),
+                "failure",
+                &user_agent,
             )
             .await;
             return Err(ZapError::Key(
@@ -307,7 +309,16 @@ pub async fn login(
                 ));
             }
             if !totp::verify(&crypto::decrypt_at_rest(&row.totp_secret), &code) {
-                audit::log(None, Some(&ip), "login_2fa_failed", &row.username, "").await;
+                audit::log_with(
+                    None,
+                    Some(&ip),
+                    "login_2fa_failed",
+                    &row.username,
+                    "",
+                    "failure",
+                    &user_agent,
+                )
+                .await;
                 login_history::record(
                     row.id as i64,
                     &row.username,
@@ -335,7 +346,16 @@ pub async fn login(
                     .bind(row.id as i64)
                     .execute(pool)
                     .await;
-            audit::log(None, Some(&ip), "login_success", &row.username, "").await;
+            audit::log_with(
+                None,
+                Some(&ip),
+                "login_success",
+                &row.username,
+                "",
+                "success",
+                &user_agent,
+            )
+            .await;
             login_history::record(
                 row.id as i64,
                 &row.username,
@@ -365,7 +385,16 @@ pub async fn login(
     record_failed_login(&ip, &username).await;
     // IP Ban（面板登录失败来源）：进程内上报，由后台循环计数并封禁
     crate::zap::ip_ban::report_failure("zapd", &ip, &username);
-    audit::log(None, Some(&ip), "login_failed", &username, "").await;
+    audit::log_with(
+        None,
+        Some(&ip),
+        "login_failed",
+        &username,
+        "",
+        "failure",
+        &user_agent,
+    )
+    .await;
     // 失败尝试记在用户名下（user_id=0：账号未必存在，无法归属）
     login_history::record(0, &username, &ip, &user_agent, login_history::STATUS_FAILED).await;
     Err(ZapError::Key(
