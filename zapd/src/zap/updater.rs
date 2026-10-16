@@ -10,9 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::zap::{ZapError, appstore as ast, update_config};
+use crate::zap::{ZapError, appstore as ast, release_key, update_config};
 use crate::{config, db, zapexec};
 use sha2::Digest;
+use tracing::warn;
 use zap_proto::Request;
 
 /// 升级启动阶段互斥（防止手动/自动并发触发）；
@@ -111,6 +112,15 @@ pub fn current_zapd_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// 渠道地址是否允许：insecure 模式放行任意 scheme；否则必须 `https://`。
+///
+/// 自动更新以 root / zapadm 权限执行升级器，明文 http 渠道可被中间人直接投毒，
+/// 因此默认强制 https，仅在 `update_config.yaml` 显式 `allow_insecure_update: 1`
+/// （离线 / 内网可信源）时放开。
+pub fn channel_allowed(channel: &str, allow_insecure: bool) -> bool {
+    allow_insecure || channel.starts_with("https://")
+}
+
 // ── 网络与下载 ──────────────────────────────────────────────
 
 fn http_agent() -> ureq::Agent {
@@ -156,6 +166,10 @@ pub fn target_arch() -> Result<&'static str, ZapError> {
 /// 查询远端渠道的 `latest.txt` 得到最新版本号。
 pub async fn check_remote_version(channel: &str) -> Result<String, ZapError> {
     let channel = channel.trim_end_matches('/').to_string();
+    // 渠道强制 https（insecure 模式除外）：与下载路径一致
+    if !channel_allowed(&channel, load_config().allow_insecure_update != 0) {
+        return Err(ZapError::New(-1, "更新渠道必须为 https://".to_string()));
+    }
     tokio::task::spawn_blocking(move || {
         let url = format!("{channel}/latest.txt");
         let text = http_get_text(&url)?;
@@ -213,6 +227,15 @@ pub async fn download_and_stage(
     run_id: &str,
 ) -> Result<PathBuf, ZapError> {
     let channel = channel.trim_end_matches('/').to_string();
+    // 渠道强制 https（insecure 模式除外）：避免明文渠道被中间人投毒
+    let allow_insecure = load_config().allow_insecure_update != 0;
+    if !channel_allowed(&channel, allow_insecure) {
+        return Err(ZapError::New(
+            -1,
+            "更新渠道必须为 https://（离线 / 内网 http 源请在 update_config.yaml 设置 allow_insecure_update: 1）"
+                .to_string(),
+        ));
+    }
     let version = version.trim_start_matches('v').to_string();
     let arch = target_arch()?.to_string();
     let pkg = format!("zap-v{version}{}-linux-{arch}.tar.gz", pkg_suffix());
@@ -220,16 +243,53 @@ pub async fn download_and_stage(
     tokio::task::spawn_blocking(move || -> Result<PathBuf, ZapError> {
         let base = format!("{channel}/{pkg}");
         let data = http_get_bytes(&base)?;
-        // 校验：发行侧上传 .sha256（build.sh），远端缺失/为空时跳过强校验
+
+        // ── Tier 2：发布签名（Ed25519 分离签名 {pkg}.sig）──
+        // 签名由 CI 私钥签署，二进制内固化发布公钥；比 sha256 更强（抗中间人替换包体）。
+        if let Some(pk) = release_key::release_pubkey() {
+            match http_get_text(&format!("{base}.sig")) {
+                Ok(sig_hex) => release_key::verify_release_signature(&data, &sig_hex, &pk)
+                    .map_err(|e| ZapError::New(-1, format!("发布签名校验失败：{e}")))?,
+                Err(_) => {
+                    if allow_insecure {
+                        warn!("未找到发布签名 {base}.sig，insecure 模式：跳过签名校验");
+                    } else {
+                        return Err(ZapError::New(
+                            -1,
+                            format!(
+                                "缺少发布签名文件 {base}.sig，拒绝安装（开启 allow_insecure_update 可跳过）"
+                            ),
+                        ));
+                    }
+                }
+            }
+        } else {
+            warn!("未配置发布公钥，跳过签名校验（仅依赖 sha256）");
+        }
+
+        // ── Tier 1：sha256 强校验（fail-closed，缺失 / 不匹配均拒绝）──
+        // 旧实现用 unwrap_or_default() 在 .sha256 取不到时静默跳过，已被绕过；
+        // 现在缺失即拒绝安装（insecure 模式除外）。
         let expected = http_get_text(&format!("{base}.sha256"))
             .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-        let actual = to_hex(&sha2::Sha256::digest(&data));
-        if !expected.is_empty() && !actual.eq_ignore_ascii_case(&expected) {
-            return Err(ZapError::New(
-                -1,
-                format!("发行包校验失败：sha256 不匹配（期望 {expected}，实际 {actual}）"),
-            ));
+            .map_err(|e| ZapError::New(-1, format!("下载校验文件 .sha256 失败: {e}")))?;
+        if expected.is_empty() {
+            if allow_insecure {
+                warn!("缺少 .sha256，insecure 模式：跳过完整性校验");
+            } else {
+                return Err(ZapError::New(
+                    -1,
+                    format!("缺少校验文件 {base}.sha256，拒绝安装（开启 allow_insecure_update 可跳过）"),
+                ));
+            }
+        } else {
+            let actual = to_hex(&sha2::Sha256::digest(&data));
+            if !actual.eq_ignore_ascii_case(&expected) {
+                return Err(ZapError::New(
+                    -1,
+                    format!("发行包校验失败：sha256 不匹配（期望 {expected}，实际 {actual}）"),
+                ));
+            }
         }
         // 解包（发行包来自可信渠道，Archive::unpack 足够）
         std::fs::create_dir_all(&stage).map_err(|e| {
@@ -389,5 +449,28 @@ pub async fn finalize_stale_updates() {
             let status = if code == 0 { "success" } else { "failed" };
             ast::finish_run(&run_id, status, code).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_allowed_requires_https_unless_insecure() {
+        // 默认（insecure=false）只允许 https
+        assert!(channel_allowed(
+            "https://mirrors.zap.cn/zap/releases",
+            false
+        ));
+        assert!(!channel_allowed(
+            "http://mirrors.zap.cn/zap/releases",
+            false
+        ));
+        assert!(!channel_allowed("ftp://example.com/releases", false));
+        assert!(!channel_allowed("mirrors.zap.cn/zap/releases", false));
+        // insecure 模式放行任意 scheme
+        assert!(channel_allowed("http://10.0.0.5/releases", true));
+        assert!(channel_allowed("https://mirrors.zap.cn/zap/releases", true));
     }
 }

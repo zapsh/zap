@@ -233,8 +233,7 @@ pub struct CertDetailQuery {
 
 /// 私钥入库前加密（fail-closed：加密失败拒绝落库，绝不回退明文）。
 fn enc_key(raw: &str) -> Result<String, ZapError> {
-    crypto::encrypt(raw)
-        .map_err(|e| ZapError::New(-1, format!("私钥加密失败，已拒绝保存：{e}")))
+    crypto::encrypt(raw).map_err(|e| ZapError::New(-1, format!("私钥加密失败，已拒绝保存：{e}")))
 }
 
 pub async fn cert_detail(

@@ -112,7 +112,7 @@ lettre = { version = "0.11", default-features = false, features = [
     "builder",
 ] }
 
-ed25519-dalek = { version = "3", optional = true }
+ed25519-dalek = "3"
 russh-sftp = "3.0.1"
 
 
@@ -130,4 +130,4 @@ anyhow = "1"
 tower = { version = "0.5", features = ["util"] }
 
 [features]
-commercial = ["dep:ed25519-dalek"]
+commercial = []
