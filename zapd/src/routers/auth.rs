@@ -79,12 +79,26 @@ fn clear_session_cookie() -> HeaderMap {
     headers
 }
 
-/// Rate limiter state: Maps IP -> (attempt_count, window_start)
-static LOGIN_RATE_LIMITER: Lazy<Mutex<HashMap<IpAddr, (u32, Instant)>>> =
+/// 单个 IP 的限流条目：尝试次数、窗口起点（用于计数重置）、上次访问（用于 LRU 淘汰）。
+struct RateLimitEntry {
+    count: u32,
+    window: Instant,
+    seen: Instant,
+}
+
+/// 登录限流状态：IP -> 尝试窗口。
+///
+/// 注意：源 IP 可能被伪造（如经反代时直接取对端、或被篡改的 XFF），
+/// 因此**必须限制条目总数**——否则攻击者可不断换 IP 把 HashMap 撑到内存耗尽（DoS）。
+/// 这里每次访问时清掉已过窗口的条目，并在超过 `MAX_RATE_LIMIT_ENTRIES` 时淘汰最久未访问的
+/// IP；锁中毒时也不 panic（降级为放行，不阻断登录）。
+static LOGIN_RATE_LIMITER: Lazy<Mutex<HashMap<IpAddr, RateLimitEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 const MAX_LOGIN_ATTEMPTS: u32 = 5;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+/// 限流表硬上限：超过则淘汰最久未活跃的 IP，防止伪造 IP 撑爆内存（约 100k 条 ≈ 数 MB）。
+const MAX_RATE_LIMIT_ENTRIES: usize = 100_000;
 
 /// 持久化失败锁定策略（针对账号+IP）
 const MAX_DB_FAILED_ATTEMPTS: i64 = 5;
@@ -110,20 +124,38 @@ struct UserRecord {
 }
 
 /// Check rate limit for the given IP. Returns Ok(()) if allowed, Err if rate limited.
+///
+/// 内存安全：先清掉已过窗口的条目，再对超限表做 LRU 淘汰，确保伪造 IP 也不会无限增长；
+/// 锁中毒时 `unwrap_or_else` 恢复内部数据而非 panic，避免登录接口被毒锁拖垮。
 fn check_rate_limit(ip: IpAddr) -> Result<(), ZapError> {
-    let mut map = LOGIN_RATE_LIMITER.lock().unwrap();
+    let mut map = LOGIN_RATE_LIMITER.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
 
-    let entry = map.entry(ip).or_insert((0, now));
+    // 清掉已过 60s 窗口、不再起作用的条目（正常流量下让表保持很小）
+    map.retain(|_, e| now.duration_since(e.window) <= RATE_LIMIT_WINDOW);
 
-    // Reset window if expired
-    if now.duration_since(entry.1) > RATE_LIMIT_WINDOW {
-        *entry = (1, now);
-        return Ok(());
+    // 硬上限：超过则淘汰最久未访问的 IP，防止伪造 IP 把表撑爆（DoS）
+    if map.len() >= MAX_RATE_LIMIT_ENTRIES {
+        if let Some(oldest) = map.iter().min_by_key(|(_, e)| e.seen).map(|(k, _)| *k) {
+            map.remove(&oldest);
+        }
     }
 
-    entry.0 += 1;
-    if entry.0 > MAX_LOGIN_ATTEMPTS {
+    let entry = map.entry(ip).or_insert(RateLimitEntry {
+        count: 0,
+        window: now,
+        seen: now,
+    });
+    entry.seen = now;
+
+    // 窗口过期则计数归零，重新开始计窗口
+    if now.duration_since(entry.window) > RATE_LIMIT_WINDOW {
+        entry.count = 0;
+        entry.window = now;
+    }
+
+    entry.count += 1;
+    if entry.count > MAX_LOGIN_ATTEMPTS {
         warn!("Rate limit exceeded for IP: {}", ip);
         return Err(ZapError::New(
             -1,
@@ -684,4 +716,34 @@ pub async fn totp_status(claims: ValidatedClaims) -> ZapJsonResult {
         .fetch_one(pool)
         .await?;
     crate::zap::api_ok(json!({ "enabled": enabled == 1 }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn ip(o: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, o))
+    }
+
+    #[test]
+    fn same_ip_blocked_after_threshold_and_other_ip_ok() {
+        // 同一 IP 在 60s 窗口内第 6 次被限流；不同 IP 不受影响
+        for i in 0..5 {
+            assert!(check_rate_limit(ip(1)).is_ok(), "第 {i} 次应放行");
+        }
+        assert!(check_rate_limit(ip(1)).is_err(), "第 6 次应限流");
+        // 另一个 IP 仍可登录
+        assert!(check_rate_limit(ip(2)).is_ok());
+    }
+
+    #[test]
+    fn spray_distinct_ips_stays_bounded_and_safe() {
+        // 伪造大量不同源 IP 反复调用限流：不得 panic（LRU 淘汰保住内存上限）
+        for o in 0..5000u16 {
+            let a = IpAddr::V4(Ipv4Addr::new(10, (o / 256) as u8, (o % 256) as u8, 0));
+            assert!(check_rate_limit(a).is_ok());
+        }
+    }
 }
