@@ -380,6 +380,9 @@ pub struct BackupRestoreDirPayload {
     pub target_dir: String,
     #[serde(default)]
     pub to_original: bool,
+    /// 为 true 时只预览将写入/覆盖的文件，不实际还原
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -403,6 +406,46 @@ pub struct BackupRestoreDbPayload {
     pub port: i32,
     #[serde(default)]
     pub db_path: Option<String>,
+    /// 为 true 时只预览将重建的库表，不实际导入
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+// ── 异地备份远端配置 ────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct BackupRemotePayload {
+    #[serde(default)]
+    pub id: Option<i64>,
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    pub host: String,
+    #[serde(default)]
+    pub port: i32,
+    #[serde(default)]
+    pub user: String,
+    pub remote_path: String,
+    #[serde(default)]
+    pub ssh_opts: String,
+    #[serde(default)]
+    pub enabled: i64,
+    #[serde(default)]
+    pub remark: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BackupRemoteDeletePayload {
+    pub id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BackupRemotePushPayload {
+    /// 要推送的备份记录 id（据此取归档路径与安全根）
+    pub record_id: i64,
+    /// 指定远端 id；为空则使用任务绑定的 cloud_id 所指远端
+    #[serde(default)]
+    pub remote_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -588,9 +631,11 @@ pub async fn run_backup<'a>(a: RunBackupArgs<'a>) -> Result<Value, ZapError> {
     let data = resp.data.clone().unwrap_or(Value::Null);
     let bpath = data["path"].as_str().unwrap_or("").to_string();
     let bsize = data["size"].as_i64().unwrap_or(0);
-    let _ = sqlx::query("UPDATE backup_records SET status=1, path=?, size=? WHERE id=?")
+    let bsha = data["sha256"].as_str().unwrap_or("").to_string();
+    let _ = sqlx::query("UPDATE backup_records SET status=1, path=?, size=?, sha256=? WHERE id=?")
         .bind(&bpath)
         .bind(bsize)
+        .bind(&bsha)
         .bind(record_id)
         .execute(pool)
         .await;
@@ -603,12 +648,62 @@ pub async fn run_backup<'a>(a: RunBackupArgs<'a>) -> Result<Value, ZapError> {
         prune_old(jid, retain, &bpath, &eff_root).await;
     }
 
+    // 异地备份（尽最大努力）：任务绑定了 cloud_id 所指远端时，把刚生成的归档推送过去；
+    // 推送失败只记录告警，不影响本次备份结果。
+    if let Some(jid) = job_id
+        && !bpath.is_empty()
+    {
+        let _ = push_to_job_remote(jid, record_id, &bpath, &eff_root).await;
+    }
+
     Ok(json!({
         "record_id": record_id,
         "path": bpath,
         "size": bsize,
         "data": data,
     }))
+}
+
+/// 把刚完成的备份（record_id）推送到任务 jid 绑定 cloud_id 所指的异地远端（best-effort）。
+async fn push_to_job_remote(jid: i64, _record_id: i64, bpath: &str, eff_root: &str) {
+    let pool = crate::db::get_db_pool().await;
+    let cid: Option<String> =
+        match sqlx::query_scalar("SELECT cloud_id FROM backup_jobs WHERE id=?")
+            .bind(jid)
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+    let remote_id = match cid.and_then(|c| c.trim().parse::<i64>().ok()) {
+        Some(id) if id > 0 => id,
+        _ => return,
+    };
+    let remote: Option<(String, i32, String, String, String)> = match sqlx::query_as(
+        "SELECT host, port, user, remote_path, ssh_opts FROM backup_remotes WHERE id=?",
+    )
+    .bind(remote_id)
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let Some((host, port, user, remote_path, ssh_opts)) = remote else {
+        return;
+    };
+    let _ = crate::zapexec::call(Request::BackupRemotePush {
+        path: bpath.to_string(),
+        kind: "rsync".to_string(),
+        host,
+        port,
+        user,
+        remote_path,
+        ssh_opts,
+        backup_root: eff_root.to_string(),
+    })
+    .await;
 }
 
 async fn job_retain(id: i64) -> Result<i64, ZapError> {
@@ -1035,13 +1130,15 @@ pub async fn restore_dir(
     let pool = crate::db::get_db_pool().await;
     // 归属校验：管理员可还原任意；用户仅能还原自己（owner = 登录名）的备份，
     // 无论该归档位于自家 home/backups 还是系统备份根（管理员全量备份的副本）。
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT owner, dest_root FROM backup_records WHERE path=?")
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT owner, dest_root, sha256 FROM backup_records WHERE path=?")
             .bind(&payload.path)
             .fetch_optional(pool)
             .await?;
+    // 还原前校验：取备份记录里的 sha256（旧归档可能为空，空则不强制校验）
+    let expect_sha = row.as_ref().map(|r| r.2.clone()).filter(|s| !s.is_empty());
     let root = match row {
-        Some((owner, dest_root)) => {
+        Some((owner, dest_root, _sha)) => {
             if !is_admin(&claims) && owner != claims.sub {
                 return Err(ZapError::New(-1, "无权操作该备份".to_string()));
             }
@@ -1065,6 +1162,8 @@ pub async fn restore_dir(
         as_user: None,
         skip_owner_check: false,
         backup_root: root,
+        sha256: expect_sha,
+        dry_run: payload.dry_run,
     })
     .await?;
     if resp.code != 0 {
@@ -1075,10 +1174,15 @@ pub async fn restore_dir(
         None,
         "backup_restore_dir",
         &payload.path,
-        &format!("to_original={}", payload.to_original),
+        &format!(
+            "to_original={} dry_run={}",
+            payload.to_original, payload.dry_run
+        ),
     )
     .await;
-    Ok(Json(json!({ "code": 0, "message": "目录还原完成" })))
+    Ok(Json(
+        json!({ "code": 0, "data": resp.data, "message": resp.message }),
+    ))
 }
 
 /// POST /system/backup/restore_db —— 还原数据库。
@@ -1090,13 +1194,15 @@ pub async fn restore_db(
         return Err(ZapError::New(-1, "归档路径不能为空".to_string()));
     }
     let pool = crate::db::get_db_pool().await;
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT owner, dest_root FROM backup_records WHERE path=?")
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT owner, dest_root, sha256 FROM backup_records WHERE path=?")
             .bind(&payload.path)
             .fetch_optional(pool)
             .await?;
+    // 还原前校验：取备份记录里的 sha256（旧归档可能为空，空则不强制校验）
+    let expect_sha = row.as_ref().map(|r| r.2.clone()).filter(|s| !s.is_empty());
     let root = match row {
-        Some((owner, dest_root)) => {
+        Some((owner, dest_root, _sha)) => {
             if !is_admin(&claims) && owner != claims.sub {
                 return Err(ZapError::New(-1, "无权操作该备份".to_string()));
             }
@@ -1133,6 +1239,8 @@ pub async fn restore_db(
         port: payload.port,
         db_path: payload.db_path,
         backup_root: root,
+        sha256: expect_sha,
+        dry_run: payload.dry_run,
     })
     .await?;
     if resp.code != 0 {
@@ -1146,7 +1254,217 @@ pub async fn restore_db(
         &audit_db,
     )
     .await;
-    Ok(Json(json!({ "code": 0, "message": "数据库还原完成" })))
+    Ok(Json(
+        json!({ "code": 0, "data": resp.data, "message": resp.message }),
+    ))
+}
+
+// ── 异地备份远端管理 ────────────────────────────────────────────────
+
+/// 异地备份远端只允许管理员管理（涉及远端主机凭据，属高敏感操作）。
+fn require_backup_manage(claims: &ValidatedClaims) -> Result<(), ZapError> {
+    if is_admin(claims) {
+        Ok(())
+    } else {
+        Err(ZapError::New(-1, "仅管理员可管理异地备份".to_string()))
+    }
+}
+
+/// GET /system/backup/remotes —— 列出已配置的异地备份远端。
+pub async fn remote_list(claims: ValidatedClaims) -> ZapJsonResult {
+    require_backup_manage(&claims)?;
+    let pool = crate::db::get_db_pool().await;
+    let rows = sqlx::query_as::<_, (
+        i64,
+        String,
+        String,
+        String,
+        i32,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        Option<i64>,
+        Option<i64>,
+    )>(
+        "SELECT id, name, kind, host, port, user, remote_path, ssh_opts, enabled, remark, created_at, updated_at \
+         FROM backup_remotes ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(Json(json!({ "code": 0, "list": rows })))
+}
+
+/// POST /system/backup/remote/save —— 新增或更新异地备份远端（id 为空=新增）。
+pub async fn remote_save(
+    claims: ValidatedClaims,
+    Json(p): Json<BackupRemotePayload>,
+) -> ZapJsonResult {
+    require_backup_manage(&claims)?;
+    if p.name.trim().is_empty() {
+        return Err(ZapError::New(-1, "远端名称不能为空".to_string()));
+    }
+    if p.host.trim().is_empty() || p.remote_path.trim().is_empty() {
+        return Err(ZapError::New(-1, "远端主机与目标目录不能为空".to_string()));
+    }
+    let pool = crate::db::get_db_pool().await;
+    let ts = now_ts();
+    let id = match p.id {
+        Some(id) if id > 0 => {
+            let r = sqlx::query(
+                "UPDATE backup_remotes SET name=?, kind=?, host=?, port=?, user=?, \
+                 remote_path=?, ssh_opts=?, enabled=?, remark=?, updated_at=? WHERE id=?",
+            )
+            .bind(&p.name)
+            .bind(if p.kind.trim().is_empty() {
+                "rsync"
+            } else {
+                p.kind.trim()
+            })
+            .bind(&p.host)
+            .bind(p.port)
+            .bind(&p.user)
+            .bind(&p.remote_path)
+            .bind(&p.ssh_opts)
+            .bind(p.enabled)
+            .bind(&p.remark)
+            .bind(ts)
+            .bind(id)
+            .execute(pool)
+            .await?;
+            if r.rows_affected() == 0 {
+                return Err(ZapError::New(-1, "远端不存在".to_string()));
+            }
+            id
+        }
+        _ => {
+            let r = sqlx::query(
+                "INSERT INTO backup_remotes (name, kind, host, port, user, remote_path, ssh_opts, enabled, remark, created_at, updated_at) \
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            )
+            .bind(&p.name)
+            .bind(if p.kind.trim().is_empty() {
+                "rsync"
+            } else {
+                p.kind.trim()
+            })
+            .bind(&p.host)
+            .bind(p.port)
+            .bind(&p.user)
+            .bind(&p.remote_path)
+            .bind(&p.ssh_opts)
+            .bind(p.enabled)
+            .bind(&p.remark)
+            .bind(ts)
+            .bind(ts)
+            .execute(pool)
+            .await?;
+            r.last_insert_rowid()
+        }
+    };
+    Ok(Json(json!({ "code": 0, "id": id, "message": "已保存" })))
+}
+
+/// POST /system/backup/remote/delete —— 删除异地备份远端配置。
+pub async fn remote_delete(
+    claims: ValidatedClaims,
+    Json(p): Json<BackupRemoteDeletePayload>,
+) -> ZapJsonResult {
+    require_backup_manage(&claims)?;
+    let pool = crate::db::get_db_pool().await;
+    let r = sqlx::query("DELETE FROM backup_remotes WHERE id=?")
+        .bind(p.id)
+        .execute(pool)
+        .await?;
+    if r.rows_affected() == 0 {
+        return Err(ZapError::New(-1, "远端不存在".to_string()));
+    }
+    Ok(Json(json!({ "code": 0, "message": "已删除" })))
+}
+
+/// POST /system/backup/remote/push —— 把某次备份归档推送到异地远端。
+pub async fn remote_push(
+    claims: ValidatedClaims,
+    Json(p): Json<BackupRemotePushPayload>,
+) -> ZapJsonResult {
+    require_backup_manage(&claims)?;
+    let pool = crate::db::get_db_pool().await;
+    // 取备份记录：归档路径 + 安全根 + sha256（推送前先校验完整性）
+    let rec: Option<(String, String, String)> =
+        sqlx::query_as("SELECT path, dest_root, sha256 FROM backup_records WHERE id=?")
+            .bind(p.record_id)
+            .fetch_optional(pool)
+            .await?;
+    let (path, dest_root, _sha) = match rec {
+        Some(r) => r,
+        None => return Err(ZapError::New(-1, "备份记录不存在".to_string())),
+    };
+    if path.trim().is_empty() {
+        return Err(ZapError::New(-1, "该备份尚未生成归档".to_string()));
+    }
+    // 解析远端：显式指定优先，否则取任务绑定 cloud_id 所指远端
+    let remote_id = match p.remote_id {
+        Some(id) if id > 0 => id,
+        _ => {
+            let jid: Option<i64> =
+                sqlx::query_scalar("SELECT job_id FROM backup_records WHERE id=?")
+                    .bind(p.record_id)
+                    .fetch_optional(pool)
+                    .await?;
+            match jid {
+                Some(j) if j > 0 => {
+                    let cid: Option<String> =
+                        sqlx::query_scalar("SELECT cloud_id FROM backup_jobs WHERE id=?")
+                            .bind(j)
+                            .fetch_optional(pool)
+                            .await?;
+                    cid.and_then(|c| c.trim().parse::<i64>().ok()).unwrap_or(0)
+                }
+                _ => 0,
+            }
+        }
+    };
+    let remote: Option<(String, i32, String, String, String)> = sqlx::query_as(
+        "SELECT host, port, user, remote_path, ssh_opts FROM backup_remotes WHERE id=?",
+    )
+    .bind(remote_id)
+    .fetch_optional(pool)
+    .await?;
+    let (host, port, user, remote_path, ssh_opts) = match remote {
+        Some(r) => r,
+        None => return Err(ZapError::New(-1, "远端不存在或未指定".to_string())),
+    };
+    let root = if dest_root.trim().is_empty() {
+        backup_root_path()
+    } else {
+        dest_root
+    };
+    let resp = crate::zapexec::call(Request::BackupRemotePush {
+        path,
+        kind: "rsync".to_string(),
+        host,
+        port,
+        user,
+        remote_path,
+        ssh_opts,
+        backup_root: root,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(-1, resp.message));
+    }
+    let _ = audit::log(
+        Some(&claims),
+        None,
+        "backup_remote_push",
+        &format!("record_id={}", p.record_id),
+        &format!("remote_id={}", remote_id),
+    )
+    .await;
+    Ok(Json(
+        json!({ "code": 0, "data": resp.data, "message": resp.message }),
+    ))
 }
 
 /// GET /system/backup/jobs —— 备份任务列表。

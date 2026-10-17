@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use zip::{ZipWriter, write::FileOptions};
 
 use zap_proto::{Response, b64_encode};

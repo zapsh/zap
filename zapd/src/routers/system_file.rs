@@ -489,7 +489,9 @@ pub async fn file_trash(
         "",
     )
     .await;
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 /// GET /system/files/trash：列出当前账号的回收站。
@@ -503,7 +505,9 @@ pub async fn list_trash(claims: Claims) -> ZapJsonResult {
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 /// POST /system/files/restore：从回收站恢复到原路径。
@@ -518,7 +522,9 @@ pub async fn restore_file(claims: Claims, Json(payload): Json<TrashIdPayload>) -
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 /// POST /system/files/purge：从回收站彻底删除。
@@ -533,7 +539,9 @@ pub async fn purge_file(claims: Claims, Json(payload): Json<TrashIdPayload>) -> 
     if resp.code != 0 {
         return Err(ZapError::New(resp.code, resp.message));
     }
-    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+    Ok(Json(
+        json!({ "code": 0, "message": resp.message, "data": resp.data }),
+    ))
 }
 
 /// POST /system/files/mkdir

@@ -2926,12 +2926,21 @@ pub async fn site_delete(
         .await
             && resp.code != 0
         {
-            tracing::warn!("recycle: remove vhost for site {} failed: {}", id, resp.message);
+            tracing::warn!(
+                "recycle: remove vhost for site {} failed: {}",
+                id,
+                resp.message
+            );
         }
     }
 
     let pool = db::get_db_pool().await;
-    let ph = payload.ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let ph = payload
+        .ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let mut q = sqlx::query(sqlx::AssertSqlSafe(
         format!(
             "UPDATE site SET deleted = 1, deleted_at = strftime('%s','now') WHERE id IN ({})",
@@ -2968,9 +2977,18 @@ pub async fn site_restore(
         site_in_scope(&claims, *id).await?;
     }
     let pool = db::get_db_pool().await;
-    let ph = payload.ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let ph = payload
+        .ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let mut q = sqlx::query(sqlx::AssertSqlSafe(
-        format!("UPDATE site SET deleted = 0, deleted_at = 0 WHERE id IN ({})", ph).as_str(),
+        format!(
+            "UPDATE site SET deleted = 0, deleted_at = 0 WHERE id IN ({})",
+            ph
+        )
+        .as_str(),
     ));
     for id in &payload.ids {
         q = q.bind(id);
