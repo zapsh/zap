@@ -153,8 +153,9 @@ curl -k https://127.0.0.1:2663/api/system/update/log/<run_id> \
 
 ## 升级前
 
-1. **备份数据库**：`cp data/zap.db data/zap.db.bak.$(date +%s)`
-   （命令行/面板升级会自动备份二进制，但不会备份数据库）
+1. **数据库自动备份**：面板 / 命令行升级在检测到 schema 版本变化时，会先对在线数据库做一次
+   一致性快照，写入 `data/zap.db.upgrade-<旧版本>-<时间戳>.bak`（权限 0o600），无需人工干预。
+   为多重保险，仍建议额外人工备份一份：`cp data/zap.db data/zap.db.bak.$(date +%s)`
 2. **备份配置**：`cp -Rf /etc/zap/ /root/zap.bak.$(date +%s)`
 3. **备份站点**：若使用了 `/var/www` 之类的自定义路径，一并 `tar`。
 
