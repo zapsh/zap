@@ -10,9 +10,10 @@ use std::io::{Cursor, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
-use serde_json::json;
+use serde_json::{json, Value};
 use zip::{ZipWriter, write::FileOptions};
 
 use zap_proto::{Response, b64_encode};
@@ -735,6 +736,222 @@ pub async fn delete(path: String, as_user: Option<String>, skip_owner_check: boo
     })
     .await
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+// ── 回收站（文件删除改为移入 trash 目录，可恢复 / 清空）────────────
+static TRASH_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn now_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn trash_owner_key(as_user: &Option<String>) -> String {
+    as_user.clone().unwrap_or_else(|| "root".to_string())
+}
+
+fn trash_root(key: &str) -> PathBuf {
+    Path::new("/var/lib/zap/trash").join(key)
+}
+
+fn trash_index(key: &str) -> PathBuf {
+    trash_root(key).join("index.json")
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct TrashEntry {
+    id: String,
+    original: String,
+    deleted_at: i64,
+    is_dir: bool,
+}
+
+fn read_index(key: &str) -> Vec<TrashEntry> {
+    let p = trash_index(key);
+    match std::fs::read_to_string(&p) {
+        Ok(s) if !s.trim().is_empty() => serde_json::from_str(&s).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn write_index(key: &str, entries: &[TrashEntry]) {
+    let root = trash_root(key);
+    let _ = std::fs::create_dir_all(&root);
+    let _ = std::fs::write(
+        trash_index(key),
+        serde_json::to_string_pretty(entries).unwrap_or_default(),
+    );
+    // 回收站目录仅属主可读（他人看不到也恢复不了）
+    let _ = std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700));
+}
+
+fn trash_unique_id() -> String {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let seq = TRASH_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{ts}_{seq}")
+}
+
+/// 移动文件/目录到目标（跨文件系统则复制后删除源）。
+fn move_to_trash(src: &Path, dst: &Path) -> Result<(), String> {
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    copy_tree(src, dst)?;
+    remove_recursive(src);
+    Ok(())
+}
+
+fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
+    let md = std::fs::symlink_metadata(src).map_err(|e| format!("读取失败: {e}"))?;
+    if md.is_symlink() {
+        let target = std::fs::read_link(src).map_err(|e| format!("读取软链失败: {e}"))?;
+        std::os::unix::fs::symlink(&target, dst).map_err(|e| format!("创建软链失败: {e}"))?;
+        return Ok(());
+    }
+    if md.is_dir() {
+        std::fs::create_dir_all(dst).map_err(|e| format!("创建目录失败: {e}"))?;
+        let rd = std::fs::read_dir(src).map_err(|e| format!("读取目录失败: {e}"))?;
+        for entry in rd {
+            let entry = entry.map_err(|e| format!("目录项失败: {e}"))?;
+            copy_tree(&entry.path(), &dst.join(entry.file_name()))
+                .map_err(|e| format!("复制失败: {e}"))?;
+        }
+    } else {
+        std::fs::copy(src, dst).map_err(|e| format!("复制失败: {e}"))?;
+    }
+    Ok(())
+}
+
+fn remove_recursive(path: &Path) {
+    let _ = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+}
+
+/// POST file.trash：移入回收站（与 delete 同样的沙箱 / 属主 / 关键路径校验）。
+pub async fn trash(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
+    tokio::task::spawn_blocking(move || {
+        let actor = match resolve_actor(&as_user, skip_owner_check) {
+            Ok(a) => a,
+            Err(e) => return Response::err(-1, e),
+        };
+        let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
+        if is_critical_path(&resolved) {
+            return Response::err(-1, "不能删除系统关键目录");
+        }
+        let md = match std::fs::symlink_metadata(&resolved) {
+            Ok(m) => m,
+            Err(e) => return Response::err(-1, format!("路径不存在: {e}")),
+        };
+        if let Err(e) = ensure_owner(actor, &resolved) {
+            return Response::err(-1, e);
+        }
+        let key = trash_owner_key(&as_user);
+        let id = trash_unique_id();
+        let dst = trash_root(&key).join(&id);
+        if let Err(e) = move_to_trash(&resolved, &dst) {
+            return Response::err(-1, format!("移入回收站失败: {e}"));
+        }
+        let deleted_at = now_secs();
+        let mut entries = read_index(&key);
+        entries.push(TrashEntry {
+            id: id.clone(),
+            original: resolved.to_string_lossy().to_string(),
+            deleted_at,
+            is_dir: md.is_dir(),
+        });
+        write_index(&key, &entries);
+        Response::ok(
+            "已移入回收站",
+            Some(json!({
+                "id": id,
+                "original": resolved.to_string_lossy(),
+                "is_dir": md.is_dir(),
+                "deleted_at": deleted_at,
+            })),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+/// GET file.trash_list：列出当前账号的回收站。
+pub async fn trash_list(as_user: Option<String>, _skip_owner_check: bool) -> Response {
+    let key = trash_owner_key(&as_user);
+    let entries = read_index(&key);
+    let items: Vec<Value> = entries
+        .iter()
+        .map(|e| {
+            json!({
+                "id": e.id,
+                "original": e.original,
+                "name": Path::new(&e.original)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                "is_dir": e.is_dir,
+                "deleted_at": e.deleted_at,
+            })
+        })
+        .collect();
+    Response::ok("ok", Some(json!({ "list": items })))
+}
+
+/// POST file.restore：从回收站恢复到原路径（恢复目标须仍在沙箱内，且不能覆盖已有文件）。
+pub async fn restore(id: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
+    tokio::task::spawn_blocking(move || {
+        let key = trash_owner_key(&as_user);
+        let mut entries = read_index(&key);
+        let idx = match entries.iter().position(|e| e.id == id) {
+            Some(i) => i,
+            None => return Response::err(-1, "回收站项目不存在"),
+        };
+        let entry = entries[idx].clone();
+        let original = resolve_path(&entry.original);
+        if let Err(e) = sandbox_path(&original, &as_user, skip_owner_check) {
+            return Response::err(-1, format!("恢复目标不在允许范围: {e}"));
+        }
+        if original.exists() {
+            return Response::err(-1, "恢复目标已存在，无法覆盖");
+        }
+        if let Some(parent) = original.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let src = trash_root(&key).join(&id);
+        if let Err(e) = move_to_trash(&src, &original) {
+            return Response::err(-1, format!("恢复失败: {e}"));
+        }
+        entries.remove(idx);
+        write_index(&key, &entries);
+        Response::ok("已恢复", Some(json!({ "original": entry.original })))
+    })
+    .await
+    .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+/// POST file.purge：从回收站彻底删除。
+pub async fn purge(id: String, as_user: Option<String>, _skip_owner_check: bool) -> Response {
+    let key = trash_owner_key(&as_user);
+    let mut entries = read_index(&key);
+    let idx = match entries.iter().position(|e| e.id == id) {
+        Some(i) => i,
+        None => return Response::err(-1, "回收站项目不存在"),
+    };
+    entries.remove(idx);
+    write_index(&key, &entries);
+    remove_recursive(&trash_root(&key).join(&id));
+    Response::ok("已彻底删除", None)
 }
 
 pub async fn mkdir(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {

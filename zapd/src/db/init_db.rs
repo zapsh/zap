@@ -922,8 +922,23 @@ async fn init_site_table() {
         ip TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX idx_site_ip_site_id ON site_ip(site_id);
+    CREATE TABLE IF NOT EXISTS db_trash (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        original TEXT NOT NULL DEFAULT '',
+        trash_name TEXT NOT NULL DEFAULT '',
+        owner_prefix TEXT NOT NULL DEFAULT '',
+        deleted_at INTEGER NOT NULL DEFAULT 0
+    );
     "#;
-    let _ = get_db_pool().await.execute(sql).await;
+    let pool = get_db_pool().await;
+    let _ = pool.execute(sql).await;
+    // 回收站：站点软删标记列（旧库补列，幂等忽略错误）
+    let _ = sqlx::query("ALTER TABLE site ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE site ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
 }
 
 // ── site_profile（站点扩展档案，1:1 site.id）────────────────────

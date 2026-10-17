@@ -142,6 +142,25 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
         } => file::delete(path, as_user, skip_owner_check).await,
+        Request::FileTrash {
+            path,
+            as_user,
+            skip_owner_check,
+        } => file::trash(path, as_user, skip_owner_check).await,
+        Request::FileTrashList {
+            as_user,
+            skip_owner_check,
+        } => file::trash_list(as_user, skip_owner_check).await,
+        Request::FileRestore {
+            id,
+            as_user,
+            skip_owner_check,
+        } => file::restore(id, as_user, skip_owner_check).await,
+        Request::FilePurge {
+            id,
+            as_user,
+            skip_owner_check,
+        } => file::purge(id, as_user, skip_owner_check).await,
         Request::FileMkdir {
             path,
             as_user,

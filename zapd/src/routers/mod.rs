@@ -320,6 +320,10 @@ fn api_routers() -> Router {
         .route("/database/export", get(database::export))
         .route("/database/import", post(database::import))
         .route("/database/slow", get(database::slow))
+        // 回收站（数据库软删：改名进 __trash_ 影子库，可恢复 / 清空）
+        .route("/database/trash", get(database::db_trash))
+        .route("/database/restore", post(database::db_trash_restore))
+        .route("/database/purge", post(database::db_trash_purge))
         // 备份中心（目录 / 数据库备份与还原 + 定时任务）
         .route("/system/backup/create_dir", post(system_backup::create_dir))
         .route("/system/backup/create_db", post(system_backup::create_db))
@@ -917,6 +921,13 @@ fn api_routers() -> Router {
             post(system_file::file_upload).layer(DefaultBodyLimit::max(LOCAL_UPLOAD_LIMIT)),
         )
         .route("/system/files/info", get(system_file::file_info))
+        // 回收站（文件删除改为移入 trash，可恢复 / 清空）
+        .route(
+            "/system/files/trash",
+            get(system_file::list_trash).post(system_file::file_trash),
+        )
+        .route("/system/files/restore", post(system_file::restore_file))
+        .route("/system/files/purge", post(system_file::purge_file))
         .route("/system/files/dir_size", get(system_file::file_dir_size))
         .route("/system/files/search", get(system_file::file_search))
         // 系统日志查看器（服务器状态 → 日志查看器，admin only）
@@ -986,6 +997,10 @@ fn api_routers() -> Router {
         .route("/site/add", post(site::site_add))
         .route("/site/update", post(site::site_update))
         .route("/site/delete", post(site::site_delete))
+        // 回收站（站点软删：标记 deleted，保留 vhost/应用/数据；清空才真正删除）
+        .route("/site/trash", get(site::site_trash))
+        .route("/site/restore", post(site::site_restore))
+        .route("/site/purge", post(site::site_purge))
         .route("/site/sync", post(site::site_sync))
         // 站点能力读取（普通用户能否用反代/自定义目录，依套餐而定）+ 已有目录浏览
         .route("/site/feature", get(site::site_feature))

@@ -155,6 +155,22 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("site", "delete")),
     ),
+    // 回收站：列表 / 恢复 / 清空
+    (
+        "/site/trash",
+        Required::User,
+        Some(Perm::action("site", "view")),
+    ),
+    (
+        "/site/restore",
+        Required::User,
+        Some(Perm::action("site", "update")),
+    ),
+    (
+        "/site/purge",
+        Required::User,
+        Some(Perm::action("site", "delete")),
+    ),
     (
         "/site/state",
         Required::User,
@@ -461,6 +477,22 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     ),
     (
         "/system/files/delete",
+        Required::User,
+        Some(Perm::action("system.file", "delete")),
+    ),
+    // 回收站：移入 / 列出 / 恢复 / 清空（删除的等价替代，按 delete 授权）
+    (
+        "/system/files/trash",
+        Required::User,
+        Some(Perm::action("system.file", "delete")),
+    ),
+    (
+        "/system/files/restore",
+        Required::User,
+        Some(Perm::action("system.file", "delete")),
+    ),
+    (
+        "/system/files/purge",
         Required::User,
         Some(Perm::action("system.file", "delete")),
     ),
