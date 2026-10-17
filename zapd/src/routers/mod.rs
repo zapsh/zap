@@ -912,6 +912,7 @@ fn api_routers() -> Router {
         )
         .route("/system/files/info", get(system_file::file_info))
         .route("/system/files/dir_size", get(system_file::file_dir_size))
+        .route("/system/files/search", get(system_file::file_search))
         // 系统日志查看器（服务器状态 → 日志查看器，admin only）
         .route("/system/logs/sources", get(system_log::sources))
         .route("/system/logs/read", get(system_log::read))

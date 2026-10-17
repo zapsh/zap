@@ -989,6 +989,20 @@ pub enum Request {
         #[serde(default)]
         skip_owner_check: bool,
     },
+    /// 递归搜索文件名（限路径沙箱内；带数量/深度上限防 DoS）。`keyword` 支持 `*` 通配。
+    #[serde(rename = "file.search")]
+    FileSearch {
+        path: String,
+        keyword: String,
+        #[serde(default)]
+        max: u32,
+        #[serde(default)]
+        depth: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
     /// 重命名
     #[serde(rename = "file.rename")]
     FileRename {

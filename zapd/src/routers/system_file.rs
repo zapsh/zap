@@ -322,6 +322,50 @@ pub async fn file_list(claims: Claims, Query(query): Query<PathQuery>) -> ZapJso
     Ok(Json(json!({ "code": 0, "message": "ok", "data": data })))
 }
 
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    path: Option<String>,
+    keyword: String,
+    #[serde(default)]
+    max: Option<u32>,
+    #[serde(default)]
+    depth: Option<u32>,
+}
+
+/// GET /system/files/search?path=/some/dir&keyword=foo[&max=500&depth=12]
+///
+/// 在 `path`（默认同文件管理的家目录兜底）下递归搜索文件名包含 `keyword` 的文件，
+/// 结果由 zapexec 在路径沙箱内遍历，带数量/深度上限防 DoS。`keyword` 支持 `*` 通配
+/// （如 `*.php`）。权限与 `list` 同一套隔离规则（管理员任意，普通用户仅 home/tmp）。
+pub async fn file_search(claims: Claims, Query(q): Query<SearchQuery>) -> ZapJsonResult {
+    let keyword = q.keyword.trim();
+    if keyword.is_empty() {
+        return Err(ZapError::New(-1, "搜索关键词不能为空".to_string()));
+    }
+    let (home, tmp) = user_private_prefixes(&claims).await;
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
+    let raw_path = resolve_list_target(is_admin(&claims), q.path.as_deref().unwrap_or(""), &home);
+    let resolved = resolve_path(&raw_path)?;
+    check_access(&claims, &resolved, &home, &tmp)?;
+    let max = q.max.unwrap_or(500).clamp(1, 2000);
+    let depth = q.depth.unwrap_or(12).clamp(1, 30);
+    let resp = crate::zapexec::call(Request::FileSearch {
+        path: resolved.to_string_lossy().to_string(),
+        keyword: keyword.to_string(),
+        max,
+        depth,
+        as_user,
+        skip_owner_check,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(
+        json!({ "code": 0, "message": "ok", "data": resp.data }),
+    ))
+}
+
 /// GET /system/files/read?path=...
 pub async fn file_read(
     claims: Claims,
