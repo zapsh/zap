@@ -2500,6 +2500,21 @@ pub enum Request {
         #[serde(default)]
         backup_root: String,
     },
+    /// 备份：把归档推送到绑定的云存储（opendal，root 特权）。归档须位于备份根内。
+    /// 由 zapexec 以 root 读取 root 属主的归档与同目录 `.sha256`/`.manifest` 侧车并上传，
+    /// 避免把 `0600` root 归档暴露给面板进程（zapd）直读。
+    #[serde(rename = "backup.cloud_push")]
+    BackupCloudPush {
+        /// 归档绝对路径（.tar.gz / .sql.gz）
+        path: String,
+        /// 云存储 ID（16 位十六进制，对应 `data/users/<owner>/cloud/stores/<id>.json`）
+        cloud_id: String,
+        /// 云存储所属用户（定位 stores 目录 + 桶内命名空间隔离）
+        owner: String,
+        /// 备份根目录；空 = 默认
+        #[serde(default)]
+        backup_root: String,
+    },
     /// 备份：查询某目录所在文件系统的可用 / 总空间（root 特权，用于磁盘不足预警）。
     #[serde(rename = "backup.disk")]
     BackupDisk {

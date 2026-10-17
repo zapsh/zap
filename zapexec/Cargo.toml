@@ -20,6 +20,19 @@ zip = "2"
 tar = "0.4"
 flate2 = "1.0"
 zap-crypto = { path = "../zap-crypto" }
+# 备份异地上传（opendal）：与 zapd `zap::cloud` 完全一致的云存储接入，由 root 进程把
+# `0600` root 属主的归档推到云。features 与 zapd 对齐。
+opendal = { version = "0.59", default-features = false, features = [
+    "services-s3",
+    "services-oss",
+    "services-cos",
+    "http-transport-reqwest",
+    "executors-tokio",
+    "layers-retry",
+    "layers-timeout",
+] }
+# 流式上传分块（与 cloud.rs 同款切片策略）
+bytes = "1"
 # plugin HMAC-SHA256(zap-crypto , file hash)
 hmac = "0.12"
 sha2 = "0.10"
