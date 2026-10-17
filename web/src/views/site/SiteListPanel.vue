@@ -639,6 +639,9 @@ function blankSec(): SiteSecurity {
     limit_req_burst: 20,
     limit_conn_enable: false,
     limit_conn_num: 50,
+    anti_hotlink_enable: false,
+    anti_hotlink_exts: '',
+    anti_hotlink_referers: '',
   }
 }
 
@@ -1111,6 +1114,53 @@ function applyStaticPreset(loc: LocationSpec) {
     { key: 'gzip', value: 'on' },
   ]
   ElMessage.success(t('site.staticPresetApplied'))
+}
+
+/** 伪静态模板库：常见程序的 rewrite 规则预设（套用到当前 location 的附加指令）。
+ *  规则经后端 is_rewrite 校验，仅含「正则 替换 [flag]」，不引入危险指令。 */
+interface RewriteRule {
+  key: string
+  value: string
+}
+interface RewritePreset {
+  id: string
+  name: string
+  rules: RewriteRule[]
+}
+const REWRITE_PRESETS: RewritePreset[] = [
+  {
+    id: 'wordpress',
+    name: 'WordPress',
+    rules: [
+      { key: 'rewrite', value: '^/index\\.php$ - last' },
+      { key: 'rewrite', value: '^(.*)$ /index.php/$1 last' },
+    ],
+  },
+  { id: 'thinkphp', name: 'ThinkPHP', rules: [{ key: 'rewrite', value: '^(.*)$ /index.php/$1 last' }] },
+  { id: 'discuz', name: 'Discuz!', rules: [{ key: 'rewrite', value: '^(.*)$ /index.php?$1 last' }] },
+  { id: 'typecho', name: 'Typecho', rules: [{ key: 'rewrite', value: '^(.*)$ /index.php/$1 last' }] },
+  {
+    id: 'generic_php',
+    name: '通用 PHP 前端控制器',
+    rules: [{ key: 'rewrite', value: '^(.*)$ /index.php/$1 last' }],
+  },
+]
+const rewritePresetKey = ref('')
+/** 套用伪静态模板：去重追加到 location 附加指令（建议套用到根 location /） */
+function applyRewritePreset(loc: LocationSpec, id: string) {
+  const p = REWRITE_PRESETS.find((x) => x.id === id)
+  if (!p) return
+  if (!loc.extra) loc.extra = []
+  for (const r of p.rules) {
+    if (!loc.extra.some((e) => e.key === r.key && e.value === r.value)) {
+      loc.extra.push({ key: r.key, value: r.value })
+    }
+  }
+  ElMessage.success(t('site.rewritePresetApplied'))
+}
+function onRewritePreset(loc: LocationSpec, v: string) {
+  applyRewritePreset(loc, v)
+  rewritePresetKey.value = ''
 }
 /** alias / root 的实际映射效果，写在切换器旁边避免选错 */
 function mountTip(loc: LocationSpec) {
@@ -2634,6 +2684,20 @@ onMounted(() => {
                           >
                             {{ t('site.staticPreset') }}
                           </el-button>
+                          <el-select
+                            v-model="rewritePresetKey"
+                            :placeholder="t('site.rewritePreset')"
+                            size="small"
+                            style="width: 200px"
+                            @change="(v: string) => onRewritePreset(loc, v)"
+                          >
+                            <el-option
+                              v-for="p in REWRITE_PRESETS"
+                              :key="p.id"
+                              :value="p.id"
+                              :label="p.name"
+                            />
+                          </el-select>
                         </div>
                       <!-- 高级代理 raw 自由指令体（与白名单附加指令并存，可写 rewrite 等自定义规则） -->
                       <div class="loc-raw-adv">
@@ -3249,6 +3313,23 @@ onMounted(() => {
               <el-input-number v-model="sec.limit_conn_num" :min="1" :max="100000" />
               <span class="form-hint">{{ t('site.secConnNumHint') }}</span>
             </el-form-item>
+            <el-form-item :label="t('site.secAntiHotlink')">
+              <el-switch v-model="sec.anti_hotlink_enable" />
+              <span class="form-hint">{{ t('site.secAntiHotlinkHint') }}</span>
+            </el-form-item>
+            <template v-if="sec.anti_hotlink_enable">
+              <el-form-item :label="t('site.secAntiHotlinkExts')">
+                <el-input v-model="sec.anti_hotlink_exts" :placeholder="t('site.secAntiHotlinkExtsPh')" />
+                <div class="form-tip">{{ t('site.secAntiHotlinkExtsHint') }}</div>
+              </el-form-item>
+              <el-form-item :label="t('site.secAntiHotlinkRefs')">
+                <el-input
+                  v-model="sec.anti_hotlink_referers"
+                  :placeholder="t('site.secAntiHotlinkRefsPh')"
+                />
+                <div class="form-tip">{{ t('site.secAntiHotlinkRefsHint') }}</div>
+              </el-form-item>
+            </template>
           </el-tab-pane>
 
           <el-tab-pane v-if="form.id" label="插件" name="plugins">

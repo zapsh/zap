@@ -1129,6 +1129,30 @@ fn render_vhost_full(a: VhostRenderSpec<'_>) -> String {
         core.push_str("    }\n");
     }
 
+    // 防盗链（站点「防盗链」开关：受信任代码生成，不经过用户指令白名单，避免 return/if 注入）
+    if security.is_some_and(|s| s.anti_hotlink_enable) {
+        let exts = sanitize_hotlink_exts(security.map_or("", |s| s.anti_hotlink_exts.trim()));
+        let mut refs = String::from("none blocked server_names");
+        let extra = security.map_or("", |s| s.anti_hotlink_referers.trim());
+        if !extra.is_empty() {
+            let safe: Vec<&str> = extra
+                .split_whitespace()
+                .filter(|t| is_referer_token(t))
+                .collect();
+            if !safe.is_empty() {
+                refs.push(' ');
+                refs.push_str(&safe.join(" "));
+            }
+        }
+        core.push_str(&format!(
+            "\n    # 防盗链：禁止站外 Referer 直接引用静态资源\n\
+             location ~* \\.({exts})$ {{\n\
+                 valid_referers {refs};\n\
+                 if ($invalid_referer) {{ return 403; }}\n\
+             }}\n"
+        ));
+    }
+
     // SSL/TLS：绑定证书后才监听 443；允许 HTTP 跳转时 80 只保留 301
     let http2_enabled = ssl_files.is_some() && ssl_tls.map(|c| c.http2).unwrap_or(false);
     // nginx < 1.25.1 只能把 http2 内嵌到 listen 参数；新版本用独立 `http2 on;` 指令
@@ -1491,6 +1515,124 @@ fn is_size(v: &str) -> bool {
     unit.is_empty() || matches!(unit.as_str(), "k" | "K" | "m" | "M" | "g" | "G")
 }
 
+/// 伪静态 `rewrite` 值校验：正则 替换 [flag]。
+/// 允许正则里的 `{` `}` 与转义 `\`，但禁止能截断/改写指令的 `;` `#` `` ` `` 与
+/// `proxy_pass`/`alias`/`return`/`include` 等危险指令名；flag 只允许
+/// last/break/redirect/permanent，防止经白名单注入第二指令或改变 location 语义。
+pub fn is_rewrite(v: &str) -> bool {
+    if v.is_empty() || v.len() > 300 {
+        return false;
+    }
+    if v.chars()
+        .any(|c| c.is_control() || matches!(c, ';' | '#' | '`'))
+    {
+        return false;
+    }
+    let lower = v.to_ascii_lowercase();
+    for bad in [
+        "proxy_pass",
+        "alias",
+        "return",
+        "include",
+        "auth_request",
+        "lua",
+        "perl",
+        "eval",
+        "content_by",
+        "rewrite_by",
+        "access_by",
+        "header_filter",
+        "body_filter",
+    ] {
+        if lower.contains(bad) {
+            return false;
+        }
+    }
+    let parts: Vec<&str> = v.split_whitespace().collect();
+    if parts.len() < 2 || parts.len() > 3 {
+        return false;
+    }
+    if parts.len() == 3 && !matches!(parts[2], "last" | "break" | "redirect" | "permanent") {
+        return false;
+    }
+    true
+}
+
+/// 防盗链 `valid_referers` 值校验：空格分隔的 token（none/blocked/server_names/域名/~正则）。
+/// 允许 `\`（~正则转义）与 `~`，但禁止 `;` `#` `{}` `` ` `` 与危险指令名。
+pub fn is_referers(v: &str) -> bool {
+    if v.is_empty() || v.len() > 300 {
+        return false;
+    }
+    if v.chars()
+        .any(|c| c.is_control() || matches!(c, ';' | '#' | '`' | '{' | '}'))
+    {
+        return false;
+    }
+    let lower = v.to_ascii_lowercase();
+    for bad in [
+        "proxy_pass",
+        "alias",
+        "return",
+        "include",
+        "auth_request",
+        "lua",
+        "perl",
+        "eval",
+    ] {
+        if lower.contains(bad) {
+            return false;
+        }
+    }
+    v.split_whitespace().all(is_referer_token)
+}
+
+/// 单个防盗链额外 Referer token 形态校验（域名 / `*.域名` / `~正则`）。
+fn is_referer_token(t: &str) -> bool {
+    if t.is_empty() || t.len() > 100 {
+        return false;
+    }
+    if t.chars()
+        .any(|c| c.is_control() || matches!(c, ';' | '#' | '`' | '{' | '}'))
+    {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    for bad in [
+        "proxy_pass",
+        "alias",
+        "return",
+        "include",
+        "auth_request",
+        "lua",
+        "perl",
+        "eval",
+    ] {
+        if lower.contains(bad) {
+            return false;
+        }
+    }
+    t.starts_with('~')
+        || t.starts_with('*')
+        || t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// 防盗链扩展名清洗：仅保留字母数字与 `|`，空则用内置默认列表。
+fn sanitize_hotlink_exts(raw: &str) -> String {
+    const DEFAULT: &str = "jpg|jpeg|png|gif|bmp|webp|ico|css|js|zip|rar|7z|mp3|mp4|pdf";
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '|')
+        .collect();
+    let cleaned = cleaned.trim_matches('|');
+    if cleaned.is_empty() {
+        DEFAULT.to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
 /// 附加指令值通用字符过滤：禁控制字符与能截断 / 改写指令的符号
 fn extra_value_clean(v: &str) -> bool {
     !v.is_empty()
@@ -1599,6 +1741,20 @@ fn validate_loc_extra(l: &LocationSpec, root: Option<&Path>) -> Result<(), Strin
                     {
                         return Err(format!("{key} 的日志路径必须在站点目录内：{v}"));
                     }
+                }
+            }
+            LocDirValue::Rewrite => {
+                if !is_rewrite(v) {
+                    return Err(format!(
+                        "{key} 需要「正则 替换 [last|break|redirect|permanent]」写法，且不能含 ; # 或危险指令（收到：{v}）"
+                    ));
+                }
+            }
+            LocDirValue::Referers => {
+                if !is_referers(v) {
+                    return Err(format!(
+                        "{key} 需要 Referer 白名单写法，如 none blocked server_names（收到：{v}）"
+                    ));
                 }
             }
         }
@@ -1876,14 +2032,7 @@ mod loc_extra_tests {
     /// 白名单之外一律拒绝：否则能塞进 proxy_pass / alias 绕过路径校验
     #[test]
     fn extra_directives_reject_keys_outside_whitelist() {
-        for bad in [
-            "proxy_pass",
-            "alias",
-            "root",
-            "return",
-            "include",
-            "rewrite",
-        ] {
+        for bad in ["proxy_pass", "alias", "root", "return", "include"] {
             let err = validate(vec![proxy_root(), static_loc("", vec![d(bad, "x")])]).unwrap_err();
             assert!(err.contains("不支持的附加指令"), "{bad} => {err}");
         }
@@ -1991,6 +2140,51 @@ mod loc_extra_tests {
         )
         .unwrap_err();
         assert!(err.contains("站点目录内"), "{err}");
+    }
+
+    #[test]
+    fn extra_directives_allow_rewrite_and_valid_referers() {
+        assert!(
+            validate(vec![
+                proxy_root(),
+                static_loc(
+                    "",
+                    vec![
+                        d("rewrite", "^/(.*)$ /index.php/$1 last"),
+                        d("valid_referers", "none blocked server_names"),
+                    ]
+                )
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn extra_directives_reject_bad_rewrite() {
+        // 含 ; 企图注入第二指令
+        assert!(
+            validate(vec![
+                proxy_root(),
+                static_loc("", vec![d("rewrite", "^/x /y; proxy_pass http://e")])
+            ])
+            .is_err()
+        );
+        // 非法 flag
+        assert!(
+            validate(vec![
+                proxy_root(),
+                static_loc("", vec![d("rewrite", "^/x /y bogus")])
+            ])
+            .is_err()
+        );
+        // 少于两段
+        assert!(
+            validate(vec![
+                proxy_root(),
+                static_loc("", vec![d("rewrite", "^/x")])
+            ])
+            .is_err()
+        );
     }
 }
 
