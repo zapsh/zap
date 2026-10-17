@@ -1746,6 +1746,54 @@ async fn validate_advanced_inputs(
 
 // ── 处理器 ──────────────────────────────────────────────────
 
+/// GET /site/trash：列出回收站里的站点（已软删）。
+pub async fn site_trash(claims: ValidatedClaims) -> ZapJsonResult {
+    require_manageable(&claims)?;
+    let pool = db::get_db_pool().await;
+    let rows: Vec<(i64, i64, String, String, String, i64)> = if jwt::is_admin(&claims) {
+        sqlx::query_as(
+            "SELECT s.id, s.user_id, s.name, s.remark, u.username, s.deleted_at \
+             FROM site s LEFT JOIN user u ON u.id = s.user_id WHERE s.deleted = 1 ORDER BY s.id DESC",
+        )
+        .fetch_all(pool)
+        .await?
+    } else if jwt::is_reseller(&claims) {
+        sqlx::query_as(
+            "SELECT s.id, s.user_id, s.name, s.remark, u.username, s.deleted_at \
+             FROM site s LEFT JOIN user u ON u.id = s.user_id \
+             WHERE s.deleted = 1 AND (s.user_id = ? OR s.user_id IN (SELECT id FROM user WHERE owner_id = ?)) \
+             ORDER BY s.id DESC",
+        )
+        .bind(claims.id as i64)
+        .bind(claims.id as i64)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT s.id, s.user_id, s.name, s.remark, u.username, s.deleted_at \
+             FROM site s LEFT JOIN user u ON u.id = s.user_id \
+             WHERE s.deleted = 1 AND {} ORDER BY s.id DESC",
+            group_scope_cond("s.user_id")
+        )))
+        .fetch_all(pool)
+        .await?
+    };
+    let items = rows
+        .into_iter()
+        .map(|(id, user_id, name, remark, owner, deleted_at)| {
+            json!({
+                "id": id,
+                "user_id": user_id,
+                "name": name,
+                "remark": remark,
+                "owner_username": owner,
+                "deleted_at": deleted_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    crate::zap::api_ok(json!({ "ok": true, "list": items }))
+}
+
 /// 站点列表（按角色裁剪范围）+ 汇总统计
 pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) -> ZapJsonResult {
     require_manageable(&claims)?;
@@ -1755,7 +1803,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
                     FROM site s LEFT JOIN user u ON u.id = s.user_id";
     let rows: Vec<SiteRow> = if jwt::is_admin(&claims) {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "{} ORDER BY s.id DESC",
+            "{} WHERE (s.deleted = 0 OR s.deleted IS NULL) ORDER BY s.id DESC",
             base_sql
         )))
         .fetch_all(pool)
@@ -1763,7 +1811,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
     } else if jwt::is_reseller(&claims) {
         // reseller：自己的站点 + 名下客户的站点
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "{} WHERE s.user_id = ? OR s.user_id IN (SELECT id FROM user WHERE owner_id = ?) \
+            "{} WHERE (s.deleted = 0 OR s.deleted IS NULL) AND (s.user_id = ? OR s.user_id IN (SELECT id FROM user WHERE owner_id = ?)) \
                  ORDER BY s.id DESC",
             base_sql
         )))
@@ -1775,7 +1823,7 @@ pub async fn site_list(claims: ValidatedClaims, Query(q): Query<SiteListQuery>) 
         // 团队共享：站长 ↔ 成员、成员 ↔ 成员互相可见（无团队时等价于只看自己的）
         let gid = group_id_of(claims.id as i64).await;
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "{} WHERE {} ORDER BY s.id DESC",
+            "{} WHERE s.deleted = 0 AND {} ORDER BY s.id DESC",
             base_sql,
             group_scope_cond("s.user_id")
         )))
@@ -2853,7 +2901,93 @@ pub async fn site_update(
 }
 
 /// 删除站点（可批量，连带删除其域名 / IP 绑定）
+/// POST /site/delete：移入回收站（软删）。回收即「停止运行」——撤掉 Nginx vhost 使其不再对外服务
+/// （应用进程保留以便恢复后原样复活），保留 vhost 配置/应用/数据/记录；前端不再列出。
+/// 清空（/site/purge）才真正删除。
 pub async fn site_delete(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<SiteDeletePayload>,
+) -> ZapJsonResult {
+    require_manageable(&claims)?;
+    if payload.ids.is_empty() {
+        return Err(ZapError::New(-1, "请选择要删除的站点".to_string()));
+    }
+    for id in &payload.ids {
+        site_in_scope(&claims, *id).await?;
+    }
+
+    // 回收即停止运行：撤掉 vhost（尽力而为，失败仅记日志不阻断回收）
+    for id in &payload.ids {
+        if let Ok(resp) = crate::zapexec::call(Request::SiteVhostRemove {
+            site_id: *id,
+            name: String::new(),
+        })
+        .await
+            && resp.code != 0
+        {
+            tracing::warn!("recycle: remove vhost for site {} failed: {}", id, resp.message);
+        }
+    }
+
+    let pool = db::get_db_pool().await;
+    let ph = payload.ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(
+        format!(
+            "UPDATE site SET deleted = 1, deleted_at = strftime('%s','now') WHERE id IN ({})",
+            ph
+        )
+        .as_str(),
+    ));
+    for id in &payload.ids {
+        q = q.bind(id);
+    }
+    q.execute(pool).await?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "site_delete",
+        "recycle",
+        "",
+    )
+    .await;
+    crate::zap::api_ok(json!({ "ok": true, "ids": payload.ids, "trashed": payload.ids.len() }))
+}
+
+/// POST /site/restore：从回收站恢复（取消软删标记，并重新同步 vhost 使其恢复对外服务）。
+/// 运行态（run_state）在回收期间保留，因此恢复后会按原状态重新拉起。
+pub async fn site_restore(
+    claims: ValidatedClaims,
+    Json(payload): Json<SiteDeletePayload>,
+) -> ZapJsonResult {
+    require_manageable(&claims)?;
+    if payload.ids.is_empty() {
+        return Err(ZapError::New(-1, "请选择要恢复的站点".to_string()));
+    }
+    for id in &payload.ids {
+        site_in_scope(&claims, *id).await?;
+    }
+    let pool = db::get_db_pool().await;
+    let ph = payload.ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(
+        format!("UPDATE site SET deleted = 0, deleted_at = 0 WHERE id IN ({})", ph).as_str(),
+    ));
+    for id in &payload.ids {
+        q = q.bind(id);
+    }
+    q.execute(pool).await?;
+
+    // 重新同步 vhost：回收时已撤掉，恢复后按原 run_state 重新拉起对外服务
+    let mut synced = 0usize;
+    for id in &payload.ids {
+        if sync_one_site(*id).await.is_ok() {
+            synced += 1;
+        }
+    }
+    crate::zap::api_ok(json!({ "ok": true, "ids": payload.ids, "synced": synced }))
+}
+
+pub async fn site_purge(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
     Json(payload): Json<SiteDeletePayload>,

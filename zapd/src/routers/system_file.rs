@@ -457,6 +457,85 @@ pub async fn file_delete(
     Ok(Json(json!({ "code": 0, "message": resp.message })))
 }
 
+#[derive(Deserialize)]
+pub struct TrashIdPayload {
+    id: String,
+}
+
+/// POST /system/files/trash：移入回收站（替代直接删除，可恢复 / 清空）。
+pub async fn file_trash(
+    claims: Claims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(payload): Json<DeletePayload>,
+) -> ZapJsonResult {
+    let (home, tmp) = user_private_prefixes(&claims).await;
+    let resolved = resolve_path(&payload.path)?;
+    check_write_access(&claims, &resolved, &home, &tmp)?;
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
+    let resp = crate::zapexec::call(Request::FileTrash {
+        path: resolved.to_string_lossy().to_string(),
+        as_user,
+        skip_owner_check,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "file_trash",
+        &resolved.to_string_lossy(),
+        "",
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+/// GET /system/files/trash：列出当前账号的回收站。
+pub async fn list_trash(claims: Claims) -> ZapJsonResult {
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
+    let resp = crate::zapexec::call(Request::FileTrashList {
+        as_user,
+        skip_owner_check,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+/// POST /system/files/restore：从回收站恢复到原路径。
+pub async fn restore_file(claims: Claims, Json(payload): Json<TrashIdPayload>) -> ZapJsonResult {
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
+    let resp = crate::zapexec::call(Request::FileRestore {
+        id: payload.id,
+        as_user,
+        skip_owner_check,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
+/// POST /system/files/purge：从回收站彻底删除。
+pub async fn purge_file(claims: Claims, Json(payload): Json<TrashIdPayload>) -> ZapJsonResult {
+    let (as_user, skip_owner_check) = actor_identity(&claims).await?;
+    let resp = crate::zapexec::call(Request::FilePurge {
+        id: payload.id,
+        as_user,
+        skip_owner_check,
+    })
+    .await?;
+    if resp.code != 0 {
+        return Err(ZapError::New(resp.code, resp.message));
+    }
+    Ok(Json(json!({ "code": 0, "message": resp.message, "data": resp.data })))
+}
+
 /// POST /system/files/mkdir
 pub async fn file_mkdir(
     claims: Claims,

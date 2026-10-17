@@ -38,6 +38,8 @@ use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlRow, MySqlSslMode};
 
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
+use crate::db;
+use std::time::{SystemTime, UNIX_EPOCH};
 use crate::zap::jwt::{self, ValidatedClaims, is_admin};
 
 /// 凭据坐标（与 `zapctl cred show mysql zapadm` 一致）
@@ -820,7 +822,7 @@ pub async fn list(claims: ValidatedClaims, Query(q): Query<ListQuery>) -> ZapJso
             continue;
         }
         let name = cols[0].clone();
-        if SYSTEM_SCHEMAS.contains(&name.as_str()) {
+        if SYSTEM_SCHEMAS.contains(&name.as_str()) || name.starts_with("__trash_") {
             continue;
         }
         if let Some(p) = &prefix
@@ -1064,8 +1066,160 @@ pub(crate) async fn provision_db(
 /// POST /api/database/drop：删除数据库。
 pub async fn drop_db(claims: ValidatedClaims, Json(req): Json<SchemaReq>) -> ZapJsonResult {
     let name = ensure_owned(&claims, req.name.trim())?;
+    if SYSTEM_SCHEMAS.contains(&name.as_str()) {
+        return Err(ZapError::New(-1, "不能删除系统内置库".to_string()));
+    }
+    let mut conn = connect().await?;
+    // 软删除：把库内所有表改名进 __trash_ 影子库，原库清空后删除；记录可供恢复 / 清空
+    let tables = rows_of(
+        &mut conn,
+        &format!(
+            "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = '{}'",
+            escape_literal(&name)
+        ),
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.into_iter().next().unwrap_or_default())
+    .collect::<Vec<String>>();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let base = if name.len() > 30 { &name[..30] } else { &name };
+    let trash_name = format!("__trash_{}_{}", base, ts);
+    run_sqls(&[format!("CREATE DATABASE IF NOT EXISTS `{trash_name}`")])
+        .await?;
+    for t in &tables {
+        let _ = run_sqls(&[format!(
+            "RENAME TABLE `{name}`.`{t}` TO `{trash_name}`.`{t}`"
+        )])
+        .await;
+    }
     run_sqls(&[format!("DROP DATABASE `{name}`")]).await?;
-    crate::zap::api_ok(json!({ "ok": true, "name": name }))
+    let prefix = schema_prefix(&claims).unwrap_or_default();
+    let deleted_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    sqlx::query(
+        "INSERT INTO db_trash (original, trash_name, owner_prefix, deleted_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(&name)
+    .bind(&trash_name)
+    .bind(prefix)
+    .bind(deleted_at)
+    .execute(db::get_db_pool().await)
+    .await
+    .map_err(|e| ZapError::New(-1, format!("记录回收站失败：{e}")))?;
+    crate::zap::api_ok(json!({ "ok": true, "name": name, "trashed": tables.len() }))
+}
+
+#[derive(Deserialize)]
+pub struct TrashIdQuery {
+    id: i64,
+}
+
+/// GET /api/database/trash：列出回收站里的数据库（管理员看全部）。
+pub async fn db_trash(claims: ValidatedClaims) -> ZapJsonResult {
+    let prefix = schema_prefix(&claims);
+    let pool = db::get_db_pool().await;
+    let rows: Vec<(i64, String, String, i64)> = if prefix.is_some() {
+        sqlx::query_as(
+            "SELECT id, original, trash_name, deleted_at FROM db_trash WHERE owner_prefix = ? ORDER BY id DESC",
+        )
+        .bind(prefix.unwrap_or_default())
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as("SELECT id, original, trash_name, deleted_at FROM db_trash ORDER BY id DESC")
+            .fetch_all(pool)
+            .await?
+    };
+    let items = rows
+        .into_iter()
+        .map(|(id, original, trash_name, deleted_at)| {
+            json!({ "id": id, "original": original, "trash_name": trash_name, "deleted_at": deleted_at })
+        })
+        .collect::<Vec<_>>();
+    crate::zap::api_ok(json!({ "ok": true, "list": items }))
+}
+
+/// POST /api/database/restore：恢复被软删的库（表改名回原库）。
+pub async fn db_trash_restore(claims: ValidatedClaims, Json(q): Json<TrashIdQuery>) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT original, trash_name FROM db_trash WHERE id = ?")
+            .bind(q.id)
+            .fetch_optional(pool)
+            .await?;
+    let (original, trash_name) = match row {
+        Some(r) => r,
+        None => return Err(ZapError::New(-1, "回收站项目不存在".to_string())),
+    };
+    ensure_owned(&claims, &original)?;
+    let mut conn = connect().await?;
+    let exists = rows_of(
+        &mut conn,
+        &format!(
+            "SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{}'",
+            escape_literal(&original)
+        ),
+    )
+    .await
+    .map(|r| !r.is_empty())
+    .unwrap_or(false);
+    if exists {
+        return Err(ZapError::New(
+            -1,
+            "原库仍存在，无法恢复（请先确认已删除）".to_string(),
+        ));
+    }
+    run_sqls(&[format!("CREATE DATABASE IF NOT EXISTS `{original}`")]).await?;
+    let tables = rows_of(
+        &mut conn,
+        &format!(
+            "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = '{}'",
+            escape_literal(&trash_name)
+        ),
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.into_iter().next().unwrap_or_default())
+    .collect::<Vec<String>>();
+    for t in &tables {
+        let _ = run_sqls(&[format!(
+            "RENAME TABLE `{trash_name}`.`{t}` TO `{original}`.`{t}`"
+        )])
+        .await;
+    }
+    run_sqls(&[format!("DROP DATABASE `{trash_name}`")]).await?;
+    sqlx::query("DELETE FROM db_trash WHERE id = ?")
+        .bind(q.id)
+        .execute(db::get_db_pool().await)
+        .await?;
+    crate::zap::api_ok(json!({ "ok": true, "original": original }))
+}
+
+/// POST /api/database/purge：彻底删除被软删的库（仅删影子库）。
+pub async fn db_trash_purge(claims: ValidatedClaims, Json(q): Json<TrashIdQuery>) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT original, trash_name FROM db_trash WHERE id = ?")
+            .bind(q.id)
+            .fetch_optional(pool)
+            .await?;
+    let (original, trash_name) = match row {
+        Some(r) => r,
+        None => return Err(ZapError::New(-1, "回收站项目不存在".to_string())),
+    };
+    ensure_owned(&claims, &original)?;
+    let _ = run_sqls(&[format!("DROP DATABASE IF EXISTS `{trash_name}`")]).await;
+    sqlx::query("DELETE FROM db_trash WHERE id = ?")
+        .bind(q.id)
+        .execute(db::get_db_pool().await)
+        .await?;
+    crate::zap::api_ok(json!({ "ok": true, "original": original }))
 }
 
 /// GET /api/database/users：数据库用户列表（含授权）。

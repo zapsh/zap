@@ -980,6 +980,41 @@ pub enum Request {
         #[serde(default)]
         skip_owner_check: bool,
     },
+    /// 移入回收站（不真正删除，可恢复 / 清空）
+    #[serde(rename = "file.trash")]
+    FileTrash {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
+    /// 列出当前执行账号的回收站
+    #[serde(rename = "file.trash_list")]
+    FileTrashList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
+    /// 从回收站恢复到原路径
+    #[serde(rename = "file.restore")]
+    FileRestore {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
+    /// 从回收站彻底删除
+    #[serde(rename = "file.purge")]
+    FilePurge {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_user: Option<String>,
+        #[serde(default)]
+        skip_owner_check: bool,
+    },
     /// 建目录
     #[serde(rename = "file.mkdir")]
     FileMkdir {
