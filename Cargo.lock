@@ -6363,6 +6363,7 @@ dependencies = [
  "clap",
  "flate2",
  "libc",
+ "rusqlite",
  "sha2 0.10.9",
  "tar",
  "ureq",

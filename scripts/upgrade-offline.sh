@@ -35,7 +35,7 @@ usage() {
   -h, --help        显示本帮助
 
 说明:
-  · 升级前会自动备份当前二进制到 <dir>/data/upgrade/backup，失败可回滚：
+  · 升级前会自动备份当前二进制与数据库（zap.db）到 <dir>/data/upgrade/backup，失败可回滚：
       zapupgrade rollback --list
   · 社区版 ⇄ Pro 属于换发行线，必须显式加 --pro 或 --community，
     否则拒绝执行（避免拷错包把 Pro 覆盖成社区版）

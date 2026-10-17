@@ -362,6 +362,10 @@ fn run_upgrade(ctx: &RunCtx) -> i32 {
         }
     }
 
+    // 3.5) 升级前快照数据库：与二进制备份同目录（<backup_dir>/zap.db），共享同一备份单元
+    //       与回滚生命周期。必须在替换二进制之前做，保证是「升级前」一致状态。
+    backup_db_before_upgrade(&dir, &backup_dir, &ctx.log);
+
     // 4) 原子替换（先写临时文件再 rename，避免半写状态）
     for b in &targets {
         let tmp = dir.join(format!(".{b}.upgrade-new"));
@@ -446,6 +450,53 @@ fn run_upgrade(ctx: &RunCtx) -> i32 {
             &format!("升级未完全成功（失败服务: {}）", failed.join(", ")),
         );
         1
+    }
+}
+
+/// 升级前对在线 `zap.db` 做一次一致性快照（`VACUUM INTO`），落到与二进制备份同一个
+/// `data/upgrade/backup/<ts>-<ver>/zap.db`，与二进制备份共享回滚生命周期。
+///
+/// 在替换二进制之前调用：此时旧 zapd 仍在运行（WAL 模式允许多连接并发读），
+/// `VACUUM INTO` 读取当前已提交状态，生成一个不含 WAL 的紧凑单文件快照。
+/// 失败仅告警、不阻断升级（二进制备份目录已就位可回滚二进制；数据库无回退点时由运维兜底）。
+fn backup_db_before_upgrade(dir: &Path, backup_dir: &Path, log: &str) {
+    let db = dir.join("data/zap.db");
+    if !db.is_file() {
+        log_line(log, "未找到数据库，跳过数据库快照");
+        return;
+    }
+    let bak = backup_dir.join("zap.db");
+    // 路径里若出现单引号（极端情况）转义，避免 VACUUM INTO 语法问题
+    let esc = bak.to_string_lossy().replace('\'', "''");
+
+    // 优先 VACUUM INTO：在线热备，产出不含 WAL 的紧凑单文件，无需停服
+    let mut done = false;
+    if let Ok(conn) = rusqlite::Connection::open(&db)
+        && conn.execute_batch(&format!("VACUUM INTO '{esc}'")).is_ok()
+        && bak.is_file()
+    {
+        done = true;
+    }
+    // 回退：checkpoint 把 WAL 合入主库后直接拷贝文件（崩溃窗口极小）
+    if !done {
+        if let Ok(conn) = rusqlite::Connection::open(&db) {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+        }
+        done = fs::copy(&db, &bak).is_ok();
+    }
+
+    if done {
+        // 数据库含敏感数据，快照同样收紧为仅属主可读写
+        let _ = fs::set_permissions(&bak, fs::Permissions::from_mode(0o600));
+        log_line(log, &format!("已快照数据库: {}", bak.display()));
+    } else {
+        log_line(
+            log,
+            &format!(
+                "升级前数据库快照失败（data/zap.db → {}），迁移中途失败将无数据库回退点，请人工备份后重试",
+                bak.display()
+            ),
+        );
     }
 }
 
@@ -1070,6 +1121,20 @@ fn cmd_rollback(list: bool, to: &Option<String>, dir: &Path, log: &str) -> i32 {
     };
     log_line(log, &format!("回滚到备份: {}", chosen.0));
 
+    // 备份里是否带了数据库快照（与二进制备份同目录，共享回滚生命周期）
+    let db_bak = chosen.1.join("zap.db");
+    let has_db = db_bak.is_file();
+
+    // 若含数据库快照，先把运行中的服务停下，避免下面覆盖 zap.db 时文件被占用
+    if has_db {
+        for svc in ["zapexec", "zapd"] {
+            let unit = service_unit(svc);
+            if unit_managed(&unit) {
+                svc_cmd(&["stop", &unit]);
+            }
+        }
+    }
+
     let mut restored: Vec<&str> = Vec::new();
     for b in BINS {
         let src = chosen.1.join(b);
@@ -1091,21 +1156,36 @@ fn cmd_rollback(list: bool, to: &Option<String>, dir: &Path, log: &str) -> i32 {
         }
         restored.push(b);
     }
-    if restored.is_empty() {
-        log_line(log, "该备份中没有可恢复的二进制");
+    if restored.is_empty() && !has_db {
+        log_line(log, "该备份中没有可恢复的二进制或数据库");
         return 1;
     }
 
-    // 与升级同序：zapexec 先、zapd 后
+    // 恢复数据库快照（VACUUM INTO 产出的单文件，无需 WAL）。恢复前服务已停止，
+    // 覆盖后丢弃可能陈旧的 WAL/SHM，避免与新主库不一致。
+    if has_db {
+        let dst = dir.join("data/zap.db");
+        if fs::copy(&db_bak, &dst).is_ok() {
+            let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o600));
+            let _ = fs::remove_file(dir.join("data/zap.db-wal"));
+            let _ = fs::remove_file(dir.join("data/zap.db-shm"));
+            log_line(log, "已恢复数据库快照");
+        } else {
+            log_line(log, "恢复数据库快照失败，请人工介入");
+            return 1;
+        }
+    }
+
+    // 与升级同序：zapexec 先、zapd 后；改了二进制或数据库都需重启生效
     for svc in ["zapexec", "zapd"] {
-        if !restored.contains(&svc) {
+        if !restored.contains(&svc) && !has_db {
             continue;
         }
         let unit = service_unit(svc);
         if !unit_managed(&unit) {
             log_line(
                 log,
-                &format!("{unit} 未注册为系统服务，旧二进制已恢复，请手动重启 {svc} 生效"),
+                &format!("{unit} 未注册为系统服务，旧二进制/数据库已恢复，请手动重启 {svc} 生效"),
             );
             continue;
         }
@@ -1181,5 +1261,37 @@ mod tests {
             "aarch64" => assert_eq!(arch.unwrap(), "arm64"),
             _ => assert!(arch.is_err()),
         }
+    }
+
+    /// 升级器的数据库快照必须落到与二进制备份同目录、且内容一致（VACUUM INTO）。
+    #[test]
+    fn db_backup_before_upgrade_snapshots() {
+        let base = std::env::temp_dir().join(format!(
+            "zap-test-up-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = base.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let db = data.join("zap.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch("CREATE TABLE t(a); INSERT INTO t VALUES (42);")
+                .unwrap();
+        }
+        let backup_dir = base.join("backup");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        // 与升级器同一步：快照 + 与二进制备份同目录
+        super::backup_db_before_upgrade(&base, &backup_dir, "");
+
+        let bak = backup_dir.join("zap.db");
+        assert!(bak.is_file(), "数据库快照应已生成在与二进制备份同目录");
+        let c2 = rusqlite::Connection::open(&bak).unwrap();
+        let v: i64 = c2.query_row("SELECT a FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 42, "快照内容应与升级前一致");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
