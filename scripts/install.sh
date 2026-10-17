@@ -30,7 +30,7 @@ LANG_MODE="$(detect_lang)"
 if [ "$LANG_MODE" = "zh" ]; then
     L_MUST_ROOT="请以 root 身份运行: sudo bash $0"
     L_FIND_BASH_FAIL="未找到 bash：请先安装后重试"
-    L_TARGET="目标版本: %s   系统: %s (systemd)   架构: %s"
+    L_TARGET="目标版本: %s   发行版: %s   初始化系统: %s   架构: %s"
     L_NO_BASH="未找到 bash：AppStore 安装脚本与计划任务将无法执行，请先安装 bash"
     L_QUERY_LATEST="查询最新版本..."
     L_LATEST_VER="最新版本: %s"
@@ -102,13 +102,15 @@ if [ "$LANG_MODE" = "zh" ]; then
     L_PASS_CHARS="管理员密码只能包含字母、数字以及 . _ -（避免破坏 env 文件解析）"
     L_PASS_SHORT="管理员密码不足 8 位，建议登录后修改"
     L_NO_SYSTEMCTL="未检测到 systemctl：目前仅支持 systemd 作为服务管理器"
+    L_INIT_MANUAL="未识别受支持的初始化系统（systemd/openrc/sysv/runit），将以后台进程方式直接拉起（重启不自动恢复，请按需配置 supervisor）"
+    L_INIT_MANUAL_DONE="已后台启动 zapd / zapexec（日志见 /var/log/zapd.log 与 /var/log/zapexec.log）"
     L_OS_UNSUPPORTED="不支持的操作系统: %s（当前仅支持 Linux）"
     L_ARCH_UNSUPPORTED="不支持的架构: %s"
     L_DOWNLOAD_EMPTY="下载内容为空: %s"
 else
     L_MUST_ROOT="Please run as root: sudo bash $0"
     L_FIND_BASH_FAIL="bash not found: please install it and retry"
-    L_TARGET="Target version: %s   OS: %s (systemd)   Arch: %s"
+    L_TARGET="Target version: %s   Distro: %s   Init: %s   Arch: %s"
     L_NO_BASH="bash not found: AppStore install scripts and cron jobs will fail; please install bash"
     L_QUERY_LATEST="Querying latest version..."
     L_LATEST_VER="Latest version: %s"
@@ -180,6 +182,8 @@ else
     L_PASS_CHARS="Admin password may only contain letters, digits and . _ - (to avoid breaking env-file parsing)"
     L_PASS_SHORT="Admin password is shorter than 8 chars; change it after first login"
     L_NO_SYSTEMCTL="systemctl not found: only systemd is supported as service manager"
+    L_INIT_MANUAL="No supported init system detected (systemd/openrc/sysv/runit); starting in background (not supervised, restart will not auto-recover)"
+    L_INIT_MANUAL_DONE="Started zapd / zapexec in background (logs: /var/log/zapd.log and /var/log/zapexec.log)"
     L_OS_UNSUPPORTED="Unsupported OS: %s (only Linux supported)"
     L_ARCH_UNSUPPORTED="Unsupported architecture: %s"
     L_DOWNLOAD_EMPTY="Downloaded content is empty: %s"
@@ -270,6 +274,151 @@ gen_password() {
     printf '%s' "${raw:0:16}"
 }
 
+# ── 发行版探测 ────────────────────────────────────────────
+# 读 /etc/os-release（主流发行版均提供），仅用于展示与诊断；失败则回退 lsb_release。
+detect_distro() {
+    DISTRO_ID="unknown"; DISTRO_NAME="unknown"; DISTRO_VERSION=""
+    if [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release 2>/dev/null || true
+        [ -n "${ID:-}" ]          && DISTRO_ID="$ID"
+        [ -n "${NAME:-}" ]        && DISTRO_NAME="$NAME"
+        [ -n "${VERSION_ID:-}" ]  && DISTRO_VERSION="$VERSION_ID"
+    fi
+    [ "$DISTRO_ID" = "unknown" ] && DISTRO_ID="$(lsb_release -si 2>/dev/null || echo unknown)"
+    [ "$DISTRO_NAME" = "unknown" ] && DISTRO_NAME="$DISTRO_ID"
+}
+
+# ── 初始化系统探测 ────────────────────────────────────────
+# 不再强制 systemd：依次探测 systemd / openrc / sysv / runit，都没有则标记为 none，
+# 由 install_services 兜底为「后台直接拉起」（重启不自动恢复，但面板可用）。
+detect_init() {
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        INIT_SYS=systemd
+    elif command -v rc-service >/dev/null 2>&1 || [ -x /sbin/openrc ]; then
+        INIT_SYS=openrc
+    elif command -v update-rc.d >/dev/null 2>&1 || command -v chkconfig >/dev/null 2>&1 || command -v service >/dev/null 2>&1; then
+        INIT_SYS=sysv
+    elif command -v sv >/dev/null 2>&1 && { [ -d /etc/service ] || [ -d /var/service ]; }; then
+        INIT_SYS=runit
+    else
+        INIT_SYS=none
+    fi
+}
+
+# ── 服务安装（按 init 分发） ──────────────────────────────
+install_services() {
+    case "$INIT_SYS" in
+        systemd) install_services_systemd ;;
+        openrc)  install_services_openrc ;;
+        sysv)    install_services_sysv ;;
+        runit)   install_services_runit ;;
+        none)    install_services_manual ;;
+    esac
+}
+
+# systemd：沿用包内 unit 文件
+install_service() {
+    local name="$1"
+    cp -Rf "$SRC/scripts/systemd/${name}.service" /etc/systemd/system/ \
+        || die "$(printf "$L_SERVICE_INSTALL_FAIL" "$name")"
+    systemctl daemon-reload
+    systemctl enable "${name}.service" >/dev/null 2>&1 || warn "$(printf "$L_SERVICE_ENABLE_FAIL" "$name")"
+    systemctl restart "${name}.service" || warn "$(printf "$L_SERVICE_START_FAIL" "$name")"
+}
+install_services_systemd() {
+    install_service zapexec
+    install_service zapd
+}
+
+# openrc
+write_openrc() {
+    local name="$1" cmd="$2" user="$3"
+    cat > "/etc/init.d/${name}" <<EOF
+#!/sbin/openrc-run
+command="${cmd}"
+command_user="${user}"
+pidfile="/run/${name}.pid"
+name="${name}"
+EOF
+    chmod 0755 "/etc/init.d/${name}"
+}
+install_services_openrc() {
+    write_openrc zapexec "/usr/local/zap/zapexec --socket /run/zap/exec.sock --secret /etc/zap/exec.key --client-user zapadm" root
+    write_openrc zapd "/usr/local/zap/zapd" zapadm
+    rc-update add zapexec default >/dev/null 2>&1 || true
+    rc-update add zapd default >/dev/null 2>&1 || true
+    rc-service zapexec restart >/dev/null 2>&1 || true
+    rc-service zapd restart >/dev/null 2>&1 || true
+}
+
+# sysv (LSB)
+write_sysv() {
+    local name="$1" cmd="$2" user="$3"
+    cat > "/etc/init.d/${name}" <<EOF
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          ${name}
+# Required-Start:    \$network \$remote_fs
+# Required-Stop:     \$network \$remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Zap ${name}
+### END INIT INFO
+NAME=${name}
+DAEMON=${cmd}
+USER=${user}
+PIDFILE=/run/\${NAME}.pid
+case "\$1" in
+  start)  start-stop-daemon --start --background --make-pidfile --pidfile \$PIDFILE --chuid \$USER --exec \$DAEMON ;;
+  stop)   start-stop-daemon --stop --pidfile \$PIDFILE ;;
+  restart) \$0 stop; sleep 1; \$0 start ;;
+  *) echo "Usage: \$0 {start|stop|restart}"; exit 1 ;;
+esac
+exit 0
+EOF
+    chmod 0755 "/etc/init.d/${name}"
+}
+install_services_sysv() {
+    write_sysv zapexec "/usr/local/zap/zapexec --socket /run/zap/exec.sock --secret /etc/zap/exec.key --client-user zapadm" root
+    write_sysv zapd "/usr/local/zap/zapd" zapadm
+    if command -v update-rc.d >/dev/null 2>&1; then
+        update-rc.d zapexec defaults >/dev/null 2>&1 || true
+        update-rc.d zapd defaults >/dev/null 2>&1 || true
+    elif command -v chkconfig >/dev/null 2>&1; then
+        chkconfig --add zapexec >/dev/null 2>&1 || true
+        chkconfig --add zapd >/dev/null 2>&1 || true
+    fi
+    service zapexec restart >/dev/null 2>&1 || true
+    service zapd restart >/dev/null 2>&1 || true
+}
+
+# runit
+write_runit() {
+    local name="$1" cmd="$2" user="$3"
+    local dir="/etc/zap/runit/${name}"
+    mkdir -p "$dir"
+    cat > "${dir}/run" <<EOF
+#!/bin/sh
+exec chpst -u ${user} ${cmd}
+EOF
+    chmod 0755 "${dir}/run"
+    ln -sf "$dir" /etc/service/${name} 2>/dev/null || true
+    sv up "${name}" >/dev/null 2>&1 || true
+}
+install_services_runit() {
+    write_runit zapexec "/usr/local/zap/zapexec --socket /run/zap/exec.sock --secret /etc/zap/exec.key --client-user zapadm" root
+    write_runit zapd "/usr/local/zap/zapd" zapadm
+}
+
+# 无受支持 init：后台直接拉起（非受管）
+install_services_manual() {
+    warn "$(printf "$L_INIT_MANUAL" "$INIT_SYS")"
+    ZAP_CONFIG=/etc/zap/zap.yaml nohup "$ZAP_DIR/zapexec" --socket /run/zap/exec.sock --secret /etc/zap/exec.key --client-user zapadm >/var/log/zapexec.log 2>&1 &
+    ZAP_CONFIG=/etc/zap/zap.yaml nohup "$ZAP_DIR/zapd" >/var/log/zapd.log 2>&1 &
+    ok "$(printf "$L_INIT_MANUAL_DONE" "$ZAP_DIR")"
+}
+
 zap_install_main() {
 [ "$(id -u)" -eq 0 ] || die "$L_MUST_ROOT"
 
@@ -351,15 +500,14 @@ esac
 
 OS=$(uname -s)
 case "$OS" in
-    Linux)
-        command -v systemctl >/dev/null 2>&1 \
-            || die "$L_NO_SYSTEMCTL"
-        OS_PKG=linux
-        ;;
-    *)
-        die "$(printf "$L_OS_UNSUPPORTED" "$OS")"
-        ;;
+    Linux) OS_PKG=linux ;;
+    *) die "$(printf "$L_OS_UNSUPPORTED" "$OS")" ;;
 esac
+
+# 发行版探测：读 /etc/os-release，仅用于展示与诊断
+detect_distro
+# 初始化系统探测：缺失时由 install_services 兜底为后台启动，不再强制 systemd
+detect_init
 
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -369,7 +517,7 @@ case "$ARCH" in
     s390x)               ;;
     *) die "$(printf "$L_ARCH_UNSUPPORTED" "$ARCH")" ;;
 esac
-info "$(printf "$L_TARGET" "$VERSION" "$OS" "$ARCH")"
+info "$(printf "$L_TARGET" "$VERSION" "$DISTRO_NAME" "$INIT_SYS" "$ARCH")"
 
 HAVE_FETCH=0
 if command -v wget >/dev/null 2>&1; then
@@ -760,18 +908,8 @@ ok "$L_CFG_DONE"
 create_admin_account "$ADMIN_USER" "/home/${ADMIN_USER}"
 
 info "$L_INSTALL_SERVICE"
-
-# install_service <service name>
-install_service() {
-    local name="$1"
-    cp -Rf "$SRC/scripts/systemd/${name}.service" /etc/systemd/system/ \
-        || die "$(printf "$L_SERVICE_INSTALL_FAIL" "$name")"
-    systemctl daemon-reload
-    systemctl enable "${name}.service" >/dev/null 2>&1 || warn "$(printf "$L_SERVICE_ENABLE_FAIL" "$name")"
-    systemctl restart "${name}.service" || warn "$(printf "$L_SERVICE_START_FAIL" "$name")"
-}
-
-install_service zapexec
+install_services
+ok "$L_SERVICE_ENABLED"
 
 init_admin_account() {
     info "$(printf "$L_INIT_ADMIN" "$ADMIN_USER")"
@@ -792,13 +930,15 @@ init_admin_account() {
 }
 init_admin_account || true
 
-install_service zapd
-ok "$L_SERVICE_ENABLED"
-
 if [ "$DOWNLOADED" = "1" ]; then
     rm -f "$ZAP_FILENAME"
 fi
-systemctl status zapd.service --no-pager || true
+case "$INIT_SYS" in
+    systemd) systemctl status zapd.service --no-pager || true ;;
+    openrc)  rc-service zapd status || true ;;
+    sysv)    service zapd status || true ;;
+    *)       true ;;
+esac
 
 printf "\n"
 printf "${GREEN}========================================${NC}\n"
