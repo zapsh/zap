@@ -653,7 +653,7 @@ pub async fn run_backup<'a>(a: RunBackupArgs<'a>) -> Result<Value, ZapError> {
     if let Some(jid) = job_id
         && !bpath.is_empty()
     {
-        let _ = push_to_job_remote(jid, record_id, &bpath, &eff_root).await;
+        let _ = push_to_job_remote(jid, record_id, &bpath, &eff_root, owner).await;
     }
 
     Ok(json!({
@@ -664,8 +664,19 @@ pub async fn run_backup<'a>(a: RunBackupArgs<'a>) -> Result<Value, ZapError> {
     }))
 }
 
-/// 把刚完成的备份（record_id）推送到任务 jid 绑定 cloud_id 所指的异地远端（best-effort）。
-async fn push_to_job_remote(jid: i64, _record_id: i64, bpath: &str, eff_root: &str) {
+/// 判断字符串是否为云存储 ID（16 位十六进制，与 zapd `zap::cloud::safe_store_id` 一致）。
+/// 用于区分「备份异地上传」的两种目的地：云存储（opendal）与旧 rsync 远端（backup_remotes.id）。
+fn is_cloud_store_id(s: &str) -> bool {
+    let s = s.trim();
+    s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// 把刚完成的备份（record_id）推送到任务 jid 绑定 cloud_id 所指的异地目的地（best-effort）。
+///
+/// 若 `cloud_id` 是 16 位十六进制云存储 ID，则走 opendal 异地上传（由 zapexec root 进程读取
+/// `0600` root 属主归档并推到云，详见 `Request::BackupCloudPush`）；否则按旧逻辑把 `cloud_id`
+/// 当作 `backup_remotes.id`，走 rsync over SSH。推送失败只记录告警，不影响本次备份结果。
+async fn push_to_job_remote(jid: i64, _record_id: i64, bpath: &str, eff_root: &str, owner: &str) {
     let pool = crate::db::get_db_pool().await;
     let cid: Option<String> =
         match sqlx::query_scalar("SELECT cloud_id FROM backup_jobs WHERE id=?")
@@ -676,7 +687,22 @@ async fn push_to_job_remote(jid: i64, _record_id: i64, bpath: &str, eff_root: &s
             Ok(c) => c,
             Err(_) => return,
         };
-    let remote_id = match cid.and_then(|c| c.trim().parse::<i64>().ok()) {
+    let Some(cid) = cid.filter(|s| !s.trim().is_empty()) else {
+        return;
+    };
+    // 云存储 ID 优先走 opendal 异地上传（root 进程读取归档，面板不直读）
+    if is_cloud_store_id(&cid) {
+        let _ = crate::zapexec::call(Request::BackupCloudPush {
+            path: bpath.to_string(),
+            cloud_id: cid.clone(),
+            owner: owner.to_string(),
+            backup_root: eff_root.to_string(),
+        })
+        .await;
+        return;
+    }
+    // 否则按旧逻辑走 rsync 远端（cloud_id 视为 backup_remotes.id）
+    let remote_id = match cid.trim().parse::<i64>().ok() {
         Some(id) if id > 0 => id,
         _ => return,
     };
@@ -2464,5 +2490,23 @@ async fn backup_all_dbs(report: &mut BackupAllReport, dest: &str, retain: i64) {
                     .push(json!({"kind":"db","name":db,"error":e.to_string()}));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_cloud_store_id;
+
+    #[test]
+    fn cloud_store_id_vs_rsync_remote_id() {
+        // 16 位十六进制 = 云存储（opendal 上传）
+        assert!(is_cloud_store_id("0123456789abcdef"));
+        assert!(is_cloud_store_id("abcdef0123456789"));
+        // 旧 rsync 远端 id（纯数字）不应误判为云存储
+        assert!(!is_cloud_store_id("5"));
+        assert!(!is_cloud_store_id("0"));
+        assert!(!is_cloud_store_id(""));
+        assert!(!is_cloud_store_id("xyz"));
+        assert!(!is_cloud_store_id("0123456789abcdef0"));
     }
 }

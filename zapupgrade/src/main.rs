@@ -1266,8 +1266,11 @@ mod tests {
     /// 升级器的数据库快照必须落到与二进制备份同目录、且内容一致（VACUUM INTO）。
     #[test]
     fn db_backup_before_upgrade_snapshots() {
-        let base =
-            std::env::temp_dir().join(format!("zap-test-up-{}-{}", std::process::id(), now_secs()));
+        let base = std::env::temp_dir().join(format!(
+            "zap-test-up-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
         let _ = std::fs::remove_dir_all(&base);
         let data = base.join("data");
         std::fs::create_dir_all(&data).unwrap();

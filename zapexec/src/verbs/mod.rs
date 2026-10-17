@@ -4,6 +4,7 @@ mod app;
 mod appstore;
 mod backup;
 mod ban_log;
+mod cloud_upload;
 mod cred;
 mod cron;
 mod docker;
@@ -939,6 +940,12 @@ pub async fn dispatch(req: Request) -> Response {
             .await
         }
         Request::BackupDisk { dir } => backup::disk(dir).await,
+        Request::BackupCloudPush {
+            path,
+            cloud_id,
+            owner,
+            backup_root,
+        } => cloud_upload::cloud_push(path, cloud_id, owner, backup_root).await,
         Request::OsRepoList => osrepo::list().await,
         Request::OsRepoRead { path } => osrepo::read(path).await,
         Request::OsRepoSave {

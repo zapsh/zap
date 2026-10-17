@@ -48,8 +48,8 @@ fn resolve_dest_dir(dest_dir: &str, backup_root: &str) -> Result<PathBuf, String
     Ok(dest)
 }
 
-/// 校验待删除/还原的归档路径位于备份根内。
-fn assert_in_root(path: &str, backup_root: &str) -> Result<PathBuf, String> {
+/// 校验待删除/还原/推送的归档路径位于备份根内。
+pub(crate) fn assert_in_root(path: &str, backup_root: &str) -> Result<PathBuf, String> {
     let root = canonical(&effective_root(backup_root))?;
     let p = canonical(Path::new(path))?;
     if !p.starts_with(&root) {
@@ -99,6 +99,112 @@ fn tar_entries(path: &Path) -> Result<Vec<String>, String> {
         entries.push(e.to_string());
     }
     Ok(entries)
+}
+
+/// 当前 Unix 秒（用于 manifest `created_at`）。
+fn now_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 在归档同目录写 `.sha256` 与 `.manifest` 侧车（权限同归档 `0600`）：
+/// - `<archive>.sha256`：`sha256sum` 兼容格式（`<hash>  <basename>`），供独立校验；
+/// - `<archive>.manifest`：JSON，含元数据 + 条目清单 + 校验和，供恢复前核对完整性。
+///
+/// 返回两个侧车文件的绝对路径（无归档名时回退空串）。
+fn write_sidecars(
+    archive: &Path,
+    kind: &str,
+    name: &str,
+    entries: &[String],
+    engine: Option<&str>,
+) -> (String, String) {
+    let basename = archive_name(archive);
+    let size = std::fs::metadata(archive).map(|m| m.len()).unwrap_or(0);
+    let sha = sha256_of(archive).unwrap_or_default();
+
+    // `.sha256`（GNU sha256sum 风格：两空格分隔）
+    let sha_file = archive.with_file_name(format!("{basename}.sha256"));
+    let _ = std::fs::write(&sha_file, format!("{sha}  {basename}\n"));
+    let _ = std::fs::set_permissions(&sha_file, std::fs::Permissions::from_mode(0o600));
+
+    // `.manifest`
+    let mut manifest = serde_json::json!({
+        "version": 1,
+        "kind": kind,
+        "name": name,
+        "archive": basename,
+        "size": size,
+        "sha256": sha,
+        "created_at": now_secs(),
+        "entries": entries,
+    });
+    if let Some(e) = engine {
+        manifest["engine"] = serde_json::Value::String(e.to_string());
+    }
+    let man_file = archive.with_file_name(format!("{basename}.manifest"));
+    let _ = std::fs::write(
+        &man_file,
+        serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+    );
+    let _ = std::fs::set_permissions(&man_file, std::fs::Permissions::from_mode(0o600));
+
+    (
+        sha_file.to_string_lossy().to_string(),
+        man_file.to_string_lossy().to_string(),
+    )
+}
+
+/// 取归档同目录 `.sha256` 侧车声明的校验和（首字段，小写）。
+fn sidecar_sha(p: &Path) -> Option<String> {
+    let sc = p.with_file_name(format!("{}.sha256", archive_name(p)));
+    let text = std::fs::read_to_string(&sc).ok()?;
+    text.split_whitespace().next().map(|s| s.to_lowercase())
+}
+
+/// 取归档同目录 `.manifest` 侧车声明的校验和（小写）。
+fn manifest_sha(p: &Path) -> Option<String> {
+    let mf = p.with_file_name(format!("{}.manifest", archive_name(p)));
+    let text = std::fs::read_to_string(&mf).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("sha256")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_lowercase())
+}
+
+/// 恢复前校验：优先用归档同目录 `.sha256` 侧车作为权威校验和，回退到 DB 记录
+/// （`backup_records.sha256`）；若 `.manifest` 侧车存在，其声明的 sha256 也必须与
+/// 实算一致。返回错误即拒绝还原（防篡改 / 损坏）。
+fn verify_integrity(p: &Path, db_sha: Option<&str>) -> Result<(), String> {
+    let act = match sha256_of(p) {
+        Some(h) => h,
+        None => return Err("无法计算归档校验和，拒绝还原".to_string()),
+    };
+    // 1) 侧车优先，其次 DB 记录；都为空则不强制（兼容旧归档）
+    let expected = sidecar_sha(p)
+        .filter(|s| !s.is_empty())
+        .or_else(|| db_sha.map(|s| s.to_lowercase()))
+        .filter(|s| !s.is_empty());
+    if let Some(exp) = expected
+        && act != exp
+    {
+        return Err(format!(
+            "归档校验和不匹配，可能已损坏或被篡改（期望 {exp}，实际 {act}）"
+        ));
+    }
+    // 2) 若 manifest 侧车存在，其声明的 sha256 必须与实算一致
+    if let Some(man_sha) = manifest_sha(p)
+        && !man_sha.is_empty()
+        && man_sha != act
+    {
+        return Err(format!(
+            "归档清单校验和不匹配，可能已损坏或被篡改（清单 {man_sha}，实际 {act}）"
+        ));
+    }
+    Ok(())
 }
 
 /// 取一个一次性的临时解包目录（位于系统临时区，还原结束由调用方清理）。
@@ -409,12 +515,17 @@ pub async fn dir(a: DirArgs) -> Response {
 
     let size = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
     let sha256 = sha256_of(&archive).unwrap_or_default();
+    // 写 `.sha256` / `.manifest` 侧车，供异地上传与恢复前校验使用
+    let entries = tar_entries(&archive).unwrap_or_default();
+    let (sha_file, man_file) = write_sidecars(&archive, "dir", &name, &entries, None);
     Response::ok(
         "打包完成",
         Some(serde_json::json!({
             "path": archive.to_string_lossy(),
             "size": size,
             "sha256": sha256,
+            "sha256_file": sha_file,
+            "manifest_file": man_file,
         })),
     )
 }
@@ -542,14 +653,32 @@ pub async fn db(a: DbArgs) -> Response {
     let _ = std::fs::set_permissions(&archive, std::fs::Permissions::from_mode(0o600));
     let size = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
     let sha256 = sha256_of(&archive).unwrap_or_default();
+    // 写 `.sha256` / `.manifest` 侧车，供异地上传与恢复前校验使用
+    let (sha_file, man_file) = write_sidecars(
+        &archive,
+        "db",
+        &name,
+        &[archive_name(&archive)],
+        Some(&engine),
+    );
     Response::ok(
         "数据库导出完成",
         Some(serde_json::json!({
             "path": archive.to_string_lossy(),
             "size": size,
             "sha256": sha256,
+            "sha256_file": sha_file,
+            "manifest_file": man_file,
         })),
     )
+}
+
+/// 取归档文件名（不含目录），供 manifest 的 entries 使用。
+fn archive_name(p: &Path) -> String {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn run_status(mut c: Command, err_msg: &str) -> Result<(), String> {
@@ -601,18 +730,9 @@ pub async fn restore_dir(
         Ok(e) => e,
         Err(e) => return Response::err(-1, e),
     };
-    // 2) 校验完整性：与 backup_records 记录的 sha256 比对，不符拒绝还原
-    if let Some(exp) = sha256.as_deref().filter(|s| !s.is_empty()) {
-        match sha256_of(&p) {
-            Some(act) if act == exp.to_lowercase() => {}
-            Some(act) => {
-                return Response::err(
-                    -1,
-                    format!("归档校验和不匹配，可能已损坏或被篡改（期望 {exp}，实际 {act}）"),
-                );
-            }
-            None => return Response::err(-1, "无法计算归档校验和，拒绝还原".to_string()),
-        }
+    // 2) 恢复前校验：优先用归档同目录 `.sha256` 侧车，回退 DB 记录；manifest 不符也拒绝
+    if let Err(e) = verify_integrity(&p, sha256.as_deref()) {
+        return Response::err(-1, e);
     }
     // 3) dry-run：仅预览将写入/覆盖的文件，不实际解包
     if dry_run {
@@ -783,18 +903,9 @@ pub async fn restore_db(a: RestoreDbArgs) -> Response {
         return Response::err(-1, "归档不存在或不是文件".to_string());
     }
     let engine = engine.to_lowercase();
-    // 1) 校验完整性：与 backup_records 记录的 sha256 比对，不符拒绝还原
-    if let Some(exp) = sha256.as_deref().filter(|s| !s.is_empty()) {
-        match sha256_of(&p) {
-            Some(act) if act == exp.to_lowercase() => {}
-            Some(act) => {
-                return Response::err(
-                    -1,
-                    format!("归档校验和不匹配，可能已损坏或被篡改（期望 {exp}，实际 {act}）"),
-                );
-            }
-            None => return Response::err(-1, "无法计算归档校验和，拒绝还原".to_string()),
-        }
+    // 1) 恢复前校验：优先用归档同目录 `.sha256` 侧车，回退 DB 记录；manifest 不符也拒绝
+    if let Err(e) = verify_integrity(&p, sha256.as_deref()) {
+        return Response::err(-1, e);
     }
     // 2) dry-run：仅预览将重建的表数，不实际导入
     let table_count = db_table_count_in_dump(&p, &engine).unwrap_or(0);
