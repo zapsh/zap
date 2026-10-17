@@ -873,6 +873,8 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
             backup_root,
+            sha256,
+            dry_run,
         } => {
             backup::restore_dir(
                 path,
@@ -881,6 +883,8 @@ pub async fn dispatch(req: Request) -> Response {
                 as_user,
                 skip_owner_check,
                 backup_root,
+                sha256,
+                dry_run,
             )
             .await
         }
@@ -894,6 +898,8 @@ pub async fn dispatch(req: Request) -> Response {
             port,
             db_path,
             backup_root,
+            sha256,
+            dry_run,
         } => {
             backup::restore_db(backup::RestoreDbArgs {
                 path,
@@ -905,7 +911,31 @@ pub async fn dispatch(req: Request) -> Response {
                 port,
                 db_path,
                 backup_root,
+                sha256,
+                dry_run,
             })
+            .await
+        }
+        Request::BackupRemotePush {
+            path,
+            kind,
+            host,
+            port,
+            user,
+            remote_path,
+            ssh_opts,
+            backup_root,
+        } => {
+            backup::remote_push(
+                path,
+                kind,
+                host,
+                port,
+                user,
+                remote_path,
+                ssh_opts,
+                backup_root,
+            )
             .await
         }
         Request::BackupDisk { dir } => backup::disk(dir).await,

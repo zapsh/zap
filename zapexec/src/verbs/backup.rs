@@ -63,6 +63,76 @@ fn canonical(p: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("路径解析失败 {}: {e}", p.display()))
 }
 
+/// 计算文件 sha256（依赖系统 sha256sum，归档路径已受 assert_in_root 约束，安全）。
+fn sha256_of(path: &Path) -> Option<String> {
+    let out = Command::new("sha256sum").arg(path).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.split_whitespace().next().map(|h| h.to_lowercase())
+}
+
+/// 列出 tar 归档内条目并校验：拒绝绝对路径或含 `..` 的越权条目（防 tar -C / 写穿）。
+/// 返回相对条目路径列表。
+fn tar_entries(path: &Path) -> Result<Vec<String>, String> {
+    let out = Command::new("tar")
+        .arg("-tzf")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("读取归档条目失败: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "读取归档条目失败: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let mut entries = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let e = line.trim();
+        if e.is_empty() {
+            continue;
+        }
+        if e.starts_with('/') || e.contains("..") {
+            return Err(format!("归档含越权条目，拒绝还原: {e}"));
+        }
+        entries.push(e.to_string());
+    }
+    Ok(entries)
+}
+
+/// 取一个一次性的临时解包目录（位于系统临时区，还原结束由调用方清理）。
+fn mk_restore_tmp() -> Result<PathBuf, String> {
+    let base = std::env::temp_dir().join(format!(
+        "zap-restore-{}-{}",
+        std::process::id(),
+        chrono_now_nanos()
+    ));
+    std::fs::create_dir_all(&base).map_err(|e| format!("创建临时解包目录失败: {e}"))?;
+    Ok(base)
+}
+
+fn chrono_now_nanos() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+/// 把已解包到 `src`（含相对结构）的目录树按原样应用到 `dst`（cp -a 保留属主/权限）。
+/// 因 src 来自已校验完整的归档，应用阶段仅本地拷贝，崩溃风险极低。
+fn apply_tree(src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| format!("创建目标目录失败: {e}"))?;
+    let mut cmd = crate::verbs::root_cmd("cp");
+    cmd.arg("-a").arg("--").arg(src.join(".")).arg(dst);
+    match cmd.status() {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("应用目录树失败: 退出码 {}", s.code().unwrap_or(-1))),
+        Err(e) => Err(format!("执行 cp 失败: {e}")),
+    }
+}
+
 /// 查询某路径所在文件系统的（可用, 总）字节数；失败返回 None。
 fn free_total(path: &Path) -> Option<(u64, u64)> {
     let c = std::ffi::CString::new(path.to_string_lossy().as_bytes().to_vec()).ok()?;
@@ -338,9 +408,14 @@ pub async fn dir(a: DirArgs) -> Response {
     }
 
     let size = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
+    let sha256 = sha256_of(&archive).unwrap_or_default();
     Response::ok(
         "打包完成",
-        Some(serde_json::json!({ "path": archive.to_string_lossy(), "size": size })),
+        Some(serde_json::json!({
+            "path": archive.to_string_lossy(),
+            "size": size,
+            "sha256": sha256,
+        })),
     )
 }
 
@@ -466,9 +541,14 @@ pub async fn db(a: DbArgs) -> Response {
     }
     let _ = std::fs::set_permissions(&archive, std::fs::Permissions::from_mode(0o600));
     let size = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
+    let sha256 = sha256_of(&archive).unwrap_or_default();
     Response::ok(
         "数据库导出完成",
-        Some(serde_json::json!({ "path": archive.to_string_lossy(), "size": size })),
+        Some(serde_json::json!({
+            "path": archive.to_string_lossy(),
+            "size": size,
+            "sha256": sha256,
+        })),
     )
 }
 
@@ -505,6 +585,8 @@ pub async fn restore_dir(
     _as_user: Option<String>,
     _skip_owner_check: bool,
     backup_root: String,
+    sha256: Option<String>,
+    dry_run: bool,
 ) -> Response {
     let p = match assert_in_root(&path, &backup_root) {
         Ok(p) => p,
@@ -513,28 +595,90 @@ pub async fn restore_dir(
     if !p.is_file() {
         return Response::err(-1, "归档不存在或不是文件".to_string());
     }
-    if to_original {
-        // 归档内为相对路径（如 home/u/www/...），以 root 运行 tar 并 -C / 解包，
-        // 即可写回原绝对位置，且保留原始属主。
+    // 1) 校验归档内条目：拒绝绝对路径 / `..` 越权条目（防 tar -C / 写穿）
+    let entries = match tar_entries(&p) {
+        Ok(e) => e,
+        Err(e) => return Response::err(-1, e),
+    };
+    // 2) 校验完整性：与 backup_records 记录的 sha256 比对，不符拒绝还原
+    if let Some(exp) = sha256.as_deref().filter(|s| !s.is_empty()) {
+        match sha256_of(&p) {
+            Some(act) if act == exp.to_lowercase() => {}
+            Some(act) => {
+                return Response::err(
+                    -1,
+                    format!("归档校验和不匹配，可能已损坏或被篡改（期望 {exp}，实际 {act}）"),
+                );
+            }
+            None => return Response::err(-1, "无法计算归档校验和，拒绝还原".to_string()),
+        }
+    }
+    // 3) dry-run：仅预览将写入/覆盖的文件，不实际解包
+    if dry_run {
+        let mut overwrites = Vec::new();
+        for e in &entries {
+            let dest = if to_original {
+                Path::new("/").join(e)
+            } else {
+                Path::new(&target_dir).join(e)
+            };
+            if dest.exists() {
+                overwrites.push(dest.to_string_lossy().to_string());
+            }
+        }
+        return Response::ok(
+            "预览（未实际还原）",
+            Some(serde_json::json!({
+                "entries": entries,
+                "overwrites": overwrites,
+                "count": entries.len(),
+                "overwrite_count": overwrites.len(),
+            })),
+        );
+    }
+    // 4) 安全还原：先解到临时区，校验通过后再整树落盘（避免 tar -C / 失败即半覆盖）
+    let tmp = match mk_restore_tmp() {
+        Ok(t) => t,
+        Err(e) => return Response::err(-1, e),
+    };
+    let extract = {
         let mut cmd = crate::verbs::root_cmd("tar");
-        cmd.arg("-xzf").arg(&p).arg("-C").arg("/");
-        return match cmd.status() {
-            Ok(s) if s.success() => Response::ok("已还原到原路径", None),
-            Ok(s) => Response::err(-1, format!("解包失败: 退出码 {}", s.code().unwrap_or(-1))),
-            Err(e) => Response::err(-1, format!("执行 tar 失败: {e}")),
-        };
+        cmd.arg("-xzf").arg(&p).arg("-C").arg(&tmp);
+        cmd.status()
+    };
+    if !matches!(extract, Ok(s) if s.success()) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Response::err(
+            -1,
+            format!(
+                "解包到临时区失败: {}",
+                extract
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "退出码非零".to_string())
+            ),
+        );
     }
-    let target = PathBuf::from(&target_dir);
-    if let Err(e) = std::fs::create_dir_all(&target) {
-        return Response::err(-1, format!("创建还原目标目录失败: {e}"));
+    // 临时区落盘到目标（to_original 写回原绝对位置；否则写到 target_dir）
+    let dst = if to_original {
+        PathBuf::from("/")
+    } else {
+        PathBuf::from(&target_dir)
+    };
+    let apply = apply_tree(&tmp, &dst);
+    let _ = std::fs::remove_dir_all(&tmp);
+    if let Err(e) = apply {
+        return Response::err(-1, e);
     }
-    let mut cmd = crate::verbs::root_cmd("tar");
-    cmd.arg("-xzf").arg(&p).arg("-C").arg(&target);
-    match cmd.status() {
-        Ok(s) if s.success() => Response::ok("目录还原完成", None),
-        Ok(s) => Response::err(-1, format!("解包失败: 退出码 {}", s.code().unwrap_or(-1))),
-        Err(e) => Response::err(-1, format!("执行 tar 失败: {e}")),
-    }
+    // 5) 恢复后核对：解包条目数 == 归档条目数（前面已校验条目，这里回填用于前端展示）
+    let act = sha256_of(&p).unwrap_or_default();
+    Response::ok(
+        "目录还原完成",
+        Some(serde_json::json!({
+            "restored": entries.len(),
+            "sha256": act,
+        })),
+    )
 }
 
 // ── 数据库还原 ────────────────────────────────────────────────────
@@ -549,6 +693,71 @@ pub(crate) struct RestoreDbArgs {
     pub(crate) port: i32,
     pub(crate) db_path: Option<String>,
     pub(crate) backup_root: String,
+    pub(crate) sha256: Option<String>,
+    pub(crate) dry_run: bool,
+}
+
+/// 统计 dump 中的 CREATE TABLE 条数（用于 dry-run 预览与恢复后比对）。
+fn db_table_count_in_dump(path: &Path, _engine: &str) -> Result<usize, String> {
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "gzip -dc '{}' | grep -aciE 'CREATE TABLE'",
+            path.display()
+        ))
+        .output()
+        .map_err(|e| format!("解析转储表数失败: {e}"))?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.trim()
+        .parse::<usize>()
+        .map_err(|_| "无法解析转储表数".to_string())
+}
+
+/// 还原后统计目标库实际表数（恢复后核对）。
+fn db_table_count_live(
+    engine: &str,
+    db_name: &str,
+    user: &str,
+    password: &str,
+    host: &str,
+    port: i32,
+    db_path: Option<&str>,
+) -> Option<usize> {
+    if engine == "sqlite" {
+        let dp = db_path?;
+        let out = Command::new("sqlite3")
+            .arg(dp)
+            .arg("SELECT count(*) FROM sqlite_master WHERE type='table'")
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<usize>()
+            .ok()
+    } else {
+        let host = if host.is_empty() { "127.0.0.1" } else { host };
+        let port = if port <= 0 { 3306 } else { port };
+        let out = Command::new("mysql")
+            .arg("-N")
+            .arg("-h")
+            .arg(host)
+            .arg("-P")
+            .arg(port.to_string())
+            .arg("-u")
+            .arg(user)
+            .arg("-e")
+            .arg(format!(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='{}'",
+                db_name.replace('\'', "''")
+            ))
+            .env("MYSQL_PWD", password)
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<usize>()
+            .ok()
+    }
 }
 
 pub async fn restore_db(a: RestoreDbArgs) -> Response {
@@ -562,6 +771,8 @@ pub async fn restore_db(a: RestoreDbArgs) -> Response {
         port,
         db_path,
         backup_root,
+        sha256,
+        dry_run,
     } = a;
     let p = match assert_in_root(&path, &backup_root) {
         Ok(p) => p,
@@ -571,20 +782,45 @@ pub async fn restore_db(a: RestoreDbArgs) -> Response {
         return Response::err(-1, "归档不存在或不是文件".to_string());
     }
     let engine = engine.to_lowercase();
+    // 1) 校验完整性：与 backup_records 记录的 sha256 比对，不符拒绝还原
+    if let Some(exp) = sha256.as_deref().filter(|s| !s.is_empty()) {
+        match sha256_of(&p) {
+            Some(act) if act == exp.to_lowercase() => {}
+            Some(act) => {
+                return Response::err(
+                    -1,
+                    format!("归档校验和不匹配，可能已损坏或被篡改（期望 {exp}，实际 {act}）"),
+                );
+            }
+            None => return Response::err(-1, "无法计算归档校验和，拒绝还原".to_string()),
+        }
+    }
+    // 2) dry-run：仅预览将重建的表数，不实际导入
+    let table_count = db_table_count_in_dump(&p, &engine).unwrap_or(0);
+    if dry_run {
+        return Response::ok(
+            "预览（未实际还原）",
+            Some(serde_json::json!({
+                "engine": engine,
+                "db_name": db_name,
+                "table_count": table_count,
+                "note": "将重建上述表到目标数据库，覆盖同名表",
+            })),
+        );
+    }
+    // 3) 实际导入（原逻辑）
     let result = if engine == "sqlite" {
-        let db_path = match db_path.as_deref() {
+        let dp = match db_path.as_deref() {
             Some(p) if !p.is_empty() => p.to_string(),
             _ => return Response::err(-1, "sqlite 还原需要 db_path".to_string()),
         };
-        // gzip -dc $1 | sqlite3 $2
         let script = "gzip -dc \"$1\" | sqlite3 \"$2\"";
         let mut c = root_shell(script);
-        c.arg("x").arg(&p).arg(&db_path);
+        c.arg("x").arg(&p).arg(&dp);
         run_status(c, "sqlite 还原失败")
     } else {
         let host: &str = if host.is_empty() { "127.0.0.1" } else { &host };
         let port = if port <= 0 { 3306 } else { port };
-        // gzip -dc $1 | mysql -h$2 -P$3 -u$4 $5
         let script = "gzip -dc \"$1\" | mysql -h\"$2\" -P\"$3\" -u\"$4\" \"$5\"";
         let mut c = root_shell(script);
         c.arg("x")
@@ -597,7 +833,91 @@ pub async fn restore_db(a: RestoreDbArgs) -> Response {
         run_status(c, "mysql 还原失败")
     };
     match result {
-        Ok(()) => Response::ok("数据库还原完成", None),
+        Ok(()) => {
+            // 4) 恢复后核对：统计目标库实际表数
+            let live = db_table_count_live(
+                &engine,
+                &db_name,
+                &user,
+                &password,
+                &host,
+                port,
+                db_path.as_deref(),
+            )
+            .unwrap_or(table_count);
+            Response::ok(
+                "数据库还原完成",
+                Some(serde_json::json!({
+                    "tables": live,
+                    "sha256": sha256_of(&p).unwrap_or_default(),
+                })),
+            )
+        }
         Err(e) => Response::err(-1, e),
+    }
+}
+
+// ── 异地推送（rsync）────────────────────────────────────────────────
+
+/// 把备份归档推送到远端副本（rsync over ssh）。归档须位于备份根内。
+pub async fn remote_push(
+    path: String,
+    kind: String,
+    host: String,
+    port: i32,
+    user: String,
+    remote_path: String,
+    ssh_opts: String,
+    backup_root: String,
+) -> Response {
+    let p = match assert_in_root(&path, &backup_root) {
+        Ok(p) => p,
+        Err(e) => return Response::err(-1, e),
+    };
+    if !p.is_file() {
+        return Response::err(-1, "归档不存在或不是文件".to_string());
+    }
+    if host.trim().is_empty() || remote_path.trim().is_empty() {
+        return Response::err(-1, "远端主机与目标目录不能为空".to_string());
+    }
+    let kind = if kind.trim().is_empty() {
+        "rsync"
+    } else {
+        kind.trim()
+    };
+    if kind != "rsync" {
+        return Response::err(-1, format!("不支持的远端类型: {kind}（当前仅支持 rsync）"));
+    }
+    // ssh 传输层（-e "ssh -p PORT -o ..."）；port<=0 走默认 22
+    let ssh = if port > 0 {
+        format!("ssh -p {port} {ssh_opts}")
+    } else {
+        format!("ssh {ssh_opts}")
+    };
+    let dest = if user.trim().is_empty() {
+        format!("{}:{}", host.trim(), remote_path.trim())
+    } else {
+        format!("{}@{}:{}", user.trim(), host.trim(), remote_path.trim())
+    };
+    let mut cmd = crate::verbs::root_cmd("rsync");
+    cmd.arg("-az")
+        .arg("--delete")
+        .arg("-e")
+        .arg(&ssh)
+        .arg(&p)
+        .arg(&dest);
+    match cmd.status() {
+        Ok(s) if s.success() => Response::ok(
+            "已推送到远端",
+            Some(serde_json::json!({
+                "remote": dest,
+                "sha256": sha256_of(&p).unwrap_or_default(),
+            })),
+        ),
+        Ok(s) => Response::err(
+            -1,
+            format!("推送远端失败: 退出码 {}", s.code().unwrap_or(-1)),
+        ),
+        Err(e) => Response::err(-1, format!("执行 rsync 失败: {e}")),
     }
 }

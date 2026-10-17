@@ -1238,47 +1238,72 @@ async fn init_ssl_acme_dns_provider_table() {
 // ── 备份中心（目录 / 数据库备份与定时任务）──────────────────────
 
 async fn init_backup_tables() {
-    if table_exists("backup_jobs").await {
-        return;
+    if !table_exists("backup_jobs").await {
+        let sql = r#"
+        CREATE TABLE backup_jobs (
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL DEFAULT '',
+            target_type TEXT NOT NULL DEFAULT 'dir',
+            target TEXT NOT NULL DEFAULT '',
+            schedule TEXT NOT NULL DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            retain_count INTEGER NOT NULL DEFAULT 7,
+            cloud_id TEXT NOT NULL DEFAULT '',
+            owner TEXT NOT NULL DEFAULT '',
+            last_run_at INTEGER NOT NULL DEFAULT 0,
+            last_status INTEGER NOT NULL DEFAULT 0,
+            last_message TEXT NOT NULL DEFAULT '',
+            created_at INTEGER,
+            updated_at INTEGER
+        );
+        CREATE TABLE backup_records (
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL DEFAULT 0,
+            kind TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL DEFAULT '',
+            path TEXT NOT NULL DEFAULT '',
+            -- 备份归属：普通用户自助备份 / 管理员全量备份都按资源主人打标（owner），
+            -- dest_root 记录该归档所在的备份根（空 = 系统备份根；否则用户家目录 backups），
+            -- 还原 / 删除时据此把对应目录作为安全根传入 zapexec 的 assert_in_root。
+            owner TEXT NOT NULL DEFAULT '',
+            dest_root TEXT NOT NULL DEFAULT '',
+            -- 备份清单：记录本次归档实际包含的来源路径（站点 = web_root + 应用 workdir + 客户目录；
+            -- 家目录 = home + 额外路径），还原「到原路径」时据此把 tar 解包回绝对位置。
+            manifest TEXT NOT NULL DEFAULT '',
+            size INTEGER NOT NULL DEFAULT 0,
+            -- 归档 sha256（备份时计算、还原前校验，防损坏/篡改；空 = 旧归档未记录）
+            sha256 TEXT NOT NULL DEFAULT '',
+            status INTEGER NOT NULL DEFAULT 0,
+            message TEXT NOT NULL DEFAULT '',
+            created_at INTEGER
+        );
+        "#;
+        let _ = get_db_pool().await.execute(sql).await;
     }
-    let sql = r#"
-    CREATE TABLE backup_jobs (
-        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL DEFAULT '',
-        target_type TEXT NOT NULL DEFAULT 'dir',
-        target TEXT NOT NULL DEFAULT '',
-        schedule TEXT NOT NULL DEFAULT '',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        retain_count INTEGER NOT NULL DEFAULT 7,
-        cloud_id TEXT NOT NULL DEFAULT '',
-        owner TEXT NOT NULL DEFAULT '',
-        last_run_at INTEGER NOT NULL DEFAULT 0,
-        last_status INTEGER NOT NULL DEFAULT 0,
-        last_message TEXT NOT NULL DEFAULT '',
-        created_at INTEGER,
-        updated_at INTEGER
-    );
-    CREATE TABLE backup_records (
-        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        job_id INTEGER NOT NULL DEFAULT 0,
-        kind TEXT NOT NULL DEFAULT '',
-        name TEXT NOT NULL DEFAULT '',
-        path TEXT NOT NULL DEFAULT '',
-        -- 备份归属：普通用户自助备份 / 管理员全量备份都按资源主人打标（owner），
-        -- dest_root 记录该归档所在的备份根（空 = 系统备份根；否则用户家目录 backups），
-        -- 还原 / 删除时据此把对应目录作为安全根传入 zapexec 的 assert_in_root。
-        owner TEXT NOT NULL DEFAULT '',
-        dest_root TEXT NOT NULL DEFAULT '',
-        -- 备份清单：记录本次归档实际包含的来源路径（站点 = web_root + 应用 workdir + 客户目录；
-        -- 家目录 = home + 额外路径），还原「到原路径」时据此把 tar 解包回绝对位置。
-        manifest TEXT NOT NULL DEFAULT '',
-        size INTEGER NOT NULL DEFAULT 0,
-        status INTEGER NOT NULL DEFAULT 0,
-        message TEXT NOT NULL DEFAULT '',
-        created_at INTEGER
-    );
-    "#;
-    let _ = get_db_pool().await.execute(sql).await;
+
+    let pool = get_db_pool().await;
+    // 异地备份远端配置表：无论新旧库都创建（可插拔远端，首期实现 rsync）
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS backup_remotes (\
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, \
+            name TEXT NOT NULL DEFAULT '', \
+            kind TEXT NOT NULL DEFAULT 'rsync', \
+            host TEXT NOT NULL DEFAULT '', \
+            port INTEGER NOT NULL DEFAULT 0, \
+            user TEXT NOT NULL DEFAULT '', \
+            remote_path TEXT NOT NULL DEFAULT '', \
+            ssh_opts TEXT NOT NULL DEFAULT '', \
+            enabled INTEGER NOT NULL DEFAULT 1, \
+            remark TEXT NOT NULL DEFAULT '', \
+            created_at INTEGER, \
+            updated_at INTEGER)",
+    )
+    .execute(pool)
+    .await;
+    // 存量库补列：backup_records.sha256（旧归档 sha256 为空，还原时不强制校验）
+    let _ = sqlx::query("ALTER TABLE backup_records ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 }
 
 // ── fpm_spec（PHP-FPM 规格模板库，仅 admin 维护）────────────────

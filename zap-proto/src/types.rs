@@ -2442,6 +2442,12 @@ pub enum Request {
         /// 备份根目录；空 = 默认
         #[serde(default)]
         backup_root: String,
+        /// 期望的归档 sha256（由 backup_records 提供）；非空时还原前校验，不符则拒绝，防篡改/损坏。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+        /// 为 true 时只预览将写入/覆盖的文件，不实际解包。
+        #[serde(default)]
+        dry_run: bool,
     },
     /// 备份：还原数据库（root 特权）。
     #[serde(rename = "backup.restore_db")]
@@ -2461,6 +2467,35 @@ pub enum Request {
         /// sqlite 时为目标数据库文件路径
         #[serde(default, skip_serializing_if = "Option::is_none")]
         db_path: Option<String>,
+        /// 备份根目录；空 = 默认
+        #[serde(default)]
+        backup_root: String,
+        /// 期望的归档 sha256（由 backup_records 提供）；非空时还原前校验，不符则拒绝，防篡改/损坏。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+        /// 为 true 时只预览将写入/覆盖的库表，不实际导入。
+        #[serde(default)]
+        dry_run: bool,
+    },
+    /// 备份：把归档推送到远端副本（rsync，root 特权）。归档须位于备份根内。
+    #[serde(rename = "backup.remote_push")]
+    BackupRemotePush {
+        /// 归档绝对路径（.tar.gz / .sql.gz）
+        path: String,
+        /// 远端类型（目前仅 rsync）
+        #[serde(default)]
+        kind: String,
+        /// 远端主机
+        host: String,
+        #[serde(default)]
+        port: i32,
+        #[serde(default)]
+        user: String,
+        /// 远端目标目录（绝对）
+        remote_path: String,
+        /// 额外 ssh 选项（如 -i /path/key -o StrictHostKeyChecking=no）
+        #[serde(default)]
+        ssh_opts: String,
         /// 备份根目录；空 = 默认
         #[serde(default)]
         backup_root: String,

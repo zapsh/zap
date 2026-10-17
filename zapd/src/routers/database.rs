@@ -36,11 +36,11 @@ use sqlx::Row;
 use sqlx::ValueRef;
 use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlRow, MySqlSslMode};
 
+use crate::db;
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
-use crate::db;
-use std::time::{SystemTime, UNIX_EPOCH};
 use crate::zap::jwt::{self, ValidatedClaims, is_admin};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 凭据坐标（与 `zapctl cred show mysql zapadm` 一致）
 const CRED_SERVICE: &str = "mysql";
@@ -1088,8 +1088,7 @@ pub async fn drop_db(claims: ValidatedClaims, Json(req): Json<SchemaReq>) -> Zap
         .unwrap_or(0);
     let base = if name.len() > 30 { &name[..30] } else { &name };
     let trash_name = format!("__trash_{}_{}", base, ts);
-    run_sqls(&[format!("CREATE DATABASE IF NOT EXISTS `{trash_name}`")])
-        .await?;
+    run_sqls(&[format!("CREATE DATABASE IF NOT EXISTS `{trash_name}`")]).await?;
     for t in &tables {
         let _ = run_sqls(&[format!(
             "RENAME TABLE `{name}`.`{t}` TO `{trash_name}`.`{t}`"
@@ -1146,7 +1145,10 @@ pub async fn db_trash(claims: ValidatedClaims) -> ZapJsonResult {
 }
 
 /// POST /api/database/restore：恢复被软删的库（表改名回原库）。
-pub async fn db_trash_restore(claims: ValidatedClaims, Json(q): Json<TrashIdQuery>) -> ZapJsonResult {
+pub async fn db_trash_restore(
+    claims: ValidatedClaims,
+    Json(q): Json<TrashIdQuery>,
+) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
     let row: Option<(String, String)> =
         sqlx::query_as("SELECT original, trash_name FROM db_trash WHERE id = ?")

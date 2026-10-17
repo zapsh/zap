@@ -353,6 +353,19 @@ fn api_routers() -> Router {
             post(system_backup::restore_dir),
         )
         .route("/system/backup/restore_db", post(system_backup::restore_db))
+        .route("/system/backup/remotes", get(system_backup::remote_list))
+        .route(
+            "/system/backup/remote/save",
+            post(system_backup::remote_save),
+        )
+        .route(
+            "/system/backup/remote/delete",
+            post(system_backup::remote_delete),
+        )
+        .route(
+            "/system/backup/remote/push",
+            post(system_backup::remote_push),
+        )
         .route("/system/backup/jobs", get(system_backup::jobs_list))
         .route("/system/backup/records", get(system_backup::records_list))
         .route("/system/backup/job/save", post(system_backup::job_save))

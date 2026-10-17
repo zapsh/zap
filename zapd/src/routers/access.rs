@@ -785,6 +785,27 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
     ("/system/backup/delete", Required::User, None),
     ("/system/backup/restore_dir", Required::User, None),
     ("/system/backup/restore_db", Required::User, None),
+    // 异地备份远端管理：涉及远端主机凭据，仅管理员。
+    (
+        "/system/backup/remotes",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
+    (
+        "/system/backup/remote/save",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
+    (
+        "/system/backup/remote/delete",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
+    (
+        "/system/backup/remote/push",
+        Required::Admin,
+        Some(Perm::module("system.backup")),
+    ),
     // 以下系统级备份：任意目录 / 全量 / 归档列表 / 历史 / 路径与存储设置，仅管理员。
     // 借 admin 条目登记 system.backup 权限点（角色页可展示、可收紧）。
     (
