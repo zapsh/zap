@@ -1,14 +1,47 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlx::Executor;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::get_db_pool;
+use super::get_db_pool_opt;
 use super::menu_seed;
 
+/// 当前 schema 版本，取面板 crate 版本号。每次发版 bump 版本即视为一次 schema 升级，
+/// 升级时 [`init_schema`] 会先自动备份数据库（见 [`backup_db_before_upgrade`]）。
+const APP_SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// 建表与种子数据入口。
+///
+/// 迁移策略：所有建表采用「`CREATE TABLE IF NOT EXISTS` + 幂等 `ADD COLUMN`」的向前迁移，
+/// 天然可重复执行、对存量库安全。本函数在此之上补上**版本记录**与**升级前自动备份**：
+/// - 记录 `schema_migrations` 中已应用的版本，使升级可观测、可回溯；
+/// - 当检测到数据库版本低于代码版本（升级）时，先做一次在线一致性快照，避免迁移中途失败无退路；
+/// - 当检测到数据库版本高于代码版本（降级 / 跨大版本回滚）时，不崩溃，但告警——旧代码可能
+///   不认识新 schema（如回收站列、异地备份表），此时应还原升级前自动备份而非继续跑向前迁移。
 pub async fn init_schema() {
+    // ── 迁移框架：版本记录 + 升级前自动备份 + 回滚检测 ─────────────
+    ensure_schema_migrations_table().await;
+    let current = APP_SCHEMA_VERSION;
+    match get_applied_version().await {
+        Some(applied) if applied != current => {
+            if version_cmp(&applied, current) < 0 {
+                // 升级：跑建表迁移前先做一次在线一致性快照，失败也能回退
+                let _ = backup_db_before_upgrade(&applied).await;
+            } else {
+                // 数据库版本高于代码（降级 / 跨大版本回滚）：不崩溃，但告警，
+                // 提示用升级前自动备份恢复（down migration = 还原快照）。
+                warn!(
+                    "数据库 schema 版本 {applied} 高于当前代码版本 {current}，疑似降级/回滚；\
+                     若旧代码无法识别新 schema，请使用升级前自动备份（data/zap.db.upgrade-*.bak）恢复"
+                );
+            }
+        }
+        _ => {}
+    }
+
     // system user
     init_system_user_table_schema().await;
     init_system_monitor_table_schema().await;
@@ -71,6 +104,117 @@ pub async fn init_schema() {
     init_backup_paths_table().await;
     // 备份策略全局 KV（是否允许用户自助备份 / 全局保留份数 / 全量备份开关与调度）
     init_backup_policy_table().await;
+
+    // 记录当前已应用 schema 版本（upsert）
+    record_version(current, "auto-migrate").await;
+}
+
+/// 迁移版本表：记录每一版已应用的 schema 版本（无版本记录 → 跨大版本回滚不可观测）。
+async fn ensure_schema_migrations_table() {
+    let _ = get_db_pool()
+        .await
+        .execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (\
+                version TEXT NOT NULL PRIMARY KEY, \
+                name TEXT NOT NULL DEFAULT '', \
+                applied_at INTEGER NOT NULL DEFAULT 0)",
+        )
+        .await;
+}
+
+/// 读取当前已应用的 schema 版本（最高版本）。无记录返回 None（新库 / 老库首次运行）。
+async fn get_applied_version() -> Option<String> {
+    let pool = get_db_pool_opt().await?;
+    sqlx::query_scalar::<_, String>(
+        "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+}
+
+/// 记录 / 更新已应用版本（upsert，重复运行安全）。
+async fn record_version(version: &str, name: &str) {
+    let pool = match get_db_pool_opt().await {
+        Some(p) => p,
+        None => return,
+    };
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let _ = sqlx::query(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?,?,?) \
+         ON CONFLICT(version) DO UPDATE SET name=excluded.name, applied_at=excluded.applied_at",
+    )
+    .bind(version)
+    .bind(name)
+    .bind(ts)
+    .execute(pool)
+    .await;
+}
+
+/// 升级前自动备份数据库：对在线库做一次一致性快照，避免迁移中途失败无退路。
+///
+/// 优先用 SQLite `VACUUM INTO` 做在线热备（与活跃连接共存、原子一致）；若不可用则回退到
+/// 先 `wal_checkpoint` 再拷贝主库文件（非完全原子，但崩溃窗口极小）。快照写入
+/// `data/zap.db.upgrade-<旧版本>-<时间戳>.bak`，权限收紧为 0o600。
+async fn backup_db_before_upgrade(old: &str) -> Option<String> {
+    let path = crate::config::get_config().read().ok()?.db.path.clone();
+    if !std::path::Path::new(&path).exists() {
+        return None;
+    }
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = format!("{path}.upgrade-{old}-{ts}.bak");
+    let pool = get_db_pool_opt().await?;
+    // 先被动 checkpoint，使 WAL 已合并进主库，快照才完整
+    let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+        .execute(pool)
+        .await;
+    // VACUUM INTO 目标文件必须不存在；以绑定参数传入路径（避免动态拼接、可被 clippy 接受）
+    let vacuum_ok = sqlx::query("VACUUM INTO ?")
+        .bind(&backup)
+        .execute(pool)
+        .await
+        .is_ok();
+    let done = if vacuum_ok && std::path::Path::new(&backup).exists() {
+        true
+    } else {
+        // 回退：直接拷贝主库文件（checkpoint 后已较完整）
+        std::fs::copy(&path, &backup).is_ok()
+    };
+    if !done {
+        warn!("升级前自动备份数据库失败（{path} → {backup}），请人工备份后再升级");
+        return None;
+    }
+    // 数据库含敏感数据，备份同样收紧为仅属主可读写
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600));
+    }
+    info!("升级前自动备份数据库: {backup}");
+    Some(backup)
+}
+
+/// 语义化版本比较：`a < b` 返回负，`a == b` 返回 0，`a > b` 返回正。
+/// 逐段按整数比较（缺省段视为 0），兼容 `1.4.40` 形式的版本号。
+fn version_cmp(a: &str, b: &str) -> i32 {
+    let pa: Vec<i32> = a.split('.').filter_map(|x| x.parse().ok()).collect();
+    let pb: Vec<i32> = b.split('.').filter_map(|x| x.parse().ok()).collect();
+    let n = pa.len().max(pb.len());
+    for i in 0..n {
+        let x = pa.get(i).copied().unwrap_or(0);
+        let y = pb.get(i).copied().unwrap_or(0);
+        if x != y {
+            return if x < y { -1 } else { 1 };
+        }
+    }
+    0
 }
 
 /// 备份策略全局 KV 表：key 主键，value 字符串。
