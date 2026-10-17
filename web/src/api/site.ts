@@ -119,6 +119,12 @@ export interface SiteSecurity {
   limit_conn_enable: boolean
   /** 单 IP 并发上限 */
   limit_conn_num: number
+  /** 防盗链：开启后由执行端生成 valid_referers + if ($invalid_referer) return 403 的 location 块 */
+  anti_hotlink_enable: boolean
+  /** 防盗链保护的文件扩展名（竖线分隔，空=内置默认列表） */
+  anti_hotlink_exts: string
+  /** 防盗链额外允许的 Referer（空格分隔的域名 / *.域名 / ~正则） */
+  anti_hotlink_referers: string
 }
 
 export interface SiteSecurityData {
@@ -332,7 +338,7 @@ export function getSiteAppLog(site_id: number, name: string, lines = 200) {
 /** location 附加指令白名单条目（与执行端校验同一份表） */
 export interface LocDirectiveSpec {
   key: string
-  kind: 'on_off' | 'duration' | 'size' | 'token' | 'header' | 'path_or_off'
+  kind: 'on_off' | 'duration' | 'size' | 'token' | 'header' | 'path_or_off' | 'rewrite' | 'referers'
   multi: boolean
   hint: string
   sample: string

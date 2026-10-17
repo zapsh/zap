@@ -1013,10 +1013,25 @@ async fn init_site_sec_table() {
         limit_req_burst INTEGER NOT NULL DEFAULT 20,
         limit_conn_enable INTEGER NOT NULL DEFAULT 0,
         limit_conn_num INTEGER NOT NULL DEFAULT 50,
+        -- 防盗链：开/关 + 保护扩展名（竖线分隔）+ 额外允许的 Referer（空格分隔）
+        anti_hotlink_enable INTEGER NOT NULL DEFAULT 0,
+        anti_hotlink_exts TEXT NOT NULL DEFAULT '',
+        anti_hotlink_referers TEXT NOT NULL DEFAULT '',
         updated_at INTEGER NOT NULL DEFAULT 0
     );
     "#;
-    let _ = get_db_pool().await.execute(sql).await;
+    let pool = get_db_pool().await;
+    let _ = pool.execute(sql).await;
+    // 老库（表已存在）补三列：列已存在时 ALTER 报错可安全忽略
+    let _ = pool
+        .execute("ALTER TABLE site_sec ADD COLUMN anti_hotlink_enable INTEGER NOT NULL DEFAULT 0")
+        .await;
+    let _ = pool
+        .execute("ALTER TABLE site_sec ADD COLUMN anti_hotlink_exts TEXT NOT NULL DEFAULT ''")
+        .await;
+    let _ = pool
+        .execute("ALTER TABLE site_sec ADD COLUMN anti_hotlink_referers TEXT NOT NULL DEFAULT ''")
+        .await;
 }
 
 async fn init_site_profile_table() {

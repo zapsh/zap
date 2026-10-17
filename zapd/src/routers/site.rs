@@ -3549,6 +3549,12 @@ pub struct SiteSecurity {
     pub limit_conn_enable: bool,
     /// 单 IP 并发连接上限
     pub limit_conn_num: u32,
+    /// 防盗链：开启后执行端生成 valid_referers + if($invalid_referer) return 403
+    pub anti_hotlink_enable: bool,
+    /// 防盗链保护的文件扩展名（竖线分隔，空=内置默认列表）
+    pub anti_hotlink_exts: String,
+    /// 防盗链额外允许的 Referer（空格分隔的域名 / *.域名 / ~正则）
+    pub anti_hotlink_referers: String,
 }
 
 impl Default for SiteSecurity {
@@ -3565,19 +3571,38 @@ impl Default for SiteSecurity {
             limit_req_burst: 20,
             limit_conn_enable: false,
             limit_conn_num: 50,
+            anti_hotlink_enable: false,
+            anti_hotlink_exts: String::new(),
+            anti_hotlink_referers: String::new(),
         }
     }
 }
 
 /// 读取站点安全配置；老站点（无记录）返回默认值
-type SiteSecRow = (i64, i64, i64, i64, i64, i64, i64, String, i64, String, i64);
+type SiteSecRow = (
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    String,
+    i64,
+    String,
+    i64,
+    i64,
+    String,
+    String,
+);
 
 async fn load_site_sec(site_id: i64) -> SiteSecurity {
     let pool = db::get_db_pool().await;
     let row: Option<SiteSecRow> = sqlx::query_as(
         "SELECT waf_enable, limit_req_enable, limit_req_rate, limit_req_burst, \
                 limit_conn_enable, limit_conn_num, waf_mode, waf_rules, waf_audit, \
-                whitelist, limit_dry_run \
+                whitelist, limit_dry_run, \
+                anti_hotlink_enable, anti_hotlink_exts, anti_hotlink_referers \
          FROM site_sec WHERE site_id = ?",
     )
     .bind(site_id)
@@ -3585,7 +3610,7 @@ async fn load_site_sec(site_id: i64) -> SiteSecurity {
     .await
     .ok()
     .flatten();
-    let Some((w, lr, rate, burst, lc, num, mode, rules, audit, wl, dry)) = row else {
+    let Some((w, lr, rate, burst, lc, num, mode, rules, audit, wl, dry, ah, ahe, ahr)) = row else {
         return SiteSecurity::default();
     };
     SiteSecurity {
@@ -3600,6 +3625,9 @@ async fn load_site_sec(site_id: i64) -> SiteSecurity {
         limit_req_burst: burst.clamp(0, 100_000) as u32,
         limit_conn_enable: lc != 0,
         limit_conn_num: num.clamp(1, 100_000) as u32,
+        anti_hotlink_enable: ah != 0,
+        anti_hotlink_exts: ahe,
+        anti_hotlink_referers: ahr,
     }
 }
 
@@ -3610,8 +3638,10 @@ async fn save_site_sec(site_id: i64, sec: &SiteSecurity) -> Result<(), ZapError>
         "INSERT INTO site_sec (site_id, waf_enable, waf_mode, waf_rules, waf_audit, \
                 whitelist, limit_dry_run, \
                 limit_req_enable, limit_req_rate, limit_req_burst, \
-                limit_conn_enable, limit_conn_num, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                limit_conn_enable, limit_conn_num, \
+                anti_hotlink_enable, anti_hotlink_exts, anti_hotlink_referers, \
+                updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(site_id) DO UPDATE SET \
            waf_enable = excluded.waf_enable, waf_mode = excluded.waf_mode, \
            waf_rules = excluded.waf_rules, waf_audit = excluded.waf_audit, \
@@ -3619,6 +3649,9 @@ async fn save_site_sec(site_id: i64, sec: &SiteSecurity) -> Result<(), ZapError>
            limit_req_enable = excluded.limit_req_enable, \
            limit_req_rate = excluded.limit_req_rate, limit_req_burst = excluded.limit_req_burst, \
            limit_conn_enable = excluded.limit_conn_enable, limit_conn_num = excluded.limit_conn_num, \
+           anti_hotlink_enable = excluded.anti_hotlink_enable, \
+           anti_hotlink_exts = excluded.anti_hotlink_exts, \
+           anti_hotlink_referers = excluded.anti_hotlink_referers, \
            updated_at = excluded.updated_at",
     )
     .bind(site_id)
@@ -3633,6 +3666,9 @@ async fn save_site_sec(site_id: i64, sec: &SiteSecurity) -> Result<(), ZapError>
     .bind(sec.limit_req_burst as i64)
     .bind(i64::from(sec.limit_conn_enable))
     .bind(sec.limit_conn_num as i64)
+    .bind(i64::from(sec.anti_hotlink_enable))
+    .bind(sec.anti_hotlink_exts.as_str())
+    .bind(sec.anti_hotlink_referers.as_str())
     .bind(now)
     .execute(pool)
     .await?;
@@ -3665,6 +3701,9 @@ fn sec_to_proto(s: SiteSecurity) -> SiteSecuritySpec {
         limit_req_burst: s.limit_req_burst,
         limit_conn_enable: s.limit_conn_enable,
         limit_conn_num: s.limit_conn_num,
+        anti_hotlink_enable: s.anti_hotlink_enable,
+        anti_hotlink_exts: s.anti_hotlink_exts,
+        anti_hotlink_referers: s.anti_hotlink_referers,
     }
 }
 

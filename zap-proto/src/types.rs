@@ -483,6 +483,17 @@ pub struct SiteSecuritySpec {
     /// 单 IP 并发连接上限
     #[serde(default)]
     pub limit_conn_num: u32,
+    /// 防盗链：开启后由执行端生成 `valid_referers` + `if ($invalid_referer) return 403` 的
+    /// location 块（受信任代码生成，不经过用户指令白名单）。
+    #[serde(default)]
+    pub anti_hotlink_enable: bool,
+    /// 防盗链保护的文件扩展名（竖线分隔，如 `jpg|png`）；空则使用内置默认列表。
+    #[serde(default)]
+    pub anti_hotlink_exts: String,
+    /// 防盗链额外允许的 Referer（空格分隔的域名 / `*.域名` / `~正则`），追加到
+    /// `none blocked server_names` 之后。
+    #[serde(default)]
+    pub anti_hotlink_referers: String,
 }
 
 impl Default for SiteSecuritySpec {
@@ -500,6 +511,9 @@ impl Default for SiteSecuritySpec {
             limit_req_burst: 0,
             limit_conn_enable: false,
             limit_conn_num: 0,
+            anti_hotlink_enable: false,
+            anti_hotlink_exts: String::new(),
+            anti_hotlink_referers: String::new(),
         }
     }
 }
@@ -531,6 +545,10 @@ pub enum LocDirValue {
     Header,
     /// 日志：`off` 或绝对路径（须在归属用户目录下）
     PathOrOff,
+    /// 伪静态重写规则：正则 替换 [last|break|redirect|permanent]（校验见执行端 is_rewrite）
+    Rewrite,
+    /// 防盗链 Referer 白名单（none/blocked/server_names/域名/~正则）
+    Referers,
 }
 
 /// 附加指令白名单条目：面板下拉项与执行端校验共用这一张表，加参数只改这里。
@@ -658,6 +676,25 @@ pub const LOC_DIRECTIVES: &[LocDirSpec] = &[
         multi: false,
         hint: "响应字符集",
         sample: "utf-8",
+    },
+    // 伪静态：允许用户在 location 附加指令里写 rewrite 规则（值经 is_rewrite 校验，
+    // 允许正则里的 {} 与转义，但禁止 ; # 与 proxy_pass/alias/return/include 等危险指令，
+    // 防经白名单注入改变 location 语义）。
+    LocDirSpec {
+        key: "rewrite",
+        kind: LocDirValue::Rewrite,
+        multi: true,
+        hint: "伪静态重写：正则 替换 [last|break|redirect|permanent]",
+        sample: "^/(.*)$ /index.php/$1 last",
+    },
+    // 防盗链 Referer 白名单：仅设置 $invalid_referer 变量，真正拦截由站点「防盗链」开关生成的
+    // `if ($invalid_referer) return 403` 完成（不经过用户指令）。
+    LocDirSpec {
+        key: "valid_referers",
+        kind: LocDirValue::Referers,
+        multi: false,
+        hint: "防盗链允许的 Referer：none/blocked/server_names/域名/~正则",
+        sample: "none blocked server_names",
     },
 ];
 
