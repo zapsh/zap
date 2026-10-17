@@ -2901,8 +2901,9 @@ pub async fn site_update(
 }
 
 /// 删除站点（可批量，连带删除其域名 / IP 绑定）
-/// POST /site/delete：移入回收站（软删）。保留 vhost/应用/数据/记录；站点在回收站期间仍运行，
-/// 前端不再列出；清空（/site/purge）才真正删除。
+/// POST /site/delete：移入回收站（软删）。回收即「停止运行」——撤掉 Nginx vhost 使其不再对外服务
+/// （应用进程保留以便恢复后原样复活），保留 vhost 配置/应用/数据/记录；前端不再列出。
+/// 清空（/site/purge）才真正删除。
 pub async fn site_delete(
     claims: ValidatedClaims,
     Extension(client_addr): Extension<SocketAddr>,
@@ -2915,6 +2916,20 @@ pub async fn site_delete(
     for id in &payload.ids {
         site_in_scope(&claims, *id).await?;
     }
+
+    // 回收即停止运行：撤掉 vhost（尽力而为，失败仅记日志不阻断回收）
+    for id in &payload.ids {
+        if let Ok(resp) = crate::zapexec::call(Request::SiteVhostRemove {
+            site_id: *id,
+            name: String::new(),
+        })
+        .await
+            && resp.code != 0
+        {
+            tracing::warn!("recycle: remove vhost for site {} failed: {}", id, resp.message);
+        }
+    }
+
     let pool = db::get_db_pool().await;
     let ph = payload.ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let mut q = sqlx::query(sqlx::AssertSqlSafe(
@@ -2939,7 +2954,8 @@ pub async fn site_delete(
     crate::zap::api_ok(json!({ "ok": true, "ids": payload.ids, "trashed": payload.ids.len() }))
 }
 
-/// POST /site/restore：从回收站恢复（取消软删标记，站点原样复活）。
+/// POST /site/restore：从回收站恢复（取消软删标记，并重新同步 vhost 使其恢复对外服务）。
+/// 运行态（run_state）在回收期间保留，因此恢复后会按原状态重新拉起。
 pub async fn site_restore(
     claims: ValidatedClaims,
     Json(payload): Json<SiteDeletePayload>,
@@ -2960,7 +2976,15 @@ pub async fn site_restore(
         q = q.bind(id);
     }
     q.execute(pool).await?;
-    crate::zap::api_ok(json!({ "ok": true, "ids": payload.ids }))
+
+    // 重新同步 vhost：回收时已撤掉，恢复后按原 run_state 重新拉起对外服务
+    let mut synced = 0usize;
+    for id in &payload.ids {
+        if sync_one_site(*id).await.is_ok() {
+            synced += 1;
+        }
+    }
+    crate::zap::api_ok(json!({ "ok": true, "ids": payload.ids, "synced": synced }))
 }
 
 pub async fn site_purge(
