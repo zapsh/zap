@@ -578,6 +578,7 @@ pub async fn delete(path: String, backup_root: String) -> Response {
 
 // ── 目录还原 ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)] // 还原需携带路径/目标/归属/校验信息，参数固定
 pub async fn restore_dir(
     path: String,
     target_dir: String,
@@ -860,6 +861,7 @@ pub async fn restore_db(a: RestoreDbArgs) -> Response {
 // ── 异地推送（rsync）────────────────────────────────────────────────
 
 /// 把备份归档推送到远端副本（rsync over ssh）。归档须位于备份根内。
+#[allow(clippy::too_many_arguments)] // 远端推送需携带主机/端口/用户/目标等连接信息，参数固定
 pub async fn remote_push(
     path: String,
     kind: String,
