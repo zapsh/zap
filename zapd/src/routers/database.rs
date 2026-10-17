@@ -1277,6 +1277,558 @@ pub async fn remote_revoke(claims: ValidatedClaims, Json(req): Json<UserDropReq>
     crate::zap::api_ok(json!({ "ok": true, "user": user }))
 }
 
+// ── 审计项 1：数据库能力补全（表浏览 / 导入导出 / 慢查询） ──────
+
+/// 转义标识符（库名 / 表名 / 列名）：反引号包裹并转义内部反引号。
+fn escape_ident(s: &str) -> String {
+    format!("`{}`", s.replace('`', "``"))
+}
+
+/// 二进制转十六进制（导出 BLOB 用 `X'...'`）。
+fn to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// 取原始行（保留类型信息），用于导出时生成正确的 SQL 字面量。
+async fn fetch_all_typed(conn: &mut MySqlConnection, sql: &str) -> Result<Vec<MySqlRow>, ZapError> {
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+        .fetch_all(conn)
+        .await
+        .map_err(|e| ZapError::New(-1, format!("数据库查询失败：{e}")))
+}
+
+/// 把一行第 `i` 列转成可嵌入 INSERT 的 SQL 字面量：
+/// NULL / 字符串（转义）/ 数字 / 二进制（X'hex'）/ 布尔。
+fn sql_literal(row: &MySqlRow, i: usize) -> String {
+    if let Ok(raw) = row.try_get_raw(i)
+        && raw.is_null()
+    {
+        return "NULL".to_string();
+    }
+    if let Ok(v) = row.try_get::<String, _>(i) {
+        return format!("'{}'", escape_literal(&v));
+    }
+    if let Ok(v) = row.try_get::<Vec<u8>, _>(i) {
+        return format!("X'{}'", to_hex(&v));
+    }
+    if let Ok(v) = row.try_get::<i64, _>(i) {
+        return v.to_string();
+    }
+    if let Ok(v) = row.try_get::<u64, _>(i) {
+        return v.to_string();
+    }
+    if let Ok(v) = row.try_get::<f64, _>(i) {
+        return v.to_string();
+    }
+    if let Ok(v) = row.try_get::<bool, _>(i) {
+        return if v { "1".to_string() } else { "0".to_string() };
+    }
+    "NULL".to_string()
+}
+
+/// 按 `;` 切分 SQL 语句，正确处理单/双引号字符串、反引号标识符与行/块注释。
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_bt = false;
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // 字符串 / 反引号之外才处理注释
+        if !in_single && !in_double && !in_bt {
+            if c == '-'
+                && i + 1 < chars.len()
+                && chars[i + 1] == '-'
+                && (i + 2 >= chars.len() || chars[i + 2] == ' ' || chars[i + 2] == '\t')
+            {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if c == '#' {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                i += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                i += 2;
+                continue;
+            }
+        }
+        match c {
+            '\'' => {
+                in_single = !in_single;
+                cur.push(c);
+            }
+            '"' => {
+                in_double = !in_double;
+                cur.push(c);
+            }
+            '`' => {
+                in_bt = !in_bt;
+                cur.push(c);
+            }
+            ';' => {
+                if in_single || in_double || in_bt {
+                    cur.push(c);
+                } else {
+                    let s = cur.trim().to_string();
+                    if !s.is_empty() {
+                        out.push(s);
+                    }
+                    cur.clear();
+                }
+            }
+            _ => cur.push(c),
+        }
+        i += 1;
+    }
+    let s = cur.trim().to_string();
+    if !s.is_empty() {
+        out.push(s);
+    }
+    out
+}
+
+/// 非管理员导入时，禁止语句引用其他数据库（`db.table` 反引号限定形式）。
+fn schema_qualified_refs_other(stmt: &str, schema: &str) -> bool {
+    let chars: Vec<char> = stmt.chars().collect();
+    let mut i = 0;
+    while i + 1 < chars.len() {
+        if chars[i] == '`' {
+            let mut j = i + 1;
+            let mut name = String::new();
+            while j < chars.len() && chars[j] != '`' {
+                name.push(chars[j]);
+                j += 1;
+            }
+            if j + 1 < chars.len() && chars[j + 1] == '.' && name != schema {
+                return true;
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// 导入禁止的 SQL 类别（大小写不敏感子串匹配）。
+fn has_banned_sql(stmt: &str) -> bool {
+    let s = stmt.to_lowercase();
+    const BANNED: &[&str] = &[
+        "create database",
+        "drop database",
+        "alter database",
+        "create user",
+        "drop user",
+        "alter user",
+        "grant ",
+        "revoke ",
+        "create view",
+        "drop view",
+        "create trigger",
+        "drop trigger",
+        "create procedure",
+        "create function",
+        "create event",
+        "drop event",
+        "set password",
+        "flush privileges",
+        "load data infile",
+        "load xml",
+        "into outfile",
+        "into dumpfile",
+        "source ",
+    ];
+    BANNED.iter().any(|b| s.contains(b))
+}
+
+#[derive(Deserialize)]
+pub struct TablesQuery {
+    schema: String,
+}
+
+/// GET /api/database/tables：列出某库的所有表（含引擎 / 行数 / 大小 / 注释）。
+pub async fn tables(claims: ValidatedClaims, Query(q): Query<TablesQuery>) -> ZapJsonResult {
+    let schema = ensure_owned(&claims, q.schema.trim())?;
+    let mut conn = connect().await?;
+    let rows = rows_of(
+        &mut conn,
+        &format!(
+            "SELECT TABLE_NAME, TABLE_TYPE, ENGINE, TABLE_ROWS, \
+             COALESCE(DATA_LENGTH,0)+COALESCE(INDEX_LENGTH,0), CREATE_TIME, TABLE_COLLATION, \
+             COALESCE(TABLE_COMMENT,'') \
+             FROM information_schema.TABLES WHERE TABLE_SCHEMA = '{}' ORDER BY TABLE_NAME",
+            escape_literal(&schema)
+        ),
+    )
+    .await?;
+    let mut items: Vec<Value> = Vec::new();
+    for r in rows {
+        if r.len() < 8 {
+            continue;
+        }
+        items.push(json!({
+            "name": r[0],
+            "type": r[1],
+            "engine": r[2],
+            "rows": r[3].parse::<u64>().unwrap_or(0),
+            "size": r[4].parse::<u64>().unwrap_or(0),
+            "create_time": r[5],
+            "collation": r[6],
+            "comment": r[7],
+        }));
+    }
+    crate::zap::api_ok(json!({ "ok": true, "schema": schema, "list": items }))
+}
+
+#[derive(Deserialize)]
+pub struct TableQuery {
+    schema: String,
+    table: String,
+    #[serde(default)]
+    page: Option<u32>,
+    #[serde(default)]
+    size: Option<u32>,
+    #[serde(default)]
+    sort: Option<String>,
+    #[serde(default)]
+    order: Option<String>,
+}
+
+/// GET /api/database/table：表结构（列）+ 分页数据。
+pub async fn table(claims: ValidatedClaims, Query(q): Query<TableQuery>) -> ZapJsonResult {
+    let schema = ensure_owned(&claims, q.schema.trim())?;
+    let table = q.table.trim().to_string();
+    if table.is_empty() {
+        return Err(ZapError::New(-1, "表名不能为空".to_string()));
+    }
+    let mut conn = connect().await?;
+    let cols = rows_of(
+        &mut conn,
+        &format!(
+            "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA, \
+             COALESCE(COLUMN_COMMENT,'') \
+             FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='{}' AND TABLE_NAME='{}' \
+             ORDER BY ORDINAL_POSITION",
+            escape_literal(&schema),
+            escape_literal(&table)
+        ),
+    )
+    .await?;
+    let columns: Vec<Value> = cols
+        .into_iter()
+        .map(|r| {
+            json!({
+                "name": r[0],
+                "type": r[1],
+                "nullable": r[2] == "YES",
+                "key": r[3],
+                "default": if r[4].is_empty() { Value::Null } else { Value::String(r[4].clone()) },
+                "extra": r[5],
+                "comment": r[6],
+            })
+        })
+        .collect();
+    let page = q.page.unwrap_or(1).clamp(1, 1_000_000);
+    let size = q.size.unwrap_or(50).clamp(1, 500);
+    let offset = (page - 1) * size;
+    let order_by = match (
+        q.sort.as_deref().filter(|s| !s.is_empty()),
+        q.order.as_deref(),
+    ) {
+        (Some(s), ord) => {
+            let col = check_ident(s, "排序列")?;
+            let o = if ord.map(|x| x.eq_ignore_ascii_case("desc")).unwrap_or(false) {
+                "DESC"
+            } else {
+                "ASC"
+            };
+            format!(" ORDER BY `{col}` {o}")
+        }
+        _ => String::new(),
+    };
+    let total = rows_of(
+        &mut conn,
+        &format!(
+            "SELECT COUNT(*) FROM `{}`.`{}`",
+            escape_ident(&schema),
+            escape_ident(&table)
+        ),
+    )
+    .await?
+    .into_iter()
+    .next()
+    .and_then(|r| r.first().and_then(|v| v.parse::<u64>().ok()))
+    .unwrap_or(0);
+    let rows = rows_of(
+        &mut conn,
+        &format!(
+            "SELECT * FROM `{}`.`{}`{} LIMIT {} OFFSET {}",
+            escape_ident(&schema),
+            escape_ident(&table),
+            order_by,
+            size,
+            offset
+        ),
+    )
+    .await?;
+    crate::zap::api_ok(json!({
+        "ok": true,
+        "schema": schema,
+        "table": table,
+        "columns": columns,
+        "rows": rows,
+        "page": page,
+        "size": size,
+        "total": total,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ExportQuery {
+    schema: String,
+    #[serde(default)]
+    tables: Option<String>,
+}
+
+/// GET /api/database/export：纯 Rust 导出 .sql（结构 + 数据），零外部依赖。
+///
+/// 多租户：非管理员只能导出自己前缀的库；表数量与单表行数均有上限防内存耗尽。
+pub async fn export(claims: ValidatedClaims, Query(q): Query<ExportQuery>) -> ZapJsonResult {
+    let schema = ensure_owned(&claims, q.schema.trim())?;
+    let mut conn = connect().await?;
+    let table_list: Vec<String> = if let Some(t) = q.tables.as_deref().filter(|s| !s.is_empty()) {
+        t.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        rows_of(
+            &mut conn,
+            &format!(
+                "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='{}' ORDER BY TABLE_NAME",
+                escape_literal(&schema)
+            ),
+        )
+        .await?
+        .into_iter()
+        .map(|r| r.into_iter().next().unwrap_or_default())
+        .collect()
+    };
+    if table_list.len() > 300 {
+        return Err(ZapError::New(-1, "导出表数量过多（上限 300）".to_string()));
+    }
+    let mut sql = String::new();
+    sql.push_str(&format!("-- zap database export\n-- schema: {schema}\n\n"));
+    sql.push_str(&format!(
+        "CREATE DATABASE IF NOT EXISTS `{schema}` DEFAULT CHARACTER SET utf8mb4;\n"
+    ));
+    sql.push_str(&format!("USE `{schema}`;\n\n"));
+    const MAX_ROWS_PER_TABLE: u64 = 200_000;
+    for tbl in &table_list {
+        let qtbl = escape_ident(tbl);
+        // 结构：SHOW CREATE TABLE 给出完整 DDL（索引 / 自增 / 外键等）
+        let create = rows_of(
+            &mut conn,
+            &format!("SHOW CREATE TABLE `{}`.`{}`", escape_ident(&schema), qtbl),
+        )
+        .await?;
+        if let Some(row) = create.into_iter().next()
+            && let Some(ddl) = row.get(1)
+        {
+            sql.push_str(ddl);
+            sql.push_str(";\n\n");
+        }
+        // 数据
+        let count = rows_of(
+            &mut conn,
+            &format!(
+                "SELECT COUNT(*) FROM `{}`.`{}`",
+                escape_ident(&schema),
+                qtbl
+            ),
+        )
+        .await?
+        .into_iter()
+        .next()
+        .and_then(|r| r.first().and_then(|v| v.parse::<u64>().ok()))
+        .unwrap_or(0);
+        if count == 0 {
+            continue;
+        }
+        if count > MAX_ROWS_PER_TABLE {
+            sql.push_str(&format!(
+                "-- 表 {tbl} 数据 {count} 行超过上限 {MAX_ROWS_PER_TABLE}，已截断导出\n"
+            ));
+        }
+        let cols = rows_of(
+            &mut conn,
+            &format!(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='{}' AND TABLE_NAME='{}' ORDER BY ORDINAL_POSITION",
+                escape_literal(&schema),
+                escape_literal(tbl)
+            ),
+        )
+        .await?;
+        let col_names: Vec<String> = cols
+            .into_iter()
+            .map(|r| r.into_iter().next().unwrap_or_default())
+            .collect();
+        let col_list = col_names
+            .iter()
+            .map(|c| escape_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let data = fetch_all_typed(
+            &mut conn,
+            &format!(
+                "SELECT * FROM `{}`.`{}` LIMIT {}",
+                escape_ident(&schema),
+                qtbl,
+                MAX_ROWS_PER_TABLE
+            ),
+        )
+        .await?;
+        const BATCH: usize = 200;
+        let mut values: Vec<String> = Vec::with_capacity(BATCH);
+        for row in &data {
+            let cells: Vec<String> = (0..col_names.len()).map(|i| sql_literal(row, i)).collect();
+            values.push(format!("({})", cells.join(", ")));
+            if values.len() >= BATCH {
+                sql.push_str(&format!(
+                    "INSERT INTO `{}` ({}) VALUES\n{};\n",
+                    qtbl,
+                    col_list,
+                    values.join(",\n")
+                ));
+                values.clear();
+            }
+        }
+        if !values.is_empty() {
+            sql.push_str(&format!(
+                "INSERT INTO `{}` ({}) VALUES\n{};\n",
+                qtbl,
+                col_list,
+                values.join(",\n")
+            ));
+        }
+        sql.push('\n');
+    }
+    let size = sql.len();
+    crate::zap::api_ok(json!({
+        "ok": true,
+        "schema": schema,
+        "tables": table_list.len(),
+        "size": size,
+        "sql": sql,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ImportReq {
+    schema: String,
+    sql: String,
+}
+
+/// POST /api/database/import：执行上传的 .sql（纯 Rust 解析，零外部依赖）。
+///
+/// 多租户：非管理员只能在自己前缀库内导入；语句不得引用其他库、不得含管理类语句。
+pub async fn import(claims: ValidatedClaims, Json(req): Json<ImportReq>) -> ZapJsonResult {
+    let schema = ensure_owned(&claims, req.schema.trim())?;
+    let admin = is_admin(&claims);
+    let body = req.sql.trim();
+    if body.is_empty() {
+        return Err(ZapError::New(-1, "SQL 内容不能为空".to_string()));
+    }
+    if req.sql.len() > 16 * 1024 * 1024 {
+        return Err(ZapError::New(-1, "SQL 文件过大（上限 16MB）".to_string()));
+    }
+    let stmts = split_sql_statements(body);
+    let mut conn = connect().await?;
+    exec_on(&mut conn, &[format!("USE `{}`", escape_ident(&schema))]).await?;
+    let mut executed = 0u32;
+    for raw in stmts {
+        let s = raw.trim();
+        if s.is_empty() {
+            continue;
+        }
+        let upper = s.to_uppercase();
+        if upper.starts_with("DELIMITER") {
+            continue;
+        }
+        if !admin && schema_qualified_refs_other(s, &schema) {
+            return Err(ZapError::New(
+                -1,
+                "导入语句不能引用其他数据库（仅限当前库）".to_string(),
+            ));
+        }
+        if has_banned_sql(s) {
+            return Err(ZapError::New(
+                -1,
+                "SQL 含有不允许的语句（如 CREATE/DROP DATABASE、GRANT、USER 等）".to_string(),
+            ));
+        }
+        exec_on(&mut conn, &[s.to_string()]).await?;
+        executed += 1;
+    }
+    crate::zap::api_ok(json!({ "ok": true, "executed": executed }))
+}
+
+#[derive(Deserialize)]
+pub struct SlowQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+/// GET /api/database/slow：慢查询（sys 视图，仅管理员）。
+///
+/// 依赖 MySQL 的 `sys.statements_with_runtimes_in_95th_percentile`（需 performance_schema 开启）；
+/// MariaDB 若未提供该视图会返回清晰错误。
+pub async fn slow(claims: ValidatedClaims, Query(q): Query<SlowQuery>) -> ZapJsonResult {
+    if !is_admin(&claims) {
+        return Err(ZapError::New(-1, "仅管理员可查看慢查询".to_string()));
+    }
+    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+    let mut conn = connect().await?;
+    let sql = format!(
+        "SELECT query, db, exec_count, total_latency, max_latency, avg_latency, \
+         lock_latency, rows_sent, rows_examined, rows_affected, tmp_tables, tmp_disk_tables, \
+         full_scan \
+         FROM sys.statements_with_runtimes_in_95th_percentile \
+         ORDER BY avg_latency DESC LIMIT {limit}"
+    );
+    match rows_of(&mut conn, &sql).await {
+        Ok(rows) => crate::zap::api_ok(json!({
+            "ok": true,
+            "columns": [
+                "query", "db", "exec_count", "total_latency", "max_latency", "avg_latency",
+                "lock_latency", "rows_sent", "rows_examined", "rows_affected",
+                "tmp_tables", "tmp_disk_tables", "full_scan"
+            ],
+            "rows": rows,
+        })),
+        Err(e) => Err(ZapError::New(
+            -1,
+            format!("慢查询视图不可用（需启用 performance_schema / sys）：{e}"),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

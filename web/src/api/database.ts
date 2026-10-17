@@ -112,4 +112,86 @@ export const databaseApi = {
   /** 撤销远程授权 */
   remoteRevoke: (data: { user: string; host: string }) =>
     http.post<any>('/database/remote/revoke', data).then(unwrap<{ ok: boolean }>),
+
+  /** 列出某库的所有表（information_schema.TABLES） */
+  tables: (schema: string) =>
+    http
+      .get<any>('/database/tables', { params: { schema } })
+      .then(unwrap<{ ok: boolean; schema: string; list: DbTable[] }>),
+
+  /** 表结构（列）+ 分页数据 */
+  table: (schema: string, table: string, page = 1, size = 50, sort?: string, order?: string) =>
+    http
+      .get<any>('/database/table', {
+        params: { schema, table, page, size, sort: sort || undefined, order: order || undefined },
+      })
+      .then(unwrap<DbTableResult>),
+
+  /** 导出 .sql（结构 + 数据），返回 SQL 文本 */
+  exportSql: (schema: string, tables?: string) =>
+    http
+      .get<any>('/database/export', { params: tables ? { schema, tables } : { schema } })
+      .then(unwrap<DbExportResult>),
+
+  /** 导入 .sql（执行上传的语句） */
+  importSql: (schema: string, sql: string) =>
+    http
+      .post<any>('/database/import', { schema, sql })
+      .then(unwrap<{ ok: boolean; executed: number }>),
+
+  /** 慢查询（仅管理员，依赖 sys 视图） */
+  slow: (limit = 20) =>
+    http.get<any>('/database/slow', { params: { limit } }).then(unwrap<DbSlowResult>),
+}
+
+/** 表信息（information_schema.TABLES） */
+export interface DbTable {
+  name: string
+  type: string
+  engine: string
+  rows: number
+  size: number
+  create_time: string
+  collation: string
+  comment: string
+}
+
+/** 列信息（information_schema.COLUMNS） */
+export interface DbColumn {
+  name: string
+  type: string
+  nullable: boolean
+  key: string
+  default: string | null
+  extra: string
+  comment: string
+}
+
+/** 表浏览结果（结构 + 分页数据） */
+export interface DbTableResult {
+  ok: boolean
+  schema: string
+  table: string
+  columns: DbColumn[]
+  /** 数据行，按 columns 顺序排列的文本矩阵 */
+  rows: string[][]
+  page: number
+  size: number
+  total: number
+}
+
+/** 导出结果（纯 Rust 生成的 .sql 文本） */
+export interface DbExportResult {
+  ok: boolean
+  schema: string
+  tables: number
+  size: number
+  sql: string
+}
+
+/** 慢查询结果 */
+export interface DbSlowResult {
+  ok: boolean
+  columns: string[]
+  rows: string[][]
 }

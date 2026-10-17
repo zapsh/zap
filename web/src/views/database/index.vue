@@ -16,6 +16,7 @@
       <div class="head-actions">
         <el-button :icon="Link" @click="openPhpMyAdmin">phpMyAdmin</el-button>
         <el-button :icon="User" @click="openUsers">{{ t('database.btnUsers') }}</el-button>
+        <el-button v-if="!prefix" :icon="List" @click="openSlow">{{ t('database.btnSlow') }}</el-button>
         <el-button :icon="Connection" @click="openRemote">{{ t('database.btnRemote') }}</el-button>
         <el-button :icon="Refresh" :loading="loadingList" @click="reload">{{
           t('common.refresh')
@@ -69,6 +70,9 @@
         <el-table-column prop="tables" :label="t('database.colTables')" width="90" align="center" />
         <el-table-column :label="t('common.operation')" width="140" fixed="right" align="center">
           <template #default="{ row }">
+            <el-button link type="primary" @click="openSchema(row)">{{
+              t('database.browseTables')
+            }}</el-button>
             <el-button link type="primary" :loading="backuping === row.name" @click="onBackupDb(row)"
               >备份</el-button
             >
@@ -374,6 +378,102 @@
         <template #empty>{{ t('database.emptyRemote') }}</template>
       </el-table>
     </el-drawer>
+
+    <!-- 库详情：表浏览 + 导入导出（审计项 1） -->
+    <el-dialog v-model="schemaVisible" :title="t('database.schemaTitle', { schema: currentSchema })" width="760px">
+      <div style="display: flex; gap: 8px; margin-bottom: 12px">
+        <el-button :icon="Upload" @click="openImport">{{ t('database.import') }}</el-button>
+        <el-button :icon="Download" type="primary" @click="exportSchema">{{ t('database.export') }}</el-button>
+      </div>
+      <el-table v-loading="loadingTables" :data="tableList" border size="small">
+        <el-table-column prop="name" :label="t('database.colTableName')" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="engine" :label="t('database.colEngine')" width="120" />
+        <el-table-column :label="t('database.colRows')" width="100" align="right">
+          <template #default="{ row }">{{ row.rows }}</template>
+        </el-table-column>
+        <el-table-column :label="t('database.colSize')" width="100" align="right">
+          <template #default="{ row }">{{ formatSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column :label="t('common.operation')" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" :icon="List" @click="openTable(row.name)">{{
+              t('database.browse')
+            }}</el-button>
+          </template>
+        </el-table-column>
+        <template #empty>{{ t('database.emptyTables') }}</template>
+      </el-table>
+    </el-dialog>
+
+    <!-- 表数据：结构 + 分页数据 -->
+    <el-dialog
+      v-model="tableVisible"
+      :title="t('database.tableTitle', { schema: currentSchema, table: currentTable })"
+      width="960px"
+    >
+      <el-tabs>
+        <el-tab-pane :label="t('database.tabData')">
+          <el-table v-loading="loadingTable" :data="tableRows" border size="small">
+            <el-table-column v-for="(c, i) in columns" :key="i" :label="c.name" show-overflow-tooltip>
+              <template #default="{ row }">{{ row[i] }}</template>
+            </el-table-column>
+            <template #empty>{{ t('database.emptyData') }}</template>
+          </el-table>
+          <el-pagination
+            v-if="tableTotal > tableSize"
+            layout="prev, pager, next, total"
+            :total="tableTotal"
+            :page-size="tableSize"
+            :current-page="tablePage"
+            @current-change="changeTablePage"
+            style="margin-top: 10px"
+          />
+        </el-tab-pane>
+        <el-tab-pane :label="t('database.tabStructure')">
+          <el-table :data="columns" border size="small">
+            <el-table-column prop="name" :label="t('database.colColName')" min-width="160" show-overflow-tooltip />
+            <el-table-column prop="type" :label="t('database.colType')" min-width="160" />
+            <el-table-column :label="t('database.colKey')" width="90">
+              <template #default="{ row }">{{ row.key }}</template>
+            </el-table-column>
+            <el-table-column :label="t('database.colNullable')" width="90">
+              <template #default="{ row }">{{ row.nullable ? t('common.yes') : t('common.no') }}</template>
+            </el-table-column>
+            <el-table-column prop="default" :label="t('database.colDefault')" min-width="120" show-overflow-tooltip />
+            <el-table-column prop="extra" :label="t('database.colExtra')" min-width="120" />
+            <el-table-column prop="comment" :label="t('database.colComment')" min-width="160" show-overflow-tooltip />
+          </el-table>
+        </el-tab-pane>
+      </el-tabs>
+    </el-dialog>
+
+    <!-- 导入 SQL -->
+    <el-dialog v-model="importVisible" :title="t('database.importTitle')" width="720px">
+      <div class="dialog-tip">{{ t('database.importTip') }}</div>
+      <el-input
+        v-model="importSqlText"
+        type="textarea"
+        :rows="14"
+        :placeholder="t('database.importPlaceholder')"
+      />
+      <template #footer>
+        <el-button @click="importVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :icon="Upload" :loading="importing" @click="doImport">{{
+          t('database.import')
+        }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 慢查询（仅管理员） -->
+    <el-dialog v-model="slowVisible" :title="t('database.slowTitle')" width="960px">
+      <div class="dialog-tip">{{ t('database.slowTip') }}</div>
+      <el-table v-loading="loadingSlow" :data="slowRows" border size="small">
+        <el-table-column v-for="(c, i) in slowColumns" :key="i" :label="c" show-overflow-tooltip>
+          <template #default="{ row }">{{ row[i] }}</template>
+        </el-table-column>
+        <template #empty>{{ t('database.emptySlow') }}</template>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
@@ -382,8 +482,15 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
-import { Connection, Link, Plus, Refresh, User } from '@/icons'
-import { databaseApi, type DbItem, type DbStatus, type DbUser } from '@/api/database'
+import { Connection, Download, Link, List, Plus, Refresh, Upload, User } from '@/icons'
+import {
+  databaseApi,
+  type DbColumn,
+  type DbItem,
+  type DbStatus,
+  type DbTable,
+  type DbUser,
+} from '@/api/database'
 import { http } from '@/utils/request'
 
 const { t } = useI18n()
@@ -719,6 +826,132 @@ async function handleDropUser(row: DbUser) {
     await loadUsers()
   } catch (e: any) {
     ElMessage.error(e?.message || t('database.deleteFailed'))
+  }
+}
+
+// ── 审计项 1：表浏览 / 导入导出 / 慢查询 ──────────────
+/** 管理员：非管理员有库名前缀（prefix 非空），管理员为 null */
+const isAdmin = computed(() => prefix.value === null)
+
+// 库详情：表浏览 + 导入导出
+const schemaVisible = ref(false)
+const currentSchema = ref('')
+const loadingTables = ref(false)
+const tableList = ref<DbTable[]>([])
+
+async function openSchema(row: DbItem) {
+  currentSchema.value = row.name
+  schemaVisible.value = true
+  await loadTables()
+}
+async function loadTables() {
+  loadingTables.value = true
+  try {
+    const res = await databaseApi.tables(currentSchema.value)
+    tableList.value = res.list || []
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('database.tablesFailed'))
+  } finally {
+    loadingTables.value = false
+  }
+}
+
+// 表数据：结构 + 分页
+const tableVisible = ref(false)
+const currentTable = ref('')
+const columns = ref<DbColumn[]>([])
+const tableRows = ref<string[][]>([])
+const tablePage = ref(1)
+const tableSize = ref(50)
+const tableTotal = ref(0)
+const loadingTable = ref(false)
+
+async function openTable(tbl: string) {
+  currentTable.value = tbl
+  tablePage.value = 1
+  tableVisible.value = true
+  await loadTableData()
+}
+async function loadTableData() {
+  loadingTable.value = true
+  try {
+    const res = await databaseApi.table(currentSchema.value, currentTable.value, tablePage.value, tableSize.value)
+    columns.value = res.columns || []
+    tableRows.value = res.rows || []
+    tableTotal.value = res.total || 0
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('database.tableFailed'))
+  } finally {
+    loadingTable.value = false
+  }
+}
+function changeTablePage(p: number) {
+  tablePage.value = p
+  loadTableData()
+}
+
+// 导出 .sql（整库，纯 Rust 生成）
+async function exportSchema() {
+  try {
+    const res = await databaseApi.exportSql(currentSchema.value)
+    const blob = new Blob([res.sql], { type: 'text/sql;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${currentSchema.value}.sql`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success(t('database.exportDone', { n: res.tables }))
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('database.exportFailed'))
+  }
+}
+
+// 导入 .sql
+const importVisible = ref(false)
+const importSqlText = ref('')
+const importing = ref(false)
+function openImport() {
+  importSqlText.value = ''
+  importVisible.value = true
+}
+async function doImport() {
+  if (!importSqlText.value.trim()) {
+    ElMessage.warning(t('database.importEmpty'))
+    return
+  }
+  importing.value = true
+  try {
+    const res = await databaseApi.importSql(currentSchema.value, importSqlText.value)
+    ElMessage.success(t('database.importDone', { n: res.executed }))
+    importVisible.value = false
+    await loadTables()
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('database.importFailed'))
+  } finally {
+    importing.value = false
+  }
+}
+
+// 慢查询（仅管理员）
+const slowVisible = ref(false)
+const slowColumns = ref<string[]>([])
+const slowRows = ref<string[][]>([])
+const loadingSlow = ref(false)
+function openSlow() {
+  slowVisible.value = true
+  loadSlow()
+}
+async function loadSlow() {
+  loadingSlow.value = true
+  try {
+    const res = await databaseApi.slow(20)
+    slowColumns.value = res.columns || []
+    slowRows.value = res.rows || []
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('database.slowFailed'))
+  } finally {
+    loadingSlow.value = false
   }
 }
 </script>

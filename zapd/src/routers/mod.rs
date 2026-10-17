@@ -314,6 +314,12 @@ fn api_routers() -> Router {
         .route("/database/remote", get(database::remote_list))
         .route("/database/remote/grant", post(database::remote_grant))
         .route("/database/remote/revoke", post(database::remote_revoke))
+        // 审计项 1：数据库能力补全（表浏览 / 导入导出 / 慢查询）
+        .route("/database/tables", get(database::tables))
+        .route("/database/table", get(database::table))
+        .route("/database/export", get(database::export))
+        .route("/database/import", post(database::import))
+        .route("/database/slow", get(database::slow))
         // 备份中心（目录 / 数据库备份与还原 + 定时任务）
         .route("/system/backup/create_dir", post(system_backup::create_dir))
         .route("/system/backup/create_db", post(system_backup::create_db))
