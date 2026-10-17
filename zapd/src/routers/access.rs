@@ -386,6 +386,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("system.file", "view")),
     ),
+    // 搜索是读取的另一种形式（递归遍历，handler 内按 home 收敛）
+    (
+        "/system/files/search",
+        Required::User,
+        Some(Perm::action("system.file", "view")),
+    ),
     (
         "/system/files/read",
         Required::User,
