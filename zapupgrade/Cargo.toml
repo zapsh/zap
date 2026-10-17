@@ -18,3 +18,6 @@ flate2 = "1.0"
 sha2 = "0.10"
 # 以 root 建目录后把属主还回数据区属主（zapadm），否则 zapd 写不进 stage/
 libc = "0.2"
+# 升级前对在线 zap.db 做一致性快照（VACUUM INTO），与二进制备份同目录、共享回滚生命周期。
+# bundled：自带 SQLite 源码编译，不依赖系统 libsqlite3 / sqlite3 CLI。
+rusqlite = { version = "0.32", features = ["bundled"] }

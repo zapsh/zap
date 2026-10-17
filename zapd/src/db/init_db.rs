@@ -9,35 +9,32 @@ use super::get_db_pool;
 use super::get_db_pool_opt;
 use super::menu_seed;
 
-/// 当前 schema 版本，取面板 crate 版本号。每次发版 bump 版本即视为一次 schema 升级，
-/// 升级时 [`init_schema`] 会先自动备份数据库（见 [`backup_db_before_upgrade`]）。
+/// 当前 schema 版本，取面板 crate 版本号。每次发版 bump 版本即视为一次 schema 升级。
+/// 升级前的一致性快照由升级器 `zapupgrade` 在备份二进制时一并完成（写入同一个
+/// `data/upgrade/backup/<ts>-<ver>/zap.db`，与二进制备份共享回滚生命周期），不在此处做。
 const APP_SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 建表与种子数据入口。
 ///
 /// 迁移策略：所有建表采用「`CREATE TABLE IF NOT EXISTS` + 幂等 `ADD COLUMN`」的向前迁移，
-/// 天然可重复执行、对存量库安全。本函数在此之上补上**版本记录**与**升级前自动备份**：
+/// 天然可重复执行、对存量库安全。本函数在此之上补上**版本记录**与**回滚检测**：
 /// - 记录 `schema_migrations` 中已应用的版本，使升级可观测、可回溯；
-/// - 当检测到数据库版本低于代码版本（升级）时，先做一次在线一致性快照，避免迁移中途失败无退路；
+/// - 升级前的一致性快照由 `zapupgrade` 在备份二进制的同一步完成（见升级器源码），
+///   与二进制备份落在同一个 `data/upgrade/backup/<ts>-<ver>/` 目录，回滚时一并恢复；
 /// - 当检测到数据库版本高于代码版本（降级 / 跨大版本回滚）时，不崩溃，但告警——旧代码可能
 ///   不认识新 schema（如回收站列、异地备份表），此时应还原升级前自动备份而非继续跑向前迁移。
 pub async fn init_schema() {
-    // ── 迁移框架：版本记录 + 升级前自动备份 + 回滚检测 ─────────────
+    // ── 迁移框架：版本记录 + 回滚检测 ─────────────
     ensure_schema_migrations_table().await;
     let current = APP_SCHEMA_VERSION;
     match get_applied_version().await {
-        Some(applied) if applied != current => {
-            if version_cmp(&applied, current) < 0 {
-                // 升级：跑建表迁移前先做一次在线一致性快照，失败也能回退
-                let _ = backup_db_before_upgrade(&applied).await;
-            } else {
-                // 数据库版本高于代码（降级 / 跨大版本回滚）：不崩溃，但告警，
-                // 提示用升级前自动备份恢复（down migration = 还原快照）。
-                warn!(
-                    "数据库 schema 版本 {applied} 高于当前代码版本 {current}，疑似降级/回滚；\
-                     若旧代码无法识别新 schema，请使用升级前自动备份（data/zap.db.upgrade-*.bak）恢复"
-                );
-            }
+        Some(applied) if applied != current && version_cmp(&applied, current) >= 0 => {
+            // 数据库版本高于代码（降级 / 跨大版本回滚）：不崩溃，但告警，
+            // 提示用升级前自动备份恢复（down migration = 还原快照）。
+            warn!(
+                "数据库 schema 版本 {applied} 高于当前代码版本 {current}，疑似降级/回滚；\
+                 若旧代码无法识别新 schema，请使用升级前自动备份（data/upgrade/backup/<ts>-<ver>/zap.db）恢复"
+            );
         }
         _ => {}
     }
@@ -153,52 +150,6 @@ async fn record_version(version: &str, name: &str) {
     .bind(ts)
     .execute(pool)
     .await;
-}
-
-/// 升级前自动备份数据库：对在线库做一次一致性快照，避免迁移中途失败无退路。
-///
-/// 优先用 SQLite `VACUUM INTO` 做在线热备（与活跃连接共存、原子一致）；若不可用则回退到
-/// 先 `wal_checkpoint` 再拷贝主库文件（非完全原子，但崩溃窗口极小）。快照写入
-/// `data/zap.db.upgrade-<旧版本>-<时间戳>.bak`，权限收紧为 0o600。
-async fn backup_db_before_upgrade(old: &str) -> Option<String> {
-    let path = crate::config::get_config().read().ok()?.db.path.clone();
-    if !std::path::Path::new(&path).exists() {
-        return None;
-    }
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let backup = format!("{path}.upgrade-{old}-{ts}.bak");
-    let pool = get_db_pool_opt().await?;
-    // 先被动 checkpoint，使 WAL 已合并进主库，快照才完整
-    let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-        .execute(pool)
-        .await;
-    // VACUUM INTO 目标文件必须不存在；以绑定参数传入路径（避免动态拼接、可被 clippy 接受）
-    let vacuum_ok = sqlx::query("VACUUM INTO ?")
-        .bind(&backup)
-        .execute(pool)
-        .await
-        .is_ok();
-    let done = if vacuum_ok && std::path::Path::new(&backup).exists() {
-        true
-    } else {
-        // 回退：直接拷贝主库文件（checkpoint 后已较完整）
-        std::fs::copy(&path, &backup).is_ok()
-    };
-    if !done {
-        warn!("升级前自动备份数据库失败（{path} → {backup}），请人工备份后再升级");
-        return None;
-    }
-    // 数据库含敏感数据，备份同样收紧为仅属主可读写
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600));
-    }
-    info!("升级前自动备份数据库: {backup}");
-    Some(backup)
 }
 
 /// 语义化版本比较：`a < b` 返回负，`a == b` 返回 0，`a > b` 返回正。
