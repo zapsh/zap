@@ -24,6 +24,24 @@ pub async fn get_db_pool_opt() -> Option<&'static SqlitePool> {
     DB_POOL
         .get_or_try_init(|| async {
             let filename = crate::config::get_config().read().unwrap().db.path.clone();
+
+            // 预先以 0o600 创建库文件（若不存在）：确保即便下面的显式 chmod 因故未执行，
+            // 文件也不会以默认 0644 落地。仅属主可读写，与 secret.key 一致。
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                if !std::path::Path::new(&filename).exists()
+                    && let Err(e) = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(&filename)
+                {
+                    warn!("预创建数据库文件失败 {}: {e}", filename);
+                }
+            }
+
             let options = SqliteConnectOptions::new()
                 .filename(&filename)
                 .create_if_missing(true)
@@ -35,15 +53,29 @@ pub async fn get_db_pool_opt() -> Option<&'static SqlitePool> {
                 .max_connections(50)
                 .connect_with(options)
                 .await?;
-            // 数据库含用户凭据等敏感数据，收紧为仅属主读写、同组只读（0o640），
-            // 与 zap.yaml / secret.key 一致，避免本地用户直接读取库文件。
+
+            // 数据库含用户凭据 / 令牌等敏感数据，收紧为仅属主读写（0o600），与 secret.key 一致；
+            // 同时覆盖 WAL/SHM 伴随文件（sqlite 写入时按进程默认 umask 以 0644 创建），
+            // 避免本地其他用户直接读取库文件或 WAL 中的在途明文。
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if let Err(e) =
-                    tokio::fs::set_permissions(&filename, fs::Permissions::from_mode(0o640)).await
-                {
-                    warn!("设置数据库文件权限失败 {}: {e}", filename);
+                // 先触发一次被动 checkpoint，使 -wal/-shm 落地，便于一并收紧权限。
+                let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                    .execute(&pool)
+                    .await;
+                let perms = fs::Permissions::from_mode(0o600);
+                for cand in [
+                    filename.clone(),
+                    format!("{filename}-wal"),
+                    format!("{filename}-shm"),
+                ] {
+                    if !std::path::Path::new(&cand).exists() {
+                        continue;
+                    }
+                    if let Err(e) = tokio::fs::set_permissions(&cand, perms.clone()).await {
+                        warn!("设置数据库文件权限失败 {}: {e}", cand);
+                    }
                 }
             }
             Ok::<_, sqlx::Error>(pool)
