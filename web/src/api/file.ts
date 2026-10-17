@@ -201,3 +201,24 @@ export function extractArchive(path: string, destDir: string, overwrite: boolean
     overwrite,
   })
 }
+
+export interface FileSearchData {
+  /** 搜索根目录（服务端确认后的实际路径） */
+  root_path: string
+  keyword: string
+  /** 命中条数（已截断时等于 max） */
+  total: number
+  /** 结果是否因达到上限被截断 */
+  truncated: boolean
+  entries: FileEntry[]
+}
+
+/**
+ * 递归搜索文件名（限当前权限目录内；keyword 支持 `*` 通配，如 `*.php`、`config*`）。
+ * `path` 为搜索根（默认当前目录），后端带数量/深度上限防 DoS。
+ */
+export function searchFiles(path: string, keyword: string, max = 500) {
+  return http.get<ApiResponse<FileSearchData>>('/system/files/search', {
+    params: { path, keyword, max },
+  })
+}

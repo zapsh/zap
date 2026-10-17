@@ -147,6 +147,14 @@ pub async fn dispatch(req: Request) -> Response {
             as_user,
             skip_owner_check,
         } => file::mkdir(path, as_user, skip_owner_check).await,
+        Request::FileSearch {
+            path,
+            keyword,
+            max,
+            depth,
+            as_user,
+            skip_owner_check,
+        } => file::search(path, keyword, max, depth, as_user, skip_owner_check).await,
         Request::FileRename {
             path,
             new_path,

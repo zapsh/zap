@@ -465,6 +465,157 @@ pub async fn list(path: String, as_user: Option<String>, skip_owner_check: bool)
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
 }
 
+/// 在 `path`（已做路径沙箱校验）下递归搜索文件名匹配 `keyword` 的文件/目录。
+///
+/// 安全边界与 `list` 一致：调用方（zapd）先做权限校验，这里再对每个进入的目录
+/// 调 `sandbox_path` 复核（防符号链接逃逸到沙箱外）；`max`/`depth` 双重上限防遍历
+/// 海量文件导致 DoS；符号链接目录不跟随，避免循环。
+#[allow(clippy::too_many_arguments)]
+pub async fn search(
+    path: String,
+    keyword: String,
+    max: u32,
+    depth: u32,
+    as_user: Option<String>,
+    skip_owner_check: bool,
+) -> Response {
+    tokio::task::spawn_blocking(move || {
+        let resolved = resolve_path(&path);
+        if let Err(e) = sandbox_path(&resolved, &as_user, skip_owner_check) {
+            return Response::err(-1, e);
+        }
+        let md = match std::fs::metadata(&resolved) {
+            Ok(m) => m,
+            Err(e) => return Response::err(-1, format!("路径不存在: {e}")),
+        };
+        if !md.is_dir() {
+            return Response::err(-1, "搜索根路径必须是目录");
+        }
+        let kw = keyword.to_lowercase();
+        let max = (max as usize).clamp(1, 2000);
+        let depth = (depth as usize).clamp(1, 30);
+        let mut results: Vec<FileInfo> = Vec::new();
+        walk_dir(
+            &resolved,
+            &kw,
+            max,
+            depth,
+            0,
+            &mut results,
+            &as_user,
+            skip_owner_check,
+        );
+        results.sort_by_key(|a| a.path.to_lowercase());
+        let truncated = results.len() >= max;
+        Response::ok(
+            "ok",
+            Some(json!({
+                "root_path": resolved.to_string_lossy(),
+                "keyword": keyword,
+                "total": results.len(),
+                "truncated": truncated,
+                "entries": results,
+            })),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+/// 在 `dir` 内递归搜索文件名匹配 `kw` 的条目，结果收集到 `results`。
+/// 仅对目录（且不跟随符号链接）递归，进入每个目录前重新做沙箱校验。
+#[allow(clippy::too_many_arguments)]
+fn walk_dir(
+    dir: &Path,
+    kw: &str,
+    max: usize,
+    max_depth: usize,
+    cur_depth: usize,
+    results: &mut Vec<FileInfo>,
+    as_user: &Option<String>,
+    skip_owner_check: bool,
+) {
+    if results.len() >= max || cur_depth >= max_depth {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        if results.len() >= max {
+            return;
+        }
+        let p = entry.path();
+        let Some(info) = file_info(&p) else {
+            continue;
+        };
+        if matches_kw(&info.name, kw) {
+            results.push(info);
+        }
+        // 仅对目录（且不跟随符号链接，避免循环）递归；进入前沙箱校验
+        if p.is_dir() && !p.is_symlink() && sandbox_path(&p, as_user, skip_owner_check).is_ok() {
+            walk_dir(
+                &p,
+                kw,
+                max,
+                max_depth,
+                cur_depth + 1,
+                results,
+                as_user,
+                skip_owner_check,
+            );
+        }
+    }
+}
+
+/// 文件名匹配：支持 `*` 通配（不区分大小写），如 `*.php`、`config*`、`*.log.*`。
+fn matches_kw(name: &str, kw: &str) -> bool {
+    let name = name.to_lowercase();
+    if !kw.contains('*') {
+        return name.contains(kw);
+    }
+    let parts: Vec<&str> = kw.split('*').collect();
+    let mut pos = 0;
+    for part in parts {
+        if part.is_empty() {
+            continue;
+        }
+        match name[pos..].find(part) {
+            Some(idx) => pos += idx + part.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::matches_kw;
+
+    #[test]
+    fn matches_substring_case_insensitive() {
+        assert!(matches_kw("Index.php", "php"));
+        assert!(matches_kw("CONFIG.JSON", "config"));
+        assert!(!matches_kw("image.png", "php"));
+    }
+
+    #[test]
+    fn matches_wildcard() {
+        // 后缀
+        assert!(matches_kw("index.php", "*.php"));
+        assert!(matches_kw("a/b/c.log", "*.log"));
+        // 前缀
+        assert!(matches_kw("config.inc.php", "config*"));
+        // 中段
+        assert!(matches_kw("access.log.1", "*.log.*"));
+        // 多段
+        assert!(matches_kw("nginx-access.log", "nginx*.log"));
+        // 不匹配
+        assert!(!matches_kw("index.html", "*.php"));
+        assert!(!matches_kw("config.yaml", "conf*json"));
+    }
+}
+
 pub async fn read(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
     tokio::task::spawn_blocking(move || {
         let resolved = resolve_path(&path);

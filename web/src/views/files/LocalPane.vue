@@ -132,6 +132,22 @@
           <el-button size="small" :title="t('filesLocal.openInEditor')" :disabled="!canOpenInEditor" @click="openInEditor()">
             <el-icon><Edit /></el-icon>
           </el-button>
+          <!-- 文件搜索：在当前目录及子目录递归搜索文件名（* 通配） -->
+          <el-input
+            v-model="searchKeyword"
+            :placeholder="t('filesLocal.searchPlaceholder')"
+            size="small"
+            clearable
+            :disabled="loading"
+            style="width: 240px"
+            @keyup.enter="runSearch"
+            @clear="clearSearch"
+          >
+            <template #prefix><el-icon><Search /></el-icon></template>
+          </el-input>
+          <el-button size="small" :loading="searching" @click="runSearch">
+            <el-icon><Search /></el-icon>
+          </el-button>
         </div>
       </div>
 
@@ -197,6 +213,18 @@
         </el-button-group>
         <el-button size="small" text :disabled="!hasSelection" @click="clearSelection">
           {{ t('filesLocal.clearSelection') }}
+        </el-button>
+      </div>
+
+      <!-- 搜索结果提示条：搜索模式下显示范围 / 数量，可一键退出 -->
+      <div v-if="searchInfo" class="fm-search-banner">
+        <el-icon><Search /></el-icon>
+        <span>{{ t('filesLocal.searchResult', { keyword: searchInfo.keyword, path: searchInfo.root_path, n: searchInfo.total }) }}</span>
+        <span v-if="searchInfo.truncated" class="fm-search-trunc">
+          {{ t('filesLocal.searchTruncated', { n: searchInfo.total }) }}
+        </span>
+        <el-button size="small" text type="primary" @click="clearSearch">
+          {{ t('filesLocal.searchClear') }}
         </el-button>
       </div>
 
@@ -917,6 +945,7 @@ import {
   InfoFilled,
   DataLine,
   Box,
+  Search,
 } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ElTree } from 'element-plus'
@@ -936,6 +965,7 @@ import {
   copyFile,
   archiveFiles,
   getDirSize,
+  searchFiles,
   type FileEntry,
 } from '@/api/file'
 import CodeEditor from '@/components/CodeEditor.vue'
@@ -967,6 +997,12 @@ const homePath = ref('')
 /** 路由（用于读取站点列表带参进入时的 ?path= 目标目录） */
 const route = useRoute()
 const fileList = ref<FileEntry[]>([])
+/** 文件搜索状态：非空表示当前处于搜索结果视图（双击目录进入会自动退出） */
+const searchKeyword = ref('')
+const searching = ref(false)
+const searchInfo = ref<{ root_path: string; keyword: string; total: number; truncated: boolean } | null>(
+  null,
+)
 const viewMode = ref<'list' | 'grid'>('list')
 /** 当前选中的条目路径集合（支持多选） */
 const selectedEntries = ref<Set<string>>(new Set())
@@ -1387,6 +1423,7 @@ async function refreshTree() {
 // ── file list ──────────────────────────────────────────────
 
 async function loadFileList() {
+  searchInfo.value = null
   loading.value = true
   try {
     // 首次不带 path：后端落到家目录（管理员也是），回来后再以实际目录为准
@@ -1405,6 +1442,43 @@ async function loadFileList() {
 }
 
 function refreshList() {
+  loadFileList()
+}
+
+// ── 文件搜索（递归搜索当前目录及子目录的文件名） ──────────────
+
+async function runSearch() {
+  const kw = searchKeyword.value.trim()
+  if (!kw) {
+    ElMessage.warning(t('filesLocal.searchEmpty'))
+    return
+  }
+  searching.value = true
+  try {
+    // 搜索根用当前目录（进入子目录后再搜即在该子树下）；后端按权限沙箱 + 数量/深度上限
+    const res = await searchFiles(currentPath.value, kw)
+    const data = res.data
+    if (data) {
+      fileList.value = data.entries || []
+      searchInfo.value = {
+        root_path: data.root_path,
+        keyword: data.keyword,
+        total: data.total,
+        truncated: data.truncated,
+      }
+      clearSelection()
+      syncTree()
+    }
+  } catch {
+    // 错误已由响应拦截器统一提示
+  } finally {
+    searching.value = false
+  }
+}
+
+/** 退出搜索结果视图，回到正常目录列表 */
+function clearSearch() {
+  searchInfo.value = null
   loadFileList()
 }
 
@@ -2869,6 +2943,27 @@ watch(
   background: var(--el-bg-color);
   border-radius: 4px;
   overflow: hidden;
+}
+
+.fm-search-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+  background: var(--el-color-primary-light-9);
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 4px;
+
+  .el-icon {
+    color: var(--el-color-primary);
+  }
+
+  .fm-search-trunc {
+    color: var(--el-text-color-secondary);
+  }
 }
 
 .fm-sidebar {
