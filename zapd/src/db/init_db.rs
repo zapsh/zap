@@ -854,85 +854,95 @@ async fn init_ip_pool_table() {
 // ── site（用户站点管理）─────────────────────────────────────
 
 async fn init_site_table() {
-    if table_exists("site").await {
-        return;
+    // 仅当 site 表不存在时才建表（已存在的库跳过，避免破坏存量数据）
+    if !table_exists("site").await {
+        let sql = r#"
+        -- 站点主表：一个站点可绑定多个域名 / 多个 IP（见 site_domain / site_ip）
+        CREATE TABLE site (
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            name TEXT NOT NULL DEFAULT '',
+            php_instance TEXT NOT NULL DEFAULT '',
+            vhost_state TEXT NOT NULL DEFAULT 'pending',
+            vhost_error TEXT NOT NULL DEFAULT '',
+            vhost_synced_at INTEGER NOT NULL DEFAULT 0,
+            run_state TEXT NOT NULL DEFAULT 'running',
+            web_root TEXT NOT NULL DEFAULT '',
+            log_root TEXT NOT NULL DEFAULT '',
+            status INTEGER NOT NULL DEFAULT 1,
+            remark TEXT NOT NULL DEFAULT '',
+            -- 流量统计：access.log 增量解析游标（inode 变化 / 文件变小 = 日志轮转，从 0 重读）
+            traffic_offset INTEGER NOT NULL DEFAULT 0,
+            traffic_inode TEXT NOT NULL DEFAULT '',
+            traffic_total_bytes INTEGER NOT NULL DEFAULT 0,
+            -- 本月流量（字节）与所属周期（YYYYMM）
+            traffic_month_bytes INTEGER NOT NULL DEFAULT 0,
+            traffic_month TEXT NOT NULL DEFAULT '',
+            traffic_stat_at INTEGER NOT NULL DEFAULT 0,
+            -- 站点磁盘占用（字节）：web_root + log_root 的 du 结果（0 = 尚未采集）
+            disk_used_bytes INTEGER NOT NULL DEFAULT 0,
+            disk_stat_at INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER,
+            updated_at INTEGER
+        );
+        CREATE INDEX idx_site_user_id ON site(user_id);
+
+        -- 站点按天流量（解析 access.log 增量累加，供站点流量分析曲线使用）
+        CREATE TABLE IF NOT EXISTS site_traffic_daily (
+            site_id INTEGER NOT NULL,
+            day TEXT NOT NULL,              -- YYYYMMDD
+            bytes INTEGER NOT NULL DEFAULT 0,
+            requests INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (site_id, day)
+        );
+
+        -- 站点按天 Top URL（每天每站点最多保留 TOP_PATH_KEEP 条，其余按 hits 修剪）
+        CREATE TABLE IF NOT EXISTS site_traffic_path (
+            site_id INTEGER NOT NULL,
+            day TEXT NOT NULL,              -- YYYYMMDD
+            path TEXT NOT NULL,
+            hits INTEGER NOT NULL DEFAULT 0,
+            bytes INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (site_id, day, path)
+        );
+        CREATE INDEX idx_traffic_path_day ON site_traffic_path(site_id, day);
+
+        CREATE TABLE site_domain (
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            site_id INTEGER NOT NULL DEFAULT 0,
+            domain TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX idx_site_domain_site_id ON site_domain(site_id);
+        CREATE UNIQUE INDEX idx_site_domain_domain ON site_domain(domain);
+
+        CREATE TABLE site_ip (
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            site_id INTEGER NOT NULL DEFAULT 0,
+            ip TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX idx_site_ip_site_id ON site_ip(site_id);
+        "#;
+        let pool = get_db_pool().await;
+        let _ = pool.execute(sql).await;
     }
-    let sql = r#"
-    -- 站点主表：一个站点可绑定多个域名 / 多个 IP（见 site_domain / site_ip）
-    CREATE TABLE site (
-        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL DEFAULT 0,
-        name TEXT NOT NULL DEFAULT '',
-        php_instance TEXT NOT NULL DEFAULT '',
-        vhost_state TEXT NOT NULL DEFAULT 'pending',
-        vhost_error TEXT NOT NULL DEFAULT '',
-        vhost_synced_at INTEGER NOT NULL DEFAULT 0,
-        run_state TEXT NOT NULL DEFAULT 'running',
-        web_root TEXT NOT NULL DEFAULT '',
-        log_root TEXT NOT NULL DEFAULT '',
-        status INTEGER NOT NULL DEFAULT 1,
-        remark TEXT NOT NULL DEFAULT '',
-        -- 流量统计：access.log 增量解析游标（inode 变化 / 文件变小 = 日志轮转，从 0 重读）
-        traffic_offset INTEGER NOT NULL DEFAULT 0,
-        traffic_inode TEXT NOT NULL DEFAULT '',
-        traffic_total_bytes INTEGER NOT NULL DEFAULT 0,
-        -- 本月流量（字节）与所属周期（YYYYMM）
-        traffic_month_bytes INTEGER NOT NULL DEFAULT 0,
-        traffic_month TEXT NOT NULL DEFAULT '',
-        traffic_stat_at INTEGER NOT NULL DEFAULT 0,
-        -- 站点磁盘占用（字节）：web_root + log_root 的 du 结果（0 = 尚未采集）
-        disk_used_bytes INTEGER NOT NULL DEFAULT 0,
-        disk_stat_at INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER,
-        updated_at INTEGER
-    );
-    CREATE INDEX idx_site_user_id ON site(user_id);
 
-    -- 站点按天流量（解析 access.log 增量累加，供站点流量分析曲线使用）
-    CREATE TABLE IF NOT EXISTS site_traffic_daily (
-        site_id INTEGER NOT NULL,
-        day TEXT NOT NULL,              -- YYYYMMDD
-        bytes INTEGER NOT NULL DEFAULT 0,
-        requests INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (site_id, day)
-    );
-
-    -- 站点按天 Top URL（每天每站点最多保留 TOP_PATH_KEEP 条，其余按 hits 修剪）
-    CREATE TABLE IF NOT EXISTS site_traffic_path (
-        site_id INTEGER NOT NULL,
-        day TEXT NOT NULL,              -- YYYYMMDD
-        path TEXT NOT NULL,
-        hits INTEGER NOT NULL DEFAULT 0,
-        bytes INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (site_id, day, path)
-    );
-    CREATE INDEX idx_traffic_path_day ON site_traffic_path(site_id, day);
-
-    CREATE TABLE site_domain (
-        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        site_id INTEGER NOT NULL DEFAULT 0,
-        domain TEXT NOT NULL DEFAULT ''
-    );
-    CREATE INDEX idx_site_domain_site_id ON site_domain(site_id);
-    CREATE UNIQUE INDEX idx_site_domain_domain ON site_domain(domain);
-
-    CREATE TABLE site_ip (
-        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        site_id INTEGER NOT NULL DEFAULT 0,
-        ip TEXT NOT NULL DEFAULT ''
-    );
-    CREATE INDEX idx_site_ip_site_id ON site_ip(site_id);
-    CREATE TABLE IF NOT EXISTS db_trash (
-        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        original TEXT NOT NULL DEFAULT '',
-        trash_name TEXT NOT NULL DEFAULT '',
-        owner_prefix TEXT NOT NULL DEFAULT '',
-        deleted_at INTEGER NOT NULL DEFAULT 0
-    );
-    "#;
     let pool = get_db_pool().await;
-    let _ = pool.execute(sql).await;
-    // 回收站：站点软删标记列（旧库补列，幂等忽略错误）
+
+    // 回收站（数据库删除）：db_trash 记录表。必须在「建表 or 旧库」两种情况下都创建，
+    // 否则已存在的库不会建表，drop_db 写入 db_trash 时会因表不存在而报错。
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS db_trash (\
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, \
+            original TEXT NOT NULL DEFAULT '', \
+            trash_name TEXT NOT NULL DEFAULT '', \
+            owner_prefix TEXT NOT NULL DEFAULT '', \
+            deleted_at INTEGER NOT NULL DEFAULT 0)",
+    )
+    .execute(pool)
+    .await;
+
+    // 回收站：站点软删标记列。必须在「建表 or 旧库」两种情况下都执行，
+    // 否则已存在的库不会补列，site_list 过滤 s.deleted 时会因列不存在而整列报错空白。
     let _ = sqlx::query("ALTER TABLE site ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
