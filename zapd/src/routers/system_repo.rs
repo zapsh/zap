@@ -119,7 +119,7 @@ pub async fn catalog(claims: ValidatedClaims) -> ZapJsonResult {
     let distro = osrepo::detect();
     api_ok(json!({
         "distro": distro,
-        "switchable": osrepo::supports_mirror_switch(&distro.id),
+        "switchable": osrepo::switchable(&distro),
         "mirrors": osrepo::mirrors_for(&distro.family, &distro.id),
         "presets": osrepo::presets_for(&distro),
     }))

@@ -267,6 +267,23 @@ pub fn supports_mirror_switch(distro_id: &str) -> bool {
     )
 }
 
+/// 当前系统是否支持「在线换源」。
+///
+/// apt 系（debian / ubuntu）走整文件生成，只要能识别出代号（suite）就可以换，
+/// 与 [`switch_preview`] 的能力严格一致；rpm 系按目录结构白名单（见
+/// [`supports_mirror_switch`]），避免拼出 404 地址；未知 family 一律不支持。
+///
+/// 目录接口（`/system/repo/catalog`）的 `switchable` 必须用本函数：
+/// 之前误用 [`supports_mirror_switch`]（rpm 白名单），导致所有 apt 系统
+/// （debian / ubuntu）被当成「未能识别当前发行版」而禁用在线换源。
+pub fn switchable(distro: &DistroInfo) -> bool {
+    match distro.family.as_str() {
+        "debian" => !distro.suite.is_empty(),
+        "rhel" => supports_mirror_switch(&distro.id),
+        _ => false,
+    }
+}
+
 /// rpm 系镜像站（rocky / almalinux / centos 同路径规则）。
 ///
 /// **加新镜像就往下边加一条**：`url` 填镜像根（结尾带 `/`），该根下必须存在
@@ -741,6 +758,46 @@ mod tests {
         assert_eq!(family_of("rocky"), "rhel");
         assert_eq!(family_of("openeuler"), "rhel");
         assert_eq!(family_of("arch"), "");
+    }
+
+    /// `switchable` 必须与 `switch_preview` 的实际能力一致：这里返回 true 的组合，
+    /// 换源预览必能生成内容。apt 系（含 Debian 13 trixie）识别出代号即可换，
+    /// 不得再误用 rpm 白名单把 debian / ubuntu 整体判为不支持。
+    #[test]
+    fn switchable_matches_switch_preview_capability() {
+        let d = |id: &str, family: &str, suite: &str| DistroInfo {
+            id: id.to_string(),
+            version: String::new(),
+            pretty_name: String::new(),
+            family: family.to_string(),
+            suite: suite.to_string(),
+        };
+
+        // apt 系：识别出代号 → 支持换源
+        assert!(switchable(&d("debian", "debian", "trixie")));
+        assert!(switchable(&d("debian", "debian", "bookworm")));
+        assert!(switchable(&d("ubuntu", "debian", "noble")));
+        // apt 系：代号未知（老版本 / 新版本未收录）→ 不支持（switch_preview 也会返回 None）
+        assert!(!switchable(&d("debian", "debian", "")));
+        // rpm 系：仅白名单发行版
+        assert!(switchable(&d("rocky", "rhel", "")));
+        assert!(!switchable(&d("fedora", "rhel", "")));
+        // 未知 family：不支持
+        assert!(!switchable(&d("arch", "", "")));
+
+        // 一致性：switchable 为 true 时 switch_preview 必能生成
+        let contents = vec![]; // apt 系整文件生成，不依赖候选文件内容
+        for (id, family, suite) in [
+            ("debian", "debian", "trixie"),
+            ("debian", "debian", "bookworm"),
+            ("ubuntu", "debian", "noble"),
+        ] {
+            let distro = d(id, family, suite);
+            assert!(
+                switch_preview(&distro, "aliyun", &contents).is_some(),
+                "{id}/{suite} 应能生成换源预览"
+            );
+        }
     }
 
     #[test]
