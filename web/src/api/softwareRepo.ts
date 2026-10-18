@@ -42,6 +42,20 @@ export interface RepoStatus {
   distro: DistroInfo
   manager: string
   files: RepoFile[]
+  /** apt 源条目级清单（主 sources.list + sources.list.d 下的 .list / .sources） */
+  entries: RepoEntry[]
+}
+
+/** 一条 apt 源条目（单行式 deb 行或 deb822 stanza 展开后的最小单元） */
+export interface RepoEntry {
+  /** 来源文件名（sources.list 或 sources.list.d 下的文件名） */
+  file: string
+  /** deb | deb-src */
+  type: string
+  uri: string
+  suite: string
+  components: string
+  enabled: boolean
 }
 
 export interface RepoCatalog {

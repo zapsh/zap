@@ -268,12 +268,151 @@ fn collect(dir: &str, kind: &str, out: &mut Vec<serde_json::Value>) {
     }
 }
 
+/// 解析 deb822（`.sources`）的一个 stanza，按 Types × URIs × Suites 展开成条目。
+fn push_deb822_stanza(
+    out: &mut Vec<serde_json::Value>,
+    file: &str,
+    types: &str,
+    uris: &str,
+    suites: &str,
+    comps: &str,
+    enabled: bool,
+) {
+    if uris.is_empty() || suites.is_empty() {
+        return;
+    }
+    for typ in types.split_whitespace() {
+        if typ != "deb" && typ != "deb-src" {
+            continue;
+        }
+        for uri in uris.split_whitespace() {
+            for suite in suites.split_whitespace() {
+                out.push(json!({
+                    "file": file,
+                    "type": typ,
+                    "uri": uri,
+                    "suite": suite,
+                    "components": comps,
+                    "enabled": enabled,
+                }));
+            }
+        }
+    }
+}
+
+/// 解析单个 apt 源文件里的条目（供前端展示「系统已存在的源」）。
+///
+/// 支持两种格式：单行式（`sources.list` / `*.list`，`deb [选项] URI suite components...`）
+/// 与 deb822（`*.sources`，`Types/URIs/Suites/Components/Enabled` 块）。
+/// 只保留 `deb` / `deb-src` 条目，注释行跳过；每条带来源文件名，便于前端定位编辑。
+fn parse_apt_entries(file: &str, content: &str, out: &mut Vec<serde_json::Value>) {
+    if file.ends_with(".sources") {
+        // deb822：空行分隔 stanza
+        let mut types = String::new();
+        let mut uris = String::new();
+        let mut suites = String::new();
+        let mut comps = String::new();
+        let mut enabled = true;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                push_deb822_stanza(out, file, &types, &uris, &suites, &comps, enabled);
+                types.clear();
+                uris.clear();
+                suites.clear();
+                comps.clear();
+                enabled = true;
+            } else if let Some(v) = line.strip_prefix("Types:") {
+                types = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("URIs:") {
+                uris = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("Suites:") {
+                suites = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("Components:") {
+                comps = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("Enabled:") {
+                enabled = !v.trim().eq_ignore_ascii_case("no");
+            }
+            // 其余字段（Signed-By / Target / 语言相关）与条目展示无关，忽略
+        }
+        push_deb822_stanza(out, file, &types, &uris, &suites, &comps, enabled);
+        return;
+    }
+    // 单行式
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (typ, rest) = match line.split_once(char::is_whitespace) {
+            Some((t, r)) => (t, r.trim()),
+            None => continue,
+        };
+        if typ != "deb" && typ != "deb-src" {
+            continue;
+        }
+        // 跳过 `[arch=amd64 trusted=yes]` 这类选项段
+        let rest = match rest.strip_prefix('[') {
+            Some(s) => match s.find(']') {
+                Some(i) => s[i + 1..].trim(),
+                None => rest,
+            },
+            None => rest,
+        };
+        let mut it = rest.split_whitespace();
+        let (Some(uri), Some(suite)) = (it.next(), it.next()) else {
+            continue;
+        };
+        let components: Vec<&str> = it.collect();
+        out.push(json!({
+            "file": file,
+            "type": typ,
+            "uri": uri,
+            "suite": suite,
+            "components": components.join(" "),
+            "enabled": true,
+        }));
+    }
+}
+
+/// 汇总 apt 系所有源条目：主 `sources.list` + `/etc/apt/sources.list.d/` 下
+/// 的 `.list` / `.sources`（跳过面板备份文件，与 `collect` 口径一致）。
+fn apt_all_entries() -> Vec<serde_json::Value> {
+    let mut entries = Vec::new();
+    if let Ok(c) = std::fs::read_to_string(APT_MAIN) {
+        parse_apt_entries("sources.list", &c, &mut entries);
+    }
+    let mut names: Vec<String> = match std::fs::read_dir(APT_DIR) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+            .filter(|n| !n.ends_with(".bak") && !n.contains(".zap"))
+            .collect(),
+        Err(_) => return entries,
+    };
+    names.sort();
+    for name in names {
+        if let Ok(c) = std::fs::read_to_string(Path::new(APT_DIR).join(&name)) {
+            parse_apt_entries(&name, &c, &mut entries);
+        }
+    }
+    entries
+}
+
 /// `os_repo.list`：系统识别 + 源文件清单。
 pub async fn list() -> Response {
     tokio::task::spawn_blocking(move || {
         let (id, version, pretty) = os_release();
         let manager = detect_manager();
         let mut files: Vec<serde_json::Value> = Vec::new();
+        // apt 系额外输出条目级清单（含主 sources.list 里的行），供前端展示
+        // 「系统已存在的源」——很多系统的源都写在主文件里，目录下反而是空的。
+        let entries = if manager == "apt-get" {
+            apt_all_entries()
+        } else {
+            Vec::new()
+        };
         if Path::new(APT_MAIN).is_file() {
             let content = std::fs::read_to_string(APT_MAIN).unwrap_or_default();
             files.push(json!({
@@ -303,6 +442,7 @@ pub async fn list() -> Response {
                 },
                 "manager": manager,
                 "files": files,
+                "entries": entries,
             })),
         )
     })
@@ -558,4 +698,105 @@ pub async fn cache_update(manager: String) -> Response {
     })
     .await
     .unwrap_or_else(|e| Response::err(-1, format!("任务执行失败: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_apt_entries;
+
+    /// 把条目简化成 (type, uri, suite, components, enabled) 便于断言。
+    fn brief(v: &serde_json::Value) -> (String, String, String, String, bool) {
+        (
+            v["type"].as_str().unwrap_or("").to_string(),
+            v["uri"].as_str().unwrap_or("").to_string(),
+            v["suite"].as_str().unwrap_or("").to_string(),
+            v["components"].as_str().unwrap_or("").to_string(),
+            v["enabled"].as_bool().unwrap_or(true),
+        )
+    }
+
+    #[test]
+    fn parse_one_line_sources_list() {
+        let content = "\
+deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+
+# 注释与被注释的行都跳过
+# deb http://example.com/debian trixie main
+deb http://deb.debian.org/debian-security trixie-security main
+";
+        let mut out = Vec::new();
+        parse_apt_entries("sources.list", content, &mut out);
+        assert_eq!(out.len(), 3, "注释行不应生成条目");
+        let first = brief(&out[0]);
+        assert_eq!(first.0, "deb");
+        assert_eq!(first.1, "http://deb.debian.org/debian");
+        assert_eq!(first.2, "trixie");
+        assert_eq!(first.3, "main contrib non-free non-free-firmware");
+        assert!(first.4);
+        // 带组件间空格的安全源
+        let sec = brief(&out[2]);
+        assert_eq!(sec.2, "trixie-security");
+        assert_eq!(sec.3, "main");
+    }
+
+    #[test]
+    fn parse_one_line_with_options() {
+        // `[arch=amd64 trusted=yes]` 选项段要整体跳过，不影响 URI / suite 解析
+        let content = "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.example.com/linux/debian bookworm stable\n";
+        let mut out = Vec::new();
+        parse_apt_entries("docker.list", content, &mut out);
+        assert_eq!(out.len(), 1);
+        let e = brief(&out[0]);
+        assert_eq!(e.1, "https://download.example.com/linux/debian");
+        assert_eq!(e.2, "bookworm");
+        assert_eq!(e.3, "stable");
+    }
+
+    #[test]
+    fn parse_deb822_sources() {
+        // Debian 12+ 默认的 deb822 格式（/etc/apt/sources.list.d/debian.sources）
+        let content = "\
+Types: deb deb-src
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: http://deb.debian.org/debian-security
+Suites: trixie-security
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+";
+        let mut out = Vec::new();
+        parse_apt_entries("debian.sources", content, &mut out);
+        // 第一 stanza 展开 2 类型 × 1 URI × 2 套件 = 4 条，第二 stanza 1 条
+        assert_eq!(out.len(), 5);
+        let e = brief(&out[0]);
+        assert_eq!(e.1, "http://deb.debian.org/debian");
+        assert_eq!(e.2, "trixie");
+        assert!(e.4);
+        // deb-src 也应生成条目
+        assert_eq!(out[2]["type"], "deb-src");
+        // 安全源 stanza
+        let sec = brief(&out[4]);
+        assert_eq!(sec.2, "trixie-security");
+    }
+
+    #[test]
+    fn parse_deb822_disabled_stanza() {
+        let content = "\
+Types: deb
+URIs: http://example.com/debian
+Suites: trixie
+Components: main
+Enabled: no
+";
+        let mut out = Vec::new();
+        parse_apt_entries("disabled.sources", content, &mut out);
+        assert_eq!(out.len(), 1);
+        assert!(!brief(&out[0]).4, "Enabled: no 应反映为 disabled");
+    }
 }

@@ -741,6 +741,13 @@ const enUS: Messages = {
     deleteConfirm: 'Delete {path}? A backup is taken before deletion.',
     deleted: 'Deleted',
     noThirdParty: 'No third-party repos yet',
+    existingTitle: 'Existing system repos',
+    existingHint:
+      'All apt entries on this system (including lines in the main sources.list; deb822 .sources files are expanded per entry). Click "Edit" to modify the source file.',
+    colType: 'Type',
+    colUri: 'URI',
+    colSuite: 'Suite',
+    colComponents: 'Components',
     editTitle: 'Edit repo file',
     createTitle: 'New repo file',
     newFile: 'New repo file',
