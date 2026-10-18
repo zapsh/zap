@@ -750,6 +750,10 @@ export default {
     applyDone: '换源完成',
     noChanges: '没有可应用的改动',
     switchHint: '换源会自动备份原文件到 data/backups/osrepo，随时可在「备份与还原」中恢复。',
+    mainFilesTitle: '主配置文件',
+    mainFilesHint:
+      '直接编辑发行版主源配置（apt：/etc/apt/sources.list；dnf/yum：/etc/dnf/dnf.conf、/etc/yum.conf）。保存前会自动备份原文件。',
+    editMainFile: '编辑 {name}',
     cacheConfirm:
       '将执行 apt-get update / dnf makecache 更新软件源索引，可能需要数十秒，确定继续？',
     cacheDone: '缓存已更新（{manager}）',

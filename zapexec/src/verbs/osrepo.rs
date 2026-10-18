@@ -32,6 +32,7 @@ const APT_DIR: &str = "/etc/apt/sources.list.d";
 const DNF_DIR: &str = "/etc/yum.repos.d";
 const ZYPP_DIR: &str = "/etc/zypp/repos.d";
 const DNF_CONF_DIR: &str = "/etc/dnf";
+const YUM_CONF: &str = "/etc/yum.conf";
 
 fn zap_path() -> PathBuf {
     std::env::var("ZAP_PATH")
@@ -85,7 +86,7 @@ fn os_release() -> (String, String, String) {
 
 /// 源文件归属的目录白名单（主文件本身也算一项）。
 fn repo_roots() -> Vec<PathBuf> {
-    [APT_MAIN, APT_DIR, DNF_DIR, ZYPP_DIR, DNF_CONF_DIR]
+    [APT_MAIN, APT_DIR, DNF_DIR, ZYPP_DIR, DNF_CONF_DIR, YUM_CONF]
         .iter()
         .map(PathBuf::from)
         .collect()
@@ -113,8 +114,8 @@ fn allowed_ext(canon: &Path) -> bool {
     if in_dir(DNF_CONF_DIR) {
         return name.ends_with(".conf");
     }
-    // /etc/apt/sources.list 主文件
-    canon == Path::new(APT_MAIN)
+    // /etc/apt/sources.list 与 /etc/yum.conf 主文件
+    canon == Path::new(APT_MAIN) || canon == Path::new(YUM_CONF)
 }
 
 /// 路径白名单校验：绝对路径、规范化后必须落在源目录内、扩展名符合约定、

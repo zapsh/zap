@@ -720,6 +720,10 @@ const enUS: Messages = {
     noChanges: 'Nothing to apply',
     switchHint:
       'Originals are backed up to data/backups/osrepo and can be restored any time from "Backups & restore".',
+    mainFilesTitle: 'Main config files',
+    mainFilesHint:
+      'Edit the distro main repo config directly (apt: /etc/apt/sources.list; dnf/yum: /etc/dnf/dnf.conf, /etc/yum.conf). The original file is backed up before saving.',
+    editMainFile: 'Edit {name}',
     cacheConfirm:
       'This runs apt-get update / dnf makecache and may take tens of seconds. Continue?',
     cacheDone: 'Cache refreshed ({manager})',
