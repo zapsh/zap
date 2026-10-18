@@ -4,6 +4,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useUserStore } from '@/stores/user'
+import CodeEditor from '@/components/CodeEditor.vue'
 import {
   Check,
   CloudDownload,
@@ -660,7 +661,7 @@ onMounted(() => {
     </el-dialog>
 
     <!-- 文件编辑 / 新建 -->
-    <el-dialog v-model="editVisible" :title="editDialogTitle" width="720px">
+    <el-dialog v-model="editVisible" :title="editDialogTitle" width="min(1100px, 96%)">
       <el-alert
         style="margin-bottom: 12px"
         :title="t('softwareRepo.editHint')"
@@ -673,12 +674,14 @@ onMounted(() => {
           <el-input v-model="editForm.path" placeholder="/etc/yum.repos.d/xxx.repo" />
         </el-form-item>
         <el-form-item :label="t('softwareRepo.contentLabel')">
-          <el-input
-            v-model="editForm.content"
-            type="textarea"
-            :rows="14"
-            class="code-input"
-          />
+          <div class="repo-editor-box">
+            <CodeEditor
+              v-model="editForm.content"
+              :path="editForm.path"
+              :active="editVisible"
+              :placeholder="t('softwareRepo.contentLabel')"
+            />
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -754,6 +757,15 @@ onMounted(() => {
     align-items: center;
     gap: 16px;
     flex-wrap: wrap;
+  }
+
+  /* 源文件编辑对话框里的 CodeMirror 容器：固定可视高度，内部自行滚动 */
+  .repo-editor-box {
+    width: 100%;
+    height: clamp(320px, 52vh, 540px);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 4px;
+    overflow: hidden;
   }
 
   .change-block {
