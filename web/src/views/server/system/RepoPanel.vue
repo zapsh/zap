@@ -229,6 +229,30 @@ function openCreate(preset?: RepoPreset) {
   editVisible.value = true
 }
 
+// ── 主配置文件（在线换源页快捷编辑入口）──
+const mainFiles = computed(() =>
+  isRpm.value
+    ? [
+        { path: '/etc/dnf/dnf.conf', label: 'dnf.conf' },
+        { path: '/etc/yum.conf', label: 'yum.conf' },
+      ]
+    : [{ path: '/etc/apt/sources.list', label: 'sources.list' }],
+)
+
+/** 打开主配置文件编辑；文件不存在（部分系统没有 sources.list）则按新建处理。 */
+async function openMainFile(path: string) {
+  editMode.value = 'edit'
+  editForm.path = path
+  editForm.content = ''
+  editVisible.value = true
+  try {
+    const res = await getRepoFile(path)
+    editForm.content = res.data.content ?? ''
+  } catch {
+    editMode.value = 'create'
+  }
+}
+
 async function submitEdit() {
   const path = editForm.path.trim()
   if (!path.startsWith('/') || !editForm.content.trim()) {
@@ -419,6 +443,33 @@ onMounted(() => {
             :closable="false"
             show-icon
           />
+        </el-card>
+
+        <!-- 主配置文件快捷编辑：主源不在 sources.list.d 目录里，这里给直达入口 -->
+        <el-card shadow="never" style="margin-top: 16px">
+          <template #header>
+            <div class="card-header">
+              <span class="page-title">{{ t('softwareRepo.mainFilesTitle') }}</span>
+            </div>
+          </template>
+          <el-alert
+            style="margin-bottom: 12px"
+            :title="t('softwareRepo.mainFilesHint')"
+            type="info"
+            :closable="false"
+            show-icon
+          />
+          <el-button
+            v-for="f in mainFiles"
+            :key="f.path"
+            type="primary"
+            plain
+            :icon="Edit"
+            :disabled="!isAdmin"
+            @click="openMainFile(f.path)"
+          >
+            {{ t('softwareRepo.editMainFile', { name: f.label }) }}
+          </el-button>
         </el-card>
       </el-tab-pane>
 
