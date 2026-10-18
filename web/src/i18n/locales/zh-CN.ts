@@ -771,6 +771,13 @@ export default {
     deleteConfirm: '将删除 {path}（删除前会自动备份），确定继续？',
     deleted: '已删除',
     noThirdParty: '尚未添加第三方源',
+    existingTitle: '系统已存在的源',
+    existingHint:
+      '当前系统全部 apt 源条目（含主 sources.list 里的行，deb822 的 .sources 已按条目展开）；点「编辑」可修改来源文件。',
+    colType: '类型',
+    colUri: '地址',
+    colSuite: '套件',
+    colComponents: '组件',
     editTitle: '编辑源文件',
     createTitle: '新建源文件',
     newFile: '新建源文件',

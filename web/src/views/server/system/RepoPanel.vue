@@ -76,6 +76,16 @@ const thirdPartyFiles = computed(
   () => (status.value?.files ?? []).filter((f) => f.kind !== 'main'),
 )
 
+// ── 系统已存在的源（条目级，apt 系）──
+const existingEntries = computed(() => status.value?.entries ?? [])
+
+/** 条目来源文件名 → status.files 里的文件对象（主 sources.list 也在 files 里） */
+function entryFile(name: string) {
+  return status.value?.files.find(
+    (f) => f.name === name || f.path.endsWith(`/${name}`),
+  )
+}
+
 // ── 备份 ──
 const backups = ref<RepoBackup[]>([])
 const backupDir = ref('')
@@ -478,6 +488,54 @@ onMounted(() => {
             <template #empty>
               <el-empty :description="t('softwareRepo.noThirdParty')" :image-size="60" />
             </template>
+          </el-table>
+        </el-card>
+
+        <!-- 系统已存在的源：条目级清单（apt 系才有；主 sources.list 里的行也在这里可见） -->
+        <el-card v-if="!isRpm && existingEntries.length" shadow="never" style="margin-top: 16px">
+          <template #header>
+            <div class="card-header">
+              <span class="page-title">{{ t('softwareRepo.existingTitle') }}</span>
+            </div>
+          </template>
+          <el-alert
+            style="margin-bottom: 12px"
+            :title="t('softwareRepo.existingHint')"
+            type="info"
+            :closable="false"
+            show-icon
+          />
+          <el-table :data="existingEntries" stripe size="small">
+            <el-table-column prop="file" :label="t('softwareRepo.colFile')" min-width="150" />
+            <el-table-column prop="type" :label="t('softwareRepo.colType')" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.type === 'deb' ? 'primary' : 'info'">{{ row.type }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="uri" :label="t('softwareRepo.colUri')" min-width="260" show-overflow-tooltip />
+            <el-table-column prop="suite" :label="t('softwareRepo.colSuite')" min-width="130" />
+            <el-table-column prop="components" :label="t('softwareRepo.colComponents')" min-width="200" show-overflow-tooltip />
+            <el-table-column :label="t('softwareRepo.colEnabled')" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.enabled ? 'success' : 'info'">
+                  {{ row.enabled ? t('softwareRepo.enabled') : t('softwareRepo.disabled') }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('common.operation')" width="110" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  v-if="entryFile(row.file)"
+                  link
+                  type="primary"
+                  :icon="Edit"
+                  :disabled="!isAdmin"
+                  @click="openEdit(entryFile(row.file)!)"
+                >
+                  {{ t('softwareRepo.edit') }}
+                </el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
