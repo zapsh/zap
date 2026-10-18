@@ -192,6 +192,13 @@ export function langFromPath(path: string): EditorLangName {
       return 'rust'
     case 'go':
       return 'go'
+    case 'list':
+    case 'sources':
+      // apt 单行式 / deb822 源：按 shell 高亮（注释、字符串）
+      return 'shell'
+    case 'repo':
+      // yum/dnf .repo 是 ini 段式
+      return 'ini'
     default:
       return 'text'
   }
