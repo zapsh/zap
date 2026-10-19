@@ -210,10 +210,9 @@ usage() {
 
 下载通道（境内 / 境外自动回退）：
   --mirror <auto|cn|global>
-                         下载通道。auto（默认）：先 mirrors.zap.cn（腾讯云 COS），失败自动改走
-                         GitHub（Releases 取包 + raw 取 latest.txt）；
-                         cn：仅用国内镜像；global：仅用 GitHub（境外服务器）
-                         版本查询顺序一致，latest.txt 都不通时会再问 GitHub API
+                         下载通道。auto（默认）：先 mirrors.zap.cn（腾讯云 COS）查版本并取包，
+                         失败自动改走 GitHub（API 查最新版本号 + Releases 取包）；
+                         cn：仅用国内镜像；global：仅用 GitHub（境外服务器，版本号问 GitHub API）
   环境变量                ZAP_MIRROR（同上，命令行参数优先）
 
 说明：安装末尾会执行 `zapd --init-admin` 建库并写入管理员（凭据只经命令行传递，
@@ -245,11 +244,10 @@ Initial admin credentials (only on first install with a fresh DB):
 
 Download channel (auto fallback between CN and overseas mirrors):
   --mirror <auto|cn|global>
-                         Download channel. auto (default): try mirrors.zap.cn (Tencent COS) first,
-                         then fall back to GitHub (Releases for the package + raw for latest.txt);
-                         cn: China mirror only; global: GitHub only (overseas hosts)
-                         The latest-version lookup follows the same order, and asks the GitHub API
-                         when latest.txt is unreachable.
+                         Download channel. auto (default): try mirrors.zap.cn (Tencent COS) first
+                         for both version and package, then fall back to GitHub (API for the latest
+                         version + Releases for the package);
+                         cn: China mirror only; global: GitHub only (overseas hosts, version via API)
   Env vars               ZAP_MIRROR (same values; CLI args take precedence)
 
 Notes: at the end `zapd --init-admin` creates the DB and writes the admin (credentials passed only via CLI,
@@ -534,21 +532,21 @@ esac
 
 # ── 下载通道 ────────────────────────────────────────────
 # 境内：mirrors.zap.cn（腾讯云 COS，国内速度快）
-# 境外：GitHub 直下（Releases 取包 + raw 取 latest.txt），不依赖自有带宽，
-#       少维护一个端点（砍掉 Cloudflare 镜像）；latest.txt 走 raw.githubusercontent.com，
-#       仍然拿不到时最后兜底问 GitHub API
+# 境外：GitHub 直下（Releases 取包），版本号直接问 GitHub API，不维护 latest.txt、
+#       也不依赖自有带宽；砍掉 Cloudflare 镜像后只维护两个端点（COS + GitHub）
 # auto：按 国内镜像 → GitHub 顺序逐个尝试，谁通用谁
 MIRROR_CN_BASE="https://mirrors.zap.cn/zap/releases"
 GITHUB_RELEASE_BASE="https://github.com/zapsh/zap/releases/download"
-GITHUB_LATEST_TXT="https://raw.githubusercontent.com/zapsh/zap/main/latest.txt"
 GITHUB_API_LATEST="https://api.github.com/repos/zapsh/zap/releases/latest"
 
-# 版本查询地址（latest.txt），按通道排序
+# 版本查询地址（latest.txt），按通道排序。
+# 境外（global / auto）不再维护 latest.txt：版本号由 query_latest_version 末尾直接问
+# GitHub API，这里只返回国内通道的 latest.txt（global 留空 → 直接走 API 兜底）。
 latest_version_urls() {
     case "$MIRROR_MODE" in
         cn)     printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" ;;
-        global) printf '%s\n' "${GITHUB_LATEST_TXT}" ;;
-        *)      printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" "${GITHUB_LATEST_TXT}" ;;
+        global) : ;;
+        *)      printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" ;;
     esac
 }
 
@@ -583,7 +581,7 @@ valid_version() {
     esac
 }
 
-# 查最新版本号：两条 latest.txt 都不通时，最后向 GitHub API 问 tag
+# 查最新版本号：国内 latest.txt 不通、或境外（无 latest.txt）时，向 GitHub API 问 tag
 query_latest_version() {
     local url ver
     while IFS= read -r url; do
