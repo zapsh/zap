@@ -3,9 +3,18 @@
   <div class="appstore-page">
     <!-- 页内导航：应用商店是单一菜单，已安装 / 我的站点应用都在本页切换 -->
     <div class="view-tabs">
-      <el-radio-group v-model="activeTab" size="default">
-        <el-radio-button v-for="tab in tabs" :key="tab.value" :value="tab.value">{{ tab.label }}</el-radio-button>
-      </el-radio-group>
+      <nav class="view-pills">
+        <button
+          v-for="tab in tabs"
+          :key="tab.value"
+          type="button"
+          class="view-pill"
+          :class="{ 'is-active': activeTab === tab.value }"
+          @click="switchTab(tab.value)"
+        >
+          {{ tab.label }}
+        </button>
+      </nav>
       <div class="view-tabs__actions">
         <!-- 任务队列入口：编译/安装是排队的，这里看得到排到哪了 -->
         <el-button size="small" :icon="List" @click="openQueue">
@@ -62,7 +71,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Goods, List, Plus } from '@/icons'
 import { useUserStore } from '@/stores/user'
@@ -82,21 +91,20 @@ const isAdmin = computed(() => userStore.roles.includes('admin'))
 
 /** 页签：站点应用相关（已安装 / 我的）对全员开放；插件管理全员可见
  *  —— 插件只装在系统目录、仅管理员可安装，普通用户只能使用，由插件页内按权限二次把关 */
-const tabs = computed(() => {
-  const list = [
-    { value: 'store', label: t('appstore.tabStore') },
-    { value: 'installed', label: t('appstore.tabInstalled') },
-    { value: 'mine', label: t('appstore.tabMine') },
-    { value: 'plugins', label: t('appstore.tabPlugins') },
-  ]
-  return list
-})
+const tabs = computed<{ value: AppstoreTab; label: string }[]>(() => [
+  { value: 'store', label: t('appstore.tabStore') },
+  { value: 'installed', label: t('appstore.tabInstalled') },
+  { value: 'mine', label: t('appstore.tabMine') },
+  { value: 'plugins', label: t('appstore.tabPlugins') },
+])
 
 /** 当前页签：store=应用商店；installed=已安装实例；mine=我的站点应用；plugins=插件管理 */
 const activeTab = ref<'store' | 'installed' | 'mine' | 'plugins'>('store')
 
 // 支持通过 ?tab=plugins 深链到「插件」页签（旧 /dev/plugins 入口重定向到这里）
+// 切换页签时把 tab 写回地址栏（replace，不留历史记录），浏览器刷新后停留在当前页签
 const route = useRoute()
+const router = useRouter()
 function syncTabFromQuery() {
   const q = route.query.tab
   if (q === 'store' || q === 'installed' || q === 'mine' || q === 'plugins') {
@@ -105,6 +113,15 @@ function syncTabFromQuery() {
 }
 syncTabFromQuery()
 watch(() => route.query.tab, syncTabFromQuery)
+
+type AppstoreTab = 'store' | 'installed' | 'mine' | 'plugins'
+
+function switchTab(v: AppstoreTab) {
+  activeTab.value = v
+  if (route.query.tab !== v) {
+    router.replace({ query: { ...route.query, tab: v } })
+  }
+}
 
 /** 已安装面板提交任务后，在这里打开日志抽屉（与商店页共用一个抽屉） */
 function onPaneTask(runId: string, title: string) {
@@ -170,6 +187,41 @@ onMounted(() => {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+/* nav pill 分段导航（与 Docker 页一致的风格） */
+.view-pills {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: var(--el-fill-color-light);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+
+.view-pill {
+  padding: 7px 16px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 0.2s,
+    color 0.2s;
+}
+
+.view-pill:hover {
+  color: var(--el-color-primary);
+}
+
+.view-pill.is-active {
+  background: var(--el-color-primary);
+  color: #fff;
+  font-weight: 500;
 }
 
 .view-tabs__actions {

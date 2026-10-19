@@ -103,7 +103,8 @@
         </el-table-column>
         <el-table-column v-if="scope !== 'mine'" :label="t('appstoreInstalled.colState')" width="110">
           <template #default="{ row }">
-            <span class="state-cell">
+            <!-- 未登记 svc_name 的应用没有真实状态（恒为 unknown），直接不显示，避免整列都是「未知」 -->
+            <span v-if="canControl(row)" class="state-cell">
               <i
                 class="state-dot"
                 :style="{ background: (stateMeta[row.state] || stateMeta.unknown).color }"
@@ -149,11 +150,7 @@
                 }}</el-button>
               </el-tooltip>
             </template>
-            <el-tooltip v-else :content="t('appstoreInstalled.noSvcTooltip')" placement="top">
-              <el-button size="small" type="primary" plain disabled>{{
-                t('appstoreInstalled.actControl')
-              }}</el-button>
-            </el-tooltip>
+            <!-- 未登记 svc_name（库类 / 面板无法启停）→ 不渲染任何启停入口，仅保留卸载与详情 -->
             <el-button
               v-if="isAdmin"
               size="small"
@@ -178,7 +175,11 @@
     <el-drawer v-model="drawerVisible" :title="detailTitle" size="480px" destroy-on-close>
       <div v-if="current" class="detail-body">
         <div class="detail-state">
-          <el-tag :type="(stateMeta[current.state] || stateMeta.unknown).tag" effect="dark">
+          <el-tag
+            v-if="canControl(current)"
+            :type="(stateMeta[current.state] || stateMeta.unknown).tag"
+            effect="dark"
+          >
             {{ (stateMeta[current.state] || stateMeta.unknown).label }}
           </el-tag>
           <el-tag v-if="current.info.enabled === false" type="danger">{{
