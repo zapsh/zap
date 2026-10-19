@@ -3,7 +3,7 @@ resolver = "3"
 members = ["zapd","zapctl","zap-proto","zapexec","zapupgrade","zap-crypto","zap-platform"]
 
 [workspace.package]
-version = "1.5.1"
+version = "1.5.3"
 license = "AGPL-3.0"
 
 
