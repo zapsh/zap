@@ -5073,8 +5073,25 @@ const enUS: Messages = {
     synced: 'Site configuration synced',
     syncFailed: 'vhost sync failed; make sure Nginx is installed and running',
     selectSiteFirst: 'Please select a site first',
-    confirmDeleteN: 'Delete the {n} selected site(s)?',
+    confirmDeleteN:
+      'Delete the {n} selected site(s)? They will be moved to the recycle bin (restore from the site list Recycle Bin).',
     confirmDeleteTitle: 'Confirm Delete',
+    trash: 'Recycle Bin',
+    trashTitle: 'Site Recycle Bin',
+    trashTip:
+      'Deleted sites go to the recycle bin first (config and data kept); restore them here. "Purge" removes the vhost config and database records permanently (site data directories remain on disk).',
+    trashColName: 'Site',
+    trashColOwner: 'Owner',
+    trashColDeletedAt: 'Deleted at',
+    trashColOps: 'Actions',
+    trashRestore: 'Restore',
+    trashPurge: 'Purge',
+    trashRestoreOk: 'Site "{name}" restored',
+    trashPurgeTitle: 'Purge Site',
+    trashPurgeConfirm:
+      'Purge "{name}"? The vhost config and database records will be removed. This cannot be undone.',
+    trashPurgeOk: '"{name}" purged',
+    trashEmpty: 'Recycle bin is empty',
     deleteDataOpt: 'Also delete site data and logs',
     deleteDataTip:
       'If checked, the site directory (website files) and log directory (access.log / error.log and their archives) are removed as well — this cannot be undone. If unchecked, only the site configuration is deleted and the data is kept.',

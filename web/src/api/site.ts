@@ -350,3 +350,31 @@ export function getLocDirectives() {
     '/site/loc-directives',
   )
 }
+
+// ── 站点回收站（删除为软删，可恢复 / 彻底删除）──────────────
+
+export interface SiteTrashItem {
+  id: number
+  user_id: number
+  name: string
+  remark: string
+  /** 归属用户名 */
+  owner_username: string
+  /** 删除时间（秒级时间戳） */
+  deleted_at: number
+}
+
+/** 列出回收站里的站点（已软删） */
+export function listSiteTrash() {
+  return http.get<ApiResponse<{ list: SiteTrashItem[] }>>('/site/trash')
+}
+
+/** 从回收站恢复：取消软删并重新同步 vhost（按原 run_state 恢复对外服务） */
+export function restoreSites(ids: number[]) {
+  return http.post<ApiResponse>('/site/restore', { ids })
+}
+
+/** 彻底删除：清理 vhost 与数据库记录，不可恢复（remove_data=false 时保留数据目录） */
+export function purgeSites(ids: number[], remove_data = false) {
+  return http.post<ApiResponse>('/site/purge', { ids, remove_data })
+}
