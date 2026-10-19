@@ -105,14 +105,20 @@
       </el-table>
     </el-card>
 
-    <!-- 新建 / 编辑 -->
-    <el-dialog
+    <!-- 新建 / 编辑：右侧抽屉（移动端友好，窄视口铺满全屏） -->
+    <el-drawer
       v-model="dialogVisible"
       :title="editing ? t('crontab.editTitle') : t('crontab.newJob')"
-      width="620px"
+      :size="drawerSize"
       :close-on-click-modal="false"
     >
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="90px" @submit.prevent>
+      <el-form
+        ref="formRef"
+        :model="form"
+        :rules="rules"
+        label-position="top"
+        @submit.prevent
+      >
         <el-form-item :label="t('crontab.nameLabel')" prop="name">
           <el-input
             v-model="form.name"
@@ -207,7 +213,7 @@
           t('common.save')
         }}</el-button>
       </template>
-    </el-dialog>
+    </el-drawer>
 
     <!-- 运行日志 -->
     <el-dialog v-model="logVisible" :title="logTitle" width="760px" @closed="stopPoll">
@@ -338,6 +344,14 @@ const dialogVisible = ref(false)
 const editing = ref<CronJob | null>(null)
 const saving = ref(false)
 const formRef = ref<FormInstance>()
+
+/** 新建/编辑用右侧抽屉承载（移动端比弹窗友好）：窄视口（≤768px）铺满，其余 480px */
+const NARROW_BREAKPOINT = 768
+const viewportNarrow = ref(window.innerWidth <= NARROW_BREAKPOINT)
+function updateViewportNarrow() {
+  viewportNarrow.value = window.innerWidth <= NARROW_BREAKPOINT
+}
+const drawerSize = computed(() => (viewportNarrow.value ? '100%' : '480px'))
 
 const form = reactive({
   name: '',
@@ -567,9 +581,13 @@ async function loadExecUsers() {
 onMounted(async () => {
   await load()
   if (canChooseExec.value) await loadExecUsers()
+  window.addEventListener('resize', updateViewportNarrow)
 })
 
-onBeforeUnmount(stopPoll)
+onBeforeUnmount(() => {
+  stopPoll()
+  window.removeEventListener('resize', updateViewportNarrow)
+})
 </script>
 
 <style scoped>
