@@ -33,7 +33,7 @@
 # Env:
 #   RELEASE_BRANCH  base branch to bump from / tag on (default: main)
 #   BUMP_BRANCH     branch name for the default PR flow (default: bump-version-v<ver>)
-#   GITHUB_REPO     owner/repo for --sync download (default: derived from git remote, else zapsh/zap)
+#   GITHUB_REPO     owner/repo for --sync download (default: zapsh/zap; override for forks)
 #   COS_ID/COS_KEY  zapfile credentials (needed for --tag / --sync mirror upload)
 # __END_USAGE__
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -124,19 +124,8 @@ ensure_zapfile() {
 # ── sync GitHub Release assets to mirrors (--sync) ───────────
 sync_github_assets() {
     local ver="$1"
-    local tag="v$ver" tmp repo url
-    repo="${GITHUB_REPO:-}"
-    if [ -z "$repo" ]; then
-        url=$(git remote get-url origin 2>/dev/null || true)
-        if [ -n "$url" ]; then
-            url="${url//:/\/}"          # git@host:owner/repo -> git@host/owner/repo
-            url="${url%.git}"           # strip trailing .git
-            repo="${url##*/}"           # repo name
-            url="${url%/*}"             # drop repo name -> .../owner
-            repo="${url##*/}/${repo}"   # owner/repo
-        fi
-    fi
-    [ -n "$repo" ] || repo="zapsh/zap"
+    local tag="v$ver" tmp repo
+    repo="${GITHUB_REPO:-zapsh/zap}"
     tmp=$(mktemp -d)
     info "downloading GitHub Release assets for $tag (repo: $repo) ..."
     if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
