@@ -834,13 +834,21 @@ fn now_ts() -> i64 {
 // ── 命令执行 ───────────────────────────────────────────────
 
 fn run_capture(program: &str, args: &[&str]) -> Result<String, String> {
+    run_capture_env(program, args, &[])
+}
+
+fn run_capture_env(program: &str, args: &[&str], envs: &[(&str, String)]) -> Result<String, String> {
     // git 远程操作（clone/fetch）在网络不可达时可能无限挂起，导致任务永久 running。
     // 统一用 timeout 限时；同时禁止 git 交互式认证提示（避免等待输入用户名/密码）。
-    let out = root_cmd("timeout")
-        .env("GIT_TERMINAL_PROMPT", "0")
+    let mut cmd = root_cmd("timeout");
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
         .arg("180")
         .arg(program)
-        .args(args)
+        .args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd
         .output()
         .map_err(|e| format!("{program} 执行失败: {e}"))?;
     if out.status.code() == Some(124) {
@@ -855,18 +863,46 @@ fn run_capture(program: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+fn is_dubious_ownership(err: &str) -> bool {
+    err.contains("unsafe repository") || err.contains("dubious ownership")
+}
+
 /// git 包装：显式放行仓库属主检查。
 ///
-/// 面板以 root 跑，而 `data/appstore/repos/<id>/` 可能是别的账号建的（内置源随发行包落地、
-/// 或用户手动 clone）。git 2.35.2+ 一旦遇到「仓库属主 ≠ 当前 euid」就报
-/// `detected dubious ownership` 并直接失败，且要求手工改全局配置——面板无权也不该
-/// 去改宿主的 `~/.gitconfig`，所以每次调用都自带 `-c safe.directory=*`。
+/// 正常情况下 `data/appstore/repos/` 子树归 root（install.sh 保证），与 zapexec 的
+/// 运行身份一致，属主检查天然通过。这里兜底两种历史偏差：
+///
+/// 1. 上游 git 2.35.2+：仓库属主 ≠ euid 时报 `dubious ownership`，`-c safe.directory=*`
+///    即可放行（不动宿主配置）。
+/// 2. 发行版回移植的旧 git（如 Ubuntu 22.04 的 2.34.1）同样报错，但**只从
+///    system/global 配置文件里读 safe.directory，忽略 `-c`**——此时用
+///    `GIT_CONFIG_GLOBAL` 指向一个临时 shim（include 真实全局配置 + `safe.directory=*`）
+///    重试一次，同样不修改宿主任何配置文件。
 fn run_git(args: &[&str]) -> Result<String, String> {
     let mut full: Vec<&str> = Vec::with_capacity(args.len() + 2);
     full.push("-c");
     full.push("safe.directory=*");
     full.extend_from_slice(args);
-    run_capture("git", &full)
+    match run_capture("git", &full) {
+        Err(e) if is_dubious_ownership(&e) => {
+            run_capture_env("git", &full, &git_safe_global_env())
+        }
+        r => r,
+    }
+}
+
+/// 构造回移植版 git 可读的 global 配置 shim（include 原全局配置，避免丢用户设置）。
+fn git_safe_global_env() -> Vec<(&'static str, String)> {
+    let real_global = std::env::var("GIT_CONFIG_GLOBAL").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        format!("{home}/.gitconfig")
+    });
+    let shim = std::env::temp_dir().join(format!("zap-git-safe-{}.gitconfig", now_ts()));
+    let _ = std::fs::write(
+        &shim,
+        format!("[include]\n\tpath = {real_global}\n[safe]\n\tdirectory = *\n"),
+    );
+    vec![("GIT_CONFIG_GLOBAL", shim.to_string_lossy().into_owned())]
 }
 
 /// 包脚本的运行身份模式（`app.yaml` 的 `run_as` / `scope` 推导结果）。

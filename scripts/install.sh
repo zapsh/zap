@@ -916,7 +916,17 @@ done
 for f in zap.db zap.db-wal zap.db-shm; do
     [ -e "$ZAP_DIR/data/$f" ] && chown zapadm:zapadm "$ZAP_DIR/data/$f" || true
 done
-[ -d "$ZAP_DIR/data/appstore" ] && chown -R zapadm:zapadm "$ZAP_DIR/data/appstore" 2>/dev/null || true
+if [ -d "$ZAP_DIR/data/appstore" ]; then
+    # repos/ 子树归 root：git 全部由 zapexec(root) 执行，仓库属主 ≠ root 时
+    # git 2.35.2+ 的 safe.directory 检查会拒绝一切操作（Ubuntu 22.04 等发行版的
+    # 回移植版连 `git -c safe.directory=*` 都不认，只能靠属主一致）。
+    # zapd(zapadm) 对 repos/ 只读（755/644 即可）；appstore 其余子目录
+    # （plugins/tmp/logs/runs/cache）zapd 也要写，仍归 zapadm。
+    chown -R zapadm:zapadm "$ZAP_DIR/data/appstore" 2>/dev/null || true
+    if [ -d "$ZAP_DIR/data/appstore/repos" ]; then
+        chown -R root:root "$ZAP_DIR/data/appstore/repos" 2>/dev/null || true
+    fi
+fi
 ok "$L_CFG_DONE"
 
 create_admin_account "$ADMIN_USER" "/home/${ADMIN_USER}"
