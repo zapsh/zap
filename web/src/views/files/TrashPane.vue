@@ -54,7 +54,11 @@
             {{ row.is_dir ? t('filesTrash.typeDir') : t('filesTrash.typeFile') }}
           </template>
         </el-table-column>
-        <el-table-column :label="t('filesTrash.colDeletedAt')" prop="deleted_at" width="180" />
+        <el-table-column :label="t('filesTrash.colDeletedAt')" width="180">
+          <template #default="{ row }">
+            {{ formatDeletedAt(row.deleted_at) }}
+          </template>
+        </el-table-column>
         <el-table-column :label="t('common.operation')" width="200" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" plain :loading="busy === row.id" @click="restore(row)">
@@ -81,6 +85,18 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { listTrash, purgeTrash, restoreTrash, type TrashItem } from '@/api/file'
 
 const { t } = useI18n()
+
+/// 后端 deleted_at 是秒级时间戳，格式化成「YYYY-MM-DD HH:mm:ss」（本地时区）。
+function formatDeletedAt(sec: number | string): string {
+  const n = Number(sec)
+  if (!Number.isFinite(n) || n <= 0) return '-'
+  const d = new Date(n * 1000)
+  const p = (x: number) => String(x).padStart(2, '0')
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  )
+}
 
 const items = ref<TrashItem[]>([])
 const loading = ref(false)

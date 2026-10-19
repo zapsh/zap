@@ -767,6 +767,15 @@ struct TrashEntry {
     original: String,
     deleted_at: i64,
     is_dir: bool,
+    /// 原文件的属主 uid / gid（跨设备恢复走复制会丢失，需在 restore 时还原）。
+    /// 旧版 index.json 无此字段，用 serde(default) 兜底为 0（root）。
+    #[serde(default)]
+    owner_uid: u32,
+    #[serde(default)]
+    owner_gid: u32,
+    /// 原顶层条目权限位（目录在复制时丢失原 mode），恢复时回设。
+    #[serde(default)]
+    mode: u32,
 }
 
 fn read_index(key: &str) -> Vec<TrashEntry> {
@@ -836,6 +845,22 @@ fn remove_recursive(path: &Path) {
     };
 }
 
+/// 递归地把 `path` 子树（含目录内所有条目、本身）的属主设为 uid/gid。
+/// 软链只改自身（不递归进目标）；目标在恢复出的子树内，属主一致，无越权风险。
+fn chown_recursive(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
+    std::os::unix::fs::chown(path, Some(uid), Some(gid))
+        .map_err(|e| format!("变更属主失败: {e}"))?;
+    let md = std::fs::symlink_metadata(path).map_err(|e| format!("读取失败: {e}"))?;
+    if md.is_dir() {
+        let rd = std::fs::read_dir(path).map_err(|e| format!("读取目录失败: {e}"))?;
+        for entry in rd {
+            let entry = entry.map_err(|e| format!("目录项失败: {e}"))?;
+            chown_recursive(&entry.path(), uid, gid)?;
+        }
+    }
+    Ok(())
+}
+
 /// POST file.trash：移入回收站（与 delete 同样的沙箱 / 属主 / 关键路径校验）。
 pub async fn trash(path: String, as_user: Option<String>, skip_owner_check: bool) -> Response {
     tokio::task::spawn_blocking(move || {
@@ -857,6 +882,10 @@ pub async fn trash(path: String, as_user: Option<String>, skip_owner_check: bool
         if let Err(e) = ensure_owner(actor, &resolved) {
             return Response::err(-1, e);
         }
+        // 记录原属主 / 权限，恢复时跨设备复制会丢失这些元数据
+        let owner_uid = md.uid();
+        let owner_gid = md.gid();
+        let mode = md.mode();
         let key = trash_owner_key(&as_user);
         let id = trash_unique_id();
         let dst = trash_root(&key).join(&id);
@@ -870,6 +899,9 @@ pub async fn trash(path: String, as_user: Option<String>, skip_owner_check: bool
             original: resolved.to_string_lossy().to_string(),
             deleted_at,
             is_dir: md.is_dir(),
+            owner_uid,
+            owner_gid,
+            mode,
         });
         write_index(&key, &entries);
         Response::ok(
@@ -931,6 +963,19 @@ pub async fn restore(id: String, as_user: Option<String>, skip_owner_check: bool
         let src = trash_root(&key).join(&id);
         if let Err(e) = move_to_trash(&src, &original) {
             return Response::err(-1, format!("恢复失败: {e}"));
+        }
+        // 还原被复制丢失的元数据：属主递归还原到原 uid/gid，目录再回设原 mode
+        if let Err(e) = chown_recursive(&original, entry.owner_uid, entry.owner_gid) {
+            return Response::err(-1, format!("恢复属主失败: {e}"));
+        }
+        if !std::fs::symlink_metadata(&original)
+            .map(|m| m.is_symlink())
+            .unwrap_or(false)
+        {
+            let _ = std::fs::set_permissions(
+                &original,
+                std::os::unix::fs::PermissionsExt::from_mode(entry.mode),
+            );
         }
         entries.remove(idx);
         write_index(&key, &entries);
