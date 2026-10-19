@@ -277,13 +277,17 @@ gen_password() {
 # 读 /etc/os-release（主流发行版均提供），仅用于展示与诊断；失败则回退 lsb_release。
 detect_distro() {
     DISTRO_ID="unknown"; DISTRO_NAME="unknown"; DISTRO_VERSION=""
+    local id="" name="" ver=""
     if [ -r /etc/os-release ]; then
-        # shellcheck disable=SC1091
-        . /etc/os-release 2>/dev/null || true
-        [ -n "${ID:-}" ]          && DISTRO_ID="$ID"
-        [ -n "${NAME:-}" ]        && DISTRO_NAME="$NAME"
-        [ -n "${VERSION_ID:-}" ]  && DISTRO_VERSION="$VERSION_ID"
+        # 在子 shell 里 source：os-release 的 VERSION/NAME/ID 等会覆盖脚本全局变量
+        # （如 VERSION=latest 被改成 "22.04 LTS (...)"），必须隔离
+        id="$(. /etc/os-release 2>/dev/null || true; printf '%s' "${ID:-}")"
+        name="$(. /etc/os-release 2>/dev/null || true; printf '%s' "${NAME:-}")"
+        ver="$(. /etc/os-release 2>/dev/null || true; printf '%s' "${VERSION_ID:-}")"
     fi
+    if [ -n "$id" ];   then DISTRO_ID="$id"; fi
+    if [ -n "$name" ]; then DISTRO_NAME="$name"; fi
+    if [ -n "$ver" ];  then DISTRO_VERSION="$ver"; fi
     if [ "$DISTRO_ID" = "unknown" ]; then
         DISTRO_ID="$(lsb_release -si 2>/dev/null || echo unknown)"
     fi
