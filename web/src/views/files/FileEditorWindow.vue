@@ -531,10 +531,25 @@ function clamp(v: number, min: number, max: number) {
   return Math.min(Math.max(v, min), Math.max(min, max))
 }
 
-/** 视口变化时把窗口拉回可见区域 */
+/**
+ * 视口变化时把窗口拉回可见区域。
+ * 移动端 / 较窄的视口（≤ NARROW_BREAKPOINT）直接铺到 95% 宽高并居中，
+ * 单栏浏览时编辑区更宽、更好用；更宽的视口保持可拖拽的 980×620 默认尺寸。
+ */
+const NARROW_BREAKPOINT = 768
+function isNarrow() {
+  return window.innerWidth <= NARROW_BREAKPOINT
+}
 function clampToViewport() {
   const vw = window.innerWidth
   const vh = window.innerHeight
+  if (isNarrow()) {
+    w.value = Math.max(280, Math.round(vw * 0.95))
+    h.value = Math.max(280, Math.round(vh * 0.95))
+    x.value = Math.round((vw - w.value) / 2)
+    y.value = Math.round((vh - h.value) / 2)
+    return
+  }
   w.value = clamp(w.value, 520, vw - 16)
   h.value = clamp(h.value, 320, vh - 16)
   x.value = clamp(x.value, 0, Math.max(0, vw - 120))
@@ -1185,6 +1200,7 @@ function onKeydown(e: KeyboardEvent) {
 onMounted(async () => {
   x.value = Math.max(0, Math.round((window.innerWidth - w.value) / 2))
   y.value = Math.min(Math.max(0, Math.round((window.innerHeight - h.value) / 2) - 40), 120)
+  clampToViewport()
   window.addEventListener('keydown', onKeydown, true)
   window.addEventListener('resize', clampToViewport)
   window.addEventListener('click', hideTabMenu)
@@ -1319,6 +1335,12 @@ watch(
   flex-direction: column;
   border-right: 1px solid var(--el-border-color-lighter);
   background: var(--el-bg-color-page);
+
+  // 移动端 / 窄视口：窗口已铺到 95%，固定 240 的侧栏会挤掉编辑区，收窄它
+  @media (max-width: 768px) {
+    width: 150px;
+    min-width: 110px;
+  }
 
   &-header {
     display: flex;
