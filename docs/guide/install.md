@@ -53,21 +53,19 @@ sudo bash install.sh latest --pro
 
 ## 离线安装（内网 / 无外网）
 
-内网机器全程不访问网络，先在有外网的机器上制作离线包：
+内网机器全程不访问网络。先在一台能联网的机器上把发行包和安装脚本取下来，再拷到内网机器：
 
 ```bash
-bash scripts/offline-pack.sh                        # 最新社区版 + 本机架构
-bash scripts/offline-pack.sh --pro --version 1.2.3  # 指定版本的商业版
-bash scripts/offline-pack.sh --arch arm64           # 给另一架构的机器准备
-bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # 手上已有发行包
+# 在能联网的机器上：下载发行包（install.sh 也可从镜像 / 仓库手动取）
+wget https://mirrors.zap.cn/zap/releases/zap-v1.5.0-linux-amd64.tar.gz
+wget https://mirrors.zap.cn/zap/install.sh
+# 用 U 盘 / 内网文件服务等方式把上面两个文件拷到目标机
 ```
 
-产物 `dist/zap-offline-v<版本>[-pro]-linux-<架构>.tar.gz` 拷到内网机器后：
+目标机上：
 
 ```bash
-tar zxf zap-offline-v<版本>-linux-<架构>.tar.gz
-cd zap-offline
-sudo bash install.sh --pkg ./zap-v<版本>-linux-<arch>.tar.gz --offline
+sudo bash install.sh --pkg ./zap-v1.5.0-linux-amd64.tar.gz --offline
 ```
 
 - 离线安装用 `install.sh --pkg <发行包> --offline`，需显式指定发行包（不自动挑包、不校验）
@@ -75,10 +73,11 @@ sudo bash install.sh --pkg ./zap-v<版本>-linux-<arch>.tar.gz --offline
 
 ## 已安装机器的离线升级
 
-同一个离线包也能升级（不必重跑安装），用 `upgrade-offline.sh`：
+已装过 ZAP 的机器，把新版本发行包拷到目标机后，用已安装的 `zapupgrade` 直接离线升级
+（无需重跑安装脚本）：
 
 ```bash
-sudo bash upgrade-offline.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz
+sudo zapupgrade upgrade --pkg ./zap-v1.5.0-linux-amd64.tar.gz
 ```
 
 它走的是与在线升级同一套替换流程（备份 → 原子替换 → 重启 → 失败自动回滚），

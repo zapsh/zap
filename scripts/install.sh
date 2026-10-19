@@ -92,8 +92,8 @@ if [ "$LANG_MODE" = "zh" ]; then
     L_WARN_EXISTING_ADMIN="⚠ 检测到库里已有管理员：本次未改动其密码，请用原密码登录"
     L_WARN_RANDOM_PASS="⚠ 以上密码为随机生成，请立即保存（不会再次显示）"
     L_WARN_CHANGE_PASS="⚠ 首次登录后请立即修改密码！"
-    L_WARN_OFFLINE="⚠ 离线安装：AppStore 用内置种子包，升级请用离线升级入口"
-    L_OFFLINE_UPGRADE_NOTE="（与 install.sh 同目录；会自动备份，失败可 zapupgrade rollback）"
+    L_WARN_OFFLINE="⚠ 离线安装：AppStore 用内置种子包，升级请用 zapupgrade upgrade --pkg <包>（已随安装装入 /usr/local/zap）"
+    L_OFFLINE_UPGRADE_NOTE="（使用已安装的 zapupgrade 二进制，自动备份，失败可 zapupgrade rollback）"
     L_UNKNOWN_ARG="未知参数: %s（--help 查看用法）"
     L_ADMIN_EMPTY="管理员用户名不能为空"
     L_ADMIN_TOO_LONG="管理员用户名过长（≤32 字符）: %s"
@@ -172,8 +172,8 @@ else
     L_WARN_EXISTING_ADMIN="⚠ An admin already exists in the database: password was NOT changed this time, please log in with the original password"
     L_WARN_RANDOM_PASS="⚠ The password above was randomly generated, save it now (it will not be shown again)"
     L_WARN_CHANGE_PASS="⚠ Change your password immediately after first login!"
-    L_WARN_OFFLINE="⚠ Offline install: AppStore uses the bundled seed package; upgrade via the offline upgrade entry"
-    L_OFFLINE_UPGRADE_NOTE="(same dir as install.sh; auto-backup, rollback with zapupgrade rollback on failure)"
+    L_WARN_OFFLINE="⚠ Offline install: AppStore uses the bundled seed package; upgrade later with: zapupgrade upgrade --pkg <tarball>"
+    L_OFFLINE_UPGRADE_NOTE="(uses the installed zapupgrade binary; auto-backup, rollback with zapupgrade rollback on failure)"
     L_UNKNOWN_ARG="Unknown argument: %s (use --help)"
     L_ADMIN_EMPTY="Admin username cannot be empty"
     L_ADMIN_TOO_LONG="Admin username too long (≤32 chars): %s"
@@ -974,7 +974,7 @@ else
 fi
 if [ "$OFFLINE" = "1" ]; then
     printf "${YELLOW}  ${L_WARN_OFFLINE}${NC}\n"
-    printf "     sudo bash upgrade-offline.sh --pkg ./zap-v<VERSION>-linux-${ARCH}.tar.gz\n"
+    printf "     sudo zapupgrade upgrade --pkg ./zap-v<VERSION>-linux-${ARCH}.tar.gz\n"
     printf "     ${L_OFFLINE_UPGRADE_NOTE}\n"
     printf "\n"
 else

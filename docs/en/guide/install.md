@@ -56,21 +56,20 @@ See [Upgrade](./upgrade).
 
 ## Offline installation (intranet / no internet)
 
-Intranet machines never reach the network, so build the offline bundle on a machine that has internet first:
+Intranet machines never reach the network. Obtain the release tarball and `install.sh` on a machine
+with internet access, then copy both to the intranet host:
 
 ```bash
-bash scripts/offline-pack.sh                        # latest community edition, host architecture
-bash scripts/offline-pack.sh --pro --version 1.2.3  # a specific commercial version
-bash scripts/offline-pack.sh --arch arm64           # prepare for another architecture
-bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # you already have the release package
+# on a machine with internet: download the release package (install.sh too, or grab it from the repo/mirror)
+wget https://mirrors.zap.cn/zap/releases/zap-v1.5.0-linux-amd64.tar.gz
+wget https://mirrors.zap.cn/zap/install.sh
+# move both files to the target host via USB / an internal file share / etc.
 ```
 
-Copy the artifact `dist/zap-offline-v<version>[-pro]-linux-<arch>.tar.gz` to the intranet machine, then:
+On the target host:
 
 ```bash
-tar zxf zap-offline-v<version>-linux-<arch>.tar.gz
-cd zap-offline
-sudo bash install.sh --pkg ./zap-v<version>-linux-<arch>.tar.gz --offline
+sudo bash install.sh --pkg ./zap-v1.5.0-linux-amd64.tar.gz --offline
 ```
 
 - Offline installation uses `install.sh --pkg <release package> --offline`; the package must be given
@@ -79,11 +78,11 @@ sudo bash install.sh --pkg ./zap-v<version>-linux-<arch>.tar.gz --offline
 
 ## Offline upgrade of an installed machine
 
-The same offline bundle also upgrades an existing installation — no need to re-run the installer —
-via `upgrade-offline.sh`:
+For a machine that already has ZAP installed, copy the new release tarball over and upgrade with the
+installed `zapupgrade` directly (no need to re-run the installer):
 
 ```bash
-sudo bash upgrade-offline.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz
+sudo zapupgrade upgrade --pkg ./zap-v1.5.0-linux-amd64.tar.gz
 ```
 
 It goes through exactly the same replacement flow as an online upgrade

@@ -14,7 +14,7 @@ title:
 | --- | --- | --- |
 | 面板 | 日常升级：有进度条、历史记录、可配自动更新 | 系统设置 → About ZAP → 系统更新 → 检查更新 / 立即更新 |
 | 命令行 | 面板打不开、服务起不来、批量运维 | `zapupgrade upgrade --to latest` |
-| 离线脚本 | 内网 / 无外网：用本地发行包安装或升级 | `bash install.sh --pkg <发行包> --offline` / `bash upgrade-offline.sh` |
+| 离线 | 内网 / 无外网：用本地发行包安装或升级 | 安装 `bash install.sh --pkg <发行包> --offline` / 升级 `zapupgrade upgrade --pkg <发行包>` |
 | 安装脚本 | 首次部署、手上已有发行包 | `bash scripts/install.sh [版本]` |
 
 命令行与面板走的是同一套替换流程（备份 → 原子替换 → 重启 → 失败回滚），区别只在谁去下载发行包。
@@ -24,61 +24,38 @@ title:
 安装脚本本身不依赖外网，联网的只有三处：查最新版本号、下载发行包、克隆 AppStore 仓库。
 离线模式下这三处全部跳过，**其余（部署、建库、systemd、初始化管理员）与在线安装完全一致**。
 
-**1. 在有外网的机器上制作离线包**
+**1. 在一台能联网的机器上取发行包和安装脚本**
 
 ```bash
-bash scripts/offline-pack.sh                        # 最新社区版 + 本机架构
-bash scripts/offline-pack.sh --pro --version 1.2.3  # 指定版本的商业版
-bash scripts/offline-pack.sh --arch arm64           # 给另一架构的机器准备
-bash scripts/offline-pack.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz   # 手上已有发行包
+# 下载发行包（install.sh 也可从镜像 / 仓库手动取）
+wget https://mirrors.zap.cn/zap/releases/zap-v1.5.0-linux-amd64.tar.gz
+wget https://mirrors.zap.cn/zap/install.sh
+# 用 U 盘 / 内网文件服务等方式把上面两个文件拷到目标机
 ```
 
-产物 `dist/zap-offline-v<版本>[-pro]-linux-<架构>.tar.gz`，解开后是：
-发行包本体 + `install.sh` / `upgrade-offline.sh` / `uninstall.sh`
-+ `SHA256SUMS` + `<发行包>.sha256` + 说明。同一个包既能装也能升。
-
-**2. 拷到内网机器上安装**
+**2. 在目标机上用本地发行包安装**
 
 ```bash
-tar zxf zap-offline-v<版本>-linux-<架构>.tar.gz
-cd zap-offline
-sudo bash install.sh --pkg <发行包> --offline   # --admin-pass / --join-url 等参数原样透传给 install.sh
-```
-
-直接离线安装（需显式指定发行包，`install.sh` 不会自动挑包、也不校验）：
-
-```bash
-sudo bash install.sh --pkg ./zap-v<版本>-linux-amd64.tar.gz --offline
+sudo bash install.sh --pkg ./zap-v1.5.0-linux-amd64.tar.gz --offline
 ```
 
 要点：
 
 - 包名带 `-pro` 就按商业版装（发行线由二进制自带），不必再加 `--pro`
 - AppStore 用发行包内置的种子包，不克隆远端仓库；面板里可随时重试更新
-- 升级走另一个入口：`upgrade-offline.sh`，见下一节
 
 ## 离线升级（内网 / 无外网机器）
 
-已装过 ZAP 的机器用**同一个**离线包升级，不必重跑安装：
+已装过 ZAP 的机器，把新版本发行包拷到目标机后，用已安装的 `zapupgrade` 直接离线升级
+（无需重跑安装脚本）：
 
 ```bash
-tar zxf zap-offline-v<版本>-linux-<架构>.tar.gz
-cd zap-offline
-sudo bash upgrade-offline.sh                      # 自动挑本目录里版本最大的发行包
-sudo bash upgrade-offline.sh --pkg ./zap-v1.2.3-linux-amd64.tar.gz
-sudo bash upgrade-offline.sh --force              # 版本不高于当前也要升（重装 / 回退）
+sudo zapupgrade upgrade --pkg ./zap-v1.5.0-linux-amd64.tar.gz --dir /usr/local/zap
 ```
 
-`upgrade-offline.sh` 自动挑本目录下版本号最大的发行包、按 `SHA256SUMS` 校验，然后把包交给
-`zapupgrade upgrade --pkg <包>` —— **与在线升级同一套替换流程**
+`zapupgrade upgrade --pkg <包>` 走的是**与在线升级同一套替换流程**
 （备份 → 原子替换 → 重启 → 失败自动回滚 → 可 `zapupgrade rollback`）。
 离线只是把「下载」换成「读本地文件」，升级质量与在线一致。
-
-也可以直接调升级器：
-
-```bash
-sudo zapupgrade upgrade --pkg ./zap-v1.2.3-linux-amd64.tar.gz --dir /usr/local/zap
-```
 
 离线升级会在**替换二进制之前**拦住这几类包（离线拷错包的概率比在线下载高得多）：
 
@@ -86,7 +63,7 @@ sudo zapupgrade upgrade --pkg ./zap-v1.2.3-linux-amd64.tar.gz --dir /usr/local/z
 | --- | --- | --- |
 | 文件名解析不出版本 | 离线时文件名是唯一的元信息来源 | 按 `zap-v<版本>[-pro]-linux-<架构>.tar.gz` 命名，或用 `--to` 指定版本 |
 | 包是别的架构 | 拷错架构会直接把机器搞挂 | 拷对应架构的发布包 |
-| 包内没有二进制 | 常是拿外层 `zap-offline-*.tar.gz` 当发布包了 | 用解开后里面那个 `zap-v*.tar.gz` |
+| 包内没有二进制 | 常是拿外层离线包当发布包了 | 用解开后里面那个 `zap-v*.tar.gz` |
 | sha256 不匹配 | 传递中损坏或拿错版本 | 重拷；确认无误时用 `--no-verify` |
 | 发行线与本机不同 | 免得把 Pro 覆盖成社区版（或反向） | 确认就显式加 `--pro` / `--community` |
 
