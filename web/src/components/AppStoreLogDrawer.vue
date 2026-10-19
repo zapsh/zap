@@ -268,15 +268,36 @@ function resetState() {
   statusTagType.value = 'info'
 }
 
+/** 断线自动重连：服务端会从 offset 0 回放整段日志，重连前清屏即可无缝续上 */
+const WS_MAX_RETRY = 6
+let wsRetry = 0
+let wsRetryTimer: number | null = null
+
+function clearRetryTimer() {
+  if (wsRetryTimer !== null) {
+    window.clearTimeout(wsRetryTimer)
+    wsRetryTimer = null
+  }
+}
+
 function connect() {
+  // 先关旧连接：对同一 run 重复 openDrawer 时旧 socket 若不关，
+  // 会出现双 WS 同时写终端，且旧 socket 掉线时误报「连接已断开」
+  closeWs()
+  clearRetryTimer()
   resetState()
+  wsRetry = 0
   if (!runId.value) return
   nextTick(() => initTerminal())
   if (!term) return
+  openSocket()
+}
 
+function openSocket() {
   // 日志流走通用任务队列端点（/appstore/ws 与它同一实现，仅作兼容路径保留）
   ws = new WebSocket(taskWsUrl(runId.value))
   ws.onopen = () => {
+    wsRetry = 0
     statusText.value = t('runLogDrawer.statusRunning')
   }
   ws.onmessage = (event) => {
@@ -312,20 +333,34 @@ function connect() {
       term?.write(event.data)
     }
   }
-  ws.onerror = () => {
-    done.value = true
-    statusText.value = t('runLogDrawer.statusConnError')
-    statusTagType.value = 'danger'
-  }
+  // onerror 之后必跟 onclose，统一由 onclose 处理（重连或报断开）
   ws.onclose = () => {
-    if (!done.value) {
+    if (done.value || !visible.value) return
+    if (wsRetry >= WS_MAX_RETRY) {
       statusText.value = t('runLogDrawer.statusDisconnected')
       statusTagType.value = 'warning'
+      return
     }
+    wsRetry++
+    statusText.value = t('runLogDrawer.statusReconnecting', {
+      current: wsRetry,
+      max: WS_MAX_RETRY,
+    })
+    statusTagType.value = 'warning'
+    wsRetryTimer = window.setTimeout(
+      () => {
+        wsRetryTimer = null
+        if (!visible.value || done.value) return
+        term?.clear() // 后端从 0 回放，清屏避免日志重复
+        openSocket()
+      },
+      Math.min(1500 * wsRetry, 8000),
+    )
   }
 }
 
 function closeWs() {
+  clearRetryTimer()
   if (ws) {
     ws.close()
     ws = null

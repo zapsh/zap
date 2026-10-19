@@ -4651,6 +4651,7 @@ const enUS: Messages = {
     statusConnError: 'Connection error',
     noRunId: 'Run record not found, it may have been purged automatically',
     statusDisconnected: 'Connection closed',
+    statusReconnecting: 'Connection lost, reconnecting ({current}/{max})...',
     statusStopped: 'Stopped',
     stopSent: 'Stop signal sent',
     stopFailed: 'Failed to stop',

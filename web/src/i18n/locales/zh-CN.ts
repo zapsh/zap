@@ -4546,6 +4546,7 @@ export default {
     statusConnError: '连接错误',
     noRunId: '该运行记录不存在，可能已被自动清理',
     statusDisconnected: '连接已断开',
+    statusReconnecting: '连接中断，自动重连中 ({current}/{max})...',
     statusStopped: '已停止',
     stopSent: '已发送停止信号',
     stopFailed: '停止失败',
