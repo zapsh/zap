@@ -921,10 +921,6 @@ ok "$L_CFG_DONE"
 
 create_admin_account "$ADMIN_USER" "/home/${ADMIN_USER}"
 
-info "$L_INSTALL_SERVICE"
-install_services
-ok "$L_SERVICE_ENABLED"
-
 init_admin_account() {
     info "$(printf "$L_INIT_ADMIN" "$ADMIN_USER")"
     local out
@@ -942,7 +938,15 @@ init_admin_account() {
     esac
     return 0
 }
+
+# 必须先建库并修正属主，再拉起服务：--init-admin 以 root 跑、建库耗时较长，
+# 期间 zap.db 是 root 属主；若服务先启动，zapadm 打不开 DB 会 panic，
+# systemd 的快速重启窗口（默认 5 次）会在建库完成前耗尽，服务永久 failed。
 init_admin_account || true
+
+info "$L_INSTALL_SERVICE"
+install_services
+ok "$L_SERVICE_ENABLED"
 
 if [ "$DOWNLOADED" = "1" ]; then
     rm -f "$ZAP_FILENAME"
