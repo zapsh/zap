@@ -3,7 +3,7 @@
 #
 # Orchestrates a release:
 #   1. bump [workspace.package].version in Cargo.toml
-#   2. git commit + tag v<version> + push
+#   2. git commit + push the branch (default also tags v<version> + pushes the tag)
 #   3. publish the version to the mirrors via `zapfile put zap/releases/latest.txt`
 #
 # Actual binary build & packaging is done by GitHub Actions on the pushed tag
@@ -12,8 +12,12 @@
 # Usage:
 #   ./release.sh <version> [--no-tag] [--no-latest]
 #   <version>   semver, e.g. 1.5.0  (no leading v; the pushed tag is v<version>)
-#   --no-tag    only set Cargo version + latest.txt; do NOT git commit/tag/push
-#   --no-latest set Cargo version + tag, but skip `zapfile put latest.txt`
+#
+#   Two push modes (both set [workspace.package].version + commit + push the branch):
+#     default  set version → commit → tag v<version> → push branch + push tag   (mode 2)
+#     --no-tag set version → commit → push branch only, no tag                   (mode 1)
+#
+#   --no-latest skip `zapfile put zap/releases/latest.txt`
 #
 # Env:
 #   RELEASE_BRANCH  branch to release from (default: main)
@@ -63,7 +67,7 @@ CUR_BRANCH=$(git rev-parse --abbrev-ref HEAD)
     || die "must be on branch '$RELEASE_BRANCH' (current: $CUR_BRANCH); set RELEASE_BRANCH=... to override"
 git diff HEAD --quiet \
     || die "working tree has tracked changes; commit or stash first"
-if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+if [ "$NO_TAG" -ne 1 ] && git rev-parse "v$VERSION" >/dev/null 2>&1; then
     die "tag v$VERSION already exists"
 fi
 git fetch -q origin "$RELEASE_BRANCH" 2>/dev/null || true
@@ -109,16 +113,17 @@ info "Cargo.toml [workspace.package].version -> $VERSION"
 grep -q "^version = \"$VERSION\"\$" Cargo.toml \
     || die "failed to set Cargo.toml version (check [workspace.package])"
 
-# ── 2. commit + tag + push ───────────────────────────────────
+# ── 2. commit + push (mode 1: branch only / mode 2: branch + tag) ──
+git add Cargo.toml
+git commit -q -m "chore(release): v$VERSION"
 if [ "$NO_TAG" -ne 1 ]; then
-    git add Cargo.toml
-    git commit -q -m "chore(release): v$VERSION"
     git tag "v$VERSION"
     git push origin "$RELEASE_BRANCH" >/dev/null
     git push origin "v$VERSION" >/dev/null
-    ok "tagged & pushed v$VERSION (GitHub Actions will build & publish the packages)"
+    ok "version set, committed, tagged & pushed v$VERSION (GitHub Actions will build & publish)"
 else
-    warn "skipped git commit/tag/push (--no-tag); Cargo.toml updated locally only"
+    git push origin "$RELEASE_BRANCH" >/dev/null
+    ok "version set, committed & pushed to $RELEASE_BRANCH (no tag)"
 fi
 
 # ── 3. publish latest.txt to mirrors ─────────────────────────
@@ -136,6 +141,9 @@ printf "${GREEN}========================================${NC}\n"
 printf "${GREEN}   ZAP release v${VERSION} prepared${NC}\n"
 printf "${GREEN}========================================${NC}\n"
 echo "  Version:   $VERSION"
-echo "  Tag:       v$VERSION"
-[ "$NO_TAG" -eq 1 ] && echo "  Git:       (skipped)"
+if [ "$NO_TAG" -ne 1 ]; then
+    echo "  Tag:       v$VERSION (pushed)"
+else
+    echo "  Tag:       (none, --no-tag)"
+fi
 echo "  Install:   bash install.sh $VERSION   (or: install.sh latest)"
