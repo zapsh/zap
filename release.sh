@@ -21,6 +21,7 @@
 #   --tag (repo owner, release):
 #     bump version -> commit -> push current branch -> tag v<ver> -> push tag
 #     -> zapfile put zap/releases/latest.txt <ver>  (COS + Cloudflare via --aws)
+#     -> zapfile upload zap/ scripts/install.sh + uninstall.sh  (COS + Cloudflare via --aws)
 #   --no-latest  with --tag, skip the zapfile latest.txt upload
 #
 # Env:
@@ -139,15 +140,15 @@ else
     fi
 fi
 
-# ── 3. tag + publish latest.txt (release mode, --tag) ───────
+# ── 3. tag + publish to mirrors (release mode, --tag) ───────
 if [ "$WITH_TAG" -eq 1 ]; then
     git tag "v$VERSION"
     git push origin "v$VERSION" >/dev/null
     ok "tagged & pushed v$VERSION (GitHub Actions will build & publish)"
+    ensure_zapfile
+    [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zapfile mirror upload)"
+    [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zapfile mirror upload)"
     if [ "$NO_LATEST" -ne 1 ]; then
-        ensure_zapfile
-        [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zapfile put latest.txt)"
-        [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zapfile put latest.txt)"
         info "publishing latest.txt -> $VERSION on COS mirror (mirrors.zap.cn)"
         zapfile put "zap/releases/latest.txt" "$VERSION" \
             || die "zapfile put latest.txt (COS) failed"
@@ -158,6 +159,16 @@ if [ "$WITH_TAG" -eq 1 ]; then
     else
         warn "skipped zapfile put latest.txt (--no-latest)"
     fi
+    for s in scripts/install.sh scripts/uninstall.sh; do
+        [ -f "$s" ] || die "missing $s"
+        info "uploading $s -> COS mirror (zap/)"
+        zapfile upload zap/ "$s" \
+            || die "zapfile upload $s (COS) failed"
+        info "uploading $s -> Cloudflare mirror (zap/, --aws)"
+        zapfile upload zap/ "$s" --aws \
+            || die "zapfile upload $s (Cloudflare, --aws) failed"
+    done
+    ok "install scripts uploaded to COS + Cloudflare (zap/install.sh, zap/uninstall.sh)"
 fi
 
 echo
@@ -168,6 +179,7 @@ echo "  Version:   $VERSION"
 if [ "$WITH_TAG" -eq 1 ]; then
     echo "  Tag:       v$VERSION (pushed)"
     echo "  latest:    zapfile put latest.txt = $VERSION (COS + Cloudflare --aws)"
+    echo "  scripts:   zapfile upload install.sh/uninstall.sh (COS + Cloudflare --aws)"
 else
     echo "  Tag:       (none; run with --tag to release)"
     if [ "$NO_BRANCH" -ne 1 ]; then
