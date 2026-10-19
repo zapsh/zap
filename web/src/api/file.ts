@@ -65,9 +65,44 @@ export function writeFile(path: string, content: string) {
   return http.post<ApiResponse<{ path: string }>>('/system/files/write', { path, content })
 }
 
-/** Delete file or directory */
+/** Delete file or directory (moved to the recycle bin, recoverable — see #42) */
 export function deleteFile(path: string) {
-  return http.post<ApiResponse>('/system/files/delete', { path })
+  return http.post<ApiResponse>('/system/files/trash', { path })
+}
+
+// ── 回收站（文件删除改为移入 trash，可恢复 / 彻底删除）────────────
+
+export interface TrashItem {
+  /** 回收站条目 id（用于恢复 / 彻底删除） */
+  id: string
+  /** 原始路径 */
+  original: string
+  /** 原文件名（original 的最后一段） */
+  name: string
+  /** 删除时是否为目录 */
+  is_dir: boolean
+  /** 删除时间（ISO / 时间戳） */
+  deleted_at: string
+}
+
+/** 移入回收站（单文件 / 目录） */
+export function trashFile(path: string) {
+  return http.post<ApiResponse>('/system/files/trash', { path })
+}
+
+/** 列出当前账号的回收站 */
+export function listTrash() {
+  return http.get<ApiResponse<{ list: TrashItem[] }>>('/system/files/trash')
+}
+
+/** 从回收站恢复到原路径 */
+export function restoreTrash(id: string) {
+  return http.post<ApiResponse>('/system/files/restore', { id })
+}
+
+/** 从回收站彻底删除（不可恢复） */
+export function purgeTrash(id: string) {
+  return http.post<ApiResponse>('/system/files/purge', { id })
 }
 
 /** Create directory */

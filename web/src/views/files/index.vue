@@ -19,10 +19,11 @@
 import { computed, onActivated, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { Cloud, Monitor } from '@/icons'
+import { Cloud, Delete, Monitor } from '@/icons'
 import NavPillPanels from '@/components/NavPillPanels.vue'
 import LocalPane from './LocalPane.vue'
 import CloudPane from './CloudPane.vue'
+import TrashPane from './TrashPane.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -69,6 +70,13 @@ const tabs = computed(() => [
     icon: Cloud,
     panel: CloudPane,
     hint: t('files.tabCloud'),
+  },
+  {
+    key: 'trash',
+    label: t('files.tabTrash'),
+    icon: Delete,
+    panel: TrashPane,
+    hint: t('files.tabTrash'),
   },
 ])
 </script>

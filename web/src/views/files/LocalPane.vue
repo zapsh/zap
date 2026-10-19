@@ -1768,7 +1768,7 @@ async function treeDelete() {
   }
   try {
     await deleteFile(node.path)
-    ElMessage.success(t('filesLocal.deleteOk'))
+    ElMessage.success(t('filesLocal.movedToTrash'))
     // 删的是当前目录或其上级：回退到父目录，避免右侧列表指向已不存在的路径
     if (currentPath.value === node.path || currentPath.value.startsWith(node.path + '/')) {
       navigateTo(dirnameOf(node.path))
@@ -2622,7 +2622,7 @@ async function removeSelected() {
     for (const item of selectedItems.value) {
       await deleteFile(item.path)
     }
-    ElMessage.success(t('filesLocal.deleteOk'))
+    ElMessage.success(t('filesLocal.movedToTrash'))
     loadFileList()
     refreshTree()
   } catch (e: any) {
