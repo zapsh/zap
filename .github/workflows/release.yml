@@ -162,22 +162,3 @@ jobs:
             dist/*.sha256.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 同步发布包到自有镜像（mirrors.zap.cn / zap.sh），让 install.sh / zapupgrade 能走
-      # 国内/境外镜像下载。需要仓库 secret：COS_ID、COS_KEY（与 build.sh 同源）；
-      # 两者任一缺失则跳过（仅发布到 GitHub Release，install.sh 走 GitHub 兜底下载）。
-      - name: Sync packages to mirror (zapfile)
-        if: ${{ secrets.COS_ID != '' && secrets.COS_KEY != '' }}
-        env:
-          COS_ID: ${{ secrets.COS_ID }}
-          COS_KEY: ${{ secrets.COS_KEY }}
-        run: |
-          curl -fsSL https://mirrors.zap.cn/zapfile/zapfile-linux-amd64 -o /usr/local/bin/zapfile \
-            || curl -fsSL https://mirrors.zap.sh/zapfile/zapfile-linux-amd64 -o /usr/local/bin/zapfile \
-            || { echo "zapfile install failed (cannot reach mirror), skip mirror sync"; exit 0; }
-          chmod +x /usr/local/bin/zapfile
-          for f in dist/*.tar.gz dist/*.sha256 dist/*.sha256.sig; do
-            [ -f "$f" ] && zapfile upload zap/releases/ "$f"
-          done
-          zapfile upload zap/ scripts/install.sh
-          zapfile upload zap/ scripts/uninstall.sh
