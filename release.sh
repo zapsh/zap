@@ -4,13 +4,16 @@
 # Orchestrates a release:
 #   1. bump [workspace.package].version in Cargo.toml
 #   2. commit + push (default on a version-bump branch; --no-branch on current branch)
-#   3. (--tag only) tag v<version> + push tag + publish latest.txt to mirrors
+#   3. (--tag only) tag v<version> + push tag + publish latest.txt + install scripts to mirrors
+#   4. (--sync only) download GitHub Release assets for <version>, mirror them to COS + Cloudflare
 #
 # Actual binary build & packaging is done by GitHub Actions on the pushed tag
-# (.github/workflows/release.yml), which also syncs the packages to the mirrors.
+# (.github/workflows/release.yml) — it only builds & creates the GitHub Release.
+# Mirroring packages to COS/Cloudflare is done here (--tag for scripts+latest.txt,
+# --sync for the compiled packages once Actions finishes building).
 #
 # Usage:
-#   ./release.sh <version> [--no-branch] [--tag] [--no-latest]
+#   ./release.sh <version> [--no-branch] [--tag] [--no-latest] [--sync]
 #   <version>   semver, e.g. 1.5.1  (no leading v; the pushed tag is v<version>)
 #
 #   Default (contributor PR flow):
@@ -22,12 +25,16 @@
 #     bump version -> commit -> push current branch -> tag v<ver> -> push tag
 #     -> zapfile put zap/releases/latest.txt <ver>  (COS + Cloudflare via --aws)
 #     -> zapfile upload zap/ scripts/install.sh + uninstall.sh  (COS + Cloudflare via --aws)
+#   --sync (standalone, after Actions finishes building):
+#     download GitHub Release assets for v<ver> -> upload to COS (mirrors.zap.cn)
+#     and Cloudflare (mirrors.zap.sh, --aws) under zap/releases/
 #   --no-latest  with --tag, skip the zapfile latest.txt upload
 #
 # Env:
 #   RELEASE_BRANCH  base branch to bump from / tag on (default: main)
 #   BUMP_BRANCH     branch name for the default PR flow (default: bump-version-v<ver>)
-#   COS_ID/COS_KEY  zapfile credentials (needed only for --tag latest.txt)
+#   GITHUB_REPO     owner/repo for --sync download (default: derived from git remote, else zapsh/zap)
+#   COS_ID/COS_KEY  zapfile credentials (needed for --tag / --sync mirror upload)
 # __END_USAGE__
 if [ -z "${BASH_VERSION:-}" ]; then
     exec bash "$0" "$@"
@@ -44,6 +51,7 @@ RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
 NO_BRANCH=0
 WITH_TAG=0
 NO_LATEST=0
+SYNC=0
 VERSION=""
 
 while [[ $# -gt 0 ]]; do
@@ -51,6 +59,7 @@ while [[ $# -gt 0 ]]; do
         --no-branch) NO_BRANCH=1; shift ;;
         --tag)       WITH_TAG=1; NO_BRANCH=1; shift ;;
         --no-latest) NO_LATEST=1; shift ;;
+        --sync)      SYNC=1; shift ;;
         -h|--help)
             sed -n '/^# Usage:/,/^# __END_USAGE__/p' "$0" | sed 's/^#* *//' | sed '/^__END_USAGE__/d'
             exit 0 ;;
@@ -63,13 +72,19 @@ done
 
 [ -n "$VERSION" ] || die "version required, e.g. ./release.sh 1.5.0"
 
+# --sync is standalone: it only mirrors GitHub Release assets, no bump/tag/commit
+if [ "$SYNC" -eq 1 ] && [ "$WITH_TAG" -eq 1 ]; then
+    die "--sync is standalone and cannot be combined with --tag"
+fi
+
 # semver X.Y.Z
 case "$VERSION" in
     [0-9]*.[0-9]*.[0-9]*) ;;
     *) die "invalid version: $VERSION (expect X.Y.Z, e.g. 1.5.0)" ;;
 esac
 
-# ── git sanity ────────────────────────────────────────────────
+# ── git sanity (skipped in --sync mode) ──────────────────────
+if [ "$SYNC" -ne 1 ]; then
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not in a git repo"
 CUR_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 [ "$CUR_BRANCH" = "$RELEASE_BRANCH" ] \
@@ -84,6 +99,7 @@ LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "origin/$RELEASE_BRANCH" 2>/dev/null || true)
 [ "$LOCAL" = "$REMOTE" ] \
     || die "local $RELEASE_BRANCH is not in sync with origin/$RELEASE_BRANCH; pull first"
+fi
 
 # ── zapfile (only needed for --tag latest.txt) ───────────────
 ensure_zapfile() {
@@ -104,6 +120,56 @@ ensure_zapfile() {
         ok "zapfile installed"
     fi
 }
+
+# ── sync GitHub Release assets to mirrors (--sync) ───────────
+sync_github_assets() {
+    local ver="$1" tag="v$ver" tmp repo
+    repo="${GITHUB_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#.*[:/]([^/]+/[^/]+)(\.git)?$#\1#')}"
+    [ -n "$repo" ] || repo="zapsh/zap"
+    tmp=$(mktemp -d)
+    info "downloading GitHub Release assets for $tag (repo: $repo) ..."
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        gh release download "$tag" --repo "$repo" --dir "$tmp" \
+            || die "gh release download $tag failed (need 'gh auth login' or set GH_TOKEN)"
+    else
+        local api="https://api.github.com/repos/$repo/releases/tags/$tag"
+        local urls
+        urls=$(curl -fsSL "$api" | grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"browser_download_url": *"//; s/"$//')
+        [ -n "$urls" ] || die "no assets found for $tag (or GitHub API unreachable)"
+        ( cd "$tmp" && for u in $urls; do
+            info "  get $(basename "$u")"
+            curl -fsSL -O "$u" || die "download failed: $u"
+        done )
+    fi
+    ensure_zapfile
+    [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zapfile mirror upload)"
+    [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zapfile mirror upload)"
+    local f n
+    for f in "$tmp"/*; do
+        [ -f "$f" ] || continue
+        n=$(basename "$f")
+        info "uploading $n -> COS mirror (zap/releases/)"
+        zapfile upload zap/releases/ "$f" \
+            || die "zapfile upload $n (COS) failed"
+        info "uploading $n -> Cloudflare mirror (zap/releases/, --aws)"
+        zapfile upload zap/releases/ "$f" --aws \
+            || die "zapfile upload $n (Cloudflare, --aws) failed"
+    done
+    ok "synced GitHub Release $tag -> COS + Cloudflare ($(ls -1 "$tmp" | wc -l) files)"
+    rm -rf "$tmp"
+}
+
+# ── --sync: download from GitHub, mirror to COS + Cloudflare ──
+if [ "$SYNC" -eq 1 ]; then
+    sync_github_assets "$VERSION"
+    echo
+    printf "${GREEN}========================================${NC}\n"
+    printf "${GREEN}   ZAP mirror sync v${VERSION} done${NC}\n"
+    printf "${GREEN}========================================${NC}\n"
+    echo "  Source:    GitHub Release v$VERSION"
+    echo "  Target:    COS (mirrors.zap.cn) + Cloudflare (mirrors.zap.sh)"
+    exit 0
+fi
 
 # ── 1. set Cargo workspace version ────────────────────────────
 set_cargo_version() {
