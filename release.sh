@@ -123,8 +123,19 @@ ensure_zapfile() {
 
 # ── sync GitHub Release assets to mirrors (--sync) ───────────
 sync_github_assets() {
-    local ver="$1" tag="v$ver" tmp repo
-    repo="${GITHUB_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#.*[:/]([^/]+/[^/]+)(\.git)?$#\1#')}"
+    local ver="$1"
+    local tag="v$ver" tmp repo url
+    repo="${GITHUB_REPO:-}"
+    if [ -z "$repo" ]; then
+        url=$(git remote get-url origin 2>/dev/null || true)
+        if [ -n "$url" ]; then
+            url="${url//:/\/}"          # git@host:owner/repo -> git@host/owner/repo
+            url="${url%.git}"           # strip trailing .git
+            repo="${url##*/}"           # repo name
+            url="${url%/*}"             # drop repo name -> .../owner
+            repo="${url##*/}/${repo}"   # owner/repo
+        fi
+    fi
     [ -n "$repo" ] || repo="zapsh/zap"
     tmp=$(mktemp -d)
     info "downloading GitHub Release assets for $tag (repo: $repo) ..."
