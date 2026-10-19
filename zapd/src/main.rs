@@ -194,6 +194,9 @@ async fn main() {
     // 日志目录命名自检：历史 {name}-{id} → {id}-{name}（含目录 rename 与 vhost 重同步）
     routers::site::migrate_log_roots().await;
 
+    // 启动对账：隔离数据库中已不存在、但 nginx 仍残留的孤儿 vhost（如 --reset-db 后）
+    routers::site::reconcile_orphan_vhosts().await;
+
     // 运行环境状态（{data}/server_env.yaml）：加载 + 启动时重新探测（过期/缺失时）
     zap::server_env::init();
     zap::server_env::refresh_on_startup(zap::server_env::STARTUP_STALE_SECS).await;

@@ -638,6 +638,78 @@ pub async fn migrate_log_roots() {
     }
 }
 
+/// 启动对账：清理数据库中已不存在、但 nginx sites-enabled / sites-available 里仍残留的
+/// `zap-site-{id}.conf`（孤儿 vhost）。典型场景：开发期 `rundev.sh --reset-db` 只删了
+/// zap.db 没删 vhost 配置；生产上手动动库 / 恢复备份后同样可能发生。若残留 id 被复用，
+/// 旧 vhost 会指向新主人的站点目录（server_name 冲突 / 配置串号），故需主动隔离。
+///
+/// 隔离走 `SiteVhostQuarantine`（配置文件移入备份目录而非删除），误判可人工捞回。
+pub async fn reconcile_orphan_vhosts() {
+    // 有效 id 集合：含软删站点（回收站内的站点 vhost 已撤，但 available 快照仍在，
+    // 不应被当作孤儿清掉），故取全表。
+    let pool = db::get_db_pool().await;
+    let valid_ids: std::collections::HashSet<i64> =
+        sqlx::query_as::<_, (i64,)>("SELECT id FROM site")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id,)| id)
+            .collect();
+
+    let mut orphans: Vec<i64> = Vec::new();
+    for kind in ["nginx"] {
+        for sub in ["sites-available", "sites-enabled"] {
+            let dir = std::path::Path::new("/etc/zap/webservers")
+                .join(kind)
+                .join(sub);
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in rd.flatten() {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                // 只认面板托管的命名：zap-site-{id}.conf
+                let Some(id_str) = fname
+                    .strip_prefix("zap-site-")
+                    .and_then(|s| s.strip_suffix(".conf"))
+                else {
+                    continue;
+                };
+                let Ok(id) = id_str.parse::<i64>() else {
+                    continue;
+                };
+                if !valid_ids.contains(&id) {
+                    orphans.push(id);
+                }
+            }
+        }
+    }
+    orphans.sort_unstable();
+    orphans.dedup();
+
+    if orphans.is_empty() {
+        return;
+    }
+    info!("启动对账发现 {} 个孤儿 vhost，开始隔离", orphans.len());
+    for id in orphans {
+        match crate::zapexec::call(Request::SiteVhostQuarantine {
+            site_id: id,
+            name: format!("orphan-{id}"),
+        })
+        .await
+        {
+            Ok(resp) => {
+                if resp.code != 0 {
+                    warn!("隔离孤儿 vhost {id} 失败: {}", resp.message);
+                } else {
+                    info!("已隔离孤儿 vhost {id}");
+                }
+            }
+            Err(e) => warn!("隔离孤儿 vhost {id} 失败: {e}"),
+        }
+    }
+}
+
 /// 判重用键：域名按原串精确匹配（忽略大小写）。`www.a.com` 与 `a.com` 视为两个
 /// 独立域名，可分别绑定到不同站点；全局唯一性由 `idx_site_domain_domain` 索引保证。
 fn domain_match_keys(d: &str) -> Vec<String> {
