@@ -683,7 +683,7 @@
     <el-dialog
       v-model="editVisible"
       :title="t('filesLocal.editTitle', { name: editingFile })"
-      :width="editDialogWidth"
+      width="70%"
       top="5vh"
       @opened="onEditorOpened"
     >
@@ -1267,14 +1267,6 @@ const editingFile = ref('')
 const editingFullPath = ref('')
 const editContent = ref('')
 const saving = ref(false)
-
-/** 窄视口（≤768px，移动端 / 窄窗口）：编辑对话框铺到 95% 宽，其余保持 70% */
-const NARROW_BREAKPOINT = 768
-const viewportNarrow = ref(window.innerWidth <= NARROW_BREAKPOINT)
-function updateViewportNarrow() {
-  viewportNarrow.value = window.innerWidth <= NARROW_BREAKPOINT
-}
-const editDialogWidth = computed(() => (viewportNarrow.value ? '95%' : '70%'))
 
 /** macOS 用 ⌘ + S，其余平台用 Ctrl + S：提示文案与实际监听的按键保持一致 */
 const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
@@ -2912,12 +2904,10 @@ onMounted(async () => {
   // 站点列表「文件」入口带 ?path= 进入时，定位到对应目录（树已建好，可正确展开）
   await openPathFromQuery()
   window.addEventListener('keydown', onEditKeydown)
-  window.addEventListener('resize', updateViewportNarrow)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditKeydown)
-  window.removeEventListener('resize', updateViewportNarrow)
 })
 
 // 文件管理页被 keep-alive 缓存后切走时，编辑器浮窗跟着隐藏（组件本身不卸载）
