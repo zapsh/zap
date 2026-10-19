@@ -607,7 +607,8 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
     if !ids.is_empty() {
         let mut site_qb = QueryBuilder::<Sqlite>::new(
             "SELECT id, user_id, name, status, remark, php_instance, disk_used_bytes, \
-             disk_stat_at, created_at FROM site WHERE user_id IN (",
+             disk_stat_at, created_at FROM site \
+             WHERE (deleted = 0 OR deleted IS NULL) AND user_id IN (",
         );
         let mut sep = site_qb.separated(", ");
         for id in &ids {

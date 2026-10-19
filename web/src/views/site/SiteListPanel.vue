@@ -34,6 +34,8 @@ import { useUserStore } from '@/stores/user'
 import type { InstalledApp } from '@/api/appstore'
 import { getInstalledApps } from '@/api/appstore'
 import { getLocDirectives, getSiteSecurity, getSecurityCaps } from '@/api/site'
+import { listSiteTrash, restoreSites, purgeSites } from '@/api/site'
+import type { SiteTrashItem } from '@/api/site'
 import { listNginxCacheZones } from '@/api/serverNginx'
 import type { LocDirectiveSpec } from '@/api/site'
 import type { SiteSecurity } from '@/api/site'
@@ -263,6 +265,72 @@ const stats = reactive({ total: 0, running: 0, stopped: 0, failed: 0 })
 
 const loading = ref(false)
 const selection = ref<SiteItem[]>([])
+
+// ── 站点回收站（删除为软删，可在此恢复 / 彻底删除）─────────────
+const trashVisible = ref(false)
+const trashLoading = ref(false)
+const trashList = ref<SiteTrashItem[]>([])
+/** 窄视口（≤768px，移动端）抽屉铺满，其余 560px */
+const NARROW_BREAKPOINT = 768
+const viewportNarrow = ref(window.innerWidth <= NARROW_BREAKPOINT)
+function updateViewportNarrow() {
+  viewportNarrow.value = window.innerWidth <= NARROW_BREAKPOINT
+}
+const trashDrawerSize = computed(() => (viewportNarrow.value ? '100%' : '560px'))
+
+function formatTrashTime(sec: number | string): string {
+  const n = Number(sec)
+  if (!Number.isFinite(n) || n <= 0) return '-'
+  const d = new Date(n * 1000)
+  const p = (x: number) => String(x).padStart(2, '0')
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  )
+}
+
+async function openTrash() {
+  trashVisible.value = true
+  trashLoading.value = true
+  try {
+    const res = await listSiteTrash()
+    trashList.value = res.data?.list ?? []
+  } finally {
+    trashLoading.value = false
+  }
+}
+
+/** 恢复到站点列表（后端会按原 run_state 重新同步并拉起 vhost） */
+async function restoreFromTrash(row: SiteTrashItem) {
+  try {
+    await restoreSites([row.id])
+    ElMessage.success(t('site.trashRestoreOk', { name: row.name }))
+    await openTrash()
+    load()
+  } catch {
+    /* 拦截器统一提示 */
+  }
+}
+
+/** 彻底删除：清理 vhost 与数据库记录；网站数据目录保留在磁盘上 */
+async function purgeFromTrash(row: SiteTrashItem) {
+  try {
+    await ElMessageBox.confirm(
+      t('site.trashPurgeConfirm', { name: row.name }),
+      t('site.trashPurgeTitle'),
+      { type: 'warning', confirmButtonClass: 'el-button--danger' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await purgeSites([row.id], false)
+    ElMessage.success(t('site.trashPurgeOk', { name: row.name }))
+    await openTrash()
+  } catch {
+    /* 拦截器统一提示 */
+  }
+}
 
 // 归属用户下拉数据（admin / reseller）
 const ownerOptions = ref<OwnerOption[]>([])
@@ -1855,6 +1923,7 @@ function handleSelectionChange(rows: SiteItem[]) {
 
 onUnmounted(() => {
   window.removeEventListener('zap:sites-changed', onSitesChanged)
+  window.removeEventListener('resize', updateViewportNarrow)
 })
 
 /** 站点配置在别处被改动（如应用部署自动挂载反代 + 同步）时刷新列表 */
@@ -1871,6 +1940,7 @@ onMounted(() => {
   loadCerts()
   loadFeature()
   load()
+  window.addEventListener('resize', updateViewportNarrow)
 })
 </script>
 
@@ -1931,6 +2001,10 @@ onMounted(() => {
             />
           </el-select>
           <el-button :icon="Refresh" circle @click="load" />
+          <!-- 回收站：删除的站点在此恢复 / 彻底删除 -->
+          <el-button :icon="Delete" plain @click="openTrash">
+            {{ t('site.trash') }}
+          </el-button>
         </div>
         <div class="toolbar-right">
           <el-button
@@ -2311,6 +2385,33 @@ onMounted(() => {
       :site-id="currentSite?.id || 0"
       :site-name="currentSite?.name || ''"
     />
+
+    <!-- 站点回收站：删除的站点在此恢复 / 彻底删除 -->
+    <el-drawer v-model="trashVisible" :title="t('site.trashTitle')" :size="trashDrawerSize">
+      <div class="trash-tip">{{ t('site.trashTip') }}</div>
+      <el-table v-loading="trashLoading" :data="trashList" size="small">
+        <el-table-column prop="name" :label="t('site.trashColName')" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="owner_username" :label="t('site.trashColOwner')" width="110" />
+        <el-table-column :label="t('site.trashColDeletedAt')" width="160">
+          <template #default="{ row }">
+            {{ formatTrashTime(row.deleted_at) }}
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('site.trashColOps')" width="150" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" link @click="restoreFromTrash(row)">
+              {{ t('site.trashRestore') }}
+            </el-button>
+            <el-button size="small" type="danger" link @click="purgeFromTrash(row)">
+              {{ t('site.trashPurge') }}
+            </el-button>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <div class="trash-empty">{{ t('site.trashEmpty') }}</div>
+        </template>
+      </el-table>
+    </el-drawer>
 
     <!-- 添加 / 编辑站点抽屉（手机端自动占满屏宽） -->
     <el-drawer
@@ -3474,6 +3575,20 @@ onMounted(() => {
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 14px;
+}
+
+/* 回收站抽屉 */
+.trash-tip {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.6;
+}
+
+.trash-empty {
+  padding: 24px 0;
+  font-size: 13px;
+  color: var(--el-text-color-placeholder);
 }
 .toolbar-left,
 .toolbar-right {
