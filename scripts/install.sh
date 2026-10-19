@@ -284,8 +284,12 @@ detect_distro() {
         [ -n "${NAME:-}" ]        && DISTRO_NAME="$NAME"
         [ -n "${VERSION_ID:-}" ]  && DISTRO_VERSION="$VERSION_ID"
     fi
-    [ "$DISTRO_ID" = "unknown" ] && DISTRO_ID="$(lsb_release -si 2>/dev/null || echo unknown)"
-    [ "$DISTRO_NAME" = "unknown" ] && DISTRO_NAME="$DISTRO_ID"
+    if [ "$DISTRO_ID" = "unknown" ]; then
+        DISTRO_ID="$(lsb_release -si 2>/dev/null || echo unknown)"
+    fi
+    if [ "$DISTRO_NAME" = "unknown" ]; then
+        DISTRO_NAME="$DISTRO_ID"
+    fi
 }
 
 # ── 初始化系统探测 ────────────────────────────────────────
