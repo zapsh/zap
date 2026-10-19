@@ -3177,8 +3177,9 @@ pub async fn vhost_list() -> Response {
                 };
                 for entry in rd.flatten() {
                     let fname = entry.file_name().to_string_lossy().to_string();
-                    let Some(id_str) =
-                        fname.strip_prefix("zap-site-").and_then(|s| s.strip_suffix(".conf"))
+                    let Some(id_str) = fname
+                        .strip_prefix("zap-site-")
+                        .and_then(|s| s.strip_suffix(".conf"))
                     else {
                         continue;
                     };
