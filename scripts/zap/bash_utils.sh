@@ -801,16 +801,19 @@ db_data_initialized() {
 
 install_system_deps() {
   local p pm deps="" rc=0
+  # 不吞输出：apt/dnf 装几十个包要几分钟，全部 >/dev/null 会让面板日志长时间
+  # 无任何输出，用户会以为卡死。输出直接流入任务日志（apt 非 tty 下本就是逐行
+  # 文本，无进度条刷屏）；DEBIAN_FRONTEND 防止 dpkg 配置询问挂住无人值守的安装。
   if is_os ubuntu debian; then
     log_info "apt install build-dependencies ..."
-    apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update failed (continuing to attempt installation)"
+    apt-get update -y 2>&1 || log_warn "apt-get update failed (continuing to attempt installation)"
     deps="${UBUNTU_DEPS}"
     # shellcheck disable=SC2086
-    if ! apt-get install -y --no-install-recommends ${deps} >/dev/null 2>&1; then
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${deps} 2>&1; then
       log_warn "Now installing missing packages ..."
       # shellcheck disable=SC2086
       for p in ${deps}; do
-        apt-get install -y --no-install-recommends "$p" >/dev/null 2>&1 \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$p" 2>&1 \
           || { log_warn "  Skip (Installation failed): ${p}"; rc=1; }
       done
     fi
@@ -818,17 +821,17 @@ install_system_deps() {
     if command -v dnf >/dev/null 2>&1; then pm="dnf"; deps="${RH_DEPS} ${RH_DNF_EXTRA}"; else pm="yum"; deps="${RH_DEPS}"; fi
     log_info "${pm} Install compilation dependencies..."
     # shellcheck disable=SC2086
-    if ! ${pm} install -y ${deps} >/dev/null 2>&1; then
+    if ! ${pm} install -y ${deps} 2>&1; then
       log_warn "Now installing missing packages ..."
       # shellcheck disable=SC2086
       for p in ${deps}; do
-        ${pm} install -y "$p" >/dev/null 2>&1 || { log_warn "  Skip (Installation failed): ${p}"; rc=1; }
+        ${pm} install -y "$p" 2>&1 || { log_warn "  Skip (Installation failed): ${p}"; rc=1; }
       done
     fi
   elif is_os alpine; then
     log_info "apk install build-dependencies ..."
     # shellcheck disable=SC2086
-    apk add --no-cache ${ALPINE_DEPS} >/dev/null 2>&1 || rc=1
+    apk add --no-cache ${ALPINE_DEPS} 2>&1 || rc=1
   else
     log_warn "The distribution (${OS_NAME:-unknown}) that supports automatic installation of dependencies is not supported temporarily, skipping; please manually install the compilation dependencies"
     rc=1
