@@ -1176,7 +1176,18 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::module("system.cron")),
     ),
     // Web 应用（/webapps/*，页面级路由）：登录用户即可，是否可访问由
-    // `webapp.phpmyadmin:view` 权限点控制，可在「角色权限」中按角色分配。
+    // `webapp.phpmyadmin:view` / `webapp.adminer:view` 权限点控制，可在「角色权限」中按角色分配。
+    // 注意：更具体的 `/webapps/adminer` 必须写在 `/webapps` 之前，规则表按「长前缀优先」匹配。
+    (
+        "/webapps/adminer",
+        Required::User,
+        Some(Perm::action("webapp.adminer", "view")),
+    ),
+    (
+        "/webapps/phpmyadmin",
+        Required::User,
+        Some(Perm::action("webapp.phpmyadmin", "view")),
+    ),
     (
         "/webapps",
         Required::User,
@@ -1361,6 +1372,7 @@ const NS_LABELS: &[(&str, &str)] = &[
     ("plugin", "插件"),
     ("dev", "开发者接口"),
     ("webapp.phpmyadmin", "phpMyAdmin"),
+    ("webapp.adminer", "Adminer"),
     // Zap Pro（商业模块）：未启用时目录里不会出现这一项（规则来自 pro_rules）
     ("pro", "Zap Pro"),
     ("pro.cluster", "集群管理"),
