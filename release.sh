@@ -20,7 +20,7 @@
 #     bump version -> commit -> push current branch (no new branch, no tag)
 #   --tag (repo owner, release):
 #     bump version -> commit -> push current branch -> tag v<ver> -> push tag
-#     -> zapfile put zap/releases/latest.txt <ver>
+#     -> zapfile put zap/releases/latest.txt <ver>  (COS + Cloudflare via --aws)
 #   --no-latest  with --tag, skip the zapfile latest.txt upload
 #
 # Env:
@@ -148,10 +148,13 @@ if [ "$WITH_TAG" -eq 1 ]; then
         ensure_zapfile
         [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zapfile put latest.txt)"
         [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zapfile put latest.txt)"
-        info "publishing latest.txt -> $VERSION on mirrors (zap/releases/latest.txt)"
+        info "publishing latest.txt -> $VERSION on COS mirror (mirrors.zap.cn)"
         zapfile put "zap/releases/latest.txt" "$VERSION" \
-            || die "zapfile put latest.txt failed"
-        ok "mirrors latest.txt = $VERSION"
+            || die "zapfile put latest.txt (COS) failed"
+        info "publishing latest.txt -> $VERSION on Cloudflare mirror (mirrors.zap.sh, --aws)"
+        zapfile put "zap/releases/latest.txt" "$VERSION" --aws \
+            || die "zapfile put latest.txt (Cloudflare, --aws) failed"
+        ok "mirrors latest.txt = $VERSION (COS + Cloudflare)"
     else
         warn "skipped zapfile put latest.txt (--no-latest)"
     fi
@@ -164,7 +167,7 @@ printf "${GREEN}========================================${NC}\n"
 echo "  Version:   $VERSION"
 if [ "$WITH_TAG" -eq 1 ]; then
     echo "  Tag:       v$VERSION (pushed)"
-    echo "  latest:    zapfile put latest.txt = $VERSION"
+    echo "  latest:    zapfile put latest.txt = $VERSION (COS + Cloudflare --aws)"
 else
     echo "  Tag:       (none; run with --tag to release)"
     if [ "$NO_BRANCH" -ne 1 ]; then
