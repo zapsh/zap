@@ -1259,6 +1259,32 @@ export default {
   files: {
     tabLocal: '本地存储',
     tabCloud: '云存储',
+    tabTrash: '回收站',
+  },
+
+  /** 文件管理 · 回收站（删除改为移入 trash，可恢复 / 彻底删除） */
+  filesTrash: {
+    title: '回收站',
+    tip: '文件删除后会先进入回收站，可在此恢复或彻底删除；彻底删除后不可恢复。',
+    colName: '名称',
+    colPath: '原路径',
+    colType: '类型',
+    colDeletedAt: '删除时间',
+    typeDir: '目录',
+    typeFile: '文件',
+    restore: '恢复',
+    purge: '彻底删除',
+    purgeAll: '清空回收站',
+    restoreConfirm: '恢复到原路径：{path}？若原路径已存在同名文件将恢复失败。',
+    purgeConfirm: '彻底删除「{name}」？此操作不可恢复。',
+    purgeAllConfirm: '清空回收站？所有项目将彻底删除，不可恢复。',
+    restoreOk: '已恢复到原路径',
+    purgeOk: '已彻底删除',
+    purgeAllOk: '回收站已清空',
+    restoreFailed: '恢复失败',
+    purgeFailed: '彻底删除失败',
+    loadFailed: '加载回收站失败',
+    empty: '回收站为空',
   },
 
   /** 文件管理 · 本地存储 */
@@ -1418,12 +1444,13 @@ export default {
     nameExists: '「{name}」已存在，请换一个名称',
     dupOk: '复制副本成功',
 
-    delConfirm: '确认删除选中的 {n} 项？{dirTip}此操作不可恢复。',
+    delConfirm: '确认删除选中的 {n} 项？{dirTip}将移入回收站（可在「回收站」恢复）。',
     delConfirmDirTip: '目录内所有内容将被删除。',
     delWarning: '警告',
     delConfirmBtn: '确认删除',
-    delConfirmOne: '确认删除「{name}」？此操作不可恢复。',
+    delConfirmOne: '确认删除「{name}」？将移入回收站（可在「回收站」恢复）。',
     deleteOk: '删除成功',
+    movedToTrash: '已移入回收站（可在「回收站」恢复）',
     deleteFailed: '删除失败',
 
     permHintAdmin: '八进制 1-4 位，如 0755 / 0644 / 1777',

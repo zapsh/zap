@@ -1261,6 +1261,32 @@ const enUS: Messages = {
   files: {
     tabLocal: 'Local Storage',
     tabCloud: 'Cloud Storage',
+    tabTrash: 'Recycle Bin',
+  },
+
+  /** File manager · Recycle Bin (delete now moves to trash: recoverable / purged) */
+  filesTrash: {
+    title: 'Recycle Bin',
+    tip: 'Deleted files go to the recycle bin first; restore or purge them here. Purging is permanent.',
+    colName: 'Name',
+    colPath: 'Original path',
+    colType: 'Type',
+    colDeletedAt: 'Deleted at',
+    typeDir: 'Dir',
+    typeFile: 'File',
+    restore: 'Restore',
+    purge: 'Purge',
+    purgeAll: 'Empty bin',
+    restoreConfirm: 'Restore to its original path: {path}? Restore fails if the path already exists.',
+    purgeConfirm: 'Purge "{name}"? This cannot be undone.',
+    purgeAllConfirm: 'Empty the recycle bin? All items will be purged permanently.',
+    restoreOk: 'Restored to original path',
+    purgeOk: 'Purged',
+    purgeAllOk: 'Recycle bin emptied',
+    restoreFailed: 'Restore failed',
+    purgeFailed: 'Purge failed',
+    loadFailed: 'Failed to load recycle bin',
+    empty: 'Recycle bin is empty',
   },
 
   filesLocal: {
@@ -1422,12 +1448,13 @@ const enUS: Messages = {
     nameExists: '"{name}" already exists — please choose another name',
     dupOk: 'Copy created',
 
-    delConfirm: 'Delete the {n} selected item(s)?{dirTip} This cannot be undone.',
+    delConfirm: 'Delete the {n} selected item(s)?{dirTip} Moved to the recycle bin (restore from Recycle Bin).',
     delConfirmDirTip: ' All contents of the directories will be deleted.',
     delWarning: 'Warning',
     delConfirmBtn: 'Delete',
-    delConfirmOne: 'Delete "{name}"? This cannot be undone.',
+    delConfirmOne: 'Delete "{name}"? Moved to the recycle bin (restore from Recycle Bin).',
     deleteOk: 'Deleted',
+    movedToTrash: 'Moved to recycle bin (restore from Recycle Bin)',
     deleteFailed: 'Delete failed',
 
     permHintAdmin: '1-4 octal digits, e.g. 0755 / 0644 / 1777',
