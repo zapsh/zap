@@ -23,7 +23,7 @@
 //! 多租户：非管理员只能看到并操作以「用户名_」为前缀的库，
 //! 创建库时会自动补上该前缀；管理员不受限制。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -1951,36 +1951,98 @@ pub struct SlowQuery {
     limit: Option<u32>,
 }
 
+/// 取 `sys` 视图实际存在的列名集合。不同 MySQL / MariaDB 版本的 `sys`
+/// 实现列名不尽一致（例如 MySQL 8.4 移除了 `lock_latency`），按真实结构动态
+/// 选列可避免 `Unknown column` 报错。
+async fn sys_view_columns(
+    conn: &mut MySqlConnection,
+    view: &str,
+) -> Result<HashSet<String>, ZapError> {
+    let sql = format!(
+        "SELECT COLUMN_NAME FROM information_schema.columns \
+         WHERE table_schema = 'sys' AND table_name = '{view}'"
+    );
+    let rows = rows_of(conn, &sql).await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| r.into_iter().next())
+        .collect())
+}
+
 /// GET /api/database/slow：慢查询（sys 视图，仅管理员）。
 ///
-/// 依赖 MySQL 的 `sys.statements_with_runtimes_in_95th_percentile`（需 performance_schema 开启）；
-/// MariaDB 若未提供该视图会返回清晰错误。
+/// 依赖 `sys.statements_with_runtimes_in_95th_percentile`（需 performance_schema 开启）。
+/// 列名按视图实际结构动态选取，兼容 MySQL 8.0 / 8.4 与 MariaDB 的不同 `sys` 实现。
 pub async fn slow(claims: ValidatedClaims, Query(q): Query<SlowQuery>) -> ZapJsonResult {
     if !is_admin(&claims) {
         return Err(ZapError::New(-1, "仅管理员可查看慢查询".to_string()));
     }
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let mut conn = connect().await?;
+    let cols =
+        match sys_view_columns(&mut conn, "statements_with_runtimes_in_95th_percentile").await {
+            Ok(c) => c,
+            Err(e) => {
+                return Err(ZapError::New(
+                    -1,
+                    format!("慢查询视图不可用（请确认 performance_schema / sys 已启用）：{e}"),
+                ));
+            }
+        };
+    if cols.is_empty() {
+        return Err(ZapError::New(
+            -1,
+            "慢查询视图不可用（performance_schema / sys 未启用，或当前数据库版本不提供该视图）"
+                .to_string(),
+        ));
+    }
+    // (视图原生列名, 展示列名)；只选取视图中实际存在的列
+    let wanted: &[(&str, &str)] = &[
+        ("query", "query"),
+        ("db", "db"),
+        ("exec_count", "exec_count"),
+        ("total_latency", "total_latency"),
+        ("max_latency", "max_latency"),
+        ("avg_latency", "avg_latency"),
+        ("lock_latency", "lock_latency"),
+        ("rows_sent", "rows_sent"),
+        ("rows_examined", "rows_examined"),
+        ("rows_affected", "rows_affected"),
+        ("tmp_tables", "tmp_tables"),
+        ("tmp_disk_tables", "tmp_disk_tables"),
+        ("full_scan", "full_scan"),
+    ];
+    let pick = |c: &str| cols.contains(c);
+    let picked: Vec<&str> = wanted
+        .iter()
+        .filter(|(c, _)| pick(c))
+        .map(|(c, _)| *c)
+        .collect();
+    if picked.is_empty() {
+        return Err(ZapError::New(
+            -1,
+            "慢查询视图不含可展示的列（数据库版本不兼容）".to_string(),
+        ));
+    }
+    let display: Vec<&str> = wanted
+        .iter()
+        .filter(|(c, _)| pick(c))
+        .map(|(_, d)| *d)
+        .collect();
+    let col_list = picked.join(", ");
     let sql = format!(
-        "SELECT query, db, exec_count, total_latency, max_latency, avg_latency, \
-         lock_latency, rows_sent, rows_examined, rows_affected, tmp_tables, tmp_disk_tables, \
-         full_scan \
-         FROM sys.statements_with_runtimes_in_95th_percentile \
+        "SELECT {col_list} FROM sys.statements_with_runtimes_in_95th_percentile \
          ORDER BY avg_latency DESC LIMIT {limit}"
     );
     match rows_of(&mut conn, &sql).await {
         Ok(rows) => crate::zap::api_ok(json!({
             "ok": true,
-            "columns": [
-                "query", "db", "exec_count", "total_latency", "max_latency", "avg_latency",
-                "lock_latency", "rows_sent", "rows_examined", "rows_affected",
-                "tmp_tables", "tmp_disk_tables", "full_scan"
-            ],
+            "columns": display,
             "rows": rows,
         })),
         Err(e) => Err(ZapError::New(
             -1,
-            format!("慢查询视图不可用（需启用 performance_schema / sys）：{e}"),
+            format!("慢查询查询失败（需启用 performance_schema / sys）：{e}"),
         )),
     }
 }
