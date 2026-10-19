@@ -643,7 +643,9 @@ pub async fn migrate_log_roots() {
 /// zap.db 没删 vhost 配置；生产上手动动库 / 恢复备份后同样可能发生。若残留 id 被复用，
 /// 旧 vhost 会指向新主人的站点目录（server_name 冲突 / 配置串号），故需主动隔离。
 ///
-/// 隔离走 `SiteVhostQuarantine`（配置文件移入备份目录而非删除），误判可人工捞回。
+/// 目录属主 root、zapd 以 zap 用户无读权限，因此「磁盘上有哪些 vhost」由 root 特权的
+/// zapexec 扫描（`SiteVhostList`），zapd 只负责与 `site` 表求差集，再调 `SiteVhostQuarantine`
+/// 隔离（配置文件移入备份目录而非删除，误判可人工捞回）。
 pub async fn reconcile_orphan_vhosts() {
     // 有效 id 集合：含软删站点（回收站内的站点 vhost 已撤，但 available 快照仍在，
     // 不应被当作孤儿清掉），故取全表。
@@ -657,33 +659,22 @@ pub async fn reconcile_orphan_vhosts() {
             .map(|(id,)| id)
             .collect();
 
-    let mut orphans: Vec<i64> = Vec::new();
-    for kind in ["nginx"] {
-        for sub in ["sites-available", "sites-enabled"] {
-            let dir = std::path::Path::new("/etc/zap/webservers")
-                .join(kind)
-                .join(sub);
-            let Ok(rd) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in rd.flatten() {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                // 只认面板托管的命名：zap-site-{id}.conf
-                let Some(id_str) = fname
-                    .strip_prefix("zap-site-")
-                    .and_then(|s| s.strip_suffix(".conf"))
-                else {
-                    continue;
-                };
-                let Ok(id) = id_str.parse::<i64>() else {
-                    continue;
-                };
-                if !valid_ids.contains(&id) {
-                    orphans.push(id);
-                }
-            }
+    // 磁盘上现存的 vhost id（root 特权扫描，避免 zap 用户读目录被拒）
+    let present_ids: Vec<i64> = match crate::zapexec::call(Request::SiteVhostList).await {
+        Ok(resp) => resp
+            .data
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
+        Err(e) => {
+            warn!("启动对账：获取磁盘 vhost 列表失败（跳过）: {e}");
+            return;
         }
-    }
+    };
+
+    let mut orphans: Vec<i64> = present_ids
+        .into_iter()
+        .filter(|id| !valid_ids.contains(id))
+        .collect();
     orphans.sort_unstable();
     orphans.dedup();
 

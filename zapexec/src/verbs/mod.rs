@@ -463,6 +463,7 @@ pub async fn dispatch(req: Request) -> Response {
         Request::SiteVhostQuarantine { site_id, name } => {
             site::vhost_quarantine(site_id, name).await
         }
+        Request::SiteVhostList => site::vhost_list().await,
         Request::SiteDataRemove {
             web_roots,
             log_roots,

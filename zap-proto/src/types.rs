@@ -1795,6 +1795,11 @@ pub enum Request {
     /// 由 zapd 启动对账（reconcile_orphan_vhosts）调用。
     #[serde(rename = "site.vhost_quarantine")]
     SiteVhostQuarantine { site_id: i64, name: String },
+    /// 列出磁盘上仍存在的站点 vhost id（`zap-site-{id}.conf`，含 sites-available /
+    /// sites-enabled）。目录属主 root，zapd 以 zap 用户无读权限，故由 root 特权的 zapexec
+    /// 执行扫描；zapd 据此与 `site` 表求差集，得到孤儿 id 再调 `SiteVhostQuarantine`。
+    #[serde(rename = "site.vhost_list")]
+    SiteVhostList,
     /// 删除站点数据目录（root 特权）：站点删除时若勾选「同时删除网站数据」，
     /// 文档根（网站文件）与日志目录（access.log / error.log 及其归档）一起 rm -rf。
     /// 安全边界由执行端兜底：路径须为绝对路径、不含 `..`，
