@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Web 应用挂载：`/webapps/*`。
 //!
-//! 当前提供 phpMyAdmin：程序本体由应用商店安装到 `/usr/local/apps/phpmyadmin`，
+//! 当前提供 phpMyAdmin / Adminer：程序本体由应用商店安装到
+//! `/usr/local/apps/phpmyadmin`、`/usr/local/apps/adminer`，
 //! 这里不再单独占用端口，而是由 zapd 直接充当 FastCGI 客户端，
 //! 把请求转交给系统 PHP-FPM 执行 —— 复用面板自身的 HTTPS、登录态与权限体系。
 //!
@@ -22,39 +23,74 @@ use crate::routers::auth::SESSION_COOKIE;
 use crate::zap::fastcgi;
 use crate::zap::jwt;
 
-/// phpMyAdmin 的挂载路径（URL 空间）。
-const PMA_MOUNT: &str = "/webapps/phpmyadmin";
-/// phpMyAdmin 程序目录（应用商店安装后的软链）。
-const PMA_ROOT: &str = "/usr/local/apps/phpmyadmin";
 /// 请求体上限（导入 SQL 用；与 php.ini 的 upload_max_filesize 取小者生效）。
 const MAX_BODY: usize = 64 * 1024 * 1024;
+
+/// 一个由 zapd 直接挂载、经 FastCGI 转 PHP-FPM 执行的 Web 应用。
+struct WebApp {
+    /// URL 前缀（如 /webapps/phpmyadmin）。
+    mount: &'static str,
+    /// 程序目录（应用商店安装后的软链 / 目录）。
+    root: &'static str,
+    /// 默认入口文件名（访问前缀根路径、无子路径时回退到此文件）。
+    index: &'static str,
+}
+
+const PMA: WebApp = WebApp {
+    mount: "/webapps/phpmyadmin",
+    root: "/usr/local/apps/phpmyadmin",
+    index: "index.php",
+};
+const ADMINER: WebApp = WebApp {
+    mount: "/webapps/adminer",
+    root: "/usr/local/apps/adminer",
+    // 保留官方下载名 adminer.php（而非改名 index.php）：文件名自解释、升级时
+    // 直接覆盖同名文件即可，且不需要路由对 index.php 做特殊假设。
+    index: "adminer.php",
+};
 
 pub fn routers() -> Router {
     Router::new()
         .route("/phpmyadmin", any(phpmyadmin))
         .route("/phpmyadmin/", any(phpmyadmin))
         .route("/phpmyadmin/{*rest}", any(phpmyadmin))
+        .route("/adminer", any(adminer))
+        .route("/adminer/", any(adminer))
+        .route("/adminer/{*rest}", any(adminer))
 }
 
 async fn phpmyadmin(OriginalUri(original): OriginalUri, req: Request) -> Response {
-    match handle(&original, req).await {
+    serve_webapp(PMA, original, req).await
+}
+
+async fn adminer(OriginalUri(original): OriginalUri, req: Request) -> Response {
+    serve_webapp(ADMINER, original, req).await
+}
+
+/// 页面级入口：统一做「规范地址 308 跳转 + 登录态校验 + 会话续期 + 转发」。
+async fn serve_webapp(app: WebApp, original: Uri, req: Request) -> Response {
+    match handle(app, &original, req).await {
         Ok(resp) => resp,
         Err((code, msg)) => (code, msg).into_response(),
     }
 }
 
-async fn handle(original: &Uri, req: Request) -> Result<Response, (StatusCode, String)> {
+async fn handle(
+    app: WebApp,
+    original: &Uri,
+    req: Request,
+) -> Result<Response, (StatusCode, String)> {
     let method = req.method().clone();
 
     // ── 1) 路径切分：base（URL 前缀）+ rest（应用内路径）──────
     // 注意：`nest("/webapps")` 会把子路由看到的 URI 重写为应用内路径，
     // 因此这里必须用 OriginalUri（浏览器原始路径）来定位挂载点。
     let full = original.path().to_string();
-    let Some(idx) = full.find(PMA_MOUNT) else {
+    let Some(idx) = full.find(app.mount) else {
         return Err((StatusCode::NOT_FOUND, "路径错误".to_string()));
     };
     let base = full[..idx].to_string(); // 如 ""（无前缀）或 "/zap"
-    let rest = full[idx + PMA_MOUNT.len()..]
+    let rest = full[idx + app.mount.len()..]
         .trim_start_matches('/')
         .to_string();
 
@@ -66,7 +102,7 @@ async fn handle(original: &Uri, req: Request) -> Result<Response, (StatusCode, S
     // 浏览器会请求成 `/webapps/js/dist/console.js` → 一片 404 且页面无样式。
     // 这里统一 308 跳到带斜杠的规范地址，并保留查询串（便于携带 ?token=）。
     if rest.is_empty() && !full.ends_with('/') {
-        let mut location = format!("{base}{PMA_MOUNT}/");
+        let mut location = format!("{base}{mount}/", mount = app.mount);
         if let Some(q) = original.query() {
             location.push('?');
             location.push_str(q);
@@ -130,8 +166,8 @@ async fn handle(original: &Uri, req: Request) -> Result<Response, (StatusCode, S
         ));
     };
 
-    // ── 3) 角色 + 权限点（webapp.phpmyadmin:view）────────────
-    crate::routers::access::authorize_page(&claims, PMA_MOUNT, &method).await?;
+    // ── 3) 角色 + 权限点（webapp.phpmyadmin:view / webapp.adminer:view …）────────────
+    crate::routers::access::authorize_page(&claims, app.mount, &method).await?;
 
     // 会话续期：每次成功访问都重新签发一个长有效期 JWT 并写回 Cookie（滑动窗口）。
     // 否则 Cookie 只在登录那一刻下发，有效期一过（浏览器不再发送）就会被提示需要登录。
@@ -144,7 +180,7 @@ async fn handle(original: &Uri, req: Request) -> Result<Response, (StatusCode, S
     .ok();
 
     // ── 4) 起：程序目录 / 文件解析 / 静态直出或 FastCGI 转发 ──
-    let outcome = serve_pma(original, req, &base, &rest, &method).await;
+    let outcome = serve_webapp_inner(app, original, req, &base, &rest, &method).await;
 
     // 成功与失败都要写回续期 Cookie：
     // 否则「首次用 ?token= 进入，但程序未安装 / FPM 未启动」这类场景
@@ -157,27 +193,30 @@ async fn handle(original: &Uri, req: Request) -> Result<Response, (StatusCode, S
 }
 
 /// 鉴权通过后的实际处理：定位程序目录与目标文件，静态直出或转交 PHP-FPM。
-async fn serve_pma(
+async fn serve_webapp_inner(
+    app: WebApp,
     original: &Uri,
     req: Request,
     base: &str,
     rest: &str,
     method: &Method,
 ) -> Result<Response, (StatusCode, String)> {
-    let root = PathBuf::from(PMA_ROOT);
+    let root = PathBuf::from(app.root);
     if !root.is_dir() {
         return Err((
             StatusCode::NOT_FOUND,
-            "未找到 phpMyAdmin 程序目录 /usr/local/apps/phpmyadmin；\
-             请先在「应用商店 → Web 应用程序」安装 phpMyAdmin。"
-                .to_string(),
+            format!(
+                "未找到 {mount} 程序目录 {root}；请先在「应用商店 → Web 应用程序」安装。",
+                mount = app.mount,
+                root = app.root
+            ),
         ));
     }
     let root_real = root.canonicalize().unwrap_or_else(|_| root.clone());
 
     // 目标文件（防目录穿越）
     let rel = if rest.is_empty() {
-        "index.php".to_string()
+        app.index.to_string()
     } else {
         rest.to_string()
     };
@@ -188,9 +227,9 @@ async fn serve_pma(
     if !target_real.starts_with(&root_real) {
         return Err((StatusCode::FORBIDDEN, "非法的文件路径".to_string()));
     }
-    // 目录 → 其下 index.php
+    // 目录 → 其下默认入口文件（index.php / adminer.php …）
     let script_real = if target_real.is_dir() {
-        let p = target_real.join("index.php");
+        let p = target_real.join(app.index);
         if !p.is_file() {
             return Err((StatusCode::FORBIDDEN, "禁止列目录".to_string()));
         }
@@ -217,12 +256,15 @@ async fn serve_pma(
         .map_err(|_| (StatusCode::BAD_REQUEST, "读取请求体失败".to_string()))?;
 
     // 组装 FastCGI 参数并执行
+    let rel_path = script_real
+        .strip_prefix(&root_real)
+        .unwrap_or(&script_real)
+        .to_string_lossy();
     let script_url = format!(
-        "{base}{PMA_MOUNT}/{}",
-        script_real
-            .strip_prefix(&root_real)
-            .unwrap_or(&script_real)
-            .to_string_lossy()
+        "{base}{mount}/{rel_path}",
+        base = base,
+        mount = app.mount,
+        rel_path = rel_path,
     );
     let socket = resolve_fpm_socket().await?;
     let params = build_params(
@@ -238,7 +280,7 @@ async fn serve_pma(
     let fcgi = fastcgi::request(&socket, &params, &body)
         .await
         .map_err(|e| {
-            tracing::warn!("phpMyAdmin FastCGI 请求失败: {e}");
+            tracing::warn!("{mount} FastCGI 请求失败: {e}", mount = app.mount, e = e);
             (StatusCode::BAD_GATEWAY, format!("PHP-FPM 执行失败: {e}"))
         })?;
 
