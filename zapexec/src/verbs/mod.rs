@@ -460,6 +460,10 @@ pub async fn dispatch(req: Request) -> Response {
             .await
         }
         Request::SiteVhostRemove { site_id, name } => site::vhost_remove(site_id, name).await,
+        Request::SiteVhostQuarantine { site_id, name } => {
+            site::vhost_quarantine(site_id, name).await
+        }
+        Request::SiteVhostList => site::vhost_list().await,
         Request::SiteDataRemove {
             web_roots,
             log_roots,

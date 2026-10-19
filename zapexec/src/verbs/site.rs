@@ -3110,6 +3110,96 @@ pub async fn vhost_remove(site_id: i64, name: String) -> Response {
     .unwrap_or_else(|e| Response::err(-1, e))
 }
 
+/// 隔离孤儿 vhost：站点已从数据库移除（或不复存在），但 sites-enabled / sites-available
+/// 里还残留 `zap-site-{id}.conf`。与 `vhost_remove`（真删）不同，这里把配置文件**移入
+/// 备份目录**（而非删除），由 zapd 启动对账（reconcile_orphan_vhosts）调用，方便误判时人工捞回。
+pub async fn vhost_quarantine(site_id: i64, name: String) -> Response {
+    tokio::task::spawn_blocking(move || -> Result<Response, String> {
+        let Some(conf_file) = find_nginx_conf_file() else {
+            return Ok(Response::ok("Nginx 未安装，无需隔离", None));
+        };
+        let bin = nginx_bin(&conf_file);
+        // 旧布局遗留文件：直接删除（已是孤儿，不存在原路径快照可保留的意义）
+        if let Ok(vdir) = vhosts_dir(&conf_file) {
+            let legacy = vdir.join(super::webconf::vhost_name(site_id));
+            if legacy.exists() {
+                let _ = std::fs::remove_file(&legacy);
+            }
+        }
+        let avail = super::webconf::available_path("nginx", site_id);
+        let enabled = super::webconf::enabled_path("nginx", site_id);
+        if !avail.exists() && !enabled.exists() {
+            return Ok(Response::ok("vhost 不存在，无需隔离", None));
+        }
+        // 统一备份目录（按 site id 唯一存放，不会互相覆盖）
+        let bak_dir = super::webconf::available_dir("nginx").join(".orphaned");
+        std::fs::create_dir_all(&bak_dir).map_err(|e| format!("创建备份目录失败: {e}"))?;
+        let _ = std::fs::set_permissions(
+            &bak_dir,
+            std::os::unix::fs::PermissionsExt::from_mode(0o750),
+        );
+        // 先撤掉 sites-enabled 里的软链（否则仍会被 nginx include），再搬走 available 文件
+        if enabled.exists() {
+            let _ = std::fs::remove_file(&enabled);
+        }
+        if avail.exists() {
+            let dst = bak_dir.join(super::webconf::vhost_name(site_id));
+            std::fs::rename(&avail, &dst).map_err(|e| format!("隔离配置文件失败: {e}"))?;
+        }
+        if nginx_running() {
+            reload_nginx(&bin)?;
+        }
+        Ok(Response::ok(
+            format!("孤儿 vhost 已隔离（site {site_id} {name}）→ {bak_dir:?}"),
+            None,
+        ))
+    })
+    .await
+    .unwrap_or_else(|e| Ok(Response::err(-1, format!("任务执行失败: {e}"))))
+    .unwrap_or_else(|e| Response::err(-1, e))
+}
+
+/// 列出磁盘上仍存在的站点 vhost id（`zap-site-{id}.conf`，含 sites-available /
+/// sites-enabled）。目录属主 root，zapd 以 zap 用户无读权限，故由 root 特权的 zapexec
+/// 执行扫描。返回去重后的 id 列表（仅解析 `zap-site-{数字}.conf`，忽略其余文件）。
+pub async fn vhost_list() -> Response {
+    tokio::task::spawn_blocking(|| -> Result<Response, String> {
+        let mut ids: Vec<i64> = Vec::new();
+        for kind in ["nginx", "apache"] {
+            for sub in ["sites-available", "sites-enabled"] {
+                let dir = if sub == "sites-available" {
+                    super::webconf::available_dir(kind)
+                } else {
+                    super::webconf::enabled_dir(kind)
+                };
+                let Ok(rd) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in rd.flatten() {
+                    let fname = entry.file_name().to_string_lossy().to_string();
+                    let Some(id_str) =
+                        fname.strip_prefix("zap-site-").and_then(|s| s.strip_suffix(".conf"))
+                    else {
+                        continue;
+                    };
+                    if let Ok(id) = id_str.parse::<i64>() {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(Response::ok(
+            format!("找到 {} 个站点 vhost", ids.len()),
+            Some(serde_json::json!(ids)),
+        ))
+    })
+    .await
+    .unwrap_or_else(|e| Ok(Response::err(-1, format!("任务执行失败: {e}"))))
+    .unwrap_or_else(|e| Response::err(-1, e))
+}
+
 /// 站点数据目录删除（root）：站点删除时勾选「同时删除网站数据」才调用。
 ///
 /// 清理范围 = 文档根（网站文件）+ 日志目录（access.log / error.log 及其轮转归档），
