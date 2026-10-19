@@ -539,9 +539,12 @@ esac
 MIRROR_CN_BASE="https://mirrors.zap.cn/zap/releases"
 MIRROR_ZAPSH_BASE="https://mirrors.zap.sh/zap/releases"
 GITHUB_RELEASE_BASE="https://github.com/zapsh/zap/releases/download"
+GITHUB_LATEST_DL="https://github.com/zapsh/zap/releases/latest/download"
 GITHUB_API_LATEST="https://api.github.com/repos/zapsh/zap/releases/latest"
 
-# 版本查询地址（latest.txt），按通道排序
+# 版本查询地址（latest.txt），按通道排序。
+# 境外（global / auto）不再维护 latest.txt：版本号由 query_latest_version 末尾直接问
+# GitHub API，这里只返回国内通道的 latest.txt（global 留空 → 直接走 API 兜底）。
 latest_version_urls() {
     case "$MIRROR_MODE" in
         cn)     printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" ;;
@@ -613,7 +616,10 @@ if [ -n "$LOCAL_PKG" ]; then
     NEED_DOWNLOAD=0
 fi
 if [ "$VERSION" = "latest" ] && [ "$NEED_DOWNLOAD" = "1" ]; then
-    if [ "$HAVE_FETCH" = "1" ] && [ "$OFFLINE" != "1" ]; then
+    if [ "$MIRROR_MODE" = "global" ]; then
+        # 境外：直接走 GitHub latest 重定向下载，无需先查版本号
+        info "$(printf "$L_LATEST_VER" "latest")"
+    elif [ "$HAVE_FETCH" = "1" ] && [ "$OFFLINE" != "1" ]; then
         info "$L_QUERY_LATEST"
         if LATEST=$(query_latest_version) && [ -n "$LATEST" ]; then
             VERSION="$LATEST"
