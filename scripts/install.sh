@@ -210,10 +210,10 @@ usage() {
 
 下载通道（境内 / 境外自动回退）：
   --mirror <auto|cn|global>
-                         下载通道。auto（默认）：先 mirrors.zap.cn（腾讯云 COS）查版本并取包，
-                         失败自动改走 GitHub（latest 重定向取包，免查版本号）；
-                         cn：仅用国内镜像；global：仅用 GitHub（境外服务器，latest 走
-                         releases/latest/download 重定向，无需先查版本号）
+                         下载通道。auto（默认）：先 mirrors.zap.cn（腾讯云 COS），
+                         失败自动改走 mirrors.zap.sh（自有境外镜像）；
+                         cn：仅用国内镜像；global：仅用 mirrors.zap.sh（境外镜像）
+                         版本均从对应镜像的 latest.txt 读取，GitHub Releases 仅作下载兜底
   环境变量                ZAP_MIRROR（同上，命令行参数优先）
 
 说明：安装末尾会执行 `zapd --init-admin` 建库并写入管理员（凭据只经命令行传递，
@@ -245,11 +245,10 @@ Initial admin credentials (only on first install with a fresh DB):
 
 Download channel (auto fallback between CN and overseas mirrors):
   --mirror <auto|cn|global>
-                         Download channel. auto (default): try mirrors.zap.cn (Tencent COS) first
-                         for both version and package, then fall back to GitHub (latest redirect for
-                         the package, no version lookup needed);
-                         cn: China mirror only; global: GitHub only (overseas hosts; latest served via
-                         releases/latest/download redirect, no version lookup)
+                         Download channel. auto (default): try mirrors.zap.cn (Tencent COS) first,
+                         then fall back to mirrors.zap.sh (own overseas mirror);
+                         cn: China mirror only; global: mirrors.zap.sh only (overseas mirror).
+                         Version is read from that mirror's latest.txt; GitHub Releases is a download fallback.
   Env vars               ZAP_MIRROR (same values; CLI args take precedence)
 
 Notes: at the end `zapd --init-admin` creates the DB and writes the admin (credentials passed only via CLI,
@@ -504,9 +503,9 @@ case "$OS" in
     *) die "$(printf "$L_OS_UNSUPPORTED" "$OS")" ;;
 esac
 
-# 发行版探测：读 /etc/os-release，仅用于展示与诊断
+# detect
 detect_distro
-# 初始化系统探测：缺失时由 install_services 兜底为后台启动，不再强制 systemd
+
 detect_init
 
 ARCH=$(uname -m)
@@ -521,7 +520,6 @@ info "$(printf "$L_TARGET" "$VERSION" "$DISTRO_NAME" "$INIT_SYS" "$ARCH")"
 
 HAVE_FETCH=0
 if command -v wget >/dev/null 2>&1; then
-    # 超时要显式给：境外机器连国内镜像时，默认超时能把安装卡住好几分钟
     fetch_url()  { wget -q --timeout=15 --tries=1 -O - "$1"; }
     fetch_file() { wget -q --timeout=30 --tries=2 -O "$2" "$1"; }
     HAVE_FETCH=1
@@ -532,13 +530,14 @@ case "$MIRROR_MODE" in
     *) die "$(printf "$L_MIRROR_BAD" "$MIRROR_MODE")" ;;
 esac
 
+# download
 # ── 下载通道 ────────────────────────────────────────────
-# 境内：mirrors.zap.cn（腾讯云 COS，国内速度快），版本号读自有 latest.txt
-# 境外：GitHub 直下。latest 走 releases/latest/download 重定向（固定名资源
-#       zap-linux-<arch>.tar.gz，发版 CI 多传一份），免查版本号、免维护 latest.txt、
-#       也不依赖自有带宽；砍掉 Cloudflare 后只维护两个端点（COS + GitHub）
-# auto：按 国内镜像 → GitHub 顺序逐个尝试，谁通用谁
+# 境内：mirrors.zap.cn（腾讯云 COS，国内速度快），版本查自有 latest.txt
+# 境外：mirrors.zap.sh（自有境外镜像，稳定），版本查 latest.txt
+# GitHub Releases 仅作下载兜底（境外镜像不可达时），不再用于版本查询
+# auto：cn → zap.sh → GitHub 顺序逐个尝试，谁通用谁
 MIRROR_CN_BASE="https://mirrors.zap.cn/zap/releases"
+MIRROR_ZAPSH_BASE="https://mirrors.zap.sh/zap/releases"
 GITHUB_RELEASE_BASE="https://github.com/zapsh/zap/releases/download"
 GITHUB_LATEST_DL="https://github.com/zapsh/zap/releases/latest/download"
 GITHUB_API_LATEST="https://api.github.com/repos/zapsh/zap/releases/latest"
@@ -549,8 +548,8 @@ GITHUB_API_LATEST="https://api.github.com/repos/zapsh/zap/releases/latest"
 latest_version_urls() {
     case "$MIRROR_MODE" in
         cn)     printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" ;;
-        global) : ;;
-        *)      printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" ;;
+        global) printf '%s\n' "${MIRROR_ZAPSH_BASE}/latest.txt" ;;
+        *)      printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" "${MIRROR_ZAPSH_BASE}/latest.txt" ;;
     esac
 }
 
@@ -561,19 +560,13 @@ download_urls_for() {
         cn)
             printf '%s\n' "${MIRROR_CN_BASE}/${f}" ;;
         global)
-            # VERSION=latest 时直接走 GitHub latest 重定向（固定名资源），免查版本号
-            if [ "$VERSION" = "latest" ]; then
-                printf '%s\n' "${GITHUB_LATEST_DL}/zap-linux-${ARCH}.tar.gz"
-            else
-                printf '%s\n' "${GITHUB_RELEASE_BASE}/v${VERSION}/${f}"
-            fi ;;
+            # 境外优先自有镜像 mirrors.zap.sh，GitHub Releases 兜底
+            printf '%s\n' "${MIRROR_ZAPSH_BASE}/${f}"
+            printf '%s\n' "${GITHUB_RELEASE_BASE}/v${VERSION}/${f}" ;;
         *)
             printf '%s\n' "${MIRROR_CN_BASE}/${f}"
-            if [ "$VERSION" = "latest" ]; then
-                printf '%s\n' "${GITHUB_LATEST_DL}/zap-linux-${ARCH}.tar.gz"
-            else
-                printf '%s\n' "${GITHUB_RELEASE_BASE}/v${VERSION}/${f}"
-            fi ;;
+            printf '%s\n' "${MIRROR_ZAPSH_BASE}/${f}"
+            printf '%s\n' "${GITHUB_RELEASE_BASE}/v${VERSION}/${f}" ;;
     esac
 }
 
@@ -593,7 +586,7 @@ valid_version() {
     esac
 }
 
-# 查最新版本号：国内 latest.txt 不通、或境外（无 latest.txt）时，向 GitHub API 问 tag
+# 查最新版本号：mirrors 的 latest.txt 都不通时，最后向 GitHub API 问 tag
 query_latest_version() {
     local url ver
     while IFS= read -r url; do
