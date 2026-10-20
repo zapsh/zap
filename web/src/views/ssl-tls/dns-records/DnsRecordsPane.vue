@@ -251,8 +251,8 @@ async function loadProviders() {
       providerId.value = recordProviders.value[0].id
       await loadDomains()
     }
-  } catch {
-    /* handled */
+  } catch (e) {
+    ElMessage.error((e as any)?.message || '服务商列表加载失败')
   } finally {
     providersLoading.value = false
   }
@@ -270,8 +270,8 @@ async function loadDomains() {
     }
     if (activeDomain.value) await loadRecords(1)
     else records.value = []
-  } catch {
-    /* handled */
+  } catch (e) {
+    ElMessage.error((e as any)?.message || '域名列表加载失败')
   } finally {
     domainsLoading.value = false
   }
@@ -290,8 +290,8 @@ async function loadRecords(p: number) {
     records.value = res.data?.records ?? []
     total.value = res.data?.total ?? 0
     pages.value = res.data?.pages ?? 1
-  } catch {
-    /* handled */
+  } catch (e) {
+    ElMessage.error((e as any)?.message || '解析记录加载失败')
   } finally {
     recordsLoading.value = false
   }
@@ -382,8 +382,8 @@ async function submit() {
     }
     dialog.visible = false
     loadRecords(page.value)
-  } catch {
-    /* handled */
+  } catch (e) {
+    ElMessage.error((e as any)?.message || '解析记录保存失败')
   } finally {
     saving.value = false
   }

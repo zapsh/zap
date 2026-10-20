@@ -814,9 +814,14 @@ impl DnsProvider for Dnspod {
             ("value", r.content.clone()),
             ("ttl", r.ttl.to_string()),
         ];
-        if let Some(line) = &r.line {
-            extra.push(("record_line", line.clone()));
-        }
+        // 线路：未填时按 DNSPod 默认线路（"默认"），空字符串会让 Record.Create /
+        // Record.Modify 报「记录线路不正确」（错误码 26）。与 add_txt 保持一致。
+        let line = r
+            .line
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "默认".to_string());
+        extra.push(("record_line", line));
         if matches!(r.r#type.to_uppercase().as_str(), "MX")
             && let Some(p) = r.priority
         {
@@ -851,9 +856,14 @@ impl DnsProvider for Dnspod {
             ("value", r.content.clone()),
             ("ttl", r.ttl.to_string()),
         ];
-        if let Some(line) = &r.line {
-            extra.push(("record_line", line.clone()));
-        }
+        // 线路：未填时按 DNSPod 默认线路（"默认"），空字符串会让 Record.Create /
+        // Record.Modify 报「记录线路不正确」（错误码 26）。与 add_txt 保持一致。
+        let line = r
+            .line
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "默认".to_string());
+        extra.push(("record_line", line));
         if matches!(r.r#type.to_uppercase().as_str(), "MX")
             && let Some(p) = r.priority
         {
