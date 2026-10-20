@@ -598,6 +598,67 @@ struct DnspodDomains {
     domains: Option<Vec<DnspodDomain>>,
 }
 
+/// DNSPod 旧版接口常把数值字段以字符串返回（如 `record_total: "14"`、`ttl: "600"`）。
+/// 以下几个反序列化器兼容 null / number / string 三种形态，统一成数字。
+fn de_flex_u32<'de, D>(d: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Number(n) => Ok(n.as_u64().unwrap_or(0) as u32),
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                Ok(0)
+            } else {
+                s.parse::<u32>().map_err(D::Error::custom)
+            }
+        }
+        _ => Err(D::Error::custom("期望数值或字符串")),
+    }
+}
+
+fn de_opt_flex_u32<'de, D>(d: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(n) => Ok(Some(n.as_u64().unwrap_or(0) as u32)),
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<u32>().map(Some).map_err(D::Error::custom)
+            }
+        }
+        _ => Err(D::Error::custom("期望数值或字符串")),
+    }
+}
+
+fn de_opt_flex_i64<'de, D>(d: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(n) => Ok(Some(n.as_i64().unwrap_or(0))),
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<i64>().map(Some).map_err(D::Error::custom)
+            }
+        }
+        _ => Err(D::Error::custom("期望数值或字符串")),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct DnspodRecordDetail {
     id: String,
@@ -605,11 +666,11 @@ struct DnspodRecordDetail {
     #[serde(rename = "type")]
     r#type: String,
     value: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_flex_u32")]
     ttl: u32,
     #[serde(default)]
     line: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_opt_flex_u32")]
     mx: Option<u32>,
 }
 
@@ -621,7 +682,7 @@ struct DnspodRecordList {
 
 #[derive(Debug, Deserialize)]
 struct DnspodRecordInfo {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_opt_flex_i64")]
     record_total: Option<i64>,
 }
 
