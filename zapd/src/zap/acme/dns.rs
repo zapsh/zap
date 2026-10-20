@@ -1040,7 +1040,7 @@ impl Namesilo {
 
     /// 找出能承载该主机名的注册基域名（取名字最长的匹配项）。
     async fn split_host(&self, host: &str) -> Result<(String, String), String> {
-        let body: NamesiloDomains = self.call("domainList", vec![]).await?;
+        let body: NamesiloDomains = self.call("listDomains", vec![]).await?;
         let mut best: Option<String> = None;
         for d in body.reply.domains.unwrap_or_default() {
             let owned = format!(".{}", d.trim_end_matches('.'));
@@ -1146,13 +1146,13 @@ impl DnsProvider for Namesilo {
     }
 
     async fn ping(&self) -> Result<String, String> {
-        let body: NamesiloDomains = self.call("domainList", vec![]).await?;
+        let body: NamesiloDomains = self.call("listDomains", vec![]).await?;
         let n = body.reply.domains.map(|d| d.len()).unwrap_or(0);
         Ok(format!("连接正常，账号下共 {n} 个域名"))
     }
 
     async fn list_domains(&self) -> Result<Vec<DnsDomain>, String> {
-        let body: NamesiloDomains = self.call("domainList", vec![]).await?;
+        let body: NamesiloDomains = self.call("listDomains", vec![]).await?;
         Ok(body
             .reply
             .domains
