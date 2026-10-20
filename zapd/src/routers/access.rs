@@ -743,6 +743,17 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Admin,
         Some(Perm::action("appstore.script", "write")),
     ),
+    // ── 脚本密钥环境变量（按用户隔离，加密落盘）：仅管理员 ──
+    (
+        "/appstore/secrets",
+        Required::Admin,
+        Some(Perm::module("appstore.secret")),
+    ),
+    (
+        "/appstore/secrets/delete",
+        Required::Admin,
+        Some(Perm::action("appstore.secret", "delete")),
+    ),
     (
         "/appstore/packages",
         Required::User,
