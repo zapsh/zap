@@ -6,10 +6,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Document, Timer } from '@/icons'
+import { Document, Timer, Key } from '@/icons'
 import NavPillPanels from '@/components/NavPillPanels.vue'
 import ScriptsPanel from './ScriptsPanel.vue'
 import CronPanel from './CronPanel.vue'
+import SecretEnvPanel from '@/components/SecretEnvPanel.vue'
 
 const { t } = useI18n()
 
@@ -32,6 +33,13 @@ const tabs = computed(() => [
     icon: Timer,
     panel: CronPanel,
     hint: t('automationGroups.hintCron'),
+  },
+  {
+    key: 'secrets',
+    label: t('automationSecrets.title'),
+    icon: Key,
+    panel: SecretEnvPanel,
+    hint: t('automationSecrets.hint'),
   },
 ])
 </script>

@@ -187,6 +187,19 @@ export const runScript = (data: { path: string }) => http.post<any>('/appstore/s
 
 export const stopScript = (data: { run_id: string }) => http.post<any>('/appstore/script/stop', data)
 
+// ── 脚本密钥环境变量（按用户隔离，加密落盘）────────────────────
+
+/** 列出当前用户的密钥 key（不回显明文）及更新时间 */
+export const getSecrets = () => http.get<any>('/appstore/secrets')
+
+/** 整体覆盖保存：content 为整段 KEY=VALUE 文本（空串 = 清空） */
+export const saveSecrets = (data: { content: string }) =>
+  http.post<any>('/appstore/secrets', data)
+
+/** 删除单条密钥 */
+export const deleteSecret = (data: { key: string }) =>
+  http.post<any>('/appstore/secrets/delete', data)
+
 // ── 运行记录 / 日志 ─────────────────────────────────────────
 
 export const getRuns = (params: { page?: number; page_size?: number }) =>

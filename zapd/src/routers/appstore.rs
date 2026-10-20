@@ -9,8 +9,11 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use tracing::info;
+use zap_crypto::{decrypt, encrypt};
 
 use crate::routers::plugins::load_user_home;
 use crate::{
@@ -1125,6 +1128,153 @@ pub async fn script_run(
         "message": "脚本已启动",
         "data": { "task_id": run_id, "log": log_path }
     })))
+}
+
+// ── 脚本密钥环境变量（按用户隔离，加密落盘）────────────────────
+//
+// 用户在大输入框里粘贴 `KEY=VALUE` 文本，后端整体加密存到
+// `{data}/users/<username>/secrets.env.enc`；脚本运行时由 zapexec 解密并注入
+// 到进程环境。密钥随脚本归属用户隔离，且**绝不回显明文**（列表只给 key）。
+
+/// 当前用户的密钥文件路径：`{data}/users/<username>/secrets.env.enc`。
+fn user_secrets_path(username: &str) -> Result<PathBuf, ZapError> {
+    user_cron::safe_username(username)?;
+    Ok(ast::data_dir().join("users").join(username).join("secrets.env.enc"))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SecretsSavePayload {
+    /// 整段 KEY=VALUE 文本；空字符串 = 清空该用户所有密钥
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SecretsDeletePayload {
+    pub key: String,
+}
+
+/// 列出当前用户的密钥 **key**（不回显明文）及文件更新时间。
+pub async fn secrets_get(claims: ValidatedClaims) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let path = user_secrets_path(&claims.sub)?;
+    let mut keys: Vec<Value> = Vec::new();
+    let mut updated_at: i64 = 0;
+    if let Ok(blob) = fs::read_to_string(&path) {
+        if let Ok(plain) = decrypt(&blob) {
+            for line in plain.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((k, _)) = line.split_once('=') {
+                    let k = k.trim();
+                    if !k.is_empty() {
+                        keys.push(json!({ "key": k }));
+                    }
+                }
+            }
+        }
+        updated_at = fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+    }
+    Ok(Json(json!({
+        "code": 0,
+        "data": { "keys": keys, "updated_at": updated_at }
+    })))
+}
+
+/// 整体覆盖保存：校验每行含 `=` → 加密写盘（0600）。空内容 = 删除文件。
+pub async fn secrets_save(
+    claims: ValidatedClaims,
+    Json(payload): Json<SecretsSavePayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let path = user_secrets_path(&claims.sub)?;
+    let content = payload.content;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if !line.contains('=') {
+            return Err(ZapError::New(-1, format!("非法行（缺少 = ）: {line}")));
+        }
+    }
+    if content.trim().is_empty() {
+        let _ = fs::remove_file(&path);
+    } else {
+        let enc = encrypt(&content).map_err(|e| ZapError::New(-1, format!("加密失败: {e}")))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| ZapError::New(-1, format!("创建目录失败: {e}")))?;
+        }
+        fs::write(&path, enc.as_bytes()).map_err(|e| ZapError::New(-1, format!("写入失败: {e}")))?;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    audit::log(
+        Some(&claims),
+        None,
+        "appstore_secrets_save",
+        claims.sub.as_str(),
+        "",
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "保存成功" })))
+}
+
+/// 删除单条密钥：解密 → 过滤掉该 key → 重加密写回；删空则删除文件。
+pub async fn secrets_delete(
+    claims: ValidatedClaims,
+    Json(payload): Json<SecretsDeletePayload>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    let key = payload.key.trim().to_string();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+    {
+        return Err(ZapError::New(-1, "非法 key".into()));
+    }
+    let path = user_secrets_path(&claims.sub)?;
+    if !path.exists() {
+        return Err(ZapError::New(-1, "无密钥可删除".into()));
+    }
+    let blob = fs::read_to_string(&path).map_err(|e| ZapError::New(-1, format!("读取失败: {e}")))?;
+    let plain = decrypt(&blob).map_err(|e| ZapError::New(-1, format!("解密失败: {e}")))?;
+    let mut kept: Vec<&str> = Vec::new();
+    for line in plain.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || !line.contains('=') {
+            kept.push(line);
+            continue;
+        }
+        let k = line.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
+        if k == key {
+            continue;
+        }
+        kept.push(line);
+    }
+    let new_content = kept.join("\n");
+    if new_content.trim().is_empty() {
+        let _ = fs::remove_file(&path);
+    } else {
+        let enc = encrypt(&new_content).map_err(|e| ZapError::New(-1, format!("加密失败: {e}")))?;
+        fs::write(&path, enc.as_bytes()).map_err(|e| ZapError::New(-1, format!("写入失败: {e}")))?;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    audit::log(
+        Some(&claims),
+        None,
+        "appstore_secrets_delete",
+        claims.sub.as_str(),
+        "",
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "删除成功" })))
 }
 
 #[derive(Debug, Deserialize)]

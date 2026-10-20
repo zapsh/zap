@@ -1342,6 +1342,47 @@ fn base_env() -> Vec<(String, String)> {
     env
 }
 
+/// 读取某用户的「密钥环境变量」文件（`{data}/users/<username>/secrets.env.enc`）：
+/// 用主密钥解密后按 `KEY=VALUE` 解析，返回要注入脚本运行时的环境变量。
+///
+/// 设计要点：
+/// - 文件不存在 / 解密失败（格式损坏）一律静默返回空，脚本照常跑，不让密钥问题阻断业务；
+/// - 跳过注释行（`#` 开头）与空行；
+/// - **不允许覆盖** ZAP 自身固定变量（ZAP_PATH / ZAPCTL / APPS_DIR / LOG_FILE /
+///   CPU_NUM / ZAP_PY_LIB / ZAP_PKG_MIRROR），避免脚本被带偏而跑飞。
+fn load_secrets_env(username: &str) -> Vec<(String, String)> {
+    const RESERVED: &[&str] = &[
+        "ZAP_PATH", "ZAPCTL", "APPS_DIR", "LOG_FILE", "CPU_NUM", "ZAP_PY_LIB", "ZAP_PKG_MIRROR",
+    ];
+    let mut out = Vec::new();
+    let root = match user_scripts_root(username) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    let blob = match std::fs::read_to_string(root.join("secrets.env.enc")) {
+        Ok(b) => b,
+        Err(_) => return out,
+    };
+    let plain = match zap_crypto::decrypt(&blob) {
+        Ok(p) => p,
+        Err(_) => return out,
+    };
+    for line in plain.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let k = k.trim();
+            if k.is_empty() || RESERVED.contains(&k) {
+                continue;
+            }
+            out.push((k.to_string(), v.trim().to_string()));
+        }
+    }
+    out
+}
+
 /// 读 `{data}/mirror.yaml` 的 `pkg_mirror`（zapd 落盘的那份配置）。
 ///
 /// 只取一个键，不引入完整反序列化：这里要的是「有没有配、配成什么」，
@@ -2383,7 +2424,11 @@ pub async fn script_run(path: String, run_id: String, username: String) -> Respo
             vec![ScriptStep {
                 interpreter: interpreter_of(&resolved),
                 script: resolved,
-                env: base_env(),
+                env: {
+                    let mut e = base_env();
+                    e.extend(load_secrets_env(&username));
+                    e
+                },
                 run_as: RunAs::Root,
             }],
             Box::new(|_| {}),

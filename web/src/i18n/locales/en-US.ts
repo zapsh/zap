@@ -3590,6 +3590,19 @@ const enUS: Messages = {
     deleteFailed: 'Delete failed',
   },
 
+  /** Automation - secret env vars (per-user, encrypted at rest) */
+  automationSecrets: {
+    title: 'Secret Env Vars',
+    hint: 'Inject runtime environment variables (KEY=VALUE) into scripts, isolated per user and encrypted at rest in data/users/<username>/secrets.env.enc',
+    warn: 'Secrets are stored server-side and encrypted; they are injected into the script process environment at runtime. Do not print env vars inside scripts to avoid leaking them into logs',
+    keyList: 'Current keys',
+    key: 'Variable name',
+    editor: 'Edit secrets (KEY=VALUE, one per line; lines starting with # are comments)',
+    placeholder: 'API_KEY=xxxxxx\nDB_PASS=yyyyyy\n# comment lines are not injected\nFOO=bar',
+    saveHint: 'Saving replaces everything: paste all KEY=VALUE pairs and save to overwrite this user\'s secrets; saving empty clears them. Use the button on the right of the list to delete a single key.',
+    confirmDel: 'Delete the secret "{key}"?',
+  },
+
   /** Profile */
   profilePage: {
     title: 'Profile',

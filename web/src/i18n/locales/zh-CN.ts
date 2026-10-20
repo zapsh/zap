@@ -3520,6 +3520,19 @@ export default {
     deleteFailed: '删除失败',
   },
 
+  /** 脚本/自动化 - 密钥环境变量（按用户隔离，加密落盘） */
+  automationSecrets: {
+    title: '密钥环境变量',
+    hint: '为脚本注入运行期环境变量（KEY=VALUE），按用户隔离、加密存储于 data/users/<用户名>/secrets.env.enc',
+    warn: '密钥仅存储于服务端并加密，运行脚本时注入进程环境；脚本内请勿打印环境变量，以免泄露到日志',
+    keyList: '当前密钥',
+    key: '变量名',
+    editor: '编辑密钥（KEY=VALUE，每行一条；# 开头为注释）',
+    placeholder: 'API_KEY=xxxxxx\nDB_PASS=yyyyyy\n# 注释行不会注入\nFOO=bar',
+    saveHint: '保存为整体覆盖：粘贴全部 KEY=VALUE 后保存即覆盖该用户全部密钥；留空保存则清空。删除单条请使用列表右侧按钮。',
+    confirmDel: '确定删除密钥「{key}」？',
+  },
+
   /** 个人中心 */
   profilePage: {
     title: '个人中心',

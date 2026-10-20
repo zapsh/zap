@@ -87,6 +87,7 @@ declare module 'vue' {
     PluginSlot: typeof import('./src/components/PluginSlot.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    SecretEnvPanel: typeof import('./src/components/SecretEnvPanel.vue')['default']
     SshKeyManager: typeof import('./src/components/SshKeyManager.vue')['default']
     SystemMonitor: typeof import('./src/components/SystemMonitor.vue')['default']
     TaskQueuePanel: typeof import('./src/components/TaskQueuePanel.vue')['default']
