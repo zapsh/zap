@@ -1083,20 +1083,22 @@ impl Namesilo {
             .await
             .map_err(|e| format!("请求失败: {e}"))?;
         let body: Value = rsp.json().await.map_err(|e| format!("响应解析失败: {e}"))?;
-        // NameSilo 的 code 在 JSON 里是数字（如 300），不是字符串 "300"，两种情况都兼容。
-        let code = match body.get("code") {
+        // NameSilo 的真实结构：成功/错误码在 reply.code（数字 300 或字符串 "300"），
+        // 说明文字在 reply.detail / reply.message；顶层还有 request 对象。
+        // 因此 code 必须从 body.reply 里取，顶层没有 code 字段。
+        let reply = body.get("reply");
+        let code = match reply.and_then(|r| r.get("code")) {
             Some(Value::String(s)) => s.clone(),
             Some(Value::Number(n)) => n.to_string(),
             _ => String::new(),
         };
         if code != "300" {
-            // NameSilo 的错误响应里说明字段可能是 message，也可能是 detail，且有时会缺省；
-            // 两者都试，仍为空则把原始响应体一并带出，方便定位真实原因。
-            let msg = body
-                .get("message")
+            // 错误说明优先 detail，其次 message；仍为空则把原始响应体一并带出。
+            let msg = reply
+                .and_then(|r| r.get("detail"))
                 .and_then(|m| m.as_str())
-                .or_else(|| body.get("detail").and_then(|m| m.as_str()))
-                .or_else(|| body.get("msg").and_then(|m| m.as_str()))
+                .or_else(|| reply.and_then(|r| r.get("message")).and_then(|m| m.as_str()))
+                .or_else(|| reply.and_then(|r| r.get("msg")).and_then(|m| m.as_str()))
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
             let raw = body.to_string();
@@ -1302,11 +1304,15 @@ mod tests {
 
     #[test]
     fn namesilo_domainlist_parses_numeric_code() {
-        // NameSilo returns code as a number (300), not the string "300"
+        // NameSilo 把 code/detail 放在 reply 里，业务数据（domains）也在 reply 里，
+        // 顶层另有 request 对象。code 既可能是数字 300 也可能是字符串 "300"。
         let body = json!({
-            "code": 300,
-            "message": "good",
-            "reply": { "domains": ["example.com", "test.com"] }
+            "reply": {
+                "code": 300,
+                "detail": "success",
+                "domains": ["example.com", "test.com"]
+            },
+            "request": { "ip": "1.2.3.4", "operation": "listDomains" }
         });
         let d: NamesiloDomains = serde_json::from_value(body).unwrap();
         assert_eq!(
