@@ -21,7 +21,7 @@ use tracing::warn;
 /// （Ed25519 PEM）持有，是 Repository secret，**绝不入仓库**（历史上曾在注释里
 /// 误提交过私钥，已移除并轮换；见下方模块文档）。
 const DEFAULT_RELEASE_PUBKEY_HEX: &str =
-    "6e1e6ed0fdef020b8e70982adae5160bc605f1f211cac2640f8c286d8eb42df9";
+    "2bc517806267debebabcde93f8f54bdc950135e358eef02fed97a04a0b279a31";
 
 /// 返回编译期 pin 的发布公钥（32 字节）；环境变量 `ZAP_RELEASE_PUBKEY` 可覆盖默认。
 pub fn release_pubkey() -> Option<[u8; 32]> {
