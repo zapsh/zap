@@ -406,6 +406,7 @@ pub async fn register_script_run(
     register_script_run_with_key(run_id, action, pkg, username, log_path, "", payload).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn register_run_kind(
     run_id: &str,
     kind: &str,
