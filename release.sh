@@ -4,14 +4,13 @@
 # Orchestrates a release:
 #   1. bump [workspace.package].version in Cargo.toml
 #   2. commit + push (default on a version-bump branch; --no-branch on current branch)
-#   3. (--tag only) tag v<version> + push tag — GitHub Actions then builds, publishes the
-#      GitHub Release, and mirrors packages + latest.txt + install scripts to COS + Cloudflare.
-#   4. (--sync only, fallback if CI mirror step failed) download GitHub Release assets for
-#      <version>, mirror them to COS + Cloudflare.
+#   3. (--tag only) tag v<version> + push tag — GitHub Actions then builds & publishes
+#      the GitHub Release. 镜像发布不在 CI 做（大包体上传对象存储太慢），改由本地 --sync。
+#   4. (--sync only) download GitHub Release assets for <version>, mirror them to
+#      COS + Cloudflare, 并发布 latest.txt + 安装脚本（一条命令完成完整镜像）。
 #
-# Build, packaging AND mirroring are now unified in .github/workflows/release.yml:
-# on a pushed tag the release job builds, creates the GitHub Release, then mirrors
-# everything via zapfile. So `./release.sh <ver> --tag` is the only manual step.
+# 构建/打包在 .github/workflows/release.yml（on tag push）；镜像发布回退到本地
+# `./release.sh <ver> --sync`（zapfile + 本地 ~/.bashrc 里的 COS_ID/COS_KEY/AWS_*）。
 #
 # Usage:
 #   ./release.sh <version> [--no-branch] [--tag] [--no-latest] [--sync]
@@ -19,24 +18,22 @@
 #
 #   Default (contributor PR flow):
 #     bump version -> create branch bump-version-v<ver> -> commit -> push branch
-#     (no tag, no latest.txt; open a PR to merge, then run --tag on main)
+#     (no tag; open a PR to merge, then run --tag on main)
 #   --no-branch (repo owner):
 #     bump version -> commit -> push current branch (no new branch, no tag)
 #   --tag (repo owner, release):
 #     bump version -> commit -> push current branch -> tag v<ver> -> push tag.
-#     GitHub Actions (on the pushed tag) then builds, publishes the GitHub Release,
-#     and mirrors packages + latest.txt + install scripts to COS + Cloudflare
-#     automatically — NO local --sync needed.
-#   --sync (standalone fallback, only if CI mirror step failed):
-#     download GitHub Release assets for v<ver> -> upload to COS (mirrors.zap.cn)
-#     and Cloudflare (mirrors.zap.sh, --aws) under zap/releases/
-#   --no-latest  (deprecated, no-op) latest.txt is now published by CI after packages.
+#     GitHub Actions builds & 发布 GitHub Release；镜像请随后另跑 --sync。
+#   --sync (完整镜像，打 tag 后跑):
+#     download GitHub Release v<ver> -> 上传包体/校验/签名到 COS(mirrors.zap.cn)
+#     与 Cloudflare(mirrors.zap.sh, --aws)，并发布 latest.txt + 安装脚本。
+#   --no-latest  (deprecated, no-op) --sync 总会发布 latest.txt。
 #
 # Env:
 #   RELEASE_BRANCH  base branch to bump from / tag on (default: main)
 #   BUMP_BRANCH     branch name for the default PR flow (default: bump-version-v<ver>)
 #   GITHUB_REPO     owner/repo for --sync download (default: zapsh/zap; override for forks)
-#   COS_ID/COS_KEY  zapfile credentials (only needed for --sync fallback now)
+#   COS_ID/COS_KEY  zapfile 凭证（COS）；AWS_* 为 Cloudflare R2(--aws)。放 ~/.bashrc。
 # __END_USAGE__
 if [ -z "${BASH_VERSION:-}" ]; then
     exec bash "$0" "$@"
@@ -157,7 +154,24 @@ sync_github_assets() {
         zapfile upload zap/releases/ "$f" --aws \
             || die "zapfile upload $n (Cloudflare, --aws) failed"
     done
-    ok "synced GitHub Release $tag -> COS + Cloudflare ($(ls -1 "$tmp" | wc -l) files)"
+    # latest.txt（内容即版本号，面板/安装器据此判断是否可升级）；必须在包体之后发布，
+    # 避免「latest.txt 先发、包体还没传完」导致的 404 升级 race
+    info "publishing latest.txt -> $ver (COS + Cloudflare)"
+    zapfile put "zap/releases/latest.txt" "$ver" \
+        || die "zapfile put latest.txt (COS) failed"
+    zapfile put "zap/releases/latest.txt" "$ver" --aws \
+        || die "zapfile put latest.txt (Cloudflare, --aws) failed"
+    # 安装脚本（zap/install.sh, zap/uninstall.sh）
+    for s in scripts/install.sh scripts/uninstall.sh; do
+        [ -f "$s" ] || die "missing $s"
+        info "uploading $s -> COS (zap/)"
+        zapfile upload zap/ "$s" \
+            || die "zapfile upload $s (COS) failed"
+        info "uploading $s -> Cloudflare (zap/, --aws)"
+        zapfile upload zap/ "$s" --aws \
+            || die "zapfile upload $s (Cloudflare, --aws) failed"
+    done
+    ok "synced GitHub Release $tag -> COS + Cloudflare ($(ls -1 "$tmp" | wc -l) files + latest.txt + scripts)"
     rm -rf "$tmp"
 }
 
