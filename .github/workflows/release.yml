@@ -199,8 +199,7 @@ jobs:
       # 不再需要本地手跑 release.sh --sync。
       - name: Install zapfile
         run: |
-          curl -fsSL https://mirrors.zap.cn/zapfile/zapfile-linux-amd64 -o /usr/local/bin/zapfile \
-            || curl -fsSL https://mirrors.zap.sh/zapfile/zapfile-linux-amd64 -o /usr/local/bin/zapfile \
+          curl -fsSL https://mirrors.zap.sh/zapfile/zapfile-linux-amd64 -o /usr/local/bin/zapfile \
             || { echo "zapfile install failed"; exit 1; }
           chmod +x /usr/local/bin/zapfile
           zapfile version
