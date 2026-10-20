@@ -189,7 +189,6 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sha256
-            dist/*.sha256.sig
             dist/*.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -220,7 +219,7 @@ jobs:
           set -euo pipefail
           ver="${{ steps.version.outputs.version }}"
           echo "mirroring release assets for v${ver} ..."
-          # 包体 + .sha256 + .sha256.sig + .sig + latest 别名（zap-linux-<arch>.tar.gz），都在 dist/ 下
+          # 包体 + .sha256 + .sig + latest 别名（zap-linux-<arch>.tar.gz），都在 dist/ 下
           for f in dist/*; do
             [ -f "$f" ] || continue
             n=$(basename "$f")

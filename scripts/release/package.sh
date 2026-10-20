@@ -15,7 +15,6 @@ usage() {
 Usage:
   scripts/release/package.sh package <target> <binary> <outdir>
   scripts/release/package.sh checksum <outdir>
-  scripts/release/package.sh sign <outdir>
 EOF
 }
 
@@ -57,72 +56,6 @@ checksum_artifacts() {
   find "$outdir" -type f -name "*.tar.gz" -print | sort | while read -r file; do
     sha256sum "$file" | awk '{print $1}' > "${file}.sha256"
   done
-}
-
-sign_checksums() {
-  local outdir="$1"
-  mkdir -p "$outdir"
-
-  # 仅 SSH 签名：用 ssh-keygen -Y sign 对校验和文件签名（与 git SSH 签名同一套）。
-  # 未配置 SSH_PRIVATE_KEY 时跳过。
-  if [[ -z "${SSH_PRIVATE_KEY:-}" ]]; then
-    echo "info: SSH_PRIVATE_KEY not set; skip checksum signing."
-    return 0
-  fi
-
-  sign_ssh "$outdir"
-}
-
-# SSH 签名：对每个 *.sha256 生成 *.sha256.sig（armored 内部格式，无需 .asc）
-# 验证方需准备 allowed_signers 文件，例：
-#   echo "release@example.com $(cat ssh_public_key.pub)" > allowed_signers
-#   ssh-keygen -Y verify -f allowed_signers -I release@example.com -n file -s <file>.sha256.sig < <file>.sha256
-# （签名文件用 -s 传入，被签原文走 stdin；两者写反会报 "missing signature file"）
-sign_ssh() {
-  local outdir="$1"
-
-  local keyfile
-  keyfile="$(mktemp)"
-  chmod 600 "$keyfile"
-  # Windows 上复制出来的密钥常带 CRLF，ssh-keygen 会报含糊的
-  # "Couldn't load public key ...: No such file or directory"；先去掉 CR 并补尾部换行。
-  printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "$keyfile"
-
-  # 始终显式传 -P（口令可以是空串）：否则密钥加密而没给口令时，
-  # ssh-keygen 会停在 "Enter passphrase:" 等交互输入。
-  local extra=(-P "${SSH_KEY_PASSPHRASE:-}")
-
-  # 先自检密钥能否解开。ssh-keygen -Y sign 失败时只会抛含糊的
-  # "Couldn't load public key"，看不出是格式问题还是口令错误，这里先拿到真实原因。
-  local err
-  if ! err="$(ssh-keygen -y -f "$keyfile" "${extra[@]}" < /dev/null 2>&1)"; then
-    warn_sign "SSH private key unusable: ${err}"
-    rm -f "$keyfile"
-    return 0
-  fi
-
-  local rc=0
-  while IFS= read -r file; do
-    if err="$(ssh-keygen -Y sign -f "$keyfile" "${extra[@]}" -n file "$file" < /dev/null 2>&1)"; then
-      echo "signed (ssh): ${file}.sig"
-    else
-      warn_sign "ssh signing failed: ${file}: ${err}"
-      rm -f "${file}.sig"
-      rc=1
-    fi
-  done < <(find "$outdir" -type f -name "*.sha256" -print | sort)
-
-  rm -f "$keyfile"
-  # 签名是可选产物：失败只告警，不阻断发布（tar.gz / sha256 照常上传）
-  return 0
-}
-
-# 告警同时打 GitHub 注解，便于在 Actions 摘要里看到
-warn_sign() {
-  echo "warning: $*" >&2
-  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-    echo "::warning::$*"
-  fi
 }
 
 # 完整发布包（与 build.sh 的 package_variant 一致）：
@@ -189,10 +122,6 @@ case "${1:-}" in
   checksum)
     [[ $# -eq 2 ]] || { usage; exit 2; }
     checksum_artifacts "$2"
-    ;;
-  sign)
-    [[ $# -eq 2 ]] || { usage; exit 2; }
-    sign_checksums "$2"
     ;;
   *)
     usage

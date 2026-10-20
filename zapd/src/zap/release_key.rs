@@ -51,28 +51,36 @@ pub fn verify_release_signature(data: &[u8], sig_hex: &str, pk: &[u8; 32]) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
     fn pubkey_parses_to_32_bytes() {
         assert!(release_pubkey().is_some_and(|k| k.len() == 32));
     }
 
-    // 离线用发布私钥（CI secret ZAP_SIGN_KEY）对固定消息签名得到的 hex，
-    // 与编译期 pin 的公钥配对：验证「verify 通过 + 篡改包体失败 + 非法签名长度失败」。
-    const MSG: &[u8] = b"zap-test-package-bytes";
-    const SIG: &str = "09be644e603ac25e942e87f15f696914da13fd43d06eb175dccee84c8b66215a86f9a854975de131dc5c91ff6fe2e9fa3539a6acec5b1994f1c300affda9e90d";
-
+    // 自包含：临时生成 Ed25519 密钥对，对固定消息签名，验证 verify_release_signature
+    // 的「通过 + 篡改失败 + 签名长度非法失败」三态。不绑定生产私钥，避免密钥轮换时改测试。
     #[test]
-    fn verify_with_pinned_key_ok_and_tamper_fails() {
-        let pk = release_pubkey().expect("pinned pubkey present");
-        assert!(verify_release_signature(MSG, SIG, &pk).is_ok());
+    fn verify_roundtrip_ok_and_tamper_fails() {
+        // 任意 32 字节都可作为 ed25519 私钥种子（clamping 在内部完成），仅用于测试。
+        let secret: [u8; 32] = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
+        ];
+        let sk = SigningKey::from_bytes(&secret);
+        let pk = sk.verifying_key();
+        let msg = b"zap-test-package-bytes";
+        let sig = hex::encode(sk.sign(msg).to_bytes());
+
+        assert!(verify_release_signature(msg, &sig, &pk.to_bytes()).is_ok());
 
         // 篡改包体 → 签名校验必须失败
-        let mut tampered = MSG.to_vec();
+        let mut tampered = msg.to_vec();
         tampered.push(b'X');
-        assert!(verify_release_signature(&tampered, SIG, &pk).is_err());
+        assert!(verify_release_signature(&tampered, &sig, &pk.to_bytes()).is_err());
 
         // 签名 hex 长度非法 → 失败
-        assert!(verify_release_signature(MSG, "00", &pk).is_err());
+        assert!(verify_release_signature(msg, "00", &pk.to_bytes()).is_err());
     }
 }
