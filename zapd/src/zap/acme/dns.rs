@@ -97,6 +97,17 @@ pub fn providers() -> Vec<ProviderMeta> {
             ],
             records: true,
         },
+        ProviderMeta {
+            kind: "namesilo",
+            label: "NameSilo",
+            fields: vec![field(
+                "api_key",
+                "API Key",
+                true,
+                "NameSilo 控制台 → API Manager 生成的 API Key（需勾选 DNS 相关权限）",
+            )],
+            records: true,
+        },
     ]
 }
 
@@ -226,6 +237,9 @@ pub fn build(kind: &str, creds: &Value) -> Result<Box<dyn DnsProvider>, String> 
         "dnspod" => Ok(Box::new(Dnspod {
             id: get("id")?,
             token: get("token")?,
+        })),
+        "namesilo" => Ok(Box::new(Namesilo {
+            api_key: get("api_key")?,
         })),
         other => Err(format!("不支持的 DNS 服务商：{other}")),
     }
@@ -946,6 +960,306 @@ impl DnsProvider for Dnspod {
     }
 }
 
+// ── NameSilo ────────────────────────────────────────────────
+//
+// API 特点（与 Cloudflare / DNSPod 不同之处）：
+// - 成功码是字符串 "300"（不是 1），`code != "300"` 即失败；
+// - 需带 `version=1&type=json&key=<APIKEY>` 走 query，返回 JSON；
+// - 记录操作的 `host` 是「子域名标签」（`@` 表示主域），不是完整 FQDN；
+//   `domain` 必须是 NameSilo 注册的基域名；
+// - TTL 取 NameSilo 允许集合内的值（含 60/300/600/3600 等）。
+const NS_BASE: &str = "https://www.namesilo.com/api";
+
+struct Namesilo {
+    api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct NamesiloDomains {
+    reply: NamesiloDomainReply,
+}
+
+#[derive(Debug, Deserialize)]
+struct NamesiloDomainReply {
+    domains: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NamesiloAddReply {
+    reply: NamesiloAddReplyInner,
+}
+
+#[derive(Debug, Deserialize)]
+struct NamesiloAddReplyInner {
+    record_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NamesiloUnit {}
+
+#[derive(Debug, Deserialize)]
+struct NamesiloRecords {
+    reply: NamesiloRecordsReply,
+}
+
+#[derive(Debug, Deserialize)]
+struct NamesiloRecordsReply {
+    resource_record: Option<Vec<NamesiloRecord>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NamesiloRecord {
+    record_id: String,
+    #[serde(rename = "type")]
+    r#type: String,
+    /// 子域名标签：`@` 表示主域，其余为 www / _acme-challenge 等
+    host: String,
+    value: String,
+    #[serde(deserialize_with = "de_flex_u32")]
+    ttl: u32,
+    /// MX / SRV 优先级（NameSilo 叫 distance）
+    #[serde(default, deserialize_with = "de_opt_flex_u32")]
+    distance: Option<u32>,
+}
+
+impl Namesilo {
+    /// 把前端传入的完整主机名收敛成 NameSilo 的「子域名标签」。
+    /// `www.example.com` → `www`；`example.com` / `@` → `@`。
+    fn host_label(full: &str, base: &str) -> String {
+        let owned = format!(".{}", base.trim_end_matches('.'));
+        let label = full
+            .strip_suffix(&owned)
+            .unwrap_or(full)
+            .trim_end_matches('.');
+        if label.is_empty() {
+            "@".to_string()
+        } else {
+            label.to_string()
+        }
+    }
+
+    /// 找出能承载该主机名的注册基域名（取名字最长的匹配项）。
+    async fn split_host(&self, host: &str) -> Result<(String, String), String> {
+        let body: NamesiloDomains = self.call("domainList", vec![]).await?;
+        let mut best: Option<String> = None;
+        for d in body.reply.domains.unwrap_or_default() {
+            let owned = format!(".{}", d.trim_end_matches('.'));
+            if (host == d || host.ends_with(&owned))
+                && best
+                    .as_ref()
+                    .map(|b| d.len() > b.len())
+                    .unwrap_or(true)
+            {
+                best = Some(d);
+            }
+        }
+        let domain = best.ok_or_else(|| format!("NameSilo 账号下没有能管理 {host} 的域名"))?;
+        let sub = host
+            .strip_suffix(&domain)
+            .unwrap_or(host)
+            .trim_end_matches('.')
+            .to_string();
+        Ok((domain, sub))
+    }
+
+    /// 统一发 NameSilo 请求：GET + query，校验成功码 "300"，解析 reply。
+    async fn call<T: serde::de::DeserializeOwned>(
+        &self,
+        action: &str,
+        params: Vec<(&str, String)>,
+    ) -> Result<T, String> {
+        let mut q: Vec<(String, String)> = vec![
+            ("version".to_string(), "1".to_string()),
+            ("type".to_string(), "json".to_string()),
+            ("key".to_string(), self.api_key.clone()),
+        ];
+        for (k, v) in params {
+            q.push((k.to_string(), v));
+        }
+        let rsp = http()
+            .get(NS_BASE)
+            .query(&q)
+            .send()
+            .await
+            .map_err(|e| format!("请求失败: {e}"))?;
+        let body: Value = rsp.json().await.map_err(|e| format!("响应解析失败: {e}"))?;
+        let code = body
+            .get("code")
+            .and_then(|c| c.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if code != "300" {
+            let msg = body
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("未知错误")
+                .to_string();
+            return Err(format!("NameSilo {action} 失败（{code}）：{msg}"));
+        }
+        serde_json::from_value(body).map_err(|e| format!("响应解析失败: {e}"))
+    }
+}
+
+#[async_trait]
+impl DnsProvider for Namesilo {
+    async fn add_txt(&self, host: &str, value: &str) -> Result<String, String> {
+        let (domain, sub) = self.split_host(host).await?;
+        let body: NamesiloAddReply = self
+            .call(
+                "dnsAddRecord",
+                vec![
+                    ("domain", domain),
+                    ("rrtype", "TXT".to_string()),
+                    ("rrhost", sub),
+                    ("rrvalue", value.to_string()),
+                    // NameSilo 最小 TTL 集合含 60/300/600/3600，3600 最稳
+                    ("rrttl", "3600".to_string()),
+                ],
+            )
+            .await?;
+        body.reply
+            .record_id
+            .ok_or_else(|| "NameSilo 未返回记录 id".to_string())
+    }
+
+    async fn remove_txt(&self, host: &str, record_id: &str) -> Result<(), String> {
+        let (domain, _sub) = self.split_host(host).await?;
+        let _: NamesiloUnit = self
+            .call(
+                "dnsDeleteRecord",
+                vec![("domain", domain), ("rrid", record_id.to_string())],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn ping(&self) -> Result<String, String> {
+        let body: NamesiloDomains = self.call("domainList", vec![]).await?;
+        let n = body.reply.domains.map(|d| d.len()).unwrap_or(0);
+        Ok(format!("连接正常，账号下共 {n} 个域名"))
+    }
+
+    async fn list_domains(&self) -> Result<Vec<DnsDomain>, String> {
+        let body: NamesiloDomains = self.call("domainList", vec![]).await?;
+        Ok(body
+            .reply
+            .domains
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| DnsDomain {
+                id: d.clone(),
+                name: d,
+                status: "active".to_string(),
+            })
+            .collect())
+    }
+
+    async fn list_records(&self, domain: &str, page: u32) -> Result<DnsRecordPage, String> {
+        let (domain_name, _sub) = self.split_host(domain).await?;
+        let body: NamesiloRecords = self
+            .call("dnsListRecords", vec![("domain", domain_name.clone())])
+            .await?;
+        let all: Vec<DnsRecord> = body
+            .reply
+            .resource_record
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| {
+                // 还原成完整 FQDN 便于展示；主域用 `@` 时即基域名本身
+                let name = if r.host == "@" {
+                    domain_name.clone()
+                } else {
+                    format!("{}.{}", r.host, domain_name)
+                };
+                DnsRecord {
+                    id: r.record_id,
+                    name,
+                    r#type: r.r#type,
+                    content: r.value,
+                    ttl: r.ttl,
+                    priority: r.distance,
+                    line: None,
+                }
+            })
+            .collect();
+        let total = all.len() as u64;
+        let per: usize = 50;
+        let pages = if total == 0 {
+            1
+        } else {
+            total.div_ceil(per as u64) as u32
+        };
+        let p = page.max(1) as usize;
+        let start = ((p - 1) * per).min(all.len());
+        let end = (start + per).min(all.len());
+        Ok(DnsRecordPage {
+            records: if start < all.len() {
+                all[start..end].to_vec()
+            } else {
+                vec![]
+            },
+            total,
+            page: p as u32,
+            pages,
+        })
+    }
+
+    async fn create_record(&self, domain: &str, r: &DnsRecordInput) -> Result<String, String> {
+        let (domain_name, _sub) = self.split_host(domain).await?;
+        let host = Self::host_label(&r.name, &domain_name);
+        let body: NamesiloAddReply = self
+            .call(
+                "dnsAddRecord",
+                vec![
+                    ("domain", domain_name),
+                    ("rrtype", r.r#type.clone()),
+                    ("rrhost", host),
+                    ("rrvalue", r.content.clone()),
+                    ("rrttl", r.ttl.to_string()),
+                ],
+            )
+            .await?;
+        body.reply
+            .record_id
+            .ok_or_else(|| "NameSilo 未返回记录 id".to_string())
+    }
+
+    async fn update_record(
+        &self,
+        domain: &str,
+        id: &str,
+        r: &DnsRecordInput,
+    ) -> Result<(), String> {
+        let (domain_name, _sub) = self.split_host(domain).await?;
+        let host = Self::host_label(&r.name, &domain_name);
+        let _: NamesiloUnit = self
+            .call(
+                "dnsUpdateRecord",
+                vec![
+                    ("domain", domain_name),
+                    ("rrid", id.to_string()),
+                    ("rrtype", r.r#type.clone()),
+                    ("rrhost", host),
+                    ("rrvalue", r.content.clone()),
+                    ("rrttl", r.ttl.to_string()),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_record(&self, domain: &str, id: &str) -> Result<(), String> {
+        let (domain_name, _sub) = self.split_host(domain).await?;
+        let _: NamesiloUnit = self
+            .call(
+                "dnsDeleteRecord",
+                vec![("domain", domain_name), ("rrid", id.to_string())],
+            )
+            .await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -961,6 +1275,10 @@ mod tests {
         let m = mask("dnspod", &dnspod);
         assert_eq!(m["id"], json!("123456"));
         assert_eq!(m["token"], json!("abcd****mnop"));
+
+        let ns = json!({ "api_key": "abcdefghijklmnop" });
+        let m = mask("namesilo", &ns);
+        assert_eq!(m["api_key"], json!("abcd****mnop"));
     }
 
     /// 未知服务商不该 panic，返回空对象即可（页面降级显示）。
