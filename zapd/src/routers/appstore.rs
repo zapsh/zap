@@ -1139,7 +1139,10 @@ pub async fn script_run(
 /// 当前用户的密钥文件路径：`{data}/users/<username>/secrets.env.enc`。
 fn user_secrets_path(username: &str) -> Result<PathBuf, ZapError> {
     user_cron::safe_username(username)?;
-    Ok(ast::data_dir().join("users").join(username).join("secrets.env.enc"))
+    Ok(ast::data_dir()
+        .join("users")
+        .join(username)
+        .join("secrets.env.enc"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1209,9 +1212,11 @@ pub async fn secrets_save(
     } else {
         let enc = encrypt(&content).map_err(|e| ZapError::New(-1, format!("加密失败: {e}")))?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| ZapError::New(-1, format!("创建目录失败: {e}")))?;
+            fs::create_dir_all(parent)
+                .map_err(|e| ZapError::New(-1, format!("创建目录失败: {e}")))?;
         }
-        fs::write(&path, enc.as_bytes()).map_err(|e| ZapError::New(-1, format!("写入失败: {e}")))?;
+        fs::write(&path, enc.as_bytes())
+            .map_err(|e| ZapError::New(-1, format!("写入失败: {e}")))?;
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
     }
     audit::log(
@@ -1243,7 +1248,8 @@ pub async fn secrets_delete(
     if !path.exists() {
         return Err(ZapError::New(-1, "无密钥可删除".into()));
     }
-    let blob = fs::read_to_string(&path).map_err(|e| ZapError::New(-1, format!("读取失败: {e}")))?;
+    let blob =
+        fs::read_to_string(&path).map_err(|e| ZapError::New(-1, format!("读取失败: {e}")))?;
     let plain = decrypt(&blob).map_err(|e| ZapError::New(-1, format!("解密失败: {e}")))?;
     let mut kept: Vec<&str> = Vec::new();
     for line in plain.lines() {
@@ -1263,7 +1269,8 @@ pub async fn secrets_delete(
         let _ = fs::remove_file(&path);
     } else {
         let enc = encrypt(&new_content).map_err(|e| ZapError::New(-1, format!("加密失败: {e}")))?;
-        fs::write(&path, enc.as_bytes()).map_err(|e| ZapError::New(-1, format!("写入失败: {e}")))?;
+        fs::write(&path, enc.as_bytes())
+            .map_err(|e| ZapError::New(-1, format!("写入失败: {e}")))?;
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
     }
     audit::log(

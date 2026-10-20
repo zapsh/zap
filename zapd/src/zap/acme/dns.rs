@@ -1054,10 +1054,7 @@ impl Namesilo {
             let d = item.domain;
             let owned = format!(".{}", d.trim_end_matches('.'));
             if (host == d || host.ends_with(&owned))
-                && best
-                    .as_ref()
-                    .map(|b| d.len() > b.len())
-                    .unwrap_or(true)
+                && best.as_ref().map(|b| d.len() > b.len()).unwrap_or(true)
             {
                 best = Some(d);
             }
@@ -1107,7 +1104,11 @@ impl Namesilo {
             let detail = reply
                 .and_then(|r| r.get("detail"))
                 .and_then(|m| m.as_str())
-                .or_else(|| reply.and_then(|r| r.get("message")).and_then(|m| m.as_str()))
+                .or_else(|| {
+                    reply
+                        .and_then(|r| r.get("message"))
+                        .and_then(|m| m.as_str())
+                })
                 .or_else(|| reply.and_then(|r| r.get("msg")).and_then(|m| m.as_str()))
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
@@ -1389,7 +1390,10 @@ mod tests {
 
     #[test]
     fn namesilo_host_label() {
-        assert_eq!(Namesilo::host_label("www.example.com", "example.com"), "www");
+        assert_eq!(
+            Namesilo::host_label("www.example.com", "example.com"),
+            "www"
+        );
         assert_eq!(
             Namesilo::host_label("_acme-challenge.example.com", "example.com"),
             "_acme-challenge"

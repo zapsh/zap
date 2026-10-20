@@ -1352,7 +1352,13 @@ fn base_env() -> Vec<(String, String)> {
 ///   CPU_NUM / ZAP_PY_LIB / ZAP_PKG_MIRROR），避免脚本被带偏而跑飞。
 fn load_secrets_env(username: &str) -> Vec<(String, String)> {
     const RESERVED: &[&str] = &[
-        "ZAP_PATH", "ZAPCTL", "APPS_DIR", "LOG_FILE", "CPU_NUM", "ZAP_PY_LIB", "ZAP_PKG_MIRROR",
+        "ZAP_PATH",
+        "ZAPCTL",
+        "APPS_DIR",
+        "LOG_FILE",
+        "CPU_NUM",
+        "ZAP_PY_LIB",
+        "ZAP_PKG_MIRROR",
     ];
     let mut out = Vec::new();
     let root = match user_scripts_root(username) {

@@ -531,9 +531,10 @@ pub async fn launch_script_run_with_id(
         username: SCRIPT_OWNER.to_string(),
     })
     .map_err(|e| ZapError::New(-1, format!("任务参数序列化失败: {e}")))?;
-    let task =
-        ast::register_script_run_with_key(run_id, action, path, username, &log_path, &key, &payload)
-            .await?;
+    let task = ast::register_script_run_with_key(
+        run_id, action, path, username, &log_path, &key, &payload,
+    )
+    .await?;
     if task.status == crate::zap::task::STATUS_PENDING {
         // 并发已满：已在任务队列排队，调度器放行时才真正执行
         return Ok(run_id.to_string());
