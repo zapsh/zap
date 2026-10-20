@@ -246,6 +246,8 @@ export interface AcmeDnsProviderMeta {
   kind: string
   /** 下拉展示名 */
   label: string
+  /** 是否支持解析记录管理（列出域名 / 增删改记录） */
+  records?: boolean
   fields: Array<{
     /** 提交给后端的字段名 */
     key: string
@@ -274,6 +276,92 @@ export function getAcmeDnsProviders() {
 
 export function getAcmeDnsList() {
   return http.get<ApiResponse<AcmeDnsProviderItem[]>>('/ssl/acme/dns/list')
+}
+
+// ── DNS 解析记录管理 ─────────────────────────────────────
+// 复用已保存的 DNS 服务商凭据，把服务商 API 暴露成解析记录管理操作。
+
+/** 账号下的一个域名（zone） */
+export interface DnsDomainItem {
+  id: string
+  name: string
+  status: string
+}
+
+/** 一条解析记录 */
+export interface DnsRecordItem {
+  id: string
+  /** 主机记录：Cloudflare 为完整 FQDN，DNSPod 为子域名（不含主域） */
+  name: string
+  type: string
+  content: string
+  ttl: number
+  /** MX / SRV 优先级 */
+  priority?: number
+  /** 解析线路（DNSPod） */
+  line?: string
+}
+
+/** 解析记录分页结果 */
+export interface DnsRecordPage {
+  records: DnsRecordItem[]
+  total: number
+  page: number
+  pages: number
+}
+
+/** 新建 / 修改记录的入参 */
+export interface DnsRecordInput {
+  name: string
+  type: string
+  content: string
+  ttl?: number
+  priority?: number
+  line?: string
+}
+
+/** 列出账号下全部域名 */
+export function getDnsDomains(providerId: number) {
+  return http.post<ApiResponse<DnsDomainItem[]>>('/ssl/acme/dns/domains', {
+    provider_id: providerId,
+  })
+}
+
+/** 列出某域名下的解析记录（分页） */
+export function getDnsRecords(params: {
+  provider_id: number
+  domain: string
+  page?: number
+}) {
+  return http.get<ApiResponse<DnsRecordPage>>('/ssl/acme/dns/records', { params })
+}
+
+/** 新增一条记录，返回服务商侧记录 id */
+export function createDnsRecord(data: {
+  provider_id: number
+  domain: string
+  record: DnsRecordInput
+}) {
+  return http.post<ApiResponse<{ id: string }>>('/ssl/acme/dns/record/create', data)
+}
+
+/** 修改一条记录 */
+export function updateDnsRecord(data: {
+  provider_id: number
+  domain: string
+  id: string
+  record: DnsRecordInput
+}) {
+  return http.post<ApiResponse<null>>('/ssl/acme/dns/record/update', data)
+}
+
+/** 删除一条记录 */
+export function deleteDnsRecord(data: {
+  provider_id: number
+  domain: string
+  id: string
+}) {
+  return http.post<ApiResponse<null>>('/ssl/acme/dns/record/delete', data)
 }
 
 export interface AcmeDnsSaveData {

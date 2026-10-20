@@ -51,6 +51,8 @@ pub struct ProviderMeta {
     pub kind: &'static str,
     pub label: &'static str,
     pub fields: Vec<FieldSpec>,
+    /// 是否支持解析记录管理（列出域名 / 增删改记录）；不支持的服务商前端不展示入口
+    pub records: bool,
 }
 
 fn field(key: &'static str, label: &'static str, secret: bool, hint: &'static str) -> FieldSpec {
@@ -74,6 +76,7 @@ pub fn providers() -> Vec<ProviderMeta> {
                 true,
                 "控制台 → My Profile → API Tokens，需「编辑区域 DNS」权限",
             )],
+            records: true,
         },
         ProviderMeta {
             kind: "dnspod",
@@ -92,6 +95,7 @@ pub fn providers() -> Vec<ProviderMeta> {
                     "DNSPod 令牌中的 Token 部分",
                 ),
             ],
+            records: true,
         },
     ]
 }
@@ -102,9 +106,70 @@ fn meta_of(kind: &str) -> Option<ProviderMeta> {
 
 // ── Provider trait ─────────────────────────────────────────
 
+/// 账号下的一个域名（zone）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DnsDomain {
+    /// 服务商侧唯一标识（Cloudflare 为 zone id，DNSPod 为域名本身）
+    pub id: String,
+    /// 域名（用于后续记录操作）
+    pub name: String,
+    /// 状态，如 active
+    pub status: String,
+}
+
+/// 一条解析记录。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DnsRecord {
+    pub id: String,
+    /// 主机记录：Cloudflare 为完整 FQDN，DNSPod 为子域名（不含主域）
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub content: String,
+    #[serde(default = "default_ttl")]
+    pub ttl: u32,
+    /// MX / SRV 优先级
+    #[serde(default)]
+    pub priority: Option<u32>,
+    /// 解析线路（DNSPod）
+    #[serde(default)]
+    pub line: Option<String>,
+}
+
+/// 记录列表分页结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DnsRecordPage {
+    pub records: Vec<DnsRecord>,
+    pub total: u64,
+    pub page: u32,
+    pub pages: u32,
+}
+
+/// 新建 / 修改记录的入参。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DnsRecordInput {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub content: String,
+    #[serde(default = "default_ttl")]
+    pub ttl: u32,
+    #[serde(default)]
+    pub priority: Option<u32>,
+    #[serde(default)]
+    pub line: Option<String>,
+}
+
+fn default_ttl() -> u32 {
+    600
+}
+
 /// DNS 服务商的最小能力集：给某条记录加一个 TXT、删掉它、并自检连通性。
 ///
 /// `host` 一律是完整的待验证主机名（`_acme-challenge.<域>`，已去掉通配前缀）。
+///
+/// 解析记录管理（列出域名 / 增删改记录）是可选能力，默认返回「不支持」，
+/// 由各服务商按需实现；前端依据 [`ProviderMeta::records`] 决定是否展示入口。
 #[async_trait]
 pub trait DnsProvider: Send + Sync {
     /// 添加一条 TXT，返回服务商侧的记录 id（删除时用）。
@@ -113,6 +178,32 @@ pub trait DnsProvider: Send + Sync {
     async fn remove_txt(&self, host: &str, record_id: &str) -> Result<(), String>;
     /// 连通性 / 凭据自检，成功返回一句可读描述（如 zone 数量）。
     async fn ping(&self) -> Result<String, String>;
+
+    /// 列出账号下的全部域名（zone）。
+    async fn list_domains(&self) -> Result<Vec<DnsDomain>, String> {
+        Err("该 DNS 服务商暂不支持解析记录管理".to_string())
+    }
+    /// 列出某域名下的解析记录（分页，per_page = 50）。
+    async fn list_records(&self, _domain: &str, _page: u32) -> Result<DnsRecordPage, String> {
+        Err("该 DNS 服务商暂不支持解析记录管理".to_string())
+    }
+    /// 新增一条记录，返回服务商侧记录 id。
+    async fn create_record(&self, _domain: &str, _r: &DnsRecordInput) -> Result<String, String> {
+        Err("该 DNS 服务商暂不支持解析记录管理".to_string())
+    }
+    /// 修改一条记录。
+    async fn update_record(
+        &self,
+        _domain: &str,
+        _id: &str,
+        _r: &DnsRecordInput,
+    ) -> Result<(), String> {
+        Err("该 DNS 服务商暂不支持解析记录管理".to_string())
+    }
+    /// 删除一条记录。
+    async fn delete_record(&self, _domain: &str, _id: &str) -> Result<(), String> {
+        Err("该 DNS 服务商暂不支持解析记录管理".to_string())
+    }
 }
 
 /// 从（服务商类型, 解密后的凭据 JSON）构造实例。
@@ -247,6 +338,31 @@ struct CfRecord {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct CfRecordDetail {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    r#type: String,
+    content: String,
+    #[serde(default)]
+    ttl: u32,
+    #[serde(default)]
+    priority: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CfRecordList {
+    result: Vec<CfRecordDetail>,
+    #[serde(default)]
+    result_info: Option<CfResultInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CfResultInfo {
+    total_count: i64,
+}
+
 impl Cloudflare {
     fn auth(&self) -> String {
         format!("Bearer {}", self.api_token)
@@ -348,6 +464,120 @@ impl DnsProvider for Cloudflare {
             .unwrap_or(0);
         Ok(format!("连接正常，账号下共 {total} 个域名"))
     }
+
+    async fn list_domains(&self) -> Result<Vec<DnsDomain>, String> {
+        let mut out = Vec::new();
+        for page in 1..=10u32 {
+            let url = format!("{CF_BASE}/zones?page={page}&per_page=50&status=active");
+            let body: Value = self.call(reqwest::Method::GET, url, None).await?;
+            let zones: Vec<CfZone> = serde_json::from_value(
+                body.get("result").cloned().unwrap_or_else(|| json!([])),
+            )
+            .map_err(|e| format!("Cloudflare zone 列表解析失败: {e}"))?;
+            if zones.is_empty() {
+                break;
+            }
+            for z in zones {
+                out.push(DnsDomain {
+                    id: z.id,
+                    name: z.name,
+                    status: "active".to_string(),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    async fn list_records(&self, domain: &str, page: u32) -> Result<DnsRecordPage, String> {
+        let zone = self.zone_for(domain).await?;
+        let url = format!(
+            "{CF_BASE}/zones/{}/dns_records?page={}&per_page=50",
+            zone.id,
+            page.max(1)
+        );
+        let body: CfRecordList = self.call(reqwest::Method::GET, url, None).await?;
+        let records: Vec<DnsRecord> = body
+            .result
+            .into_iter()
+            .map(|r| DnsRecord {
+                id: r.id,
+                name: r.name,
+                r#type: r.r#type,
+                content: r.content,
+                ttl: r.ttl,
+                priority: r.priority,
+                line: None,
+            })
+            .collect();
+        let total = body
+            .result_info
+            .map(|i| i.total_count as u64)
+            .unwrap_or(records.len() as u64);
+        let pages = if total == 0 {
+            1
+        } else {
+            ((total + 49) / 50) as u32
+        };
+        Ok(DnsRecordPage {
+            records,
+            total,
+            page: page.max(1),
+            pages,
+        })
+    }
+
+    async fn create_record(&self, domain: &str, r: &DnsRecordInput) -> Result<String, String> {
+        let zone = self.zone_for(domain).await?;
+        let mut body = json!({
+            "type": r.r#type,
+            "name": r.name,
+            "content": r.content,
+            "ttl": r.ttl,
+        });
+        if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV") {
+            if let Some(p) = r.priority {
+                body["priority"] = json!(p);
+            }
+        }
+        body["proxied"] = json!(false);
+        let url = format!("{CF_BASE}/zones/{}/dns_records", zone.id);
+        let rsp: Value = self.call(reqwest::Method::POST, url, Some(body)).await?;
+        rsp.get("result")
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Cloudflare 未返回记录 id".to_string())
+    }
+
+    async fn update_record(
+        &self,
+        domain: &str,
+        id: &str,
+        r: &DnsRecordInput,
+    ) -> Result<(), String> {
+        let zone = self.zone_for(domain).await?;
+        let mut body = json!({
+            "type": r.r#type,
+            "name": r.name,
+            "content": r.content,
+            "ttl": r.ttl,
+        });
+        if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV") {
+            if let Some(p) = r.priority {
+                body["priority"] = json!(p);
+            }
+        }
+        let url = format!("{CF_BASE}/zones/{}/dns_records/{}", zone.id, id);
+        let _: Value = self.call(reqwest::Method::PATCH, url, Some(body)).await?;
+        Ok(())
+    }
+
+    async fn delete_record(&self, domain: &str, id: &str) -> Result<(), String> {
+        let zone = self.zone_for(domain).await?;
+        let url = format!("{CF_BASE}/zones/{}/dns_records/{}", zone.id, id);
+        let _: Value = self.call(reqwest::Method::DELETE, url, None).await?;
+        Ok(())
+    }
 }
 
 // ── 腾讯云 DNSPod ──────────────────────────────────────────
@@ -363,6 +593,41 @@ const DNSPOD_BASE: &str = "https://dnsapi.cn";
 struct DnspodDomain {
     name: String,
 }
+
+#[derive(Debug, Deserialize)]
+struct DnspodDomains {
+    domains: Option<Vec<DnspodDomain>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DnspodRecordDetail {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    r#type: String,
+    value: String,
+    #[serde(default)]
+    ttl: u32,
+    #[serde(default)]
+    line: Option<String>,
+    #[serde(default)]
+    mx: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DnspodRecordList {
+    records: Option<Vec<DnspodRecordDetail>>,
+    info: Option<DnspodRecordInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DnspodRecordInfo {
+    #[serde(default)]
+    record_total: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DnspodUnit {}
 
 impl Dnspod {
     fn login_token(&self) -> String {
@@ -481,6 +746,129 @@ impl DnsProvider for Dnspod {
         let body: Domains = self.post("Domain.List", vec![]).await?;
         let n = body.domains.map(|d| d.len()).unwrap_or(0);
         Ok(format!("连接正常，账号下共 {n} 个域名"))
+    }
+
+    async fn list_domains(&self) -> Result<Vec<DnsDomain>, String> {
+        let body: DnspodDomains = self.post("Domain.List", vec![]).await?;
+        Ok(body
+            .domains
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| DnsDomain {
+                id: d.name.clone(),
+                name: d.name,
+                status: "active".to_string(),
+            })
+            .collect())
+    }
+
+    async fn list_records(&self, domain: &str, page: u32) -> Result<DnsRecordPage, String> {
+        let (domain_name, _sub) = self.split_host(domain).await?;
+        let offset = (page.max(1) - 1) * 50;
+        let body: DnspodRecordList = self
+            .post(
+                "Record.List",
+                vec![
+                    ("domain", domain_name),
+                    ("offset", offset.to_string()),
+                    ("length", "50".to_string()),
+                ],
+            )
+            .await?;
+        let records: Vec<DnsRecord> = body
+            .records
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| DnsRecord {
+                id: r.id,
+                name: r.name,
+                r#type: r.r#type,
+                content: r.value,
+                ttl: r.ttl,
+                priority: r.mx,
+                line: r.line,
+            })
+            .collect();
+        let total = body
+            .info
+            .and_then(|i| i.record_total)
+            .unwrap_or(records.len() as i64) as u64;
+        let pages = if total == 0 {
+            1
+        } else {
+            ((total + 49) / 50) as u32
+        };
+        Ok(DnsRecordPage {
+            records,
+            total,
+            page: page.max(1),
+            pages,
+        })
+    }
+
+    async fn create_record(&self, domain: &str, r: &DnsRecordInput) -> Result<String, String> {
+        let (domain_name, _sub) = self.split_host(domain).await?;
+        let mut extra: Vec<(&str, String)> = vec![
+            ("domain", domain_name),
+            ("sub_domain", r.name.clone()),
+            ("record_type", r.r#type.clone()),
+            ("value", r.content.clone()),
+            ("ttl", r.ttl.to_string()),
+        ];
+        if let Some(line) = &r.line {
+            extra.push(("record_line", line.clone()));
+        }
+        if matches!(r.r#type.to_uppercase().as_str(), "MX") && r.priority.is_some() {
+            extra.push(("mx", r.priority.unwrap().to_string()));
+        }
+        #[derive(Debug, Deserialize)]
+        struct Created {
+            record: Option<DnspodRecordId>,
+        }
+        #[derive(Debug, Deserialize)]
+        struct DnspodRecordId {
+            id: String,
+        }
+        let body: Created = self.post("Record.Create", extra).await?;
+        body.record
+            .map(|x| x.id)
+            .ok_or_else(|| "DNSPod 未返回记录 id".to_string())
+    }
+
+    async fn update_record(
+        &self,
+        domain: &str,
+        id: &str,
+        r: &DnsRecordInput,
+    ) -> Result<(), String> {
+        let (domain_name, _sub) = self.split_host(domain).await?;
+        let mut extra: Vec<(&str, String)> = vec![
+            ("domain", domain_name),
+            ("record_id", id.to_string()),
+            ("sub_domain", r.name.clone()),
+            ("record_type", r.r#type.clone()),
+            ("value", r.content.clone()),
+            ("ttl", r.ttl.to_string()),
+        ];
+        if let Some(line) = &r.line {
+            extra.push(("record_line", line.clone()));
+        }
+        if matches!(r.r#type.to_uppercase().as_str(), "MX") && r.priority.is_some() {
+            extra.push(("mx", r.priority.unwrap().to_string()));
+        }
+        let _: DnspodUnit = self.post("Record.Modify", extra).await?;
+        Ok(())
+    }
+
+    async fn delete_record(&self, domain: &str, id: &str) -> Result<(), String> {
+        let (domain_name, _sub) = self.split_host(domain).await?;
+        let _: DnspodUnit = self
+            .post(
+                "Record.Remove",
+                vec![("domain", domain_name), ("record_id", id.to_string())],
+            )
+            .await?;
+        Ok(())
     }
 }
 

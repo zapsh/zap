@@ -48,12 +48,17 @@
     
       </el-alert> -->
 
-      <el-tabs v-model="activeTab" class="ssl-tabs">
-        <el-tab-pane name="certs">
-          <template #label>
-            <span class="tab-label">{{ t('sslCerts.cardTitle') }}</span>
-          </template>
-          <el-table :data="tableData" v-loading="loading" stripe>
+      <!-- 顶部 nav pill：证书管理 / 进行中的申请 / 域名解析 -->
+      <div class="ssl-nav">
+        <el-radio-group v-model="viewMode">
+          <el-radio-button value="certs">{{ t('sslCerts.cardTitle') }}</el-radio-button>
+          <el-radio-button value="orders">{{ t('sslCerts.leOrdersBtn') }}</el-radio-button>
+          <el-radio-button value="records">{{ t('sslCerts.dnsRecordsNav') }}</el-radio-button>
+        </el-radio-group>
+      </div>
+
+      <template v-if="viewMode === 'certs'">
+        <el-table :data="tableData" v-loading="loading" stripe>
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column v-if="canManageAll" :label="t('sslCerts.colOwner')" width="160">
           <template #default="{ row }">
@@ -144,18 +149,9 @@
           </template>
         </el-table-column>
       </el-table>
-        </el-tab-pane>
+      </template>
 
-        <el-tab-pane name="orders">
-          <template #label>
-            <span class="tab-label">{{ t('sslCerts.leOrdersBtn') }}</span>
-            <el-badge
-              v-if="orders.length"
-              :value="orders.length"
-              type="primary"
-              class="tab-badge"
-            />
-          </template>
+      <template v-else-if="viewMode === 'orders'">
           <el-alert
             type="info"
             :closable="false"
@@ -193,8 +189,10 @@
             :image-size="90"
             style="padding: 30px 0"
           />
-        </el-tab-pane>
-      </el-tabs>
+      </template>
+      <template v-else-if="viewMode === 'records'">
+        <DnsRecordsPane />
+      </template>
     </el-card>
 
     <!-- 添加 / 编辑 -->
@@ -777,6 +775,7 @@ import {
   MoreFilled,
 } from '@/icons'
 import DnsProvidersPane from '@/views/ssl-tls/dns-providers/DnsProvidersPane.vue'
+import DnsRecordsPane from '@/views/ssl-tls/dns-records/DnsRecordsPane.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { http } from '@/utils/request'
@@ -1648,16 +1647,16 @@ async function loadOrders() {
   }
 }
 
-/** 当前激活页签：certs=证书列表；orders=进行中的申请 */
-const activeTab = ref<'certs' | 'orders'>('certs')
+/** 顶部 nav pill 当前视图：certs=证书列表；orders=进行中的申请；records=域名解析 */
+const viewMode = ref<'certs' | 'orders' | 'records'>('certs')
 
 async function openOrders() {
-  activeTab.value = 'orders'
+  viewMode.value = 'orders'
   loadOrders()
 }
 
-// 切到「进行中的申请」页签时主动拉取，保证进度最新
-watch(activeTab, (tab) => {
+// 切到「进行中的申请」时主动拉取，保证进度最新
+watch(viewMode, (tab) => {
   if (tab === 'orders') loadOrders()
 })
 

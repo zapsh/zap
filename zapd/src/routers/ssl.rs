@@ -1821,6 +1821,151 @@ pub async fn acme_dns_test(
     ))
 }
 
+// ── ACME 的 DNS 解析记录管理 ─────────────────────────────
+//
+// 复用已保存的 DNS 服务商凭据（同一套归属隔离），把服务商 API 暴露成记录管理操作。
+// 记录属高危操作：改错 A / CNAME 可让站点下线，因此写操作全部走审计日志，且要求
+// 凭据归属与请求用户一致（dns_in_scope 已强制）。
+
+/// 按凭据归属可见性载入一个 DNS 服务商实例（解密凭据并构造）。
+async fn dns_records_provider(
+    claims: &jwt::Claims,
+    id: i64,
+) -> Result<Box<dyn acme::dns::DnsProvider>, ZapError> {
+    let row = acme::dns_in_scope(claims, id).await?;
+    let plain = crypto::decrypt(&row.credentials)
+        .map_err(|e| ZapError::New(-1, format!("凭据解密失败: {e}")))?;
+    let creds: serde_json::Value =
+        serde_json::from_str(&plain).map_err(|e| ZapError::New(-1, format!("凭据解析失败: {e}")))?;
+    acme::dns::build(&row.provider, &creds).map_err(|e| ZapError::New(-1, e))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DnsProviderIdQuery {
+    pub provider_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DnsRecordListQuery {
+    pub provider_id: i64,
+    pub domain: String,
+    #[serde(default)]
+    pub page: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DnsRecordWritePayload {
+    pub provider_id: i64,
+    pub domain: String,
+    /// 修改时传记录 id；新建不传
+    #[serde(default)]
+    pub id: Option<String>,
+    pub record: acme::dns::DnsRecordInput,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DnsRecordDeletePayload {
+    pub provider_id: i64,
+    pub domain: String,
+    pub id: String,
+}
+
+/// 列出账号下的全部域名。
+pub async fn acme_dns_domains(
+    claims: ValidatedClaims,
+    Json(q): Json<DnsProviderIdQuery>,
+) -> ZapJsonResult {
+    let p = dns_records_provider(&claims, q.provider_id).await?;
+    let domains = p.list_domains().await.map_err(|e| ZapError::New(-1, e))?;
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": domains })))
+}
+
+/// 列出某域名下的解析记录（分页）。
+pub async fn acme_dns_records(
+    claims: ValidatedClaims,
+    Query(q): Query<DnsRecordListQuery>,
+) -> ZapJsonResult {
+    let p = dns_records_provider(&claims, q.provider_id).await?;
+    let page = p
+        .list_records(&q.domain, q.page)
+        .await
+        .map_err(|e| ZapError::New(-1, e))?;
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": page })))
+}
+
+/// 新增一条解析记录；返回服务商侧记录 id。
+pub async fn acme_dns_record_create(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(q): Json<DnsRecordWritePayload>,
+) -> ZapJsonResult {
+    let p = dns_records_provider(&claims, q.provider_id).await?;
+    let id = p
+        .create_record(&q.domain, &q.record)
+        .await
+        .map_err(|e| ZapError::New(-1, e))?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_dns_record_create",
+        &q.domain,
+        &format!(
+            "provider_id={}, type={}, name={}, content={}",
+            q.provider_id, q.record.r#type, q.record.name, q.record.content
+        ),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": { "id": id } })))
+}
+
+/// 修改一条解析记录。
+pub async fn acme_dns_record_update(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(q): Json<DnsRecordWritePayload>,
+) -> ZapJsonResult {
+    let id = q.id.clone().ok_or_else(|| {
+        ZapError::New(-1, "修改记录需要传入记录 id".to_string())
+    })?;
+    let p = dns_records_provider(&claims, q.provider_id).await?;
+    p.update_record(&q.domain, &id, &q.record)
+        .await
+        .map_err(|e| ZapError::New(-1, e))?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_dns_record_update",
+        &q.domain,
+        &format!(
+            "provider_id={}, record_id={}, type={}, name={}, content={}",
+            q.provider_id, id, q.record.r#type, q.record.name, q.record.content
+        ),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK" })))
+}
+
+/// 删除一条解析记录。
+pub async fn acme_dns_record_delete(
+    claims: ValidatedClaims,
+    Extension(client_addr): Extension<SocketAddr>,
+    Json(q): Json<DnsRecordDeletePayload>,
+) -> ZapJsonResult {
+    let p = dns_records_provider(&claims, q.provider_id).await?;
+    p.delete_record(&q.domain, &q.id)
+        .await
+        .map_err(|e| ZapError::New(-1, e))?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "ssl_dns_record_delete",
+        &q.domain,
+        &format!("provider_id={}, record_id={}", q.provider_id, q.id),
+    )
+    .await;
+    Ok(Json(json!({ "code": 0, "message": "OK" })))
+}
+
 /// 将 PEM 证书链拆为（叶子证书, 中间链），供 crt / ca-bundle 分列存储。
 pub(crate) fn split_leaf_chain(pem: &str) -> (String, String) {
     const END: &str = "-----END CERTIFICATE-----";
