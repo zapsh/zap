@@ -65,8 +65,7 @@ pub async fn status_get(_claims: ValidatedClaims) -> ZapJsonResult {
                 "last_check_has_update": cfg.last_check_has_update != 0,
                 "last_error": cfg.last_error,
             },
-            "upgrading": current_run.is_some()
-                || updater::UPGRADING.load(std::sync::atomic::Ordering::SeqCst),
+            "upgrading": updater::upgrade_in_progress().await,
             "current_run": current_run
                 .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
                 .unwrap_or(Value::Null),

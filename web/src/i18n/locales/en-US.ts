@@ -1213,6 +1213,8 @@ const enUS: Messages = {
     upgradeFailed: 'The upgrade did not complete successfully. Please check the log.',
     connInterrupted:
       'Connection lost (the panel may be restarting). Please reload in a moment to see the upgrade result.',
+    restarting:
+      'The panel is restarting — waiting to recover… (the upgrader finished; the new version should be reachable in a few seconds)',
   },
 
   /** 目录选择窗口（DirPicker） */

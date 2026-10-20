@@ -1211,6 +1211,7 @@ export default {
     upgradeOk: '升级成功，面板即将以新版本重启，请稍后刷新页面查看',
     upgradeFailed: '升级未完全成功，请查看日志',
     connInterrupted: '连接中断（面板可能在重启中），请稍后刷新页面查看升级结果',
+    restarting: '面板正在重启，等待恢复…（升级器安装完成，几秒后即可访问新版本）',
   },
 
   /** 目录选择窗口（DirPicker） */

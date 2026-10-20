@@ -41,6 +41,7 @@
                   type="danger"
                   plain
                   size="small"
+                  :loading="applying"
                   :disabled="!isAdmin || !hasChecked"
                   @click="onApply"
                 >
@@ -249,6 +250,7 @@ const form = reactive({ auto: false, cron: '', channel: '' })
 
 const checking = ref(false)
 const saving = ref(false)
+const applying = ref(false)
 const hasChecked = ref(false)
 const checkMsg = ref<{ type: 'success' | 'info' | 'warning' | 'error'; text: string } | null>(null)
 
@@ -256,6 +258,9 @@ const liveLog = ref('')
 const liveRunId = ref('')
 const liveOffset = ref(0)
 let pollTimer: ReturnType<typeof setInterval> | null = null
+// 面板重启窗口内 getUpdateLog 会连续失败，先重试等待恢复，避免误报「连接中断」
+let restartRetries = 0
+const MAX_RESTART_RETRIES = 24 // 1.5s × 24 ≈ 36s
 
 const historyVisible = ref(false)
 const historyLog = ref('')
@@ -367,6 +372,7 @@ async function onApply() {
     return
   }
   try {
+    applying.value = true
     const res = await applyUpdate()
     status.upgrading = true
     ElMessage.success(t('sysUpdate.applyStarted', { version: res.data.latest }))
@@ -376,11 +382,14 @@ async function onApply() {
       type: 'error',
       text: t('sysUpdate.applyError', { msg: String(e?.message || e) }),
     }
+  } finally {
+    applying.value = false
   }
 }
 
 function startPoll(runId: string, logPath: string) {
   stopPoll()
+  restartRetries = 0
   liveRunId.value = runId
   liveOffset.value = 0
   liveLog.value = `${t('sysUpdate.waitingUpgrader')}\n`
@@ -392,6 +401,7 @@ async function pollLog() {
   if (!liveRunId.value) return
   try {
     const res = await getUpdateLog(liveRunId.value, liveOffset.value)
+    restartRetries = 0
     const d = res.data
     if (d.log) {
       liveLog.value += d.log
@@ -413,7 +423,12 @@ async function pollLog() {
       }, 1500)
     }
   } catch {
-    // zapd 正在重启导致请求中断 → 提示用户刷新查看
+    // zapd 重启窗口内请求会失败：先重试等待恢复，避免误报「连接中断」
+    restartRetries++
+    if (restartRetries === 1) {
+      liveLog.value += `\n${t('sysUpdate.restarting')}\n`
+    }
+    if (restartRetries <= MAX_RESTART_RETRIES) return
     stopPoll()
     ElMessage.warning(t('sysUpdate.connInterrupted'))
   }

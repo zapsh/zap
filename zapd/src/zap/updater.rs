@@ -5,7 +5,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -17,8 +17,13 @@ use tracing::warn;
 use zap_proto::Request;
 
 /// 升级启动阶段互斥（防止手动/自动并发触发）；
-/// 一旦 zapupgrade 已在独立 unit 中运行即释放（运行状态由 task_queue 记录）。
+/// 下载/安装转后台后由运行记录（task_queue）表达「正在升级」，
+/// 本标志仅覆盖「检查版本 → 登记运行」的窗口，run 登记完成后靠记录判断。
 pub static UPGRADING: AtomicBool = AtomicBool::new(false);
+/// UPGRADING 置位时刻（unix 秒），用于卡死自救（后台任务意外死亡时自动复位）。
+static UPGRADING_AT: AtomicU64 = AtomicU64::new(0);
+/// 运行记录是否已登记（登记后以 task_queue 为准，不再依赖本进程标志）。
+static RUN_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// 随发行包分发的二进制清单（与 build.sh / zapupgrade 保持一致）。
 pub const UPGRADE_BINS: [&str; 4] = ["zapd", "zapexec", "zapctl", "zapupgrade"];
@@ -140,15 +145,56 @@ fn http_get_text(url: &str) -> Result<String, ZapError> {
         .map_err(|e| ZapError::New(-1, format!("读取响应失败 {url}: {e}")))
 }
 
-fn http_get_bytes(url: &str) -> Result<Vec<u8>, ZapError> {
+/// 追加一行到升级日志（下载进度用，弱网下让用户看到「还在动」）。
+fn append_log_line(path: &Path, line: &str) {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "[{ts}] {line}");
+    }
+}
+
+/// 下载到内存；`log` 传入时把进度（开始 / 每 8MB / 完成）追加进日志，
+/// 供面板轮询展示——整包几十 MB，弱网下载数分钟，静默会像卡死。
+fn http_get_bytes_progress(url: &str, log: Option<&Path>) -> Result<Vec<u8>, ZapError> {
     let resp = http_agent()
         .get(url)
         .call()
         .map_err(|e| ZapError::New(-1, format!("下载失败 {url}: {e}")))?;
+    let total = resp
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok());
+    if let Some(p) = log {
+        match total {
+            Some(t) => append_log_line(p, &format!("开始下载（约 {} MB）", t / 1024 / 1024 + 1)),
+            None => append_log_line(p, "开始下载 …"),
+        }
+    }
+    let mut reader = resp.into_reader();
     let mut buf = Vec::new();
-    resp.into_reader()
-        .read_to_end(&mut buf)
-        .map_err(|e| ZapError::New(-1, format!("读取响应体失败 {url}: {e}")))?;
+    let mut chunk = [0u8; 64 * 1024];
+    let mut last_report = 0u64;
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|e| ZapError::New(-1, format!("读取响应体失败 {url}: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(p) = log {
+            if buf.len() as u64 - last_report >= 8 * 1024 * 1024 {
+                last_report = buf.len() as u64;
+                append_log_line(p, &format!("已下载 {} MB …", buf.len() / 1024 / 1024));
+            }
+        }
+    }
+    if let Some(p) = log {
+        append_log_line(p, &format!("下载完成，共 {} MB", buf.len() / 1024 / 1024 + 1));
+    }
     Ok(buf)
 }
 
@@ -240,9 +286,12 @@ pub async fn download_and_stage(
     let arch = target_arch()?.to_string();
     let pkg = format!("zap-v{version}{}-linux-{arch}.tar.gz", pkg_suffix());
     let stage = stage_dir_for(run_id);
+    // 在闭包外算好并 move 进去：闭包需 'static，不能捕获 run_id(&str)
+    let log_path = log_path_for(run_id);
     tokio::task::spawn_blocking(move || -> Result<PathBuf, ZapError> {
         let base = format!("{channel}/{pkg}");
-        let data = http_get_bytes(&base)?;
+        // 主包下载写进度日志：弱网下用户能在面板看到进度，而不是全程静默像卡死
+        let data = http_get_bytes_progress(&base, Some(Path::new(&log_path)))?;
 
         // ── Tier 2：发布签名（Ed25519 分离签名 {pkg}.sig）──
         // 签名由 CI 私钥签署，二进制内固化发布公钥；比 sha256 更强（抗中间人替换包体）。
@@ -328,8 +377,11 @@ pub async fn download_and_stage(
 // ── 升级触发与收尾 ──────────────────────────────────────────
 
 /// 启动一次系统升级（手动 / 自动共用）。
-/// 流程：查远端最新版 → 下载+校验+解包 stage → 登记运行 → RPC 拉起 zapupgrade。
-/// 升级包实际执行在 zapexec 拉起的独立 unit 中，本函数返回即触发完成。
+///
+/// 设计要点（修复「点击升级无状态、弱网请求超时、刷新卡在『正在升级』」）：
+/// - 快速预检（仅拉 `latest.txt`，秒级）+ 登记运行记录后**立即返回**；
+/// - 下载整包 + 拉起升级器转后台 `tokio::spawn` 执行，前端轮询日志/状态；
+///   这样不会让 HTTP 请求长时间挂起被网关或前端超时掐断，用户也能实时看到进度。
 pub async fn launch_update(username: &str) -> Result<LaunchInfo, ZapError> {
     if UPGRADING.swap(true, Ordering::SeqCst) {
         return Err(ZapError::New(
@@ -337,12 +389,37 @@ pub async fn launch_update(username: &str) -> Result<LaunchInfo, ZapError> {
             "已有升级任务正在进行中，请稍后再试".to_string(),
         ));
     }
-    let result = launch_update_inner(username).await;
-    UPGRADING.store(false, Ordering::SeqCst);
-    result
+    UPGRADING_AT.store(now_secs(), Ordering::SeqCst);
+
+    // 快速预检（仅碰 latest.txt）+ 登记运行记录，让升级立刻在「状态/历史」可见
+    let prepared = match prepare_update(username).await {
+        Ok(p) => p,
+        Err(e) => {
+            UPGRADING.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
+    };
+    RUN_REGISTERED.store(true, Ordering::SeqCst);
+
+    let info = LaunchInfo {
+        run_id: prepared.run_id.clone(),
+        log_path: prepared.log_path.clone(),
+        latest: prepared.latest.clone(),
+    };
+    tokio::spawn(run_update_background(prepared));
+    Ok(info)
 }
 
-async fn launch_update_inner(username: &str) -> Result<LaunchInfo, ZapError> {
+/// 升级所需参数（HTTP 请求内同步准备好，下载/安装转后台执行）。
+struct PreparedUpdate {
+    channel: String,
+    latest: String,
+    run_id: String,
+    log_path: String,
+}
+
+/// 快速预检：读配置、比对远端版本、登记运行记录。任何失败直接返回、不进后台。
+async fn prepare_update(username: &str) -> Result<PreparedUpdate, ZapError> {
     let cfg = load_config();
     let channel = cfg.channel.clone();
     let current = current_zapd_version();
@@ -365,35 +442,92 @@ async fn launch_update_inner(username: &str) -> Result<LaunchInfo, ZapError> {
     if let Some(parent) = Path::new(&log_path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-
-    let stage = match download_and_stage(&channel, &latest, &run_id).await {
-        Ok(s) => s,
-        Err(e) => {
-            record_check(&latest, true, &e.to_string());
-            return Err(e);
-        }
-    };
-
+    // 先登记 running：点击后立即在升级状态/历史可见，下载进度也实时写入该日志
     ast::register_run(&run_id, ACTION_ZAP_UPDATE, &latest, username, &log_path).await?;
-
-    let resp = zapexec::call(Request::UpgradeRun {
-        run_id: run_id.clone(),
-        stage_dir: stage.to_string_lossy().into_owned(),
-        log_path: log_path.clone(),
-    })
-    .await?;
-    if resp.code != 0 {
-        ast::finish_run(&run_id, "failed", resp.code as i64).await;
-        let msg = format!("启动升级器失败: {}", resp.message);
-        record_check(&latest, true, &msg);
-        return Err(ZapError::New(resp.code, msg));
-    }
-    ast::watch_log(run_id.clone(), log_path.clone());
-    Ok(LaunchInfo {
+    Ok(PreparedUpdate {
+        channel,
+        latest,
         run_id,
         log_path,
-        latest,
     })
+}
+
+/// 后台执行：下载+校验+解包 → 拉起 zapupgrade 安装。失败写日志并收尾。
+async fn run_update_background(p: PreparedUpdate) {
+    append_log_line(
+        Path::new(&p.log_path),
+        &format!("检测到新版本 v{}，开始下载升级包（弱网下可能需要几分钟）…", p.latest),
+    );
+    let stage = match download_and_stage(&p.channel, &p.latest, &p.run_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            append_log_line(Path::new(&p.log_path), &format!("下载或解包失败: {e}"));
+            ast::finish_run(&p.run_id, "failed", -1).await;
+            record_check(&p.latest, true, &e.to_string());
+            UPGRADING.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    append_log_line(
+        Path::new(&p.log_path),
+        "升级包就绪，拉起升级器执行安装（完成后会自动重启面板）…",
+    );
+    let resp = match zapexec::call(Request::UpgradeRun {
+        run_id: p.run_id.clone(),
+        stage_dir: stage.to_string_lossy().into_owned(),
+        log_path: p.log_path.clone(),
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            append_log_line(Path::new(&p.log_path), &format!("拉起升级器失败: {e}"));
+            ast::finish_run(&p.run_id, "failed", -1).await;
+            record_check(&p.latest, true, &e.to_string());
+            UPGRADING.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    if resp.code != 0 {
+        let msg = format!("启动升级器失败: {}", resp.message);
+        append_log_line(Path::new(&p.log_path), &msg);
+        ast::finish_run(&p.run_id, "failed", resp.code as i64).await;
+        record_check(&p.latest, true, &msg);
+        UPGRADING.store(false, Ordering::SeqCst);
+        return;
+    }
+    // 成功：zapupgrade 会自行停服、替换二进制并重启 zapd，本进程随后退出，
+    // UPGRADING 随进程自然清零，无需在此复位。
+    ast::watch_log(p.run_id.clone(), p.log_path.clone());
+}
+
+/// 是否处于升级中（供状态接口使用）。
+///
+/// 以 `task_queue` 的 running 记录为准，并对 UPGRADING 标志做卡死自愈：
+/// 后台任务意外死亡、或 zapd 在重启前异常退出时，标志可能残留为 true；
+/// 此时若已无 running 记录且（已登记过 / 卡死超 180s），则自动复位，
+/// 避免页面永远停在「正在升级」且无法再次触发升级。
+pub async fn upgrade_in_progress() -> bool {
+    if running_run().await.is_some() {
+        return true;
+    }
+    if !UPGRADING.load(Ordering::SeqCst) {
+        return false;
+    }
+    let elapsed = now_secs().saturating_sub(UPGRADING_AT.load(Ordering::SeqCst));
+    if RUN_REGISTERED.load(Ordering::SeqCst) || elapsed > 180 {
+        UPGRADING.store(false, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+/// 当前 unix 秒（用于卡死超时判定）。
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// 当前正在进行的系统升级（`task_queue` 中 action=zap_update 且 status=running 的最新一条）。
