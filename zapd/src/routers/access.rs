@@ -396,6 +396,34 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("ssl", "view")),
     ),
+    // 列出账号下的全部域名（读取授权）
+    (
+        "/ssl/acme/dns/domains",
+        Required::User,
+        Some(Perm::action("ssl", "view")),
+    ),
+    // 列出某域名下的解析记录（读取授权）
+    (
+        "/ssl/acme/dns/records",
+        Required::User,
+        Some(Perm::action("ssl", "view")),
+    ),
+    // 新增一条解析记录（写入授权）
+    (
+        "/ssl/acme/dns/record/create",
+        Required::User,
+        Some(Perm::action("ssl", "update")),
+    ),
+    (
+        "/ssl/acme/dns/record/update",
+        Required::User,
+        Some(Perm::action("ssl", "update")),
+    ),
+    (
+        "/ssl/acme/dns/record/delete",
+        Required::User,
+        Some(Perm::action("ssl", "delete")),
+    ),
     // ── 文件管理：view / write / delete（handler 内按 home 收敛）──
     (
         "/system/files/list",
