@@ -470,10 +470,9 @@ impl DnsProvider for Cloudflare {
         for page in 1..=10u32 {
             let url = format!("{CF_BASE}/zones?page={page}&per_page=50&status=active");
             let body: Value = self.call(reqwest::Method::GET, url, None).await?;
-            let zones: Vec<CfZone> = serde_json::from_value(
-                body.get("result").cloned().unwrap_or_else(|| json!([])),
-            )
-            .map_err(|e| format!("Cloudflare zone 列表解析失败: {e}"))?;
+            let zones: Vec<CfZone> =
+                serde_json::from_value(body.get("result").cloned().unwrap_or_else(|| json!([])))
+                    .map_err(|e| format!("Cloudflare zone 列表解析失败: {e}"))?;
             if zones.is_empty() {
                 break;
             }
@@ -516,7 +515,7 @@ impl DnsProvider for Cloudflare {
         let pages = if total == 0 {
             1
         } else {
-            ((total + 49) / 50) as u32
+            total.div_ceil(50) as u32
         };
         Ok(DnsRecordPage {
             records,
@@ -534,11 +533,10 @@ impl DnsProvider for Cloudflare {
             "content": r.content,
             "ttl": r.ttl,
         });
-        if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV") {
-            if let Some(p) = r.priority {
+        if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV")
+            && let Some(p) = r.priority {
                 body["priority"] = json!(p);
             }
-        }
         body["proxied"] = json!(false);
         let url = format!("{CF_BASE}/zones/{}/dns_records", zone.id);
         let rsp: Value = self.call(reqwest::Method::POST, url, Some(body)).await?;
@@ -562,11 +560,10 @@ impl DnsProvider for Cloudflare {
             "content": r.content,
             "ttl": r.ttl,
         });
-        if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV") {
-            if let Some(p) = r.priority {
+        if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV")
+            && let Some(p) = r.priority {
                 body["priority"] = json!(p);
             }
-        }
         let url = format!("{CF_BASE}/zones/{}/dns_records/{}", zone.id, id);
         let _: Value = self.call(reqwest::Method::PATCH, url, Some(body)).await?;
         Ok(())
@@ -796,7 +793,7 @@ impl DnsProvider for Dnspod {
         let pages = if total == 0 {
             1
         } else {
-            ((total + 49) / 50) as u32
+            total.div_ceil(50) as u32
         };
         Ok(DnsRecordPage {
             records,
@@ -818,8 +815,10 @@ impl DnsProvider for Dnspod {
         if let Some(line) = &r.line {
             extra.push(("record_line", line.clone()));
         }
-        if matches!(r.r#type.to_uppercase().as_str(), "MX") && r.priority.is_some() {
-            extra.push(("mx", r.priority.unwrap().to_string()));
+        if matches!(r.r#type.to_uppercase().as_str(), "MX")
+            && let Some(p) = r.priority
+        {
+            extra.push(("mx", p.to_string()));
         }
         #[derive(Debug, Deserialize)]
         struct Created {
@@ -853,8 +852,10 @@ impl DnsProvider for Dnspod {
         if let Some(line) = &r.line {
             extra.push(("record_line", line.clone()));
         }
-        if matches!(r.r#type.to_uppercase().as_str(), "MX") && r.priority.is_some() {
-            extra.push(("mx", r.priority.unwrap().to_string()));
+        if matches!(r.r#type.to_uppercase().as_str(), "MX")
+            && let Some(p) = r.priority
+        {
+            extra.push(("mx", p.to_string()));
         }
         let _: DnspodUnit = self.post("Record.Modify", extra).await?;
         Ok(())
