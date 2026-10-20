@@ -114,12 +114,19 @@
           <span class="form-hint">{{ t('sysUpdate.cronHint') }}</span>
         </el-form-item>
         <el-form-item :label="t('sysUpdate.channel')">
-          <el-input
+          <el-select
             v-model="form.channel"
             class="w-480"
+            filterable
+            allow-create
+            default-first-option
             :disabled="!isAdmin"
-            placeholder="https://mirrors.zap.cn/zap/releases"
-          />
+            :placeholder="t('sysUpdate.channelPlaceholder')"
+          >
+            <el-option :label="t('sysUpdate.channelGithub')" value="https://github.com/zapsh/zap/releases" />
+            <el-option :label="t('sysUpdate.channelCn')" value="https://mirrors.zap.cn/zap/releases" />
+            <el-option :label="t('sysUpdate.channelSh')" value="https://mirrors.zap.sh/zap/releases" />
+          </el-select>
           <span class="form-hint">{{ t('sysUpdate.channelHint') }}</span>
         </el-form-item>
         <el-form-item :label="t('sysUpdate.lastCheck')">

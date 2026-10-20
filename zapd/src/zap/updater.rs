@@ -130,6 +130,7 @@ pub fn channel_allowed(channel: &str, allow_insecure: bool) -> bool {
 
 fn http_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
+        .user_agent("zap-updater")
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout_read(std::time::Duration::from_secs(120))
         .timeout_write(std::time::Duration::from_secs(120))
@@ -215,12 +216,60 @@ pub fn target_arch() -> Result<&'static str, ZapError> {
     }
 }
 
-/// 查询远端渠道的 `latest.txt` 得到最新版本号。
+/// 是否为 GitHub Release 渠道（GitHub 没有 latest.txt，需走 API 取最新 tag，
+/// 且包体在 `.../download/v{ver}/` 路径下）。
+fn is_github_channel(channel: &str) -> bool {
+    channel.contains("github.com")
+}
+
+/// 查 GitHub 最新版本：解析 `https://github.com/<owner>/<repo>/releases` 推出
+/// owner/repo，再调 api.github.com 读 latest release 的 tag_name。
+async fn github_latest_version(channel: &str) -> Result<String, ZapError> {
+    let parts: Vec<&str> = channel.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() < 5 || parts[2] != "github.com" {
+        return Err(ZapError::New(
+            -1,
+            format!("GitHub 渠道格式应为 https://github.com/<owner>/<repo>/releases，实际: {channel}"),
+        ));
+    }
+    let api = format!(
+        "https://api.github.com/repos/{}/{}/releases/latest",
+        parts[3], parts[4]
+    );
+    tokio::task::spawn_blocking(move || -> Result<String, ZapError> {
+        let text = http_get_text(&api).map_err(|e| {
+            ZapError::New(-1, format!("查询 GitHub 最新版本失败（需联网且未触发 API 限流）: {e}"))
+        })?;
+        let tag = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| v.get("tag_name").and_then(|t| t.as_str()).map(|s| s.to_string()))
+            .ok_or_else(|| {
+                ZapError::New(
+                    -1,
+                    "GitHub API 未返回 tag_name（可能触发限流或非公开仓库）".to_string(),
+                )
+            })?;
+        let v = tag.trim_start_matches('v').to_string();
+        if v.is_empty() {
+            return Err(ZapError::New(-1, "GitHub 最新版本号为空".to_string()));
+        }
+        Ok(v)
+    })
+    .await
+    .map_err(|e| ZapError::New(-1, format!("GitHub 查询任务异常: {e}")))?
+}
+
+/// 查询远端渠道的最新版本号。
+/// - 镜像类渠道：`{channel}/latest.txt`
+/// - GitHub 渠道：api.github.com 读 latest release 的 tag_name
 pub async fn check_remote_version(channel: &str) -> Result<String, ZapError> {
     let channel = channel.trim_end_matches('/').to_string();
     // 渠道强制 https（insecure 模式除外）：与下载路径一致
     if !channel_allowed(&channel, load_config().allow_insecure_update != 0) {
         return Err(ZapError::New(-1, "更新渠道必须为 https://".to_string()));
+    }
+    if is_github_channel(&channel) {
+        return github_latest_version(&channel).await;
     }
     tokio::task::spawn_blocking(move || {
         let url = format!("{channel}/latest.txt");
@@ -295,7 +344,12 @@ pub async fn download_and_stage(
     // 在闭包外算好并 move 进去：闭包需 'static，不能捕获 run_id(&str)
     let log_path = log_path_for(run_id);
     tokio::task::spawn_blocking(move || -> Result<PathBuf, ZapError> {
-        let base = format!("{channel}/{pkg}");
+        // GitHub 渠道包体在 .../download/v{ver}/ 下；镜像类渠道即 channel 根
+        let base = if is_github_channel(&channel) {
+            format!("{channel}/download/v{version}/{pkg}")
+        } else {
+            format!("{channel}/{pkg}")
+        };
         // 主包下载写进度日志：弱网下用户能在面板看到进度，而不是全程静默像卡死
         let data = http_get_bytes_progress(&base, Some(Path::new(&log_path)))?;
 

@@ -1170,8 +1170,12 @@ const enUS: Messages = {
     cronPlaceholder: 'e.g. 0 3 * * * (daily at 03:00)',
     cronHint: 'Standard 5-field cron: minute hour day month weekday (supports * / */n a-b a,b)',
     channel: 'Update Channel',
+    channelPlaceholder: 'https://mirrors.zap.cn/zap/releases',
+    channelGithub: 'GitHub (official releases)',
+    channelCn: 'Mirror (COS · China)',
+    channelSh: 'Mirror (Cloudflare · overseas)',
     channelHint:
-      'Directory containing the release packages and latest.txt (must start with http(s)://)',
+      'Directory containing the release packages (must start with https://). Mirror channels read latest.txt; GitHub auto-resolves the latest version via API',
     lastCheck: 'Last Check',
     foundNewVersion: 'New version v{version} available',
     upToDate: 'Already up to date',
