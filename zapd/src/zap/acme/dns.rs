@@ -534,9 +534,10 @@ impl DnsProvider for Cloudflare {
             "ttl": r.ttl,
         });
         if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV")
-            && let Some(p) = r.priority {
-                body["priority"] = json!(p);
-            }
+            && let Some(p) = r.priority
+        {
+            body["priority"] = json!(p);
+        }
         body["proxied"] = json!(false);
         let url = format!("{CF_BASE}/zones/{}/dns_records", zone.id);
         let rsp: Value = self.call(reqwest::Method::POST, url, Some(body)).await?;
@@ -561,9 +562,10 @@ impl DnsProvider for Cloudflare {
             "ttl": r.ttl,
         });
         if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV")
-            && let Some(p) = r.priority {
-                body["priority"] = json!(p);
-            }
+            && let Some(p) = r.priority
+        {
+            body["priority"] = json!(p);
+        }
         let url = format!("{CF_BASE}/zones/{}/dns_records/{}", zone.id, id);
         let _: Value = self.call(reqwest::Method::PATCH, url, Some(body)).await?;
         Ok(())

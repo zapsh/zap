@@ -191,10 +191,11 @@ fn http_get_bytes_progress(url: &str, log: Option<&Path>) -> Result<Vec<u8>, Zap
         }
         buf.extend_from_slice(&chunk[..n]);
         if let Some(p) = log
-            && buf.len() as u64 - last_report >= 8 * 1024 * 1024 {
-                last_report = buf.len() as u64;
-                append_log_line(p, &format!("已下载 {} MB …", buf.len() / 1024 / 1024));
-            }
+            && buf.len() as u64 - last_report >= 8 * 1024 * 1024
+        {
+            last_report = buf.len() as u64;
+            append_log_line(p, &format!("已下载 {} MB …", buf.len() / 1024 / 1024));
+        }
     }
     if let Some(p) = log {
         append_log_line(
@@ -229,7 +230,9 @@ async fn github_latest_version(channel: &str) -> Result<String, ZapError> {
     if parts.len() < 5 || parts[2] != "github.com" {
         return Err(ZapError::New(
             -1,
-            format!("GitHub 渠道格式应为 https://github.com/<owner>/<repo>/releases，实际: {channel}"),
+            format!(
+                "GitHub 渠道格式应为 https://github.com/<owner>/<repo>/releases，实际: {channel}"
+            ),
         ));
     }
     let api = format!(
@@ -238,11 +241,18 @@ async fn github_latest_version(channel: &str) -> Result<String, ZapError> {
     );
     tokio::task::spawn_blocking(move || -> Result<String, ZapError> {
         let text = http_get_text(&api).map_err(|e| {
-            ZapError::New(-1, format!("查询 GitHub 最新版本失败（需联网且未触发 API 限流）: {e}"))
+            ZapError::New(
+                -1,
+                format!("查询 GitHub 最新版本失败（需联网且未触发 API 限流）: {e}"),
+            )
         })?;
         let tag = serde_json::from_str::<Value>(&text)
             .ok()
-            .and_then(|v| v.get("tag_name").and_then(|t| t.as_str()).map(|s| s.to_string()))
+            .and_then(|v| {
+                v.get("tag_name")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+            })
             .ok_or_else(|| {
                 ZapError::New(
                     -1,
