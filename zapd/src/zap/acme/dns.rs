@@ -1090,13 +1090,23 @@ impl Namesilo {
             _ => String::new(),
         };
         if code != "300" {
+            // NameSilo 的错误响应里说明字段可能是 message，也可能是 detail，且有时会缺省；
+            // 两者都试，仍为空则把原始响应体一并带出，方便定位真实原因。
             let msg = body
                 .get("message")
                 .and_then(|m| m.as_str())
+                .or_else(|| body.get("detail").and_then(|m| m.as_str()))
+                .or_else(|| body.get("msg").and_then(|m| m.as_str()))
                 .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "未知错误".to_string());
-            return Err(format!("NameSilo {action} 失败（{code}）：{msg}"));
+                .map(|s| s.to_string());
+            let raw = body.to_string();
+            let raw = if raw.len() > 400 {
+                format!("{}…", &raw[..400])
+            } else {
+                raw
+            };
+            let msg = msg.unwrap_or_else(|| "未知错误".to_string());
+            return Err(format!("NameSilo {action} 失败（{code}）：{msg} | 响应: {raw}"));
         }
         serde_json::from_value(body).map_err(|e| format!("响应解析失败: {e}"))
     }
