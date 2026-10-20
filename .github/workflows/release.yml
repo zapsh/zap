@@ -139,16 +139,9 @@ jobs:
           chmod +x scripts/release/package.sh
           bash scripts/release/package.sh checksum "dist"
 
-      # secrets 上下文不能用在 if: 里；密钥未配置时 package.sh 会自行跳过签名。
-      # 注意：SSH_PRIVATE_KEY 需配置为 Repository secret（环境 secret 需 job 声明 environment 才可见）。
-      - name: Optional sign shasum files (SSH)
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_KEY_PASSPHRASE: ${{ secrets.SSH_KEY_PASSPHRASE }}
-        run: |
-          chmod +x scripts/release/package.sh
-          bash scripts/release/package.sh sign "dist"
-
+      # 注：原先还有一步用 SSH_PRIVATE_KEY 给 .sha256 签 SSH 签名（.sha256.sig），
+      # 该文件没有任何消费方（zapd/zapupgrade 不校验它），属于无用的第二把私钥，
+      # 已整体移除，避免把 SSH 私钥引入发布流水线。
       # Ed25519 发布签名（{pkg}.sig，hex 分离签名）：zapd/zapupgrade 用编译期 pin 的
       # 公钥验证包体，这是自动更新信任根的关键一层（sha256 可被中间人静默跳过）。
       # 私钥为 Repository secret ZAP_SIGN_KEY（PKCS#8 Ed25519 PEM 文本，与 build.sh

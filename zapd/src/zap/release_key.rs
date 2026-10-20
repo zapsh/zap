@@ -5,7 +5,9 @@
 //! （中间人只要让 `.sha256` 取不到即可静默跳过），因此引入**经私钥签名的发布包**：
 //! 二进制内固化发布公钥，下载阶段先验证签名再解包。
 //!
-//! - 私钥由 CI 以 `ZAP_SIGN_KEY`（Ed25519 PEM 路径）持有，绝不入仓库；
+//! - 私钥由 CI 以 `ZAP_SIGN_KEY`（Ed25519 PEM）持有，是 Repository secret，
+//!   **绝不入仓库**（公钥才可公开）。历史上曾在源码注释里误提交过私钥，
+//!   该私钥已视为泄露并轮换；请勿再把任何私钥写回仓库。
 //! - 公钥默认固化于 [`DEFAULT_RELEASE_PUBKEY_HEX`]，构建时可用环境变量
 //!   `ZAP_RELEASE_PUBKEY`（hex）覆盖以完成密钥轮换；
 //! - 若构建/运行环境均未提供公钥，则跳过签名校验（仅余 sha256），并告警。
@@ -15,12 +17,9 @@ use tracing::warn;
 
 /// 默认发布公钥（Ed25519 原始 32 字节，hex）。
 ///
-/// 对应私钥（CI secret `ZAP_SIGN_KEY`）：
-/// ```text
-/// -----BEGIN PRIVATE KEY-----
-/// MC4CAQAwBQYDK2VwBCIEIHBAMzHq/0U+0lvvG2FVVdka7wF/6O9/pvWc7UB8OOvs
-/// -----END PRIVATE KEY-----
-/// ```
+/// 仅用于**验签**，可安全公开编译进二进制。对应**私钥**由 CI 以 `ZAP_SIGN_KEY`
+/// （Ed25519 PEM）持有，是 Repository secret，**绝不入仓库**（历史上曾在注释里
+/// 误提交过私钥，已移除并轮换；见下方模块文档）。
 const DEFAULT_RELEASE_PUBKEY_HEX: &str =
     "6e1e6ed0fdef020b8e70982adae5160bc605f1f211cac2640f8c286d8eb42df9";
 
