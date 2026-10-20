@@ -319,9 +319,14 @@ pub async fn download_and_stage(
         // ── Tier 1：sha256 强校验（fail-closed，缺失 / 不匹配均拒绝）──
         // 旧实现用 unwrap_or_default() 在 .sha256 取不到时静默跳过，已被绕过；
         // 现在缺失即拒绝安装（insecure 模式除外）。
+        // .sha256 是 sha256sum 输出格式 "<hex>  <文件名>"（--sync 从仓库根生成时带
+        // dist/ 前缀），只取第一个字段做比较，裸 hex 与带文件名两种都兼容。
         let expected = http_get_text(&format!("{base}.sha256"))
-            .map(|s| s.trim().to_string())
-            .map_err(|e| ZapError::New(-1, format!("下载校验文件 .sha256 失败: {e}")))?;
+            .map_err(|e| ZapError::New(-1, format!("下载校验文件 .sha256 失败: {e}")))?
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
         if expected.is_empty() {
             if allow_insecure {
                 warn!("缺少 .sha256，insecure 模式：跳过完整性校验");
@@ -332,7 +337,7 @@ pub async fn download_and_stage(
                 ));
             }
         } else {
-            let actual = to_hex(&sha2::Sha256::digest(&data));
+            let actual = to_hex(&sha2::Sha256::digest(&data)).to_ascii_lowercase();
             if !actual.eq_ignore_ascii_case(&expected) {
                 return Err(ZapError::New(
                     -1,

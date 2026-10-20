@@ -736,11 +736,14 @@ fn download_and_stage(
     log_line(log, &format!("下载发行包: {base}"));
 
     let data = http_get_bytes(&base)?;
-    // 校验：发行侧上传同名 .sha256（build.sh），远端缺失/为空时跳过强校验
+    // 校验：发行侧上传同名 .sha256（build.sh），远端缺失/为空时跳过强校验。
+    // 文件格式是 sha256sum 输出 "<hex>  <文件名>"（--sync 从仓库根生成时带 dist/ 前缀），
+    // 只取第一个字段做比较，裸 hex 与带文件名两种格式都兼容。
     let expected = http_get_text(&format!("{base}.sha256"))
-        .map(|s| s.trim().to_string())
+        .ok()
+        .and_then(|s| s.split_whitespace().next().map(|h| h.to_ascii_lowercase()))
         .unwrap_or_default();
-    let actual = to_hex(&sha2::Sha256::digest(&data));
+    let actual = to_hex(&sha2::Sha256::digest(&data)).to_ascii_lowercase();
     if !expected.is_empty() && !actual.eq_ignore_ascii_case(&expected) {
         return Err(format!(
             "发行包校验失败：sha256 不匹配（期望 {expected}，实际 {actual}）"

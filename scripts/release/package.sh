@@ -50,8 +50,12 @@ checksum_artifacts() {
   local outdir="$1"
   mkdir -p "$outdir"
 
+  # 只写裸 hex，不带文件名：sha256sum "<路径>" 会把路径（可能是绝对路径或
+  # dist/ 前缀）一起写进 .sha256，而面板 / zapupgrade 的校验是「整行 vs 计算值」
+  # 比较，带路径必然不匹配（老版本二进制尤其如此）。新校验端虽然兼容
+  # "<hex>  <文件名>" 格式，但发行侧统一裸 hex 最稳。
   find "$outdir" -type f -name "*.tar.gz" -print | sort | while read -r file; do
-    sha256sum "$file" > "${file}.sha256"
+    sha256sum "$file" | awk '{print $1}' > "${file}.sha256"
   done
 }
 
