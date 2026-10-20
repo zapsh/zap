@@ -4212,7 +4212,7 @@ export default {
     dnsRecordsType: '记录类型',
     dnsRecordsHost: '主机记录',
     dnsRecordsHostPh: '如 www（子域名）或完整域名',
-    dnsRecordsHostHint: 'Cloudflare 填完整域名；DNSPod / NameSilo 填子域名（不含主域，主域用 @）',
+    dnsRecordsHostHint: "Cloudflare 填完整域名；DNSPod / NameSilo 填子域名（不含主域，主域用 {'@'}）",
     dnsRecordsValue: '记录值',
     dnsRecordsValuePh: '如 1.2.3.4 或 target.example.com',
     dnsRecordsTtl: 'TTL(秒)',

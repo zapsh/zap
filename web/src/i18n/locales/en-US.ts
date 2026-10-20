@@ -4297,7 +4297,7 @@ const enUS: Messages = {
     dnsRecordsType: 'Type',
     dnsRecordsHost: 'Host',
     dnsRecordsHostPh: 'e.g. www (subdomain) or the full domain name',
-    dnsRecordsHostHint: 'Cloudflare expects the full domain; DNSPod / NameSilo expect the subdomain (without the root, use @ for the root)',
+    dnsRecordsHostHint: "Cloudflare expects the full domain; DNSPod / NameSilo expect the subdomain (without the root, use {'@'} for the root)",
     dnsRecordsValue: 'Value',
     dnsRecordsValuePh: 'e.g. 1.2.3.4 or target.example.com',
     dnsRecordsTtl: 'TTL (sec)',

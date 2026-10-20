@@ -981,7 +981,13 @@ struct NamesiloDomains {
 
 #[derive(Debug, Deserialize)]
 struct NamesiloDomainReply {
-    domains: Option<Vec<String>>,
+    /// 官方 listDomains 响应：domains 是对象数组 [{domain, created, expires, maxBid}]
+    domains: Option<Vec<NamesiloDomainItem>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NamesiloDomainItem {
+    domain: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1015,7 +1021,7 @@ struct NamesiloRecord {
     /// 子域名标签：`@` 表示主域，其余为 www / _acme-challenge 等
     host: String,
     value: String,
-    #[serde(deserialize_with = "de_flex_u32")]
+    #[serde(default, deserialize_with = "de_flex_u32")]
     ttl: u32,
     /// MX / SRV 优先级（NameSilo 叫 distance）
     #[serde(default, deserialize_with = "de_opt_flex_u32")]
@@ -1026,12 +1032,14 @@ impl Namesilo {
     /// 把前端传入的完整主机名收敛成 NameSilo 的「子域名标签」。
     /// `www.example.com` → `www`；`example.com` / `@` → `@`。
     fn host_label(full: &str, base: &str) -> String {
-        let owned = format!(".{}", base.trim_end_matches('.'));
+        let base = base.trim_end_matches('.');
+        let owned = format!(".{base}");
         let label = full
             .strip_suffix(&owned)
             .unwrap_or(full)
             .trim_end_matches('.');
-        if label.is_empty() {
+        // 裸主域（"example.com"）与空标签都视为根记录 "@"
+        if label.is_empty() || label.eq_ignore_ascii_case(base) {
             "@".to_string()
         } else {
             label.to_string()
@@ -1042,7 +1050,8 @@ impl Namesilo {
     async fn split_host(&self, host: &str) -> Result<(String, String), String> {
         let body: NamesiloDomains = self.call("listDomains", vec![]).await?;
         let mut best: Option<String> = None;
-        for d in body.reply.domains.unwrap_or_default() {
+        for item in body.reply.domains.unwrap_or_default() {
+            let d = item.domain;
             let owned = format!(".{}", d.trim_end_matches('.'));
             if (host == d || host.ends_with(&owned))
                 && best
@@ -1093,22 +1102,28 @@ impl Namesilo {
             _ => String::new(),
         };
         if code != "300" {
-            // 错误说明优先 detail，其次 message；仍为空则把原始响应体一并带出。
-            let msg = reply
+            // NameSilo 的失败说明在 reply.detail / reply.message 里，优先展示其原文；
+            // 只有当两者都缺失（裸错误）时才附带原始响应体，避免正常有说明时堆一堆 JSON。
+            let detail = reply
                 .and_then(|r| r.get("detail"))
                 .and_then(|m| m.as_str())
                 .or_else(|| reply.and_then(|r| r.get("message")).and_then(|m| m.as_str()))
                 .or_else(|| reply.and_then(|r| r.get("msg")).and_then(|m| m.as_str()))
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
-            let raw = body.to_string();
-            let raw = if raw.len() > 400 {
-                format!("{}…", &raw[..400])
-            } else {
-                raw
+            let err = match detail {
+                Some(d) => format!("NameSilo {action} 失败（{code}）：{d}"),
+                None => {
+                    let raw = body.to_string();
+                    let raw = if raw.len() > 400 {
+                        format!("{}…", &raw[..400])
+                    } else {
+                        raw
+                    };
+                    format!("NameSilo {action} 失败（{code}）：未知错误 | 响应: {raw}")
+                }
             };
-            let msg = msg.unwrap_or_else(|| "未知错误".to_string());
-            return Err(format!("NameSilo {action} 失败（{code}）：{msg} | 响应: {raw}"));
+            return Err(err);
         }
         serde_json::from_value(body).map_err(|e| format!("响应解析失败: {e}"))
     }
@@ -1160,9 +1175,9 @@ impl DnsProvider for Namesilo {
             .domains
             .unwrap_or_default()
             .into_iter()
-            .map(|d| DnsDomain {
-                id: d.clone(),
-                name: d,
+            .map(|item| DnsDomain {
+                id: item.domain.clone(),
+                name: item.domain,
                 status: "active".to_string(),
             })
             .collect())
@@ -1179,9 +1194,13 @@ impl DnsProvider for Namesilo {
             .unwrap_or_default()
             .into_iter()
             .map(|r| {
-                // 还原成完整 FQDN 便于展示；主域用 `@` 时即基域名本身
-                let name = if r.host == "@" {
+                // 还原成完整 FQDN 便于展示。NameSilo 返回的 host 可能是完整 FQDN
+                // （如 "www.example.com"），也可能只是标签 / "@"，两种都兼容。
+                let owned = format!(".{}", domain_name.trim_end_matches('.'));
+                let name = if r.host.is_empty() || r.host == "@" {
                     domain_name.clone()
+                } else if r.host == domain_name || r.host.ends_with(&owned) {
+                    r.host
                 } else {
                     format!("{}.{}", r.host, domain_name)
                 };
@@ -1221,18 +1240,22 @@ impl DnsProvider for Namesilo {
     async fn create_record(&self, domain: &str, r: &DnsRecordInput) -> Result<String, String> {
         let (domain_name, _sub) = self.split_host(domain).await?;
         let host = Self::host_label(&r.name, &domain_name);
-        let body: NamesiloAddReply = self
-            .call(
-                "dnsAddRecord",
-                vec![
-                    ("domain", domain_name),
-                    ("rrtype", r.r#type.clone()),
-                    ("rrhost", host),
-                    ("rrvalue", r.content.clone()),
-                    ("rrttl", r.ttl.to_string()),
-                ],
-            )
-            .await?;
+        // NameSilo 要求 TTL ∈ [3600, 2592000]；超出则夹到边界，避免 code 280
+        let ttl = r.ttl.clamp(3600, 2_592_000);
+        let mut params = vec![
+            ("domain", domain_name),
+            ("rrtype", r.r#type.clone()),
+            ("rrhost", host),
+            ("rrvalue", r.content.clone()),
+            ("rrttl", ttl.to_string()),
+        ];
+        // rrdistance 仅 MX/SRV 用；未提供时 NameSilo 默认 10
+        if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV")
+            && let Some(p) = r.priority
+        {
+            params.push(("rrdistance", p.to_string()));
+        }
+        let body: NamesiloAddReply = self.call("dnsAddRecord", params).await?;
         body.reply
             .record_id
             .ok_or_else(|| "NameSilo 未返回记录 id".to_string())
@@ -1246,19 +1269,22 @@ impl DnsProvider for Namesilo {
     ) -> Result<(), String> {
         let (domain_name, _sub) = self.split_host(domain).await?;
         let host = Self::host_label(&r.name, &domain_name);
-        let _: NamesiloUnit = self
-            .call(
-                "dnsUpdateRecord",
-                vec![
-                    ("domain", domain_name),
-                    ("rrid", id.to_string()),
-                    ("rrtype", r.r#type.clone()),
-                    ("rrhost", host),
-                    ("rrvalue", r.content.clone()),
-                    ("rrttl", r.ttl.to_string()),
-                ],
-            )
-            .await?;
+        // NameSilo 要求 TTL ∈ [3600, 2592000]；超出则夹到边界，避免 code 280
+        let ttl = r.ttl.clamp(3600, 2_592_000);
+        let mut params = vec![
+            ("domain", domain_name),
+            ("rrid", id.to_string()),
+            ("rrtype", r.r#type.clone()),
+            ("rrhost", host),
+            ("rrvalue", r.content.clone()),
+            ("rrttl", ttl.to_string()),
+        ];
+        if matches!(r.r#type.to_uppercase().as_str(), "MX" | "SRV")
+            && let Some(p) = r.priority
+        {
+            params.push(("rrdistance", p.to_string()));
+        }
+        let _: NamesiloUnit = self.call("dnsUpdateRecord", params).await?;
         Ok(())
     }
 
@@ -1303,21 +1329,72 @@ mod tests {
     }
 
     #[test]
-    fn namesilo_domainlist_parses_numeric_code() {
-        // NameSilo 把 code/detail 放在 reply 里，业务数据（domains）也在 reply 里，
-        // 顶层另有 request 对象。code 既可能是数字 300 也可能是字符串 "300"。
+    fn namesilo_listdomains_official_shape() {
+        // 官方文档 listDomains 的 JSON 响应示例（domains 是对象数组，含 maxBid 数字字段）
         let body = json!({
+            "request": { "operation": "listDomains", "ip": "55.555.55.55" },
             "reply": {
                 "code": 300,
                 "detail": "success",
-                "domains": ["example.com", "test.com"]
-            },
-            "request": { "ip": "1.2.3.4", "operation": "listDomains" }
+                "domains": [
+                    { "domain": "namesilo.com", "created": "1998-02-03", "expires": "2023-02-03", "maxBid": 50 },
+                    { "domain": "namesilo.net", "created": "2000-02-03", "expires": "2023-02-03" }
+                ]
+            }
         });
         let d: NamesiloDomains = serde_json::from_value(body).unwrap();
+        let domains: Vec<String> = d
+            .reply
+            .domains
+            .unwrap()
+            .into_iter()
+            .map(|i| i.domain)
+            .collect();
+        assert_eq!(domains, vec!["namesilo.com", "namesilo.net"]);
+    }
+
+    #[test]
+    fn namesilo_add_record_official_shape() {
+        // 官方文档 dnsAddRecord 的 JSON 响应示例
+        let body = json!({
+            "request": { "operation": "dnsAddRecord", "ip": "55.555.55.55" },
+            "reply": { "code": 300, "detail": "success", "record_id": "1a2b3c4d5e" }
+        });
+        let d: NamesiloAddReply = serde_json::from_value(body).unwrap();
+        assert_eq!(d.reply.record_id.unwrap(), "1a2b3c4d5e");
+    }
+
+    #[test]
+    fn namesilo_list_records_official_shape() {
+        // resource_record 里 ttl / distance 常为字符串，非 MX 的 distance 为空串
+        let body = json!({
+            "request": { "operation": "dnsListRecords", "ip": "55.555.55.55" },
+            "reply": {
+                "code": 300,
+                "detail": "success",
+                "resource_record": [
+                    { "record_id": "1a2b3c4d5e6f", "type": "A", "host": "www.example.com", "value": "1.2.3.4", "ttl": "3600", "distance": "" },
+                    { "record_id": "abcdef123456", "type": "MX", "host": "example.com", "value": "mail.example.com", "ttl": "7207", "distance": "10" }
+                ]
+            }
+        });
+        let d: NamesiloRecords = serde_json::from_value(body).unwrap();
+        let rs = d.reply.resource_record.unwrap();
+        assert_eq!(rs.len(), 2);
+        assert_eq!(rs[0].ttl, 3600);
+        assert_eq!(rs[0].distance, None);
+        assert_eq!(rs[1].ttl, 7207);
+        assert_eq!(rs[1].distance, Some(10));
+    }
+
+    #[test]
+    fn namesilo_host_label() {
+        assert_eq!(Namesilo::host_label("www.example.com", "example.com"), "www");
         assert_eq!(
-            d.reply.domains.unwrap(),
-            vec!["example.com".to_string(), "test.com".to_string()]
+            Namesilo::host_label("_acme-challenge.example.com", "example.com"),
+            "_acme-challenge"
         );
+        assert_eq!(Namesilo::host_label("example.com", "example.com"), "@");
+        assert_eq!(Namesilo::host_label("@", "example.com"), "@");
     }
 }
