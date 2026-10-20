@@ -1083,17 +1083,19 @@ impl Namesilo {
             .await
             .map_err(|e| format!("请求失败: {e}"))?;
         let body: Value = rsp.json().await.map_err(|e| format!("响应解析失败: {e}"))?;
-        let code = body
-            .get("code")
-            .and_then(|c| c.as_str())
-            .unwrap_or_default()
-            .to_string();
+        // NameSilo 的 code 在 JSON 里是数字（如 300），不是字符串 "300"，两种情况都兼容。
+        let code = match body.get("code") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Number(n)) => n.to_string(),
+            _ => String::new(),
+        };
         if code != "300" {
             let msg = body
                 .get("message")
                 .and_then(|m| m.as_str())
-                .unwrap_or("未知错误")
-                .to_string();
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "未知错误".to_string());
             return Err(format!("NameSilo {action} 失败（{code}）：{msg}"));
         }
         serde_json::from_value(body).map_err(|e| format!("响应解析失败: {e}"))
@@ -1286,5 +1288,20 @@ mod tests {
     fn mask_unknown_provider() {
         assert_eq!(mask("nope", &json!({"k": "v"})), json!({}));
         assert!(build("nope", &json!({})).is_err());
+    }
+
+    #[test]
+    fn namesilo_domainlist_parses_numeric_code() {
+        // NameSilo returns code as a number (300), not the string "300"
+        let body = json!({
+            "code": 300,
+            "message": "good",
+            "reply": { "domains": ["example.com", "test.com"] }
+        });
+        let d: NamesiloDomains = serde_json::from_value(body).unwrap();
+        assert_eq!(
+            d.reply.domains.unwrap(),
+            vec!["example.com".to_string(), "test.com".to_string()]
+        );
     }
 }
