@@ -139,6 +139,33 @@ jobs:
           chmod +x scripts/release/package.sh
           bash scripts/release/package.sh sign "dist"
 
+      # Ed25519 发布签名（{pkg}.sig，hex 分离签名）：zapd/zapupgrade 用编译期 pin 的
+      # 公钥验证包体，这是自动更新信任根的关键一层（sha256 可被中间人静默跳过）。
+      # 私钥为 Repository secret ZAP_SIGN_KEY（PKCS#8 Ed25519 PEM 文本，与 build.sh
+      # 本地发版同一把）。未配置时跳过，目标机需开启 allow_insecure_update 才能安装。
+      - name: Sign packages (Ed25519)
+        env:
+          ZAP_SIGN_KEY: ${{ secrets.ZAP_SIGN_KEY }}
+        run: |
+          if [ -z "$ZAP_SIGN_KEY" ]; then
+            echo "info: ZAP_SIGN_KEY not set; skip package signing (updaters need allow_insecure_update)."
+            exit 0
+          fi
+          keyfile=$(mktemp)
+          printf '%s\n' "$ZAP_SIGN_KEY" > "$keyfile"
+          chmod 600 "$keyfile"
+          # 确认是 Ed25519 私钥（算法不符时立刻失败，而不是产出无效签名）
+          openssl pkey -in "$keyfile" -noout -text 2>/dev/null | grep -q "ED25519" \
+            || { echo "error: ZAP_SIGN_KEY is not an Ed25519 private key"; rm -f "$keyfile"; exit 1; }
+          for pkg in dist/*.tar.gz; do
+            openssl pkeyutl -sign -inkey "$keyfile" -rawin -in "$pkg" -out "$pkg.sig.bin" \
+              || { echo "error: signing failed: $pkg"; rm -f "$keyfile"; exit 1; }
+            od -An -tx1 -v "$pkg.sig.bin" | tr -d ' \n' > "$pkg.sig"
+            rm -f "$pkg.sig.bin"
+            echo "signed: $pkg.sig"
+          done
+          rm -f "$keyfile"
+
       # 固定名「latest」别名资源：zap-linux-<arch>.tar.gz。installer 境外通道走
       # releases/latest/download 重定向直下最新包，无需先查版本号 / latest.txt / API。
       # 与版本化资源内容完全一致，只是名字不含版本，发版 CI 顺手复制一份。
@@ -160,5 +187,6 @@ jobs:
             dist/*.tar.gz
             dist/*.sha256
             dist/*.sha256.sig
+            dist/*.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
