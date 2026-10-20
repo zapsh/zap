@@ -177,12 +177,23 @@ service.interceptors.response.use(
 /**
  * 认证失效统一处理：清空本地凭据并引导重新登录。
  * 避免反复收到 "Missing credentials / Invalid token" 等英文报错却停留在页面上。
+ *
+ * 幂等：一次页面会话内只触发一次重定向。多个并发请求（401 + 缺凭据的 400）
+ * 都会走到这里，若不幂等会各自 setTimeout 调度一次 `window.location.href`，
+ * 导致登录页渲染后又被第二次赋值触发额外整页刷新（表现为「显示登录页后又刷新一下」）。
  */
+let authExpiredHandled = false
 function handleAuthExpired(message = t('error.sessionExpired')) {
+  if (authExpiredHandled) return
+  authExpiredHandled = true
   removeToken()
   ElMessage({ message, type: 'error', duration: 5000, grouping: true })
   setTimeout(() => {
-    window.location.href = withBase('/login')
+    const loginPath = withBase('/login')
+    // 已在登录页（理论上本函数就是靠这次重载进入的）则不再重载，避免额外刷新
+    if (window.location.pathname !== loginPath) {
+      window.location.href = loginPath
+    }
   }, 1500)
 }
 
