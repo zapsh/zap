@@ -229,9 +229,10 @@ if [ "$WITH_TAG" -eq 1 ]; then
     git tag "v$VERSION"
     git push origin "v$VERSION" >/dev/null
     ok "tagged & pushed v$VERSION"
-    info "GitHub Actions 将自动构建、发布 GitHub Release，并把包体/校验/签名/安装脚本"
-    info "同步到 COS(mirrors.zap.cn) 与 Cloudflare(mirrors.zap.sh)，并发布 latest.txt。"
-    info "无需本地 --sync。请在 Actions 运行 v$VERSION 完成后验证镜像。"
+    info "GitHub Actions 将自动构建并发布 GitHub Release（包体 / .sha256 / .sig / latest 别名）。"
+    info "镜像（COS + Cloudflare 的包体 / latest.txt / 安装脚本）不在 CI 做，且需等 "
+    info "GitHub Release 先就绪；请等 Actions 把 v$VERSION 发布完成后，再单独执行："
+    info "    ./release.sh $VERSION --sync"
 fi
 
 echo
@@ -241,8 +242,8 @@ printf "${GREEN}========================================${NC}\n"
 echo "  Version:   $VERSION"
 if [ "$WITH_TAG" -eq 1 ]; then
     echo "  Tag:       v$VERSION (pushed)"
-    echo "  latest:    zapfile put latest.txt = $VERSION (COS + Cloudflare --aws)"
-    echo "  scripts:   zapfile upload install.sh/uninstall.sh (COS + Cloudflare --aws)"
+    echo "  next:      GitHub Release 发布后，单独跑 ./release.sh $VERSION --sync 做镜像"
+    echo "              （latest.txt / 安装脚本 / 包体 -> COS + Cloudflare）"
 else
     echo "  Tag:       (none; run with --tag to release)"
     if [ "$NO_BRANCH" -ne 1 ]; then
