@@ -837,7 +837,11 @@ fn run_capture(program: &str, args: &[&str]) -> Result<String, String> {
     run_capture_env(program, args, &[])
 }
 
-fn run_capture_env(program: &str, args: &[&str], envs: &[(&str, String)]) -> Result<String, String> {
+fn run_capture_env(
+    program: &str,
+    args: &[&str],
+    envs: &[(&str, String)],
+) -> Result<String, String> {
     // git 远程操作（clone/fetch）在网络不可达时可能无限挂起，导致任务永久 running。
     // 统一用 timeout 限时；同时禁止 git 交互式认证提示（避免等待输入用户名/密码）。
     let mut cmd = root_cmd("timeout");
@@ -884,9 +888,7 @@ fn run_git(args: &[&str]) -> Result<String, String> {
     full.push("safe.directory=*");
     full.extend_from_slice(args);
     match run_capture("git", &full) {
-        Err(e) if is_dubious_ownership(&e) => {
-            run_capture_env("git", &full, &git_safe_global_env())
-        }
+        Err(e) if is_dubious_ownership(&e) => run_capture_env("git", &full, &git_safe_global_env()),
         r => r,
     }
 }

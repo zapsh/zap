@@ -1070,9 +1070,18 @@ fn api_routers() -> Router {
         .route("/ssl/acme/dns/test", post(ssl::acme_dns_test))
         .route("/ssl/acme/dns/domains", post(ssl::acme_dns_domains))
         .route("/ssl/acme/dns/records", get(ssl::acme_dns_records))
-        .route("/ssl/acme/dns/record/create", post(ssl::acme_dns_record_create))
-        .route("/ssl/acme/dns/record/update", post(ssl::acme_dns_record_update))
-        .route("/ssl/acme/dns/record/delete", post(ssl::acme_dns_record_delete))
+        .route(
+            "/ssl/acme/dns/record/create",
+            post(ssl::acme_dns_record_create),
+        )
+        .route(
+            "/ssl/acme/dns/record/update",
+            post(ssl::acme_dns_record_update),
+        )
+        .route(
+            "/ssl/acme/dns/record/delete",
+            post(ssl::acme_dns_record_delete),
+        )
         // 开发：API Token 管理 + API 文档
         .route("/dev/api-token/list", get(dev::api_token_list))
         .route("/dev/api-token/create", post(dev::api_token_create))

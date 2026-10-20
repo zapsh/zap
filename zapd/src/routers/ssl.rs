@@ -1835,8 +1835,8 @@ async fn dns_records_provider(
     let row = acme::dns_in_scope(claims, id).await?;
     let plain = crypto::decrypt(&row.credentials)
         .map_err(|e| ZapError::New(-1, format!("凭据解密失败: {e}")))?;
-    let creds: serde_json::Value =
-        serde_json::from_str(&plain).map_err(|e| ZapError::New(-1, format!("凭据解析失败: {e}")))?;
+    let creds: serde_json::Value = serde_json::from_str(&plain)
+        .map_err(|e| ZapError::New(-1, format!("凭据解析失败: {e}")))?;
     acme::dns::build(&row.provider, &creds).map_err(|e| ZapError::New(-1, e))
 }
 
@@ -1915,7 +1915,9 @@ pub async fn acme_dns_record_create(
         ),
     )
     .await;
-    Ok(Json(json!({ "code": 0, "message": "OK", "data": { "id": id } })))
+    Ok(Json(
+        json!({ "code": 0, "message": "OK", "data": { "id": id } }),
+    ))
 }
 
 /// 修改一条解析记录。
@@ -1924,9 +1926,9 @@ pub async fn acme_dns_record_update(
     Extension(client_addr): Extension<SocketAddr>,
     Json(q): Json<DnsRecordWritePayload>,
 ) -> ZapJsonResult {
-    let id = q.id.clone().ok_or_else(|| {
-        ZapError::New(-1, "修改记录需要传入记录 id".to_string())
-    })?;
+    let id =
+        q.id.clone()
+            .ok_or_else(|| ZapError::New(-1, "修改记录需要传入记录 id".to_string()))?;
     let p = dns_records_provider(&claims, q.provider_id).await?;
     p.update_record(&q.domain, &id, &q.record)
         .await

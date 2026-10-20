@@ -148,7 +148,11 @@ fn http_get_text(url: &str) -> Result<String, ZapError> {
 /// 追加一行到升级日志（下载进度用，弱网下让用户看到「还在动」）。
 fn append_log_line(path: &Path, line: &str) {
     use std::io::Write as _;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -185,15 +189,17 @@ fn http_get_bytes_progress(url: &str, log: Option<&Path>) -> Result<Vec<u8>, Zap
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
-        if let Some(p) = log {
-            if buf.len() as u64 - last_report >= 8 * 1024 * 1024 {
+        if let Some(p) = log
+            && buf.len() as u64 - last_report >= 8 * 1024 * 1024 {
                 last_report = buf.len() as u64;
                 append_log_line(p, &format!("已下载 {} MB …", buf.len() / 1024 / 1024));
             }
-        }
     }
     if let Some(p) = log {
-        append_log_line(p, &format!("下载完成，共 {} MB", buf.len() / 1024 / 1024 + 1));
+        append_log_line(
+            p,
+            &format!("下载完成，共 {} MB", buf.len() / 1024 / 1024 + 1),
+        );
     }
     Ok(buf)
 }
@@ -461,7 +467,10 @@ async fn prepare_update(username: &str) -> Result<PreparedUpdate, ZapError> {
 async fn run_update_background(p: PreparedUpdate) {
     append_log_line(
         Path::new(&p.log_path),
-        &format!("检测到新版本 v{}，开始下载升级包（弱网下可能需要几分钟）…", p.latest),
+        &format!(
+            "检测到新版本 v{}，开始下载升级包（弱网下可能需要几分钟）…",
+            p.latest
+        ),
     );
     let stage = match download_and_stage(&p.channel, &p.latest, &p.run_id).await {
         Ok(s) => s,
