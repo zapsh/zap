@@ -13,7 +13,7 @@
 # `./release.sh <ver> --sync`（zapfile + 本地 ~/.bashrc 里的 COS_ID/COS_KEY/AWS_*）。
 #
 # Usage:
-#   ./release.sh <version> [--no-branch] [--tag] [--no-latest] [--sync]
+#   ./release.sh <version> [--no-branch] [--tag] [--no-latest] [--sync] [--sync-tag]
 #   <version>   semver, e.g. 1.5.1  (no leading v; the pushed tag is v<version>)
 #
 #   Default (contributor PR flow):
@@ -27,7 +27,10 @@
 #   --sync (完整镜像，打 tag 后跑):
 #     download GitHub Release v<ver> -> 上传包体/校验/签名到 COS(mirrors.zap.cn)
 #     与 Cloudflare(mirrors.zap.sh, --aws)，并发布 latest.txt + 安装脚本。
-#   --no-latest  (deprecated, no-op) --sync 总会发布 latest.txt。
+#   --sync-tag (仅同步版本标签，打 tag 或包体已在镜像后跑):
+#     只把 latest.txt 更新为 v<ver>（COS + Cloudflare），不重新下载/上传包体、
+#     校验/签名/安装脚本。包体已在镜像、只想把 mirror 版本号推进到新值时用。
+#   --no-latest  (deprecated, no-op) --sync / --sync-tag 总会发布 latest.txt。
 #
 # Env:
 #   RELEASE_BRANCH  base branch to bump from / tag on (default: main)
@@ -51,6 +54,7 @@ NO_BRANCH=0
 WITH_TAG=0
 NO_LATEST=0
 SYNC=0
+SYNC_TAG=0
 VERSION=""
 
 while [[ $# -gt 0 ]]; do
@@ -59,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --tag)       WITH_TAG=1; NO_BRANCH=1; shift ;;
         --no-latest) NO_LATEST=1; shift ;;
         --sync)      SYNC=1; shift ;;
+        --sync-tag)  SYNC_TAG=1; shift ;;
         -h|--help)
             sed -n '/^# Usage:/,/^# __END_USAGE__/p' "$0" | sed 's/^#* *//' | sed '/^__END_USAGE__/d'
             exit 0 ;;
@@ -75,6 +80,12 @@ done
 if [ "$SYNC" -eq 1 ] && [ "$WITH_TAG" -eq 1 ]; then
     die "--sync is standalone and cannot be combined with --tag"
 fi
+if [ "$SYNC_TAG" -eq 1 ] && [ "$WITH_TAG" -eq 1 ]; then
+    die "--sync-tag is standalone and cannot be combined with --tag"
+fi
+if [ "$SYNC" -eq 1 ] && [ "$SYNC_TAG" -eq 1 ]; then
+    die "--sync and --sync-tag are mutually exclusive"
+fi
 
 # semver X.Y.Z
 case "$VERSION" in
@@ -83,7 +94,7 @@ case "$VERSION" in
 esac
 
 # ── git sanity (skipped in --sync mode) ──────────────────────
-if [ "$SYNC" -ne 1 ]; then
+if [ "$SYNC" -ne 1 ] && [ "$SYNC_TAG" -ne 1 ]; then
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not in a git repo"
 CUR_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 [ "$CUR_BRANCH" = "$RELEASE_BRANCH" ] \
@@ -175,15 +186,38 @@ sync_github_assets() {
     rm -rf "$tmp"
 }
 
-# ── --sync: download from GitHub, mirror to COS + Cloudflare ──
-if [ "$SYNC" -eq 1 ]; then
-    sync_github_assets "$VERSION"
-    echo
-    printf "${GREEN}========================================${NC}\n"
-    printf "${GREEN}   ZAP mirror sync v${VERSION} done${NC}\n"
-    printf "${GREEN}========================================${NC}\n"
-    echo "  Source:    GitHub Release v$VERSION"
-    echo "  Target:    COS (mirrors.zap.cn) + Cloudflare (mirrors.zap.sh)"
+# ── --sync-tag: only update the version label (latest.txt), no asset re-upload ──
+sync_tag_only() {
+    local ver="$1"
+    ensure_zapfile
+    [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zapfile mirror upload)"
+    [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zapfile mirror upload)"
+    info "publishing latest.txt -> $ver (COS + Cloudflare)  [仅标签，不重传包体/脚本]"
+    zapfile put "zap/releases/latest.txt" "$ver" \
+        || die "zapfile put latest.txt (COS) failed"
+    zapfile put "zap/releases/latest.txt" "$ver" --aws \
+        || die "zapfile put latest.txt (Cloudflare, --aws) failed"
+    ok "latest.txt -> $ver 已同步到 COS(mirrors.zap.cn) + Cloudflare(mirrors.zap.sh)"
+}
+
+# ── --sync / --sync-tag: mirror to COS + Cloudflare (standalone) ──
+if [ "$SYNC" -eq 1 ] || [ "$SYNC_TAG" -eq 1 ]; then
+    if [ "$SYNC" -eq 1 ]; then
+        sync_github_assets "$VERSION"
+        echo
+        printf "${GREEN}========================================${NC}\n"
+        printf "${GREEN}   ZAP mirror sync v${VERSION} done${NC}\n"
+        printf "${GREEN}========================================${NC}\n"
+        echo "  Source:    GitHub Release v$VERSION"
+        echo "  Target:    COS (mirrors.zap.cn) + Cloudflare (mirrors.zap.sh)"
+    else
+        sync_tag_only "$VERSION"
+        echo
+        printf "${GREEN}========================================${NC}\n"
+        printf "${GREEN}   ZAP tag sync -> v${VERSION} done${NC}\n"
+        printf "${GREEN}========================================${NC}\n"
+        echo "  Target:    COS (mirrors.zap.cn) + Cloudflare (mirrors.zap.sh) latest.txt"
+    fi
     exit 0
 fi
 
