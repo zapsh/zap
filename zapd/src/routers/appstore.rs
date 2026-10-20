@@ -1073,7 +1073,40 @@ pub async fn script_run(
     validate_script_path(&payload.path)?;
     let run_id = ast::generate_run_id();
     let log_path = ast::log_path_for(&run_id);
-    ast::register_script_run(&run_id, "script", &payload.path, &claims.sub, &log_path).await?;
+    // payload 交给任务队列：并发满时以 pending 排队，由调度器放行执行
+    let exec_payload = serde_json::to_string(&Request::AppstoreScriptRun {
+        path: payload.path.clone(),
+        run_id: run_id.clone(),
+        username: claims.sub.clone(),
+    })
+    .map_err(|e| ZapError::New(-1, format!("任务参数序列化失败: {e}")))?;
+    let task = ast::register_script_run(
+        &run_id,
+        "script",
+        &payload.path,
+        &claims.sub,
+        &log_path,
+        &exec_payload,
+    )
+    .await?;
+    audit::log(
+        Some(&claims),
+        Some(client_addr.ip().to_string().as_str()),
+        "appstore_script_run",
+        &payload.path,
+        "",
+    )
+    .await;
+
+    // 并发已满（5 个）：进任务队列排队，调度器会自动放行，这里不下发执行
+    if task.status == crate::zap::task::STATUS_PENDING {
+        info!("AppStore script queued: {} ({})", payload.path, run_id);
+        return Ok(Json(json!({
+            "code": 0,
+            "message": "并发已满，已加入任务队列",
+            "data": { "task_id": run_id, "log": log_path, "queued": true }
+        })));
+    }
 
     let resp = zapexec::call(Request::AppstoreScriptRun {
         path: payload.path.clone(),
@@ -1086,14 +1119,6 @@ pub async fn script_run(
         return Err(ZapError::New(resp.code, resp.message));
     }
     ast::watch_log(run_id.clone(), log_path.clone());
-    audit::log(
-        Some(&claims),
-        Some(client_addr.ip().to_string().as_str()),
-        "appstore_script_run",
-        &payload.path,
-        "",
-    )
-    .await;
     info!("AppStore script run started: {}", payload.path);
     Ok(Json(json!({
         "code": 0,

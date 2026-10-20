@@ -3576,6 +3576,8 @@ const enUS: Messages = {
     saveFailed: 'Save failed',
     saveFailedRun: 'Save failed, cannot run',
     started: 'Script started',
+    queued: 'Concurrency limit (5) reached, task queued and will start automatically',
+    taskQueue: 'Task Queue',
     runFailed: 'Run failed',
     runLogTitle: 'Run {name}',
     fallbackName: 'script',

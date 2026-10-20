@@ -524,7 +524,20 @@ pub async fn launch_script_run_with_id(
 ) -> Result<String, ZapError> {
     let log_path = ast::log_path_for(run_id);
     let key = job_key(username, job_id);
-    ast::register_script_run_with_key(run_id, action, path, username, &log_path, &key).await?;
+    // payload 交给任务队列：并发满时以 pending 排队，由调度器放行执行
+    let payload = serde_json::to_string(&Request::AppstoreScriptRun {
+        path: path.to_string(),
+        run_id: run_id.to_string(),
+        username: SCRIPT_OWNER.to_string(),
+    })
+    .map_err(|e| ZapError::New(-1, format!("任务参数序列化失败: {e}")))?;
+    let task =
+        ast::register_script_run_with_key(run_id, action, path, username, &log_path, &key, &payload)
+            .await?;
+    if task.status == crate::zap::task::STATUS_PENDING {
+        // 并发已满：已在任务队列排队，调度器放行时才真正执行
+        return Ok(run_id.to_string());
+    }
     let resp = zapexec::call(Request::AppstoreScriptRun {
         path: path.to_string(),
         run_id: run_id.to_string(),

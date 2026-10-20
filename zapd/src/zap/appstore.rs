@@ -33,6 +33,16 @@ pub const KIND_SCRIPT: &str = crate::zap::task::KIND_SCRIPT;
 /// 排队，由 `task` 的调度器在前者结束后自动放行。
 pub const COMPILE_GROUP: &str = "appstore:compile";
 
+/// 自定义脚本的并发组：**不互斥，但同时最多跑 `SCRIPT_GROUP_LIMIT` 条**。
+///
+/// 脚本之间彼此独立，没有编译那种资源争抢，所以不做互斥；
+/// 但无限并发容易被一个死循环脚本把机器拖垮，超出上限的运行登记为
+/// `pending` 进任务队列，由 `task` 的调度器在前面的运行结束后自动放行。
+pub const SCRIPT_GROUP: &str = "script";
+
+/// 自定义脚本同时运行的上限（超出排队）。
+pub const SCRIPT_GROUP_LIMIT: i64 = 5;
+
 /// 日志监控超时：编译安装可能跑很久，给足 24 小时。
 const WATCH_TIMEOUT_SECS: u64 = 24 * 3600;
 
@@ -349,13 +359,19 @@ pub async fn register_run_with_key(
     log_path: &str,
     job_key: &str,
 ) -> Result<(), ZapError> {
-    register_run_kind(run_id, KIND, action, pkg, username, log_path, job_key).await
+    register_run_kind(run_id, KIND, action, pkg, username, log_path, job_key, "")
+        .await
+        .map(|_| ())
 }
 
 /// 登记一条**自定义脚本**的运行记录（kind = `script`）。
 ///
 /// 与 [`register_run_with_key`] 的唯一区别就是大类：脚本走 AppStore 的执行通道，
 /// 但任务队列里要显示成「自定义脚本」而不是「应用商店」。
+///
+/// `payload` 是序列化好的 [`zap_proto::types::Request::AppstoreScriptRun`]：
+/// 并发满时任务以 `pending` 入队，之后由任务队列的调度器按 payload 放行执行，
+/// 因此调用方拿到 `status = pending` 时**不要**再自己去启动。
 pub async fn register_script_run_with_key(
     run_id: &str,
     action: &str,
@@ -363,7 +379,8 @@ pub async fn register_script_run_with_key(
     username: &str,
     log_path: &str,
     job_key: &str,
-) -> Result<(), ZapError> {
+    payload: &str,
+) -> Result<crate::zap::task::Task, ZapError> {
     register_run_kind(
         run_id,
         KIND_SCRIPT,
@@ -372,6 +389,7 @@ pub async fn register_script_run_with_key(
         username,
         log_path,
         job_key,
+        payload,
     )
     .await
 }
@@ -383,8 +401,9 @@ pub async fn register_script_run(
     pkg: &str,
     username: &str,
     log_path: &str,
-) -> Result<(), ZapError> {
-    register_script_run_with_key(run_id, action, pkg, username, log_path, "").await
+    payload: &str,
+) -> Result<crate::zap::task::Task, ZapError> {
+    register_script_run_with_key(run_id, action, pkg, username, log_path, "", payload).await
 }
 
 async fn register_run_kind(
@@ -395,8 +414,12 @@ async fn register_run_kind(
     username: &str,
     log_path: &str,
     job_key: &str,
-) -> Result<(), ZapError> {
-    crate::zap::task::enqueue(crate::zap::task::NewTask {
+    payload: &str,
+) -> Result<crate::zap::task::Task, ZapError> {
+    // 脚本不互斥、但全局限 SCRIPT_GROUP_LIMIT 条并发（超出的进任务队列排队）；
+    // 其余（仓库同步等）保持不限（编译类走 enqueue_compile 单独入口）
+    let is_script = kind == KIND_SCRIPT;
+    let task = crate::zap::task::enqueue(crate::zap::task::NewTask {
         task_id: run_id.to_string(),
         kind: kind.to_string(),
         action: action.to_string(),
@@ -405,10 +428,13 @@ async fn register_run_kind(
         title: String::new(),
         log_path: log_path.to_string(),
         job_key: job_key.to_string(),
-        // 脚本 / 仓库同步等任务不做全局互斥（编译类走 enqueue_compile 单独入口）
-        group_key: String::new(),
-        group_limit: 0,
-        payload: String::new(),
+        group_key: if is_script {
+            SCRIPT_GROUP.to_string()
+        } else {
+            String::new()
+        },
+        group_limit: if is_script { SCRIPT_GROUP_LIMIT } else { 0 },
+        payload: payload.to_string(),
     })
     .await?;
     // 裁剪在后台跑，不拖慢本次触发；无归属的运行只受全表上限约束
@@ -416,7 +442,7 @@ async fn register_run_kind(
         let key = job_key.to_string();
         tokio::spawn(async move { prune_runs(&key).await });
     }
-    Ok(())
+    Ok(task)
 }
 
 /// 登记一条与定时任务无关的运行记录（`job_key` 为空）。

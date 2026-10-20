@@ -56,6 +56,9 @@
           >
             {{ t('automationScripts.run') }}
           </el-button>
+          <el-button size="small" @click="goTaskQueue">
+            {{ t('automationScripts.taskQueue') }}
+          </el-button>
         </div>
       </div>
       <CodeEditor
@@ -86,6 +89,16 @@
 
     <!-- 日志抽屉 -->
     <AppStoreLogDrawer ref="logDrawerRef" />
+
+    <!-- 任务队列抽屉：只看自定义脚本的运行/排队记录（与 Appstore 同款面板） -->
+    <el-drawer
+      v-model="queueVisible"
+      :title="t('automationScripts.taskQueue')"
+      size="72%"
+      destroy-on-close
+    >
+      <TaskQueuePanel ref="queuePanelRef" kind="script" />
+    </el-drawer>
   </div>
 </template>
 
@@ -96,10 +109,21 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Folder, Document, InfoFilled, Delete } from '@/icons'
 import { getScriptsTree, readScript, writeScript, runScript, deleteScript } from '@/api/appstore'
 import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
+import TaskQueuePanel from '@/components/TaskQueuePanel.vue'
 import CodeEditor from '@/components/CodeEditor.vue'
 import { langFromPath } from '@/utils/editorLang'
 
 const { t } = useI18n()
+
+// 任务队列抽屉：只看自定义脚本（kind=script）的运行/排队记录
+const queueVisible = ref(false)
+const queuePanelRef = ref<InstanceType<typeof TaskQueuePanel> | null>(null)
+
+/** 打开任务队列抽屉，查看运行/排队记录 */
+function goTaskQueue() {
+  queueVisible.value = true
+  queuePanelRef.value?.load()
+}
 
 interface TreeNode {
   type: 'dir' | 'file'
@@ -217,8 +241,13 @@ async function handleRun() {
   running.value = true
   try {
     const resp = await runScript({ path: currentPath.value })
-    ElMessage.success(t('automationScripts.started'))
     const name = currentPath.value.split('/').pop() || t('automationScripts.fallbackName')
+    if (resp.data?.queued) {
+      // 并发已满：已进任务队列排队，不打开日志抽屉（还没开始写日志）
+      ElMessage.warning(t('automationScripts.queued'))
+      return
+    }
+    ElMessage.success(t('automationScripts.started'))
     logDrawerRef.value?.openDrawer(resp.data.task_id, t('automationScripts.runLogTitle', { name }))
   } catch (e: any) {
     ElMessage.error(e.message || t('automationScripts.runFailed'))

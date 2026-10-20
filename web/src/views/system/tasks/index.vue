@@ -164,6 +164,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { List, Refresh, Search } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AppStoreLogDrawer from '@/components/AppStoreLogDrawer.vue'
@@ -207,6 +208,12 @@ const filters = reactive<{ kind: string; status: string; username: string; keywo
   username: '',
   keyword: '',
 })
+
+// 支持从其他页面深链进入并预选类型（如脚本页的「任务队列」按钮带 ?kind=script）
+const route = useRoute()
+if (typeof route.query.kind === 'string') {
+  filters.kind = route.query.kind
+}
 
 const kindOptions = [
   { value: 'appstore', label: t('task.kind.appstore') },

@@ -3507,6 +3507,8 @@ export default {
     saveFailed: '保存失败',
     saveFailedRun: '保存失败，无法运行',
     started: '脚本已启动',
+    queued: '并发已满（5 个），已加入任务队列，结束后自动执行',
+    taskQueue: '任务队列',
     runFailed: '运行失败',
     runLogTitle: '运行 {name}',
     fallbackName: '脚本',
