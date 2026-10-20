@@ -1077,7 +1077,7 @@ impl Namesilo {
             q.push((k.to_string(), v));
         }
         let rsp = http()
-            .get(NS_BASE)
+            .get(format!("{NS_BASE}/{action}"))
             .query(&q)
             .send()
             .await
