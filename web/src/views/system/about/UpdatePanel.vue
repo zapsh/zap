@@ -397,6 +397,7 @@ async function onApply() {
 function startPoll(runId: string, logPath: string) {
   stopPoll()
   restartRetries = 0
+  pollInFlight = false
   liveRunId.value = runId
   liveOffset.value = 0
   liveLog.value = `${t('sysUpdate.waitingUpgrader')}\n`
@@ -404,8 +405,14 @@ function startPoll(runId: string, logPath: string) {
   pollLog()
 }
 
+/** 上一轮请求是否还在途中。zapd 重启窗口内请求会长时间挂起，
+ * 若不拦住，interval 会不断发出带同一旧 offset 的新请求，恢复后
+ * 全部返回并重复追加同一段日志（表现为「已重启/升级完成」刷屏）。 */
+let pollInFlight = false
+
 async function pollLog() {
-  if (!liveRunId.value) return
+  if (!liveRunId.value || pollInFlight) return
+  pollInFlight = true
   try {
     const res = await getUpdateLog(liveRunId.value, liveOffset.value)
     restartRetries = 0
@@ -438,6 +445,8 @@ async function pollLog() {
     if (restartRetries <= MAX_RESTART_RETRIES) return
     stopPoll()
     ElMessage.warning(t('sysUpdate.connInterrupted'))
+  } finally {
+    pollInFlight = false
   }
 }
 
