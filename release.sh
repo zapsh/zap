@@ -4,13 +4,14 @@
 # Orchestrates a release:
 #   1. bump [workspace.package].version in Cargo.toml
 #   2. commit + push (default on a version-bump branch; --no-branch on current branch)
-#   3. (--tag only) tag v<version> + push tag + publish latest.txt + install scripts to mirrors
-#   4. (--sync only) download GitHub Release assets for <version>, mirror them to COS + Cloudflare
+#   3. (--tag only) tag v<version> + push tag — GitHub Actions then builds, publishes the
+#      GitHub Release, and mirrors packages + latest.txt + install scripts to COS + Cloudflare.
+#   4. (--sync only, fallback if CI mirror step failed) download GitHub Release assets for
+#      <version>, mirror them to COS + Cloudflare.
 #
-# Actual binary build & packaging is done by GitHub Actions on the pushed tag
-# (.github/workflows/release.yml) — it only builds & creates the GitHub Release.
-# Mirroring packages to COS/Cloudflare is done here (--tag for scripts+latest.txt,
-# --sync for the compiled packages once Actions finishes building).
+# Build, packaging AND mirroring are now unified in .github/workflows/release.yml:
+# on a pushed tag the release job builds, creates the GitHub Release, then mirrors
+# everything via zapfile. So `./release.sh <ver> --tag` is the only manual step.
 #
 # Usage:
 #   ./release.sh <version> [--no-branch] [--tag] [--no-latest] [--sync]
@@ -22,19 +23,20 @@
 #   --no-branch (repo owner):
 #     bump version -> commit -> push current branch (no new branch, no tag)
 #   --tag (repo owner, release):
-#     bump version -> commit -> push current branch -> tag v<ver> -> push tag
-#     -> zapfile put zap/releases/latest.txt <ver>  (COS + Cloudflare via --aws)
-#     -> zapfile upload zap/ scripts/install.sh + uninstall.sh  (COS + Cloudflare via --aws)
-#   --sync (standalone, after Actions finishes building):
+#     bump version -> commit -> push current branch -> tag v<ver> -> push tag.
+#     GitHub Actions (on the pushed tag) then builds, publishes the GitHub Release,
+#     and mirrors packages + latest.txt + install scripts to COS + Cloudflare
+#     automatically — NO local --sync needed.
+#   --sync (standalone fallback, only if CI mirror step failed):
 #     download GitHub Release assets for v<ver> -> upload to COS (mirrors.zap.cn)
 #     and Cloudflare (mirrors.zap.sh, --aws) under zap/releases/
-#   --no-latest  with --tag, skip the zapfile latest.txt upload
+#   --no-latest  (deprecated, no-op) latest.txt is now published by CI after packages.
 #
 # Env:
 #   RELEASE_BRANCH  base branch to bump from / tag on (default: main)
 #   BUMP_BRANCH     branch name for the default PR flow (default: bump-version-v<ver>)
 #   GITHUB_REPO     owner/repo for --sync download (default: zapsh/zap; override for forks)
-#   COS_ID/COS_KEY  zapfile credentials (needed for --tag / --sync mirror upload)
+#   COS_ID/COS_KEY  zapfile credentials (only needed for --sync fallback now)
 # __END_USAGE__
 if [ -z "${BASH_VERSION:-}" ]; then
     exec bash "$0" "$@"
@@ -206,35 +208,16 @@ else
     fi
 fi
 
-# ── 3. tag + publish to mirrors (release mode, --tag) ───────
+# ── 3. tag + push (release mode, --tag) ───────────────────
+#    镜像发布（包体 + .sha256 + .sig + latest.txt + 安装脚本）已统一收口到
+#    .github/workflows/release.yml 的 release job，打 tag 后由 Actions 自动完成。
 if [ "$WITH_TAG" -eq 1 ]; then
     git tag "v$VERSION"
     git push origin "v$VERSION" >/dev/null
-    ok "tagged & pushed v$VERSION (GitHub Actions will build & publish)"
-    ensure_zapfile
-    [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zapfile mirror upload)"
-    [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zapfile mirror upload)"
-    if [ "$NO_LATEST" -ne 1 ]; then
-        info "publishing latest.txt -> $VERSION on COS mirror (mirrors.zap.cn)"
-        zapfile put "zap/releases/latest.txt" "$VERSION" \
-            || die "zapfile put latest.txt (COS) failed"
-        info "publishing latest.txt -> $VERSION on Cloudflare mirror (mirrors.zap.sh, --aws)"
-        zapfile put "zap/releases/latest.txt" "$VERSION" --aws \
-            || die "zapfile put latest.txt (Cloudflare, --aws) failed"
-        ok "mirrors latest.txt = $VERSION (COS + Cloudflare)"
-    else
-        warn "skipped zapfile put latest.txt (--no-latest)"
-    fi
-    for s in scripts/install.sh scripts/uninstall.sh; do
-        [ -f "$s" ] || die "missing $s"
-        info "uploading $s -> COS mirror (zap/)"
-        zapfile upload zap/ "$s" \
-            || die "zapfile upload $s (COS) failed"
-        info "uploading $s -> Cloudflare mirror (zap/, --aws)"
-        zapfile upload zap/ "$s" --aws \
-            || die "zapfile upload $s (Cloudflare, --aws) failed"
-    done
-    ok "install scripts uploaded to COS + Cloudflare (zap/install.sh, zap/uninstall.sh)"
+    ok "tagged & pushed v$VERSION"
+    info "GitHub Actions 将自动构建、发布 GitHub Release，并把包体/校验/签名/安装脚本"
+    info "同步到 COS(mirrors.zap.cn) 与 Cloudflare(mirrors.zap.sh)，并发布 latest.txt。"
+    info "无需本地 --sync。请在 Actions 运行 v$VERSION 完成后验证镜像。"
 fi
 
 echo

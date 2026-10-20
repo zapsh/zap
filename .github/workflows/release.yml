@@ -113,6 +113,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # 版本号唯一来源：根 Cargo.toml 的 [workspace.package].version。
+      # release job 自己解析一份，供 latest.txt / latest 别名资产使用
+      # （也修掉此前「Add latest alias assets」引用 steps.version 时的空值问题）。
+      - name: Resolve version
+        id: version
+        run: |
+          version="$(awk -F'"' '/^\[workspace\.package\]/{f=1} f&&/^version/{print $2; exit}' Cargo.toml)"
+          [ -n "$version" ] || { echo "error: failed to parse workspace version from Cargo.toml"; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -190,3 +200,59 @@ jobs:
             dist/*.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 镜像发布（统一收口：原 release.sh --sync / --tag 的 zapfile 动作全部搬进 CI）──
+      # 这样「打 tag 即可」：构建完成后自动把包体 + 校验/签名 + 安装脚本同步到
+      # COS(mirrors.zap.cn) 与 Cloudflare R2(mirrors.zap.sh)，并发布 latest.txt。
+      # 不再需要本地手跑 release.sh --sync。
+      - name: Install zapfile
+        run: |
+          curl -fsSL https://mirrors.zap.cn/zapfile/zapfile-linux-amd64 -o /usr/local/bin/zapfile \
+            || curl -fsSL https://mirrors.zap.sh/zapfile/zapfile-linux-amd64 -o /usr/local/bin/zapfile \
+            || { echo "zapfile install failed"; exit 1; }
+          chmod +x /usr/local/bin/zapfile
+          zapfile version
+
+      - name: Mirror to COS + Cloudflare (releases + latest.txt + scripts)
+        env:
+          COS_ID: ${{ secrets.COS_ID }}
+          COS_KEY: ${{ secrets.COS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT: ${{ secrets.AWS_ENDPOINT }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
+          AWS_R2_TOKEN: ${{ secrets.AWS_R2_TOKEN }}
+        run: |
+          set -euo pipefail
+          ver="${{ steps.version.outputs.version }}"
+          echo "mirroring release assets for v${ver} ..."
+          # 包体 + .sha256 + .sha256.sig + .sig + latest 别名（zap-linux-<arch>.tar.gz），都在 dist/ 下
+          for f in dist/*; do
+            [ -f "$f" ] || continue
+            n=$(basename "$f")
+            echo "  -> COS: $n"
+            zapfile upload zap/releases/ "$f" \
+              || { echo "COS upload failed: $n"; exit 1; }
+            echo "  -> Cloudflare: $n"
+            zapfile upload zap/releases/ "$f" --aws \
+              || { echo "Cloudflare upload failed: $n"; exit 1; }
+          done
+          # latest.txt（内容即版本号，面板/安装器据此判断是否可升级）；必须在包体之后，
+          # 避免旧版「latest.txt 先发、包体还没传完」导致的 404 升级 race
+          echo "  -> latest.txt (COS + Cloudflare)"
+          zapfile put "zap/releases/latest.txt" "$ver" \
+            || { echo "latest.txt COS failed"; exit 1; }
+          zapfile put "zap/releases/latest.txt" "$ver" --aws \
+            || { echo "latest.txt Cloudflare failed"; exit 1; }
+          # 安装脚本（zap/install.sh, zap/uninstall.sh）
+          for s in scripts/install.sh scripts/uninstall.sh; do
+            [ -f "$s" ] || { echo "missing $s"; exit 1; }
+            echo "  -> script COS: $s"
+            zapfile upload zap/ "$s" \
+              || { echo "script COS failed: $s"; exit 1; }
+            echo "  -> script Cloudflare: $s"
+            zapfile upload zap/ "$s" --aws \
+              || { echo "script Cloudflare failed: $s"; exit 1; }
+          done
+          echo "mirror sync done for v${ver}"
