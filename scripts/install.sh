@@ -38,7 +38,7 @@ if [ "$LANG_MODE" = "zh" ]; then
     L_OFFLINE_NO_QUERY="离线模式：不查询最新版本，请显式指定版本号"
     L_MIRROR_TRY="尝试下载源: %s"
     L_MIRROR_USED="已从 %s 下载完成"
-    L_MIRROR_BAD="未知下载通道: %s（可用 auto / cn / global）"
+    L_MIRROR_BAD="未知下载通道: %s（可用 github / cn / cf）"
     L_OFFLINE_USE="离线安装：使用本地安装包 %s（版本 %s）"
     L_USE_EXISTING="使用已存在的安装包 %s"
     L_DOWNLOAD="下载 %s ..."
@@ -118,7 +118,7 @@ else
     L_OFFLINE_NO_QUERY="Offline mode: not querying latest version, please specify a version explicitly"
     L_MIRROR_TRY="Trying download source: %s"
     L_MIRROR_USED="Downloaded from %s"
-    L_MIRROR_BAD="Unknown download channel: %s (auto / cn / global)"
+    L_MIRROR_BAD="Unknown download channel: %s (github / cn / cf)"
     L_OFFLINE_USE="Offline install: using local package %s (version %s)"
     L_USE_EXISTING="Using existing package %s"
     L_DOWNLOAD="Downloading %s ..."
@@ -209,11 +209,11 @@ usage() {
   环境变量                ZAP_ADMIN_USER / ZAP_ADMIN_PASSWORD（命令行参数优先）
 
 下载通道（境内 / 境外自动回退）：
-  --mirror <auto|cn|global>
-                         下载通道。auto（默认）：先 mirrors.zap.cn（腾讯云 COS），
-                         失败自动改走 mirrors.zap.sh（自有境外镜像）；
-                         cn：仅用国内镜像；global：仅用 mirrors.zap.sh（境外镜像）
-                         版本均从对应镜像的 latest.txt 读取，GitHub Releases 仅作下载兜底
+  --mirror <github|cn|cf>
+                       下载通道。默认 github（直连 GitHub Releases）；
+                       cn：仅用国内镜像 mirrors.zap.cn（腾讯云 COS）；
+                       cf：仅用境外 Cloudflare 镜像 mirrors.zap.sh（GitHub 兜底）。
+                       版本：github 走 API 查 latest tag，cn/cf 读各自 latest.txt
   环境变量                ZAP_MIRROR（同上，命令行参数优先）
 
 说明：安装末尾会执行 `zapd --init-admin` 建库并写入管理员（凭据只经命令行传递，
@@ -244,11 +244,11 @@ Initial admin credentials (only on first install with a fresh DB):
   Env vars               ZAP_ADMIN_USER / ZAP_ADMIN_PASSWORD (CLI args take precedence)
 
 Download channel (auto fallback between CN and overseas mirrors):
-  --mirror <auto|cn|global>
-                         Download channel. auto (default): try mirrors.zap.cn (Tencent COS) first,
-                         then fall back to mirrors.zap.sh (own overseas mirror);
-                         cn: China mirror only; global: mirrors.zap.sh only (overseas mirror).
-                         Version is read from that mirror's latest.txt; GitHub Releases is a download fallback.
+  --mirror <github|cn|cf>
+                         Download channel. Default github (direct GitHub Releases);
+                         cn: China mirror only (mirrors.zap.cn, Tencent COS);
+                         cf: overseas Cloudflare mirror only (mirrors.zap.sh, GitHub fallback).
+                         Version: github queries the GitHub API for the latest tag; cn/cf read their latest.txt.
   Env vars               ZAP_MIRROR (same values; CLI args take precedence)
 
 Notes: at the end `zapd --init-admin` creates the DB and writes the admin (credentials passed only via CLI,
@@ -436,7 +436,7 @@ printf "${GREEN}========================================${NC}\n"
 VERSION="latest"
 ADMIN_USER=""; ADMIN_PASS=""; PASS_GENERATED=0; ADMIN_UNCHANGED=0
 LOCAL_PKG=""; OFFLINE=0
-MIRROR_MODE="${ZAP_MIRROR:-auto}"
+MIRROR_MODE="${ZAP_MIRROR:-github}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --mirror)
@@ -534,46 +534,44 @@ if command -v wget >/dev/null 2>&1; then
 fi
 
 case "$MIRROR_MODE" in
-    auto|cn|global) ;;
+    github|cn|cf|global) ;;
     *) die "$(printf "$L_MIRROR_BAD" "$MIRROR_MODE")" ;;
 esac
+# global 作为 cf（Cloudflare 境外镜像）的兼容别名
+[ "$MIRROR_MODE" = "global" ] && MIRROR_MODE=cf
 
 # download
 # ── 下载通道 ────────────────────────────────────────────
-# 境内：mirrors.zap.cn（腾讯云 COS，国内速度快），版本查自有 latest.txt
-# 境外：mirrors.zap.sh（自有境外镜像，稳定），版本查 latest.txt
-# GitHub Releases 仅作下载兜底（境外镜像不可达时），不再用于版本查询
-# auto：cn → zap.sh → GitHub 顺序逐个尝试，谁通用谁
+# 默认 github：直连 GitHub Releases（版本走 API 查 latest tag，包走 .../download/v<ver>/...）。
+# cn：国内镜像 mirrors.zap.cn（腾讯云 COS），版本查自有 latest.txt。
+# cf：境外 Cloudflare 镜像 mirrors.zap.sh（GitHub 兜底），版本查 latest.txt。
+# 三者均为「先解析版本号 → 下版本化包」，不存在 latest 重定向别名。
 MIRROR_CN_BASE="https://mirrors.zap.cn/zap/releases"
-MIRROR_ZAPSH_BASE="https://mirrors.zap.sh/zap/releases"
+MIRROR_ZAPSH_BASE="https://mirrors.zap.sh/zap/releases"   # Cloudflare 境外镜像（--mirror cf）
 GITHUB_RELEASE_BASE="https://github.com/zapsh/zap/releases/download"
 GITHUB_LATEST_DL="https://github.com/zapsh/zap/releases/latest/download"
 GITHUB_API_LATEST="https://api.github.com/repos/zapsh/zap/releases/latest"
 
-# 版本查询地址（latest.txt），按通道排序。
-# 境外（global / auto）不再维护 latest.txt：版本号由 query_latest_version 末尾直接问
-# GitHub API，这里只返回国内通道的 latest.txt（global 留空 → 直接走 API 兜底）。
+# 版本查询地址（latest.txt），按通道。github 无 latest.txt，直接走 API。
 latest_version_urls() {
     case "$MIRROR_MODE" in
-        cn)     printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" ;;
-        global) printf '%s\n' "${MIRROR_ZAPSH_BASE}/latest.txt" ;;
-        *)      printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" "${MIRROR_ZAPSH_BASE}/latest.txt" ;;
+        cn) printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" ;;
+        cf) printf '%s\n' "${MIRROR_ZAPSH_BASE}/latest.txt" ;;
+        *)  printf '%s\n'  ;;   # github（及未知）→ 无 latest.txt，走 API 兜底
     esac
 }
 
-# 安装包下载地址，按通道排序（$1 = 文件名）
+# 安装包下载地址，按通道（$1 = 文件名）
 download_urls_for() {
     local f="$1"
     case "$MIRROR_MODE" in
-        cn)
-            printf '%s\n' "${MIRROR_CN_BASE}/${f}" ;;
-        global)
-            # 境外优先自有镜像 mirrors.zap.sh，GitHub Releases 兜底
+        cn) printf '%s\n' "${MIRROR_CN_BASE}/${f}" ;;
+        cf)
+            # 境外优先 Cloudflare 镜像 mirrors.zap.sh，GitHub Releases 兜底
             printf '%s\n' "${MIRROR_ZAPSH_BASE}/${f}"
             printf '%s\n' "${GITHUB_RELEASE_BASE}/v${VERSION}/${f}" ;;
         *)
-            printf '%s\n' "${MIRROR_CN_BASE}/${f}"
-            printf '%s\n' "${MIRROR_ZAPSH_BASE}/${f}"
+            # github（默认）
             printf '%s\n' "${GITHUB_RELEASE_BASE}/v${VERSION}/${f}" ;;
     esac
 }
@@ -665,7 +663,7 @@ else
     [ "$OFFLINE" != "1" ] || die "$(printf "$L_OFFLINE_NO_PKG" "$ZAP_FILENAME")"
     [ "$HAVE_FETCH" = "1" ] || die "$(printf "$L_NO_WGET" "$ZAP_FILENAME")"
     info "$(printf "$L_DOWNLOAD" "$ZAP_FILENAME")"
-    # 按通道顺序逐个尝试：国内镜像 → GitHub → Cloudflare，谁先成功用谁
+    # 按通道顺序逐个尝试：github 直连 / cn 国内 / cf 境外（GitHub 兜底），谁先成功用谁
     # 先写 .part 再改名：中途失败不会留下半截包，被下次运行当成完整包解压
     rm -f "${ZAP_FILENAME}.part"
     DL_OK=0; LAST_URL=""
