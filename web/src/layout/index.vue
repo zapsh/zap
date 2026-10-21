@@ -83,7 +83,7 @@ const watchDeviceWidth = () => {
   // 强制 PC 模式：把布局视口设成 PC 宽度（请求桌面版网站的机制），浏览器按桌面宽度
   // 排版（el-col 断点 / 卡片列数都按 PC 算），内容可缩放；关闭时恢复成设备宽度
   const MOBILE_VIEWPORT = 'width=device-width, initial-scale=1.0'
-  const DESKTOP_VIEWPORT = 'width=1200, initial-scale=1.0'
+  const DESKTOP_VIEWPORT = 'width=1366, initial-scale=1.0'
   const setViewport = (content: string) => {
     const meta = document.head.querySelector('meta[name="viewport"]')
     if (meta) meta.setAttribute('content', content)
