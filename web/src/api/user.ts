@@ -384,8 +384,6 @@ export interface NoticePrefs {
   lang?: string
   /** 主题/显示模式：light=亮色 / dark=深色 / auto=跟随系统 */
   theme_mode?: string
-  /** 强制 PC 模式：移动端按桌面布局展示（true = 侧栏常驻，不分盖式抽屉） */
-  force_pc?: boolean
 }
 
 /** 读取当前用户偏好设置 */

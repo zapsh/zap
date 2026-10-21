@@ -110,7 +110,7 @@ const enUS: Messages = {
     docs: 'Docs',
   },
 
-  /** Preferences (avatar dropdown): currently keep-alive pages only, stored in localStorage */
+  /** Preferences (avatar dropdown): keep-alive pages + force PC mode, stored in localStorage */
   prefs: {
     title: 'Preferences',
     keepAliveTitle: 'Keep-alive pages',
@@ -118,6 +118,9 @@ const enUS: Messages = {
       'Checked pages stay alive once opened: switching pages or sections never destroys them, so their state is still there when you come back (SSH sessions, file browser location). Saved in this browser only, never uploaded; newly checked pages apply the next time they are opened.',
     defaultTag: 'default',
     saved: 'Preferences saved',
+    forcePc: 'Force PC mode',
+    forcePcDesc:
+      'Show the desktop layout on narrow screens like phones (sidebar pinned, no overlay drawer). Saved in this browser only, not synced to the account. Off = auto-switch to the mobile layout by screen width.',
     pages: {
       files: 'Files',
       terminal: 'Terminal',
@@ -3681,9 +3684,6 @@ const enUS: Messages = {
       'Language and theme are saved with your account and stay consistent across devices. On mobile the top-bar language/theme buttons are hidden; set them here.',
     uiLang: 'Language',
     uiTheme: 'Theme',
-    forcePcMode: 'Force PC mode',
-    forcePcModeDesc:
-      'Show the desktop layout on narrow screens like phones (sidebar pinned, no overlay drawer). Off = auto-switch to the mobile layout by screen width.',
     prefsSaved: 'Preferences saved',
     tabLogins: 'Login history',
     tabSshKeys: 'SSH Keys',

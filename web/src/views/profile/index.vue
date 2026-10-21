@@ -6,7 +6,6 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import QRCode from 'qrcode'
 import { useUserStore } from '@/stores/user'
-import { useAppStore } from '@/stores/app'
 import { setLocale, LOCALE_OPTIONS } from '@/i18n'
 import { setThemeMode } from '@/composables/useTheme'
 import TeamPanel from '@/views/team/TeamPanel.vue'
@@ -30,7 +29,6 @@ import { formatDate } from '@/utils/fmt'
 const { t } = useI18n()
 const userStore = useUserStore()
 const { userInfo } = userStore
-const appStore = useAppStore()
 /** 语言选项（取自 i18n，用语言自称便于在任意界面下找到对应项） */
 const localeOptions = LOCALE_OPTIONS
 
@@ -236,7 +234,6 @@ const prefs = reactive<NoticePrefs>({
   autossl_notify_mode: 'deferrals',
   lang: 'zh-CN',
   theme_mode: 'auto',
-  force_pc: false,
 })
 const prefsLoading = ref(false)
 const prefsSaving = ref(false)
@@ -247,8 +244,6 @@ async function loadPrefs() {
     const res = await getMyPrefs()
     if (res.data) {
       Object.assign(prefs, res.data)
-      // 与服务端偏好同步：本地布局据此即时生效（layout 监听 forcePc 自动应用）
-      appStore.setForcePc(!!res.data.force_pc)
       // 语言 / 主题随账号生效（未在此改过时也以服务端为准）
       applyUiPrefs()
     }
@@ -257,11 +252,6 @@ async function loadPrefs() {
   } finally {
     prefsLoading.value = false
   }
-}
-
-/** 开关实时生效：无需保存也立即切换布局（保存时一并持久化到服务端） */
-function onForcePcChange(v: boolean | string | number) {
-  appStore.setForcePc(v === true || v === 'true' || v === 1)
 }
 
 /** 把语言 / 主题偏好即时应用到当前界面（与顶栏下拉同源：setLocale / setThemeMode 会写入 localStorage） */
@@ -277,7 +267,6 @@ async function savePrefs() {
   try {
     const res = await saveMyPrefs({ ...prefs })
     ElMessage.success(res.message || t('profilePage.prefsSaved'))
-    appStore.setForcePc(!!prefs.force_pc)
     applyUiPrefs()
   } catch {
     // 拦截器已弹窗
@@ -569,13 +558,6 @@ async function logoutAllDevices() {
                   t('profilePage.autosslDisabled')
                 }}</el-radio>
               </el-radio-group>
-            </div>
-
-            <!-- 界面模式：强制 PC 模式（移动端按桌面布局展示） -->
-            <div class="prefs-section">
-              <h4 class="prefs-title prefs-section-title">{{ t('profilePage.forcePcMode') }}</h4>
-              <p class="prefs-desc">{{ t('profilePage.forcePcModeDesc') }}</p>
-              <el-switch v-model="prefs.force_pc" @change="onForcePcChange" />
             </div>
 
             <div style="margin-top: 28px">

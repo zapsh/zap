@@ -20,6 +20,16 @@
       </el-checkbox>
     </el-checkbox-group>
 
+    <el-divider />
+
+    <!-- 强制 PC 模式：移动端按桌面布局展示（侧栏常驻，不分盖式抽屉）；仅本机 localStorage -->
+    <div class="pref-section">{{ t('prefs.forcePc') }}</div>
+    <div class="pref-hint">{{ t('prefs.forcePcDesc') }}</div>
+    <el-switch
+      :model-value="appStore.forcePc"
+      @change="(v: boolean) => appStore.setForcePc(v)"
+    />
+
     <template #footer>
       <el-button @click="visible = false">{{ t('common.cancel') }}</el-button>
       <el-button type="primary" :loading="saving" @click="save">
@@ -34,9 +44,12 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { useTagsStore, ALIVE_CANDIDATES, DEFAULT_ALIVE_PATHS } from '@/stores/tags'
+import { useAppStore } from '@/stores/app'
 
 const { t } = useI18n()
 const tagsStore = useTagsStore()
+/** 强制 PC 模式：移动端按桌面布局展示，仅存本机 localStorage（layout 监听 forcePc 自动应用） */
+const appStore = useAppStore()
 
 const visible = defineModel<boolean>({ default: false })
 

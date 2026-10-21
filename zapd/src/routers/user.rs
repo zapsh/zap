@@ -517,9 +517,6 @@ pub struct NoticePrefs {
     /// 主题/显示模式：light=亮色 / dark=深色 / auto=跟随系统
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
-    /// 强制 PC 模式：移动端设备按桌面布局展示（侧栏常驻，不分盖式抽屉）
-    #[serde(default)]
-    pub force_pc: bool,
 }
 
 impl Default for NoticePrefs {
@@ -536,7 +533,6 @@ impl Default for NoticePrefs {
             autossl_notify_mode: "deferrals".to_string(),
             lang: "zh-CN".to_string(),
             theme_mode: "auto".to_string(),
-            force_pc: false,
         }
     }
 }

@@ -123,7 +123,7 @@ export default {
    * 因此后端菜单下发中文标题时也能切到英文（见 i18n/index.ts）。
    * key 与后端 menus.name 保持一致（dashboard / system / user …）。
    */
-  /** 偏好设置（头像下拉菜单）：目前只有「常驻页面」，只存本机 localStorage */
+  /** 偏好设置（头像下拉菜单）：常驻页面 + 强制 PC 模式，只存本机 localStorage */
   prefs: {
     title: '偏好设置',
     keepAliveTitle: '常驻页面',
@@ -131,6 +131,9 @@ export default {
       '勾选的页面打开后实例常驻：切换页面、切换分类都不会销毁，切回来状态还在（终端的 SSH 会话、文件管理的目录位置不用重来）。仅保存在当前浏览器，不上传服务器；新勾选的页面下次打开生效。',
     defaultTag: '默认',
     saved: '偏好已保存',
+    forcePc: '强制 PC 模式',
+    forcePcDesc:
+      '在手机等窄屏设备上以桌面布局展示（侧边栏常驻、不再使用覆盖式抽屉）。仅保存在本浏览器，不随账号同步；关闭时按屏幕宽度自动切换移动端布局。',
     pages: {
       files: '文件管理',
       terminal: '终端',
@@ -3622,8 +3625,6 @@ export default {
     uiDesc: '语言与主题随账号保存，换设备登录保持一致；移动端顶栏的语言、主题按钮已隐藏，可在此设置。',
     uiLang: '语言',
     uiTheme: '主题',
-    forcePcMode: '强制 PC 模式',
-    forcePcModeDesc: '在手机等窄屏设备上以桌面布局展示（侧边栏常驻、不再使用覆盖式抽屉）。关闭时按屏幕宽度自动切换移动端布局。',
     prefsSaved: '偏好设置已保存',
   },
 
