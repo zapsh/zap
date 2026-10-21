@@ -1295,6 +1295,8 @@ export default {
   /** 文件管理 · 本地存储 */
   filesLocal: {
     tree: '目录树',
+    collapseTree: '收起目录树',
+    expandTree: '展开目录树',
     uploadFile: '上传文件',
     uploadDir: '上传目录',
     newDir: '新建目录',
@@ -1472,6 +1474,8 @@ export default {
 
   filesCloud: {
     storeListTitle: '云存储',
+    collapseStores: '收起存储列表',
+    expandStores: '展开存储列表',
     addStore: '添加云存储',
     editStore: '编辑云存储',
     testConn: '测试连接',

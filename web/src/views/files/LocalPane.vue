@@ -1,13 +1,32 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="file-manager">
-    <!-- 左侧目录树 -->
-    <div class="fm-sidebar">
+    <!-- 左侧目录树（可折叠，移动端默认折叠） -->
+    <div class="fm-sidebar" :class="{ 'is-collapsed': treeCollapsed }">
       <div class="fm-sidebar-header">
-        <span>{{ t('filesLocal.tree') }}</span>
-        <el-button :icon="Refresh" size="small" text @click="refreshTree" />
+        <template v-if="!treeCollapsed">
+          <span>{{ t('filesLocal.tree') }}</span>
+          <div class="fm-sidebar-actions">
+            <el-button :icon="Refresh" size="small" text @click="refreshTree" />
+            <el-button
+              :icon="ArrowBack"
+              size="small"
+              text
+              :title="t('filesLocal.collapseTree')"
+              @click="treeCollapsed = true"
+            />
+          </div>
+        </template>
+        <el-button
+          v-else
+          :icon="ArrowRight"
+          size="small"
+          text
+          :title="t('filesLocal.expandTree')"
+          @click="treeCollapsed = false"
+        />
       </div>
-      <el-scrollbar class="fm-tree-scroll">
+      <el-scrollbar v-show="!treeCollapsed" class="fm-tree-scroll">
         <el-tree
           ref="treeRef"
           :data="treeData"
@@ -946,6 +965,8 @@ import {
   DataLine,
   Box,
   Search,
+  ArrowBack,
+  ArrowRight,
 } from '@/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ElTree } from 'element-plus'
@@ -978,6 +999,9 @@ import type { PluginInfo } from '@/api/plugin'
 const FileEditorWindow = defineAsyncComponent(() => import('./FileEditorWindow.vue'))
 
 const { t } = useI18n()
+
+/** 左侧目录树折叠：移动端（<768px）默认折叠，桌面默认展开 */
+const treeCollapsed = ref(window.innerWidth < 768)
 
 // ── store ──────────────────────────────────────────────────
 
@@ -2984,6 +3008,17 @@ watch(
   flex-direction: column;
   /*background: var(--el-bg-color-page);*/
 
+  /* 折叠态：只留一条窄边栏，点展开按钮恢复 */
+  &.is-collapsed {
+    width: 42px;
+    min-width: 42px;
+
+    .fm-sidebar-header {
+      padding: 12px 2px;
+      justify-content: center;
+    }
+  }
+
   &-header {
     padding: 12px 16px;
     font-weight: 600;
@@ -2991,6 +3026,11 @@ watch(
     border-bottom: 1px solid var(--el-border-color-lighter);
     display: flex;
     justify-content: space-between;
+    align-items: center;
+  }
+
+  &-actions {
+    display: flex;
     align-items: center;
   }
 }

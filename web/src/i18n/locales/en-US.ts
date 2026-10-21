@@ -1297,6 +1297,8 @@ const enUS: Messages = {
 
   filesLocal: {
     tree: 'Directory Tree',
+    collapseTree: 'Collapse tree',
+    expandTree: 'Expand tree',
     uploadFile: 'Upload Files',
     uploadDir: 'Upload Folder',
     newDir: 'New Directory',
@@ -1477,6 +1479,8 @@ const enUS: Messages = {
 
   filesCloud: {
     storeListTitle: 'Cloud Storage',
+    collapseStores: 'Collapse list',
+    expandStores: 'Expand list',
     addStore: 'Add Cloud Storage',
     editStore: 'Edit Cloud Storage',
     testConn: 'Test Connection',

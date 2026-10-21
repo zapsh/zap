@@ -1,19 +1,38 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="cloud-manager">
-    <!-- 左侧：云存储列表（一个用户可配多套） -->
-    <div class="cm-sidebar">
+    <!-- 左侧：云存储列表（可折叠，移动端默认折叠） -->
+    <div class="cm-sidebar" :class="{ 'is-collapsed': storeCollapsed }">
       <div class="cm-sidebar-header">
-        <span>{{ t('filesCloud.storeListTitle') }}</span>
+        <template v-if="!storeCollapsed">
+          <span>{{ t('filesCloud.storeListTitle') }}</span>
+          <div class="cm-sidebar-actions">
+            <el-button
+              :icon="Plus"
+              size="small"
+              text
+              :title="t('filesCloud.addStore')"
+              @click="openStoreDialog()"
+            />
+            <el-button
+              :icon="ArrowBack"
+              size="small"
+              text
+              :title="t('filesCloud.collapseStores')"
+              @click="storeCollapsed = true"
+            />
+          </div>
+        </template>
         <el-button
-          :icon="Plus"
+          v-else
+          :icon="ArrowRight"
           size="small"
           text
-          :title="t('filesCloud.addStore')"
-          @click="openStoreDialog()"
+          :title="t('filesCloud.expandStores')"
+          @click="storeCollapsed = false"
         />
       </div>
-      <el-scrollbar class="cm-store-scroll">
+      <el-scrollbar v-show="!storeCollapsed" class="cm-store-scroll">
         <div v-loading="storeLoading" class="cm-store-list">
           <div
             v-for="store in stores"
@@ -501,7 +520,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, TableInstance, UploadFile } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 
-import { Cloud, Document, Folder, FolderAdd, MoreFilled, Plus, Refresh, Upload } from '@/icons'
+import { ArrowBack, ArrowRight, Cloud, Document, Folder, FolderAdd, MoreFilled, Plus, Refresh, Upload } from '@/icons'
 import {
   cloudDelete,
   cloudMkdir,
@@ -523,6 +542,9 @@ import {
 import type { FileEntry } from '@/api/file'
 
 const { t } = useI18n()
+
+/** 左侧存储列表折叠：移动端（<768px）默认折叠，桌面默认展开 */
+const storeCollapsed = ref(window.innerWidth < 768)
 
 // ── state ──────────────────────────────────────────────────
 
@@ -1189,6 +1211,22 @@ onMounted(() => {
   border-right: 1px solid var(--el-border-color-lighter);
   display: flex;
   flex-direction: column;
+
+  /* 折叠态：只留一条窄边栏，点展开按钮恢复 */
+  &.is-collapsed {
+    width: 42px;
+    min-width: 42px;
+
+    .cm-sidebar-header {
+      padding: 10px 2px;
+      justify-content: center;
+    }
+  }
+}
+
+.cm-sidebar-actions {
+  display: flex;
+  align-items: center;
 }
 
 .cm-sidebar-header {
