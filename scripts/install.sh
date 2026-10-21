@@ -624,10 +624,12 @@ if [ -n "$LOCAL_PKG" ]; then
     NEED_DOWNLOAD=0
 fi
 if [ "$VERSION" = "latest" ] && [ "$NEED_DOWNLOAD" = "1" ]; then
-    if [ "$MIRROR_MODE" = "global" ]; then
-        # 境外：直接走 GitHub latest 重定向下载，无需先查版本号
-        info "$(printf "$L_LATEST_VER" "latest")"
-    elif [ "$HAVE_FETCH" = "1" ] && [ "$OFFLINE" != "1" ]; then
+    # 所有镜像模式（cn / global / auto）都先解析出真实版本号再下载：
+    # download_urls_for 拼的是 .../download/v<版本>/... 路径，若带着 “latest”
+    # 当版本号会拼成 .../download/vlatest/... 直接 404。global 模式下的
+    # query_latest_version 会先试 mirrors.zap.sh 的 latest.txt，再兜底问
+    # GitHub API，与 auto 完全一致。
+    if [ "$HAVE_FETCH" = "1" ] && [ "$OFFLINE" != "1" ]; then
         info "$L_QUERY_LATEST"
         if LATEST=$(query_latest_version) && [ -n "$LATEST" ]; then
             VERSION="$LATEST"
@@ -917,11 +919,6 @@ for f in zap.db zap.db-wal zap.db-shm; do
     [ -e "$ZAP_DIR/data/$f" ] && chown zapadm:zapadm "$ZAP_DIR/data/$f" || true
 done
 if [ -d "$ZAP_DIR/data/appstore" ]; then
-    # repos/ 子树归 root：git 全部由 zapexec(root) 执行，仓库属主 ≠ root 时
-    # git 2.35.2+ 的 safe.directory 检查会拒绝一切操作（Ubuntu 22.04 等发行版的
-    # 回移植版连 `git -c safe.directory=*` 都不认，只能靠属主一致）。
-    # zapd(zapadm) 对 repos/ 只读（755/644 即可）；appstore 其余子目录
-    # （plugins/tmp/logs/runs/cache）zapd 也要写，仍归 zapadm。
     chown -R zapadm:zapadm "$ZAP_DIR/data/appstore" 2>/dev/null || true
     if [ -d "$ZAP_DIR/data/appstore/repos" ]; then
         chown -R root:root "$ZAP_DIR/data/appstore/repos" 2>/dev/null || true
