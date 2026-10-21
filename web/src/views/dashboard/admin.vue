@@ -26,9 +26,6 @@
     <!-- 服务器状态 -->
     <div class="section-title-row">
       <span class="section-title">{{ t('dashboardAdmin.serverStatus') }}</span>
-      <el-link type="primary" underline="never" @click="go('/server-status/index?tab=monitor')">
-        {{ t('dashboardAdmin.viewDetails') }}
-      </el-link>
     </div>
     <el-row :gutter="16" class="section-row">
       <el-col v-for="item in statusCards" :key="item.id" :xs="24" :sm="12" :lg="6" class="metric-col">
