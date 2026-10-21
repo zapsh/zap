@@ -3,7 +3,7 @@
   <div class="pill-panels">
     <!-- 一级 nav pill：只有一个面板时不渲染，避免多余的空导航 -->
     <div v-if="tabs.length > 1" class="panel-nav">
-      <div class="nav-pills">
+      <div ref="pillsEl" class="nav-pills">
         <span
           v-for="it in tabs"
           :key="it.key"
@@ -26,7 +26,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch, type Component } from 'vue'
+import { computed, nextTick, onMounted, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 export interface PillTab {
@@ -59,6 +59,19 @@ function initialKey(): string {
 
 const active = ref(initialKey())
 const panelRef = ref<{ reload?: () => void }>()
+const pillsEl = ref<HTMLElement | null>(null)
+
+/** 窄屏下 pill 行可横向滑动：把激活 pill 滚到可视区中间（容器内滚动，不动页面） */
+function scrollActiveIntoView() {
+  const wrap = pillsEl.value
+  if (!wrap) return
+  const el = wrap.querySelector('.pill.active') as HTMLElement | null
+  if (!el) return
+  const target = el.offsetLeft - (wrap.clientWidth - el.offsetWidth) / 2
+  wrap.scrollTo({ left: Math.max(0, target), behavior: 'smooth' })
+}
+
+onMounted(scrollActiveIntoView)
 
 const currentTab = computed(
   () => props.tabs.find((t) => t.key === active.value) ?? props.tabs[0],
@@ -72,6 +85,8 @@ watch(active, async (v) => {
   // 面板若在另一个 pill 里刚被改过（角色、套餐…），切回来刷一次
   await nextTick()
   panelRef.value?.reload?.()
+  // 移动端窄屏：确保新激活的 pill 可见
+  scrollActiveIntoView()
 })
 
 // 前进/后退等外部改地址栏的情况跟着切
@@ -120,6 +135,14 @@ export default { name: 'NavPillPanels' }
   padding: 3px;
   border-radius: 10px;
   background: var(--el-fill-color-light);
+  /* 窄屏溢出时容器内横向滑动（触摸可滑，滚动条隐藏），不再把 pill 挤变形/裁掉 */
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nav-pills::-webkit-scrollbar {
+  display: none;
 }
 
 .nav-pills .pill {
@@ -134,6 +157,8 @@ export default { name: 'NavPillPanels' }
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+  /* 不被容器压缩：完整宽度靠横向滚动查看 */
+  flex: none;
   transition:
     background-color 0.15s,
     color 0.15s;
