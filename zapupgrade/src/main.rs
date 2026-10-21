@@ -59,8 +59,8 @@ fn align_owner(path: &Path, data_dir: &Path) {
     }
 }
 
-/// 默认更新渠道（与 zapd `zap::update_config::DEFAULT_CHANNEL` 保持一致）。
-const DEFAULT_CHANNEL: &str = "https://mirrors.zap.cn/zap/releases";
+/// 默认更新渠道（与 zapd `zap::update_config::DEFAULT_CHANNEL` 保持一致，均为 GitHub 官方发布）。
+const DEFAULT_CHANNEL: &str = "https://github.com/zapsh/zap/releases";
 
 /// 日志是否同时打到 stdout。
 ///

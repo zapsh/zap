@@ -1170,7 +1170,7 @@ const enUS: Messages = {
     cronPlaceholder: 'e.g. 0 3 * * * (daily at 03:00)',
     cronHint: 'Standard 5-field cron: minute hour day month weekday (supports * / */n a-b a,b)',
     channel: 'Update Channel',
-    channelPlaceholder: 'https://mirrors.zap.cn/zap/releases',
+    channelPlaceholder: 'https://github.com/zapsh/zap/releases',
     channelGithub: 'GitHub (official releases)',
     channelCn: 'Mirror (COS · China)',
     channelSh: 'Mirror (Cloudflare · overseas)',
