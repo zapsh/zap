@@ -223,22 +223,32 @@ fn is_github_channel(channel: &str) -> bool {
     channel.contains("github.com")
 }
 
+/// 从 GitHub 渠道 URL 解析 owner/repo。
+///
+/// `https://github.com/<owner>/<repo>/releases`（`/releases` 与尾斜杠可省）。
+/// 注意先过滤空段再取下标：`https://` 里的 `//` 会切出空串，若不过滤
+/// 会导致索引整体偏移，把 owner 当成 host 校验（曾因此误判格式非法）。
+fn github_owner_repo(channel: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = channel.split('/').filter(|s| !s.is_empty()).collect();
+    // 过滤空段后：["https:", "github.com", owner, repo, ...]
+    if parts.len() < 4 || parts[1] != "github.com" {
+        return None;
+    }
+    Some((parts[2].to_string(), parts[3].to_string()))
+}
+
 /// 查 GitHub 最新版本：解析 `https://github.com/<owner>/<repo>/releases` 推出
 /// owner/repo，再调 api.github.com 读 latest release 的 tag_name。
 async fn github_latest_version(channel: &str) -> Result<String, ZapError> {
-    let parts: Vec<&str> = channel.split('/').filter(|s| !s.is_empty()).collect();
-    if parts.len() < 5 || parts[2] != "github.com" {
-        return Err(ZapError::New(
+    let (owner, repo) = github_owner_repo(channel).ok_or_else(|| {
+        ZapError::New(
             -1,
             format!(
                 "GitHub 渠道格式应为 https://github.com/<owner>/<repo>/releases，实际: {channel}"
             ),
-        ));
-    }
-    let api = format!(
-        "https://api.github.com/repos/{}/{}/releases/latest",
-        parts[3], parts[4]
-    );
+        )
+    })?;
+    let api = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
     tokio::task::spawn_blocking(move || -> Result<String, ZapError> {
         let text = http_get_text(&api).map_err(|e| {
             ZapError::New(
@@ -684,5 +694,27 @@ mod tests {
         // insecure 模式放行任意 scheme
         assert!(channel_allowed("http://10.0.0.5/releases", true));
         assert!(channel_allowed("https://mirrors.zap.cn/zap/releases", true));
+    }
+
+    #[test]
+    fn github_owner_repo_parses_default_channel() {
+        // 默认渠道（含 /releases 结尾）：曾因空段过滤后索引偏移被误判非法
+        assert_eq!(
+            github_owner_repo("https://github.com/zapsh/zap/releases"),
+            Some(("zapsh".into(), "zap".into()))
+        );
+        // 尾斜杠 / 不带 /releases 也应可解析
+        assert_eq!(
+            github_owner_repo("https://github.com/zapsh/zap/"),
+            Some(("zapsh".into(), "zap".into()))
+        );
+        assert_eq!(
+            github_owner_repo("https://github.com/zapsh/zap"),
+            Some(("zapsh".into(), "zap".into()))
+        );
+        // 非 github / 缺 owner 或 repo：拒绝
+        assert_eq!(github_owner_repo("https://mirrors.zap.cn/zap/releases"), None);
+        assert_eq!(github_owner_repo("https://github.com/zapsh"), None);
+        assert_eq!(github_owner_repo("github.com/zapsh/zap/releases"), None);
     }
 }
