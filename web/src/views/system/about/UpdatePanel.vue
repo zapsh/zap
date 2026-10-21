@@ -242,7 +242,7 @@ const status = reactive<UpdateStatusData>({
   config: {
     auto: false,
     cron: '0 3 * * *',
-    channel: 'https://mirrors.zap.sh/zap/releases',
+    channel: 'https://github.com/zapsh/zap/releases',
     last_check_at: 0,
     last_check_version: '',
     last_check_has_update: false,
@@ -289,7 +289,7 @@ function applyConfigFromServer() {
   const c = status.config
   form.auto = c.auto
   form.cron = c.cron || '0 3 * * *'
-  form.channel = c.channel || 'https://mirrors.zap.sh/zap/releases'
+  form.channel = c.channel || 'https://github.com/zapsh/zap/releases'
 }
 
 async function load() {

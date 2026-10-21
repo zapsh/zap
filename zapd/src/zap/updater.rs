@@ -279,29 +279,53 @@ async fn github_latest_version(channel: &str) -> Result<String, ZapError> {
     .map_err(|e| ZapError::New(-1, format!("GitHub 查询任务异常: {e}")))?
 }
 
+/// 镜像 latest.txt 地址：版本号来源。二者均在发布包生成并同步完成后才更新。
+const MIRROR_CF_LATEST: &str = "https://mirrors.zap.sh/zap/releases/latest.txt";
+const MIRROR_CN_LATEST: &str = "https://mirrors.zap.cn/zap/releases/latest.txt";
+
+/// 版本号来源（镜像 latest.txt 顺序：cf 优先，再 cn）。仅用于版本解析，
+/// 与「下载渠道」解耦——下载默认 GitHub，用户也可在面板切到 cf/cn 镜像，
+/// 但版本号始终以镜像 latest.txt 为准。
+pub(crate) fn version_source_urls() -> [&'static str; 2] {
+    [MIRROR_CF_LATEST, MIRROR_CN_LATEST]
+}
+
 /// 查询远端渠道的最新版本号。
-/// - 镜像类渠道：`{channel}/latest.txt`
-/// - GitHub 渠道：api.github.com 读 latest release 的 tag_name
+///
+/// 版本号一律从镜像 latest.txt 取（cf 优先，再 cn），与「下载渠道」无关：
+/// 镜像在发布包生成并同步完成后才更新 latest.txt，而 GitHub 刚打 tag 时安装包
+/// 尚未生成，直接查 API 会拿到未就绪版本导致下载 404。因此版本号绝不依赖 GitHub。
+/// 仅当两个镜像都不可达、且当前是显式 GitHub 下载渠道时，才兜底查 GitHub API。
 pub async fn check_remote_version(channel: &str) -> Result<String, ZapError> {
     let channel = channel.trim_end_matches('/').to_string();
     // 渠道强制 https（insecure 模式除外）：与下载路径一致
     if !channel_allowed(&channel, load_config().allow_insecure_update != 0) {
         return Err(ZapError::New(-1, "更新渠道必须为 https://".to_string()));
     }
+    // 1) 版本号从镜像 latest.txt 取（cf 优先，再 cn）
+    for url in version_source_urls() {
+        if let Ok(Ok(v)) = tokio::task::spawn_blocking(move || {
+            let text = http_get_text(url)?;
+            let v = text.trim().to_string();
+            if v.is_empty() {
+                Err(ZapError::New(-1, format!("{url} 返回空内容")))
+            } else {
+                Ok(v)
+            }
+        })
+        .await
+        {
+            return Ok(v);
+        }
+    }
+    // 2) 兜底：仅显式 GitHub 下载渠道、且两个镜像都不可达时，才查 GitHub API 取最新 tag
     if is_github_channel(&channel) {
         return github_latest_version(&channel).await;
     }
-    tokio::task::spawn_blocking(move || {
-        let url = format!("{channel}/latest.txt");
-        let text = http_get_text(&url)?;
-        let v = text.trim().to_string();
-        if v.is_empty() {
-            return Err(ZapError::New(-1, format!("{url} 返回空内容")));
-        }
-        Ok(v)
-    })
-    .await
-    .map_err(|e| ZapError::New(-1, format!("检查更新任务异常: {e}")))?
+    Err(ZapError::New(
+        -1,
+        "无法从镜像 latest.txt 获取最新版本号（非 GitHub 渠道不会兜底查 API）".to_string(),
+    ))
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -722,12 +746,18 @@ mod tests {
     }
 
     #[test]
-    fn default_channel_is_mirror_not_github() {
-        // 默认通道必须是镜像（版本号从 latest.txt 取），而非 GitHub：
-        // GitHub 刚打 tag 时安装包尚未生成，查 API 会拿到未就绪版本。
-        assert_eq!(DEFAULT_CHANNEL, "https://mirrors.zap.sh/zap/releases");
-        assert!(!is_github_channel(DEFAULT_CHANNEL));
-        // 镜像通道走 {channel}/latest.txt；只有显式 github 才查 API
-        assert!(is_github_channel("https://github.com/zapsh/zap/releases"));
+    fn default_channel_is_github_but_version_from_mirror() {
+        // 下载默认走 GitHub；但版本号始终从镜像 latest.txt 取（绝不依赖 GitHub API）：
+        // GitHub 刚打 tag 时安装包尚未生成，查 API 会拿到未就绪版本导致下载 404。
+        assert_eq!(DEFAULT_CHANNEL, "https://github.com/zapsh/zap/releases");
+        assert!(is_github_channel(DEFAULT_CHANNEL));
+        // 版本源顺序：cf 优先，再 cn（与 download 渠道解耦）
+        assert_eq!(
+            version_source_urls(),
+            [
+                "https://mirrors.zap.sh/zap/releases/latest.txt",
+                "https://mirrors.zap.cn/zap/releases/latest.txt"
+            ]
+        );
     }
 }

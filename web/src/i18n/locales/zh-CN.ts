@@ -1173,7 +1173,7 @@ export default {
     cronPlaceholder: '例：0 3 * * *（每天 03:00）',
     cronHint: '标准 5 段 cron：分 时 日 月 周（支持 * / */n a-b a,b）',
     channel: '更新渠道',
-    channelPlaceholder: 'https://mirrors.zap.sh/zap/releases',
+    channelPlaceholder: 'https://github.com/zapsh/zap/releases',
     channelGithub: 'GitHub（官方发布）',
     channelCn: '镜像（COS · 国内）',
     channelSh: '镜像（Cloudflare · 境外）',
