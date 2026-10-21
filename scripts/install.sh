@@ -213,8 +213,8 @@ usage() {
                        下载通道。默认 github（直连 GitHub Releases）；
                        cn：仅用国内镜像 mirrors.zap.cn（腾讯云 COS）；
                        cf：仅用境外 Cloudflare 镜像 mirrors.zap.sh（GitHub 兜底）。
-                       版本：github 走 API 查 latest tag，cn/cf 读各自 latest.txt
-  环境变量                ZAP_MIRROR（同上，命令行参数优先）
+                       版本：统一从镜像 latest.txt 获取（GitHub 刚打 tag 时安装包尚未生成，避免拿到未就绪版本）
+                       环境变量                ZAP_MIRROR（同上，命令行参数优先）
 
 说明：安装末尾会执行 `zapd --init-admin` 建库并写入管理员（凭据只经命令行传递，
 不落任何文件）；已安装过的机器重新执行本脚本不会改动现有管理员密码。
@@ -248,7 +248,7 @@ Download channel (auto fallback between CN and overseas mirrors):
                          Download channel. Default github (direct GitHub Releases);
                          cn: China mirror only (mirrors.zap.cn, Tencent COS);
                          cf: overseas Cloudflare mirror only (mirrors.zap.sh, GitHub fallback).
-                         Version: github queries the GitHub API for the latest tag; cn/cf read their latest.txt.
+                         Version: always resolved from the mirror latest.txt (a fresh GitHub tag may not have packages ready yet, which would 404).
   Env vars               ZAP_MIRROR (same values; CLI args take precedence)
 
 Notes: at the end `zapd --init-admin` creates the DB and writes the admin (credentials passed only via CLI,
@@ -552,12 +552,15 @@ GITHUB_RELEASE_BASE="https://github.com/zapsh/zap/releases/download"
 GITHUB_LATEST_DL="https://github.com/zapsh/zap/releases/latest/download"
 GITHUB_API_LATEST="https://api.github.com/repos/zapsh/zap/releases/latest"
 
-# 版本查询地址（latest.txt），按通道。github 无 latest.txt，直接走 API。
+# 版本查询地址（latest.txt），按通道。版本号一律从镜像的 latest.txt 取：
+# 镜像在发布包生成并同步完成后才更新 latest.txt，而 GitHub 刚打 tag 时安装包
+# 尚未生成，直接查 API 会拿到「包还没就绪」的版本导致下载 404。
+# github（默认）用国内外两个镜像的 latest.txt；cn 仅国内；cf 仅境外。
 latest_version_urls() {
     case "$MIRROR_MODE" in
         cn) printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" ;;
         cf) printf '%s\n' "${MIRROR_ZAPSH_BASE}/latest.txt" ;;
-        *)  printf '%s\n'  ;;   # github（及未知）→ 无 latest.txt，走 API 兜底
+        *)  printf '%s\n' "${MIRROR_CN_BASE}/latest.txt" "${MIRROR_ZAPSH_BASE}/latest.txt" ;;
     esac
 }
 
