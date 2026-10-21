@@ -713,7 +713,10 @@ mod tests {
             Some(("zapsh".into(), "zap".into()))
         );
         // 非 github / 缺 owner 或 repo：拒绝
-        assert_eq!(github_owner_repo("https://mirrors.zap.cn/zap/releases"), None);
+        assert_eq!(
+            github_owner_repo("https://mirrors.zap.cn/zap/releases"),
+            None
+        );
         assert_eq!(github_owner_repo("https://github.com/zapsh"), None);
         assert_eq!(github_owner_repo("github.com/zapsh/zap/releases"), None);
     }
