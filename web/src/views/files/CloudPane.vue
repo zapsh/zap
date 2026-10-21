@@ -109,11 +109,11 @@
             </el-breadcrumb>
           </div>
           <div class="cm-toolbar-right">
-            <el-button size="small" @click="openUploadDialog">
+            <el-button size="small" :title="t('filesCloud.upload')" @click="openUploadDialog">
               <el-icon><Upload /></el-icon>
               {{ t('filesCloud.upload') }}
             </el-button>
-            <el-button size="small" @click="showMkdirDialog">
+            <el-button size="small" :title="t('filesCloud.newDir')" @click="showMkdirDialog">
               <el-icon><FolderAdd /></el-icon>
               {{ t('filesCloud.newDir') }}
             </el-button>
@@ -1360,7 +1360,28 @@ onMounted(() => {
 .cm-toolbar-right {
   display: flex;
   align-items: center;
+  gap: 8px;
   flex-shrink: 0;
+}
+
+/* 移动端：顶部按钮收成纯图标（语义走 :title），整行横向滚动，避免折行截断 */
+@media (max-width: 767px) {
+  .cm-toolbar-right {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  /* 文本节点继承 font-size:0 被隐藏，图标单独定尺寸 */
+  .cm-toolbar-right .el-button {
+    font-size: 0;
+    padding: 8px 9px;
+
+    .el-icon {
+      font-size: 15px;
+    }
+  }
 }
 
 .cm-sub-toolbar {

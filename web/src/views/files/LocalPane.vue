@@ -97,11 +97,21 @@
           </el-button-group>
           <!-- 上传：文件 / 目录 收进同一按钮组，省横向空间 -->
           <el-button-group class="upload-group">
-            <el-button size="small" :loading="uploadBusy" @click="triggerUpload(false)">
+            <el-button
+              size="small"
+              :title="t('filesLocal.uploadFile')"
+              :loading="uploadBusy"
+              @click="triggerUpload(false)"
+            >
               <el-icon><Upload /></el-icon>
               {{ t('filesLocal.uploadFile') }}
             </el-button>
-            <el-button size="small" :loading="uploadBusy" @click="triggerUpload(true)">
+            <el-button
+              size="small"
+              :title="t('filesLocal.uploadDir')"
+              :loading="uploadBusy"
+              @click="triggerUpload(true)"
+            >
               <el-icon><FolderOpened /></el-icon>
               {{ t('filesLocal.uploadDir') }}
             </el-button>
@@ -123,11 +133,11 @@
           />
           <!-- 新建：目录 / 文件 收进同一按钮组 -->
           <el-button-group class="create-group">
-            <el-button size="small" @click="openMkdirForCurrent">
+            <el-button size="small" :title="t('filesLocal.newDir')" @click="openMkdirForCurrent">
               <el-icon><FolderAdd /></el-icon>
               {{ t('filesLocal.newDir') }}
             </el-button>
-            <el-button size="small" @click="openNewFileForCurrent">
+            <el-button size="small" :title="t('filesLocal.newFile')" @click="openNewFileForCurrent">
               <el-icon><DocumentAdd /></el-icon>
               {{ t('filesLocal.newFile') }}
             </el-button>
@@ -158,7 +168,7 @@
             size="small"
             clearable
             :disabled="loading"
-            style="width: 240px"
+            class="fm-search-input"
             @keyup.enter="runSearch"
             @clear="clearSearch"
           >
@@ -3134,6 +3144,44 @@ watch(
 .view-toggle {
   .el-button {
     padding: 5px 10px;
+  }
+}
+
+/* 搜索框宽度（原内联样式，抽出以便移动端覆盖） */
+.fm-search-input {
+  width: 240px;
+}
+
+/* 移动端：顶部按钮收成纯图标（语义走 :title），整行横向滚动，避免折行截断 */
+@media (max-width: 767px) {
+  .fm-toolbar {
+    padding: 8px 10px;
+  }
+
+  .fm-toolbar-right {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  /* 文本节点继承 font-size:0 被隐藏，图标单独定尺寸 */
+  .fm-toolbar-right .el-button {
+    font-size: 0;
+    padding: 8px 9px;
+
+    .el-icon {
+      font-size: 15px;
+    }
+  }
+
+  .fm-search-input {
+    width: 130px;
+  }
+
+  .fm-selection-bar {
+    padding: 6px 10px;
+    gap: 6px;
   }
 }
 
