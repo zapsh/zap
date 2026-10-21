@@ -9,7 +9,8 @@
         :xs="12"
         :sm="8"
         :md="6"
-        :lg="3"
+        :lg="4"
+        :xl="3"
         class="shortcut-col"
       >
         <el-card shadow="hover" class="shortcut-card" @click="go(item.path)">
@@ -26,6 +27,9 @@
     <!-- 服务器状态 -->
     <div class="section-title-row">
       <span class="section-title">{{ t('dashboardAdmin.serverStatus') }}</span>
+      <el-link type="primary" underline="never" @click="go('/server-status/index?tab=monitor')">
+        {{ t('dashboardAdmin.viewDetails') }}
+      </el-link>
     </div>
     <el-row :gutter="16" class="section-row">
       <el-col v-for="item in statusCards" :key="item.id" :xs="24" :sm="12" :lg="6" class="metric-col">
@@ -465,18 +469,27 @@ onMounted(async () => {
   align-items: center;
   gap: 12px;
   padding: 4px 0;
+  /* 允许文本侧收缩，标题过长时省略而不是把卡片撑折行 */
+  min-width: 0;
 }
 
 .shortcut-icon {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .shortcut-title {
+  flex: 1;
+  min-width: 0;
   font-size: 14px;
   font-weight: 500;
   color: var(--el-text-color-primary);
+  /* 标题永不折行：放不下省略号收尾，避免「服务器状/态」式难看换行 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .section-row {
