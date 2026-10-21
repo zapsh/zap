@@ -697,8 +697,8 @@ mod tests {
     }
 
     #[test]
-    fn github_owner_repo_parses_default_channel() {
-        // 默认渠道（含 /releases 结尾）：曾因空段过滤后索引偏移被误判非法
+    fn github_owner_repo_parses_github_url() {
+        // 显式 GitHub 渠道（含 /releases 结尾）：曾因空段过滤后索引偏移被误判非法
         assert_eq!(
             github_owner_repo("https://github.com/zapsh/zap/releases"),
             Some(("zapsh".into(), "zap".into()))
@@ -716,5 +716,15 @@ mod tests {
         assert_eq!(github_owner_repo("https://mirrors.zap.cn/zap/releases"), None);
         assert_eq!(github_owner_repo("https://github.com/zapsh"), None);
         assert_eq!(github_owner_repo("github.com/zapsh/zap/releases"), None);
+    }
+
+    #[test]
+    fn default_channel_is_mirror_not_github() {
+        // 默认通道必须是镜像（版本号从 latest.txt 取），而非 GitHub：
+        // GitHub 刚打 tag 时安装包尚未生成，查 API 会拿到未就绪版本。
+        assert_eq!(DEFAULT_CHANNEL, "https://mirrors.zap.sh/zap/releases");
+        assert!(!is_github_channel(DEFAULT_CHANNEL));
+        // 镜像通道走 {channel}/latest.txt；只有显式 github 才查 API
+        assert!(is_github_channel("https://github.com/zapsh/zap/releases"));
     }
 }

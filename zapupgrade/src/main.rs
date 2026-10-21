@@ -59,8 +59,9 @@ fn align_owner(path: &Path, data_dir: &Path) {
     }
 }
 
-/// 默认更新渠道（与 zapd `zap::update_config::DEFAULT_CHANNEL` 保持一致，均为 GitHub 官方发布）。
-const DEFAULT_CHANNEL: &str = "https://github.com/zapsh/zap/releases";
+/// 默认更新渠道（与 zapd `zap::update_config::DEFAULT_CHANNEL` 保持一致，均为 Cloudflare 境外镜像）。
+/// 版本号从 {channel}/latest.txt 读取，不依赖 GitHub API（GitHub 刚打 tag 时包尚未生成）。
+const DEFAULT_CHANNEL: &str = "https://mirrors.zap.sh/zap/releases";
 
 /// 日志是否同时打到 stdout。
 ///

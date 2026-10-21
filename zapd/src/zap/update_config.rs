@@ -22,8 +22,11 @@ use crate::zap::user_cron::data_dir;
 /// 文件名（位于 `{data}/`，即 zap.db 同级目录）。
 pub const FILE_NAME: &str = "update_config.yaml";
 
-/// 默认更新渠道：GitHub 官方发布（zapd 与 zapupgrade 共用同一默认值）。
-pub const DEFAULT_CHANNEL: &str = "https://github.com/zapsh/zap/releases";
+/// 默认更新渠道：Cloudflare 境外镜像（包就绪后才更新 latest.txt，版本号可靠）。
+/// 版本号从 {channel}/latest.txt 读取，绝不走 GitHub API——GitHub 刚打 tag 时
+/// 安装包尚未生成，直接查 API 会拿到未就绪版本导致下载 404。
+/// 用户可在面板手动切到 GitHub / 国内 COS 镜像。
+pub const DEFAULT_CHANNEL: &str = "https://mirrors.zap.sh/zap/releases";
 /// 默认调度：每天凌晨 3 点。
 pub const DEFAULT_CRON: &str = "0 3 * * *";
 
