@@ -503,6 +503,9 @@ pub struct NoticePrefs {
     /// AutoSSL 通知模式：deferrals=失败及延后 / failures=仅失败 / disabled=禁用
     #[serde(default = "default_autossl_mode")]
     pub autossl_notify_mode: String,
+    /// 强制 PC 模式：移动端设备按桌面布局展示（侧栏常驻，不分盖式抽屉）
+    #[serde(default)]
+    pub force_pc: bool,
 }
 
 impl Default for NoticePrefs {
@@ -517,6 +520,7 @@ impl Default for NoticePrefs {
             notify_login: false,
             login_disable: false,
             autossl_notify_mode: "deferrals".to_string(),
+            force_pc: false,
         }
     }
 }

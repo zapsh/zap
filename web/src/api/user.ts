@@ -380,6 +380,8 @@ export interface NoticePrefs {
   login_disable?: boolean
   /** AutoSSL 通知模式：deferrals=失败及延后 / failures=仅失败 / disabled=禁用 */
   autossl_notify_mode: 'deferrals' | 'failures' | 'disabled'
+  /** 强制 PC 模式：移动端按桌面布局展示（true = 侧栏常驻，不分盖式抽屉） */
+  force_pc?: boolean
 }
 
 /** 读取当前用户偏好设置 */

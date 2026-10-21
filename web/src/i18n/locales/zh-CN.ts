@@ -3618,6 +3618,8 @@ export default {
     autosslDeferrals: 'AutoSSL 失败及延后时。（默认）',
     autosslFailures: '仅 AutoSSL 失败时。',
     autosslDisabled: '禁用 AutoSSL 事件通知。',
+    forcePcMode: '强制 PC 模式',
+    forcePcModeDesc: '在手机等窄屏设备上以桌面布局展示（侧边栏常驻、不再使用覆盖式抽屉）。关闭时按屏幕宽度自动切换移动端布局。',
     prefsSaved: '偏好设置已保存',
   },
 

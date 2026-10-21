@@ -58,6 +58,7 @@ const sidebar = computed(() => ({
   hide: false,
 }))
 const device = computed(() => appStore.device)
+const forcePc = computed(() => appStore.forcePc)
 
 // 缓存的路由视图 = 当前打开的标签（关掉标签即丢弃缓存；终端 / 文件管理的标签一直开着，
 // 所以切走再回来实例还在，见 stores/tags.ts）
@@ -80,6 +81,12 @@ const watchDeviceWidth = () => {
   }
 
   const resizeHandler = () => {
+    // 强制 PC 模式：即便窄屏也按桌面布局展示（侧栏常驻）
+    if (forcePc.value) {
+      appStore.toggleDevice('desktop')
+      appStore.openSidebar()
+      return
+    }
     if (isMobile()) {
       appStore.toggleDevice('mobile')
       appStore.closeSidebar(true)
@@ -91,6 +98,9 @@ const watchDeviceWidth = () => {
   window.addEventListener('resize', resizeHandler)
   // 初始检查
   resizeHandler()
+
+  // 偏好切换强制 PC 模式时即时应用（无需刷新）
+  watch(forcePc, resizeHandler)
 
   // 组件卸载时移除事件监听
   onBeforeUnmount(() => {

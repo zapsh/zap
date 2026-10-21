@@ -3676,6 +3676,9 @@ const enUS: Messages = {
     autosslDeferrals: 'When AutoSSL fails or is deferred. (Default)',
     autosslFailures: 'Only when AutoSSL fails.',
     autosslDisabled: 'Disable AutoSSL event notifications.',
+    forcePcMode: 'Force PC mode',
+    forcePcModeDesc:
+      'Show the desktop layout on narrow screens like phones (sidebar pinned, no overlay drawer). Off = auto-switch to the mobile layout by screen width.',
     prefsSaved: 'Preferences saved',
     tabLogins: 'Login history',
     tabSshKeys: 'SSH Keys',
