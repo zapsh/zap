@@ -13,7 +13,7 @@
 
     <div class="right-menu">
       <!-- 语言切换：选项用语言自称，英文界面下也能找到「简体中文」 -->
-      <el-dropdown trigger="click" @command="handleLocaleCommand">
+      <el-dropdown class="hide-mobile" trigger="click" @command="handleLocaleCommand">
         <div class="icon-button theme-trigger" :title="t('layout.language')">
           <el-icon :size="18">
             <Translate />
@@ -31,7 +31,7 @@
         </template>
       </el-dropdown>
 
-      <el-dropdown trigger="click" @command="handleThemeCommand">
+      <el-dropdown class="hide-mobile" trigger="click" @command="handleThemeCommand">
         <div
           class="icon-button theme-trigger"
           :title="`${t('layout.theme')}：${currentThemeLabel}`"
@@ -493,6 +493,11 @@ async function handleExitSudo() {
   .navbar {
     .nav-toggle {
       padding: 0 10px;
+    }
+
+    /* 语言 / 主题入口移入「个人中心 → 偏好设置」，移动端顶栏不再占位置 */
+    .hide-mobile {
+      display: none;
     }
 
     .right-menu {

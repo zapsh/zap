@@ -473,6 +473,14 @@ fn default_autossl_mode() -> String {
     "deferrals".to_string()
 }
 
+fn default_lang() -> String {
+    "zh-CN".to_string()
+}
+
+fn default_theme_mode() -> String {
+    "auto".to_string()
+}
+
 /// 当前用户通知/其它偏好（个人中心 → 偏好设置），存 user.prefs（JSON）。
 /// 子项 `*_disable`：对应父通知类别下的子通知被禁用（cPanel 风格偏好覆盖）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -503,6 +511,12 @@ pub struct NoticePrefs {
     /// AutoSSL 通知模式：deferrals=失败及延后 / failures=仅失败 / disabled=禁用
     #[serde(default = "default_autossl_mode")]
     pub autossl_notify_mode: String,
+    /// 界面语言：zh-CN=简体中文 / en-US=English
+    #[serde(default = "default_lang")]
+    pub lang: String,
+    /// 主题/显示模式：light=亮色 / dark=深色 / auto=跟随系统
+    #[serde(default = "default_theme_mode")]
+    pub theme_mode: String,
     /// 强制 PC 模式：移动端设备按桌面布局展示（侧栏常驻，不分盖式抽屉）
     #[serde(default)]
     pub force_pc: bool,
@@ -520,6 +534,8 @@ impl Default for NoticePrefs {
             notify_login: false,
             login_disable: false,
             autossl_notify_mode: "deferrals".to_string(),
+            lang: "zh-CN".to_string(),
+            theme_mode: "auto".to_string(),
             force_pc: false,
         }
     }

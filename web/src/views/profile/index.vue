@@ -7,6 +7,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import QRCode from 'qrcode'
 import { useUserStore } from '@/stores/user'
 import { useAppStore } from '@/stores/app'
+import { setLocale, LOCALE_OPTIONS } from '@/i18n'
+import { setThemeMode } from '@/composables/useTheme'
 import TeamPanel from '@/views/team/TeamPanel.vue'
 import SshKeyManager from '@/components/SshKeyManager.vue'
 import {
@@ -29,6 +31,8 @@ const { t } = useI18n()
 const userStore = useUserStore()
 const { userInfo } = userStore
 const appStore = useAppStore()
+/** 语言选项（取自 i18n，用语言自称便于在任意界面下找到对应项） */
+const localeOptions = LOCALE_OPTIONS
 
 const activeTab = ref('info')
 
@@ -230,6 +234,8 @@ const prefs = reactive<NoticePrefs>({
   notify_password_change: true,
   notify_login: false,
   autossl_notify_mode: 'deferrals',
+  lang: 'zh-CN',
+  theme_mode: 'auto',
   force_pc: false,
 })
 const prefsLoading = ref(false)
@@ -243,6 +249,8 @@ async function loadPrefs() {
       Object.assign(prefs, res.data)
       // 与服务端偏好同步：本地布局据此即时生效（layout 监听 forcePc 自动应用）
       appStore.setForcePc(!!res.data.force_pc)
+      // 语言 / 主题随账号生效（未在此改过时也以服务端为准）
+      applyUiPrefs()
     }
   } catch {
     // 拦截器已弹窗
@@ -256,12 +264,21 @@ function onForcePcChange(v: boolean | string | number) {
   appStore.setForcePc(v === true || v === 'true' || v === 1)
 }
 
+/** 把语言 / 主题偏好即时应用到当前界面（与顶栏下拉同源：setLocale / setThemeMode 会写入 localStorage） */
+function applyUiPrefs() {
+  const lang = prefs.lang
+  if (lang === 'zh-CN' || lang === 'en-US') void setLocale(lang)
+  const mode = prefs.theme_mode
+  if (mode === 'light' || mode === 'dark' || mode === 'auto') setThemeMode(mode)
+}
+
 async function savePrefs() {
   prefsSaving.value = true
   try {
     const res = await saveMyPrefs({ ...prefs })
     ElMessage.success(res.message || t('profilePage.prefsSaved'))
     appStore.setForcePc(!!prefs.force_pc)
+    applyUiPrefs()
   } catch {
     // 拦截器已弹窗
   } finally {
@@ -485,6 +502,28 @@ async function logoutAllDevices() {
           <div class="prefs-panel" v-loading="prefsLoading">
             <h4 class="prefs-title">{{ t('profilePage.prefsTitle') }}</h4>
             <p class="prefs-desc">{{ t('profilePage.prefsDesc') }}</p>
+
+            <!-- 界面偏好：语言 + 主题（随账号保存；移动端顶栏入口已隐藏） -->
+            <div class="prefs-section">
+              <h4 class="prefs-title prefs-section-title">{{ t('profilePage.uiTitle') }}</h4>
+              <p class="prefs-desc">{{ t('profilePage.uiDesc') }}</p>
+              <div class="prefs-item prefs-ui-row">
+                <span class="prefs-ui-label">{{ t('profilePage.uiLang') }}</span>
+                <el-radio-group v-model="prefs.lang" @change="applyUiPrefs">
+                  <el-radio v-for="opt in localeOptions" :key="opt.value" :value="opt.value">{{
+                    opt.label
+                  }}</el-radio>
+                </el-radio-group>
+              </div>
+              <div class="prefs-item prefs-ui-row">
+                <span class="prefs-ui-label">{{ t('profilePage.uiTheme') }}</span>
+                <el-radio-group v-model="prefs.theme_mode" @change="applyUiPrefs">
+                  <el-radio value="light">{{ t('layout.themeLight') }}</el-radio>
+                  <el-radio value="dark">{{ t('layout.themeDark') }}</el-radio>
+                  <el-radio value="auto">{{ t('layout.themeAuto') }}</el-radio>
+                </el-radio-group>
+              </div>
+            </div>
 
             <!-- 通知事件 -->
             <div class="prefs-section">
@@ -738,6 +777,16 @@ async function logoutAllDevices() {
   margin: 0 0 10px;
   white-space: normal;
   line-height: 1.6;
+}
+
+.prefs-ui-row {
+  align-items: center;
+}
+
+.prefs-ui-label {
+  flex: none;
+  width: 64px;
+  color: var(--el-text-color-regular);
 }
 .prefs-sub {
   margin: 0 0 12px 32px;

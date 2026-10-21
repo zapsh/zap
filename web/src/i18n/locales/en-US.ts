@@ -3676,6 +3676,11 @@ const enUS: Messages = {
     autosslDeferrals: 'When AutoSSL fails or is deferred. (Default)',
     autosslFailures: 'Only when AutoSSL fails.',
     autosslDisabled: 'Disable AutoSSL event notifications.',
+    uiTitle: 'Interface',
+    uiDesc:
+      'Language and theme are saved with your account and stay consistent across devices. On mobile the top-bar language/theme buttons are hidden; set them here.',
+    uiLang: 'Language',
+    uiTheme: 'Theme',
     forcePcMode: 'Force PC mode',
     forcePcModeDesc:
       'Show the desktop layout on narrow screens like phones (sidebar pinned, no overlay drawer). Off = auto-switch to the mobile layout by screen width.',
