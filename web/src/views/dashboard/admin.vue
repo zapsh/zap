@@ -31,7 +31,7 @@
       </el-link>
     </div>
     <el-row :gutter="16" class="section-row">
-      <el-col v-for="item in statusCards" :key="item.id" :xs="12" :sm="6" :lg="6" class="metric-col">
+      <el-col v-for="item in statusCards" :key="item.id" :xs="24" :sm="12" :lg="6" class="metric-col">
         <el-card shadow="hover" class="metric-card">
           <div class="metric-body">
             <div class="metric-left">
@@ -584,6 +584,7 @@ onMounted(async () => {
   font-size: 15px;
   font-weight: 600;
   color: var(--el-text-color-primary);
+  white-space: nowrap;
 }
 
 .metric-desc {
@@ -596,6 +597,7 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   font-size: 12px;
   line-height: 1.6;
 }
@@ -607,6 +609,7 @@ onMounted(async () => {
 .metric-desc-value {
   color: var(--el-text-color-primary);
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .metric-right {
