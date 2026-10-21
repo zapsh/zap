@@ -80,13 +80,24 @@ const watchDeviceWidth = () => {
     return rect.width - 1 < WIDTH
   }
 
+  // 强制 PC 模式：把布局视口设成 PC 宽度（请求桌面版网站的机制），浏览器按桌面宽度
+  // 排版（el-col 断点 / 卡片列数都按 PC 算），内容可缩放；关闭时恢复成设备宽度
+  const MOBILE_VIEWPORT = 'width=device-width, initial-scale=1.0'
+  const DESKTOP_VIEWPORT = 'width=1200, initial-scale=1.0'
+  const setViewport = (content: string) => {
+    const meta = document.head.querySelector('meta[name="viewport"]')
+    if (meta) meta.setAttribute('content', content)
+  }
+
   const resizeHandler = () => {
-    // 强制 PC 模式：即便窄屏也按桌面布局展示（侧栏常驻）
     if (forcePc.value) {
+      // 按 PC 宽度渲染：布局视口拉到 1200，侧栏常驻，整页以桌面比例呈现（手机上会缩小显示、可双指缩放）
+      setViewport(DESKTOP_VIEWPORT)
       appStore.toggleDevice('desktop')
       appStore.openSidebar()
       return
     }
+    setViewport(MOBILE_VIEWPORT)
     if (isMobile()) {
       appStore.toggleDevice('mobile')
       appStore.closeSidebar(true)
