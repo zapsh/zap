@@ -169,20 +169,6 @@ jobs:
           done
           rm -f "$keyfile"
 
-      # 固定名「latest」别名资源：zap-linux-<arch>.tar.gz。installer 境外通道走
-      # releases/latest/download 重定向直下最新包，无需先查版本号 / latest.txt / API。
-      # 与版本化资源内容完全一致，只是名字不含版本，发版 CI 顺手复制一份。
-      - name: Add latest alias assets
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          cd dist
-          for a in amd64 arm64; do
-            src="zap-v${VERSION}-linux-${a}.tar.gz"
-            [ -f "$src" ] && cp "$src" "zap-linux-${a}.tar.gz"
-          done
-          ls -1
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
@@ -192,8 +178,3 @@ jobs:
             dist/*.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 注：镜像发布（包体 + latest.txt + 安装脚本，同步到 COS 与 Cloudflare）不在 CI
-      # 做——CI 上传大包体到对象存储速度慢。改由本地 `release.sh <ver> --sync` 手工完成
-      # （zapfile + 本地 ~/.bashrc 里的 COS_ID/COS_KEY/AWS_* 凭证），一条命令完整镜像。
-
