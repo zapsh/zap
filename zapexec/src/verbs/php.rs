@@ -237,13 +237,14 @@ fn default_spec() -> BTreeMap<String, String> {
 ///
 /// 三类：
 /// - 命令执行：exec / passthru / shell_exec / system / proc_open / popen / pcntl_exec
-/// - 代码执行与信息泄露：eval / assert / create_function / show_source / phpinfo
+/// - 代码执行与信息泄露：eval / assert / create_function / show_source
 ///   （eval 是语言构造、disable_functions 实际管不住，列出仅显式表达意图）
 /// - 文件提权：chmod / chown / chgrp / symlink / link
 ///
-/// 业务需要调用外部程序（如 FFmpeg）时在规格里覆盖同名键；上线前先在测试环境验证。
+/// 注：`phpinfo` 默认**不**禁用（业务常需查看 PHP 环境信息，且它只是信息泄露、无执行风险）；
+/// 若要收紧可在规格里覆盖同名键。业务需要调用外部程序（如 FFmpeg）时在规格里覆盖同名键；上线前先在测试环境验证。
 pub const DEFAULT_DISABLE_FUNCTIONS: &str = "exec,passthru,shell_exec,system,proc_open,popen,\
-     pcntl_exec,eval,assert,create_function,show_source,phpinfo,chmod,chown,chgrp,symlink,link";
+     pcntl_exec,eval,assert,create_function,show_source,chmod,chown,chgrp,symlink,link";
 
 /// 让渲染结果里的 `php_admin_value[error_log]` 落点可用：
 /// - 家目录内（兜底 `{home}/logs/php-error.log`）：logs 目录默认 770 www:www（nginx 日志用），

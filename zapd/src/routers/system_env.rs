@@ -412,7 +412,7 @@ pub fn default_fpm_spec() -> serde_json::Map<String, Value> {
         Value::Object(
             serde_json::json!({
                 "error_log": "/var/log/zap/php/{user}-error.log",
-                "disable_functions": "exec,passthru,shell_exec,system,proc_open,popen,pcntl_exec,eval,assert,create_function,show_source,phpinfo,chmod,chown,chgrp,symlink,link"
+                "disable_functions": "exec,passthru,shell_exec,system,proc_open,popen,pcntl_exec,eval,assert,create_function,show_source,chmod,chown,chgrp,symlink,link"
             })
             .as_object()
             .cloned()
