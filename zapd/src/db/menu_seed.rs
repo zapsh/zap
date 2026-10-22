@@ -429,6 +429,17 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     )
     .parent("reseller-users")
     .icon("material-symbols:campaign"),
+    MenuSeed::new(
+        "reseller-account",
+        "账号能力",
+        "menu",
+        "account",
+        "system/account/index",
+        R_ADMIN_RESELLER,
+        5,
+    )
+    .parent("reseller-users")
+    .icon("material-symbols:tune"),
     // ── 服务器状态（目录）────────────────────────────────────
     MenuSeed::new(
         "server-status",

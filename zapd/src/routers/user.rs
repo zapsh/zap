@@ -50,6 +50,10 @@ struct UserInfo {
     /// 流量统计周期（YYYYMM）
     bandwidth_period: String,
     bandwidth_stat_at: i64,
+    /// 按用户覆盖的磁盘配额（MB，0 = 跟随套餐）
+    disk_quota_mb: i64,
+    /// 按用户覆盖的带宽配额（MB，0 = 跟随套餐）
+    bandwidth_quota_mb: i64,
     created_at: i64,
     updated_at: i64,
 }
@@ -87,6 +91,20 @@ pub struct CreateUserPayload {
     /// 非 admin 提交一律按 0 处理（不允许自提上限）
     #[serde(default)]
     pub max_users: Option<i64>,
+}
+
+/// 批量重生成 PHP-FPM pool 入参
+#[derive(Debug, Deserialize)]
+pub struct ResyncPoolsPayload {
+    pub user_ids: Vec<i64>,
+}
+
+/// 设置 / 重置单类配额（按用户覆盖）入参
+/// `mb`：0 = 重置为套餐值（跟随套餐）；>0 = 覆盖为该值（MB）
+#[derive(Debug, Deserialize)]
+pub struct SetQuotaPayload {
+    pub user_ids: Vec<i64>,
+    pub mb: i64,
 }
 
 /// 附加权限入参：兼容数组与逗号分隔字符串两种写法。
@@ -216,13 +234,21 @@ struct UserAccountRow {
     owner_id: i64,
     user_kind: i32,
     max_users: i64,
+    /// PHP-FPM 规格（JSON 字符串；空 = 使用面板默认规格）
+    fpm_pool: String,
+    /// FPM 规格引用：''=面板默认 / 'inherit'=继承 owner(reseller) 名下默认 / 模板名
+    fpm_spec_ref: String,
+    /// 按用户覆盖的磁盘配额（MB，0 = 跟随套餐）
+    disk_quota_mb: i64,
+    /// 按用户覆盖的带宽配额（MB，0 = 跟随套餐）
+    bandwidth_quota_mb: i64,
 }
 
 /// 读取用户的归属与运行实体信息；不存在返回 None。
 async fn load_account(id: i64) -> Result<Option<UserAccountRow>, ZapError> {
     let pool = db::get_db_pool().await;
     let row: Option<UserAccountRow> =
-        sqlx::query_as("SELECT home_dir, linux_user, roles, package_id, owner_id, user_kind, max_users FROM user WHERE id = ?")
+        sqlx::query_as("SELECT home_dir, linux_user, roles, package_id, owner_id, user_kind, max_users, fpm_pool, fpm_spec_ref, disk_quota_mb, bandwidth_quota_mb FROM user WHERE id = ?")
             .bind(id)
             .fetch_optional(pool)
             .await?;
@@ -373,6 +399,156 @@ pub async fn sync_package_quota(user_id: i64) {
         ),
         Err(e) => warn!("下发磁盘配额失败({}): {}", linux_user, e),
     }
+}
+
+/// 批量重生成指定用户的 PHP-FPM pool（每用户 × 每 PHP 版本一个 pool）。
+/// 仅对操作者可见的用户生效（admin 全部；reseller 仅 owner_id=自己）；成员跳过。
+pub async fn user_pool_resync(
+    claims: ValidatedClaims,
+    Json(payload): Json<ResyncPoolsPayload>,
+) -> ZapJsonResult {
+    let is_admin = jwt::is_admin(&claims);
+    let mut results = Vec::new();
+    for uid in payload.user_ids {
+        results.push(resync_user_pool(claims.id as i64, is_admin, uid).await);
+    }
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": results })))
+}
+
+/// 单用户 FPM pool 重生成：取其名下站点去重的 php_instance，按最终规格调用 zapexec::PhpPoolSync。
+async fn resync_user_pool(caller_id: i64, is_admin: bool, uid: i64) -> Value {
+    let account = match load_account(uid).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return json!({ "id": uid, "ok": false, "message": "用户不存在" }),
+        Err(_) => return json!({ "id": uid, "ok": false, "message": "查询用户失败" }),
+    };
+    if !is_admin && account.owner_id != caller_id {
+        return json!({ "id": uid, "ok": false, "message": "无权操作该用户" });
+    }
+    if account.user_kind == USER_KIND_MEMBER {
+        return json!({ "id": uid, "ok": false, "message": "成员共享父账号系统账号，不可单独重生成 pool" });
+    }
+    let pool = db::get_db_pool().await;
+    let instances: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT php_instance FROM site \
+         WHERE user_id = ? AND (deleted = 0 OR deleted IS NULL) AND php_instance <> ''",
+    )
+    .bind(uid)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    if instances.is_empty() {
+        return json!({ "id": uid, "ok": true, "message": "该用户无站点，无需重生成 pool" });
+    }
+    let spec = crate::routers::fpm_spec::resolve_user_spec(
+        if account.fpm_pool.is_empty() { None } else { Some(account.fpm_pool.as_str()) },
+        &account.fpm_spec_ref,
+        Some(account.owner_id),
+    )
+    .await;
+    let mut details = Vec::new();
+    for inst in &instances {
+        let resp = crate::zapexec::call(zap_proto::types::Request::PhpPoolSync {
+            php_instance: inst.clone(),
+            linux_user: account.linux_user.clone(),
+            home_dir: account.home_dir.clone(),
+            spec: spec.clone(),
+        })
+        .await;
+        match resp {
+            Ok(r) if r.code == 0 => {
+                details.push(json!({ "php_instance": inst, "ok": true, "message": r.message }))
+            }
+            Ok(r) => details.push(json!({ "php_instance": inst, "ok": false, "message": r.message })),
+            Err(e) => details.push(json!({ "php_instance": inst, "ok": false, "message": e.to_string() })),
+        }
+    }
+    json!({ "id": uid, "username": account.linux_user, "ok": true, "message": "已重生成", "details": details })
+}
+
+/// 设置 / 重置用户的磁盘配额（按用户覆盖）。
+pub async fn user_disk_quota_set(
+    claims: ValidatedClaims,
+    Json(payload): Json<SetQuotaPayload>,
+) -> ZapJsonResult {
+    let is_admin = jwt::is_admin(&claims);
+    let mut results = Vec::new();
+    for uid in &payload.user_ids {
+        results.push(set_disk_quota(claims.id as i64, is_admin, *uid, payload.mb).await);
+    }
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": results })))
+}
+
+async fn set_disk_quota(caller_id: i64, is_admin: bool, uid: i64, mb: i64) -> Value {
+    let account = match load_account(uid).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return json!({ "id": uid, "ok": false, "message": "用户不存在" }),
+        Err(_) => return json!({ "id": uid, "ok": false, "message": "查询用户失败" }),
+    };
+    if !is_admin && account.owner_id != caller_id {
+        return json!({ "id": uid, "ok": false, "message": "无权操作该用户" });
+    }
+    if account.user_kind == USER_KIND_MEMBER {
+        return json!({ "id": uid, "ok": false, "message": "成员不可单独设置磁盘配额" });
+    }
+    let pool = db::get_db_pool().await;
+    let _ = sqlx::query("UPDATE user SET disk_quota_mb = ? WHERE id = ?")
+        .bind(mb.max(0))
+        .bind(uid)
+        .execute(pool)
+        .await;
+    if mb <= 0 {
+        // 重置 = 重新下发套餐配额（回写套餐 disk_quota_mb 到 Linux quota）
+        sync_package_quota(uid).await;
+        return json!({ "id": uid, "ok": true, "message": "已重置为套餐配额" });
+    }
+    match crate::zapexec::call(zap_proto::types::Request::UserQuotaSet {
+        linux_user: account.linux_user.clone(),
+        quota_mb: mb,
+    })
+    .await
+    {
+        Ok(r) if r.code == 0 => json!({ "id": uid, "ok": true, "message": format!("已设置为 {} MB", mb) }),
+        Ok(r) => json!({ "id": uid, "ok": false, "message": r.message }),
+        Err(e) => json!({ "id": uid, "ok": false, "message": e.to_string() }),
+    }
+}
+
+/// 设置 / 重置用户的带宽配额（按用户覆盖）。当前系统未对接带宽限速 verb，仅记录用于展示 / 超额判断。
+pub async fn user_bandwidth_quota_set(
+    claims: ValidatedClaims,
+    Json(payload): Json<SetQuotaPayload>,
+) -> ZapJsonResult {
+    let is_admin = jwt::is_admin(&claims);
+    let mut results = Vec::new();
+    for uid in &payload.user_ids {
+        results.push(set_bandwidth_quota(claims.id as i64, is_admin, *uid, payload.mb).await);
+    }
+    Ok(Json(json!({ "code": 0, "message": "OK", "data": results })))
+}
+
+async fn set_bandwidth_quota(caller_id: i64, is_admin: bool, uid: i64, mb: i64) -> Value {
+    let account = match load_account(uid).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return json!({ "id": uid, "ok": false, "message": "用户不存在" }),
+        Err(_) => return json!({ "id": uid, "ok": false, "message": "查询用户失败" }),
+    };
+    if !is_admin && account.owner_id != caller_id {
+        return json!({ "id": uid, "ok": false, "message": "无权操作该用户" });
+    }
+    if account.user_kind == USER_KIND_MEMBER {
+        return json!({ "id": uid, "ok": false, "message": "成员不可单独设置带宽配额" });
+    }
+    let pool = db::get_db_pool().await;
+    let _ = sqlx::query("UPDATE user SET bandwidth_quota_mb = ? WHERE id = ?")
+        .bind(mb.max(0))
+        .bind(uid)
+        .execute(pool)
+        .await;
+    if mb <= 0 {
+        return json!({ "id": uid, "ok": true, "message": "已重置为套餐带宽" });
+    }
+    json!({ "id": uid, "ok": true, "message": format!("已设置为 {} MB", mb) })
 }
 
 /// Fetch the owner_id of a user. Returns -1 when the user does not exist.
@@ -690,6 +866,9 @@ pub async fn user_list(claims: ValidatedClaims) -> ZapJsonResult {
                 "bandwidth_used_bytes": user.bandwidth_used_bytes,
                 "bandwidth_period": user.bandwidth_period,
                 "bandwidth_stat_at": user.bandwidth_stat_at,
+                // 按用户覆盖的配额（MB，0 = 跟随套餐）
+                "disk_quota_mb": user.disk_quota_mb,
+                "bandwidth_quota_mb": user.bandwidth_quota_mb,
                 // 该用户名下的站点摘要（列表行展开时的「站点详细」）
                 "sites": sites_by_user.remove(&user.id).unwrap_or_default(),
                 "created_at": user.created_at,

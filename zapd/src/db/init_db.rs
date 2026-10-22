@@ -102,6 +102,12 @@ pub async fn init_schema() {
     // 备份策略全局 KV（是否允许用户自助备份 / 全局保留份数 / 全量备份开关与调度）
     init_backup_policy_table().await;
 
+    // 向前迁移：user 表补「按用户配额覆盖列」（存量库安全，列已存在则跳过）
+    ensure_column("user", "disk_quota_mb", "INTEGER NOT NULL DEFAULT 0").await;
+    ensure_column("user", "bandwidth_quota_mb", "INTEGER NOT NULL DEFAULT 0").await;
+    // 向前迁移：客户管理下补「账号能力」子菜单（存量库安全，name 唯一自动跳过）
+    ensure_account_menu().await;
+
     // 记录当前已应用 schema 版本（upsert）
     record_version(current, "auto-migrate").await;
 }
@@ -261,6 +267,10 @@ async fn init_system_user_table_schema() {
         -- 流量统计周期（YYYYMM）：跨月自动重置本月计数
         bandwidth_period TEXT NOT NULL DEFAULT '',
         bandwidth_stat_at INTEGER NOT NULL DEFAULT 0,
+        -- 按用户覆盖的磁盘配额（MB）：0 = 跟随套餐（实际下发见 sync_package_quota）
+        disk_quota_mb INTEGER NOT NULL DEFAULT 0,
+        -- 按用户覆盖的带宽配额（MB）：0 = 跟随套餐；仅记录用于展示/超额判断，当前未实际限速
+        bandwidth_quota_mb INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER,
         updated_at INTEGER
     )
@@ -1529,6 +1539,70 @@ async fn ensure_column(table: &str, column: &str, decl: &str) {
         .await
     {
         eprintln!("补列失败 {table}.{column}: {e}");
+    }
+}
+
+/// 向前迁移：客户管理（reseller-users）下补「账号能力」子菜单。
+///
+/// 存量库安全——`menus.name` 唯一，`INSERT OR IGNORE` 已存在则跳过；随后按 name 查回
+/// 真实 id 补 `role_menus` 授权（admin / reseller）。仅作用于本菜单，不触碰其它种子。
+async fn ensure_account_menu() {
+    let pool = get_db_pool().await;
+    let parent_id: i64 = sqlx::query_scalar("SELECT id FROM menus WHERE name = 'reseller-users'")
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    if parent_id == 0 {
+        return; // 父菜单不存在，跳过
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO menus
+            (parent_id, name, path, component, redirect, type, title, icon,
+             hidden, affix, feature, roles, sort_order, status, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )
+    .bind(parent_id)
+    .bind("reseller-account")
+    .bind("account")
+    .bind("system/account/index")
+    .bind("")
+    .bind("menu")
+    .bind("账号能力")
+    .bind("material-symbols:tune")
+    .bind(0)
+    .bind(0)
+    .bind("")
+    .bind("admin,reseller")
+    .bind(5)
+    .bind(1)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await;
+    let menu_id: i64 = sqlx::query_scalar("SELECT id FROM menus WHERE name = 'reseller-account'")
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    if menu_id == 0 {
+        return;
+    }
+    for role in ["admin", "reseller"] {
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
+             SELECT r.id, ? FROM roles r WHERE r.role_key = ?",
+        )
+        .bind(menu_id)
+        .bind(role)
+        .execute(pool)
+        .await;
     }
 }
 

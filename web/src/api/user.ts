@@ -78,6 +78,10 @@ export interface UserListItem {
   /** 流量统计周期（YYYYMM） */
   bandwidth_period: string
   bandwidth_stat_at: number
+  /** 按用户覆盖的磁盘配额（MB，0 = 跟随套餐） */
+  disk_quota_mb: number
+  /** 按用户覆盖的带宽配额（MB，0 = 跟随套餐） */
+  bandwidth_quota_mb: number
   /** 该用户名下的站点摘要；展开行的「站点详细」直接取用 */
   sites: UserSiteItem[]
   created_at: number
@@ -450,4 +454,48 @@ export function backupHome(username?: string) {
   return http.post<ApiResponse<HomeBackupData>>('/system/user/backup-home', {
     ...(username ? { username } : {}),
   })
+}
+
+// ── 账号能力（客户管理 → account）────────────────────────────
+// 批量重生成 PHP-FPM pool / 设置·重置磁盘·带宽配额。
+
+/** 单条配额 / 重生成操作结果 */
+export interface QuotaOpResult {
+  id: number
+  ok: boolean
+  message: string
+}
+
+/** 单用户 FPM 重生成的明细（每个 PHP 版本一条） */
+export interface PoolResyncDetail {
+  php_instance: string
+  ok: boolean
+  message: string
+}
+
+/** FPM 重生成结果（在 QuotaOpResult 基础上带用户名与逐版本明细） */
+export interface PoolResyncResult extends QuotaOpResult {
+  username?: string
+  details?: PoolResyncDetail[]
+}
+
+export interface AccountOpResponse {
+  code: number
+  message: string
+  data: (QuotaOpResult | PoolResyncResult)[]
+}
+
+/** 批量重生成用户的 PHP-FPM pool（每个用户 × 每 PHP 版本一个） */
+export function resyncUserPools(ids: number[]) {
+  return http.post<AccountOpResponse>('/system/user/pool_resync', { user_ids: ids })
+}
+
+/** 设置 / 重置磁盘配额（mb=0 重置为套餐值，>0 覆盖为该值，单位 MB） */
+export function setUserDiskQuota(ids: number[], mb: number) {
+  return http.post<AccountOpResponse>('/system/user/disk_quota', { user_ids: ids, mb })
+}
+
+/** 设置 / 重置带宽配额（mb=0 重置为套餐值，>0 覆盖为该值，单位 MB） */
+export function setUserBandwidthQuota(ids: number[], mb: number) {
+  return http.post<AccountOpResponse>('/system/user/bandwidth_quota', { user_ids: ids, mb })
 }
