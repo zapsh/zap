@@ -1,111 +1,77 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="svc-conf-page">
-    <!-- 服务配置：总览 + 各服务独立配置页，用 nav pill 切换 -->
-    <nav class="svc-pills">
-      <button
-        v-for="tab in tabs"
-        :key="tab.key"
-        type="button"
-        class="svc-pill"
-        :class="{ 'is-active': active === tab.key }"
-        @click="switchTab(tab.key)"
-      >
-        <span>{{ tab.label }}</span>
-      </button>
-    </nav>
-
-    <section class="svc-panel">
-      <!-- 各服务页自带状态与操作，这里只负责切换；key 保证切回来时重新拉取 -->
-      <component :is="current.component" :key="active" />
-    </section>
+    <!-- 服务配置：总览 + 各服务独立配置页 + 自定义服务（管理员自建）。
+         固定页 + 自定义服务页较多时，统一用顶部横向 pill，溢出时在容器内滑动，不切侧边栏。 -->
+    <NavPillPanels :tabs="tabs" layout="pill" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, markRaw, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
+import NavPillPanels, { type PillTab } from '@/components/NavPillPanels.vue'
 import Overview from './overview.vue'
 import NginxConf from './nginx.vue'
 import PhpConf from './php.vue'
 import MysqlConf from './mysql.vue'
 import PythonConf from './python.vue'
 import NodejsConf from './nodejs.vue'
+import GenericServiceConf from './GenericServiceConf.vue'
+import CustomServiceManager from './CustomServiceManager.vue'
+import { getServiceConfDefs, type ServiceConfDef } from '@/api/servicesConf'
 
 const { t } = useI18n()
 const route = useRoute()
-const router = useRouter()
 
-const TAB_KEYS = ['overview', 'nginx', 'php', 'mysql', 'python', 'nodejs'] as const
+/** 管理员自建的服务定义（不含内置的 php/mysql…，它们已在固定页里） */
+const userDefs = ref<ServiceConfDef[]>([])
 
-/** 初始页：优先取 ?tab=（刷新停留在原页），无 / 非法则总览 */
-const initial = String(route.query.tab || '')
-const active = ref<(typeof TAB_KEYS)[number]>(
-  (TAB_KEYS as readonly string[]).includes(initial)
-    ? (initial as (typeof TAB_KEYS)[number])
-    : 'overview',
-)
-
-function switchTab(key: (typeof TAB_KEYS)[number]) {
-  active.value = key
-  // URL 同步（replace 不产生历史记录）；离开 nginx 时顺带清掉它的子页参数
-  router.replace({
-    query: { ...route.query, tab: key, ...(key === 'nginx' ? {} : { page: undefined }) },
-  })
+async function loadUserDefs() {
+  try {
+    const r = await getServiceConfDefs()
+    userDefs.value = (r.data.items || []).filter((d) => d.origin === 'user')
+  } catch {
+    userDefs.value = []
+  }
 }
 
-const tabs = computed<{ key: (typeof TAB_KEYS)[number]; label: string; component: unknown }[]>(() => [
-  { key: 'overview', label: t('serviceConf.overview'), component: Overview },
-  { key: 'nginx', label: t('serviceConf.nginx'), component: NginxConf },
-  { key: 'php', label: t('serviceConf.php'), component: PhpConf },
-  { key: 'mysql', label: t('serviceConf.mysql'), component: MysqlConf },
-  { key: 'python', label: t('serviceConf.pythonTab'), component: PythonConf },
-  { key: 'nodejs', label: t('serviceConf.nodejsTab'), component: NodejsConf },
-])
+onMounted(loadUserDefs)
+// 切换 tab 时同步刷新：直接往 /etc/zap/services 丢定义、或其它入口改动后，
+// 侧边栏的自定义服务 tab 也能即时出现 / 消失（不必整页刷新）。
+watch(() => route.query.tab, loadUserDefs)
 
-const current = computed(() => tabs.value.find((x) => x.key === active.value) ?? tabs.value[0])
+/** 固定页 + 自定义服务页 + 管理页，交给 NavPillPanels 渲染（含自适应布局） */
+const tabs = computed<PillTab[]>(() => {
+  const base: PillTab[] = [
+    { key: 'overview', label: t('serviceConf.overview'), panel: Overview },
+    { key: 'nginx', label: t('serviceConf.nginx'), panel: NginxConf },
+    { key: 'php', label: t('serviceConf.php'), panel: PhpConf },
+    { key: 'mysql', label: t('serviceConf.mysql'), panel: MysqlConf },
+    { key: 'python', label: t('serviceConf.pythonTab'), panel: PythonConf },
+    { key: 'nodejs', label: t('serviceConf.nodejsTab'), panel: NodejsConf },
+  ]
+  for (const d of userDefs.value) {
+    base.push({
+      key: `svc:${d.key}`,
+      label: d.label,
+      panel: markRaw(GenericServiceConf),
+      props: { service: d.key, label: d.label },
+    })
+  }
+  base.push({
+    key: 'manage',
+    label: t('serviceConf.manage'),
+    panel: markRaw(CustomServiceManager),
+    on: { changed: loadUserDefs },
+  })
+  return base
+})
 </script>
 
 <style scoped>
 .svc-conf-page {
   padding: 16px;
-}
-
-/* 与容器管理一致的分段导航 */
-.svc-pills {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px;
-  margin-bottom: 12px;
-  background: var(--el-fill-color-light);
-  border-radius: 10px;
-  overflow-x: auto;
-}
-
-.svc-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 16px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--el-text-color-regular);
-  font-size: 13px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background 0.2s, color 0.2s;
-}
-
-.svc-pill:hover {
-  color: var(--el-color-primary);
-}
-
-.svc-pill.is-active {
-  background: var(--el-color-primary);
-  color: #fff;
-  font-weight: 500;
 }
 </style>

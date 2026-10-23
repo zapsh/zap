@@ -23,6 +23,8 @@ export interface ServiceItem {
   enabled: boolean
   /** unit 是否已注册（未注册说明装了但服务没登记好） */
   exists: boolean
+  /** 是否自定义服务（管理员在「服务配置 → 自定义服务」登记的定义） */
+  custom?: boolean
 }
 
 export interface ServicesOverview {

@@ -53,7 +53,15 @@
       <el-table-column :label="t('servicesOverview.colCategory')" min-width="140">
         <template #default="{ row }">
           <div class="ov-tags">
-            <el-tag size="small" effect="plain">{{ row.category }}</el-tag>
+            <el-tag
+              v-if="row.custom"
+              size="small"
+              type="warning"
+              effect="dark"
+            >
+              {{ t('servicesCustom.originUser') }}
+            </el-tag>
+            <el-tag v-if="row.category" size="small" effect="plain">{{ row.category }}</el-tag>
             <el-tag v-if="row.instance && row.instance !== '-'" size="small" effect="plain">
               {{ row.instance }}
             </el-tag>
@@ -72,7 +80,7 @@
           <el-switch
             size="small"
             :model-value="row.enabled"
-            :disabled="!overview.systemd || acting === row.svc"
+            :disabled="!overview.systemd || !row.exists || acting === row.svc"
             @change="(v: string | number | boolean) => toggleBoot(row, !!v)"
           />
         </template>
@@ -84,7 +92,7 @@
             size="small"
             type="success"
             plain
-            :disabled="row.state === 'running' || busy(row)"
+            :disabled="row.state === 'running' || !row.exists || busy(row)"
             @click="doControl(row, 'start')"
           >
             {{ t('servicesOverview.start') }}
@@ -93,7 +101,7 @@
             size="small"
             type="warning"
             plain
-            :disabled="row.state !== 'running' || busy(row)"
+            :disabled="row.state !== 'running' || !row.exists || busy(row)"
             @click="doControl(row, 'stop')"
           >
             {{ t('servicesOverview.stop') }}
@@ -102,7 +110,7 @@
             size="small"
             type="primary"
             plain
-            :disabled="busy(row)"
+            :disabled="!row.exists || busy(row)"
             @click="doControl(row, 'restart')"
           >
             {{ t('servicesOverview.restart') }}
@@ -114,7 +122,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onActivated, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import {
@@ -191,6 +199,8 @@ async function toggleBoot(item: ServiceItem, enable: boolean) {
 }
 
 onMounted(load)
+// KeepAlive 缓存下切回本页时刷新，确保服务状态 / 自定义服务列表最新
+onActivated(load)
 </script>
 
 <style scoped>

@@ -1976,6 +1976,21 @@ pub enum Request {
     /// 新增一个服务 = 丢一份 yaml，前端据此自动生成配置页入口。
     #[serde(rename = "service_conf.defs")]
     ServiceConfDefs,
+    /// 通用服务配置·写入 / 覆盖自定义服务定义（管理员，落盘到 ZAP_SERVICE_CONF_DIR）
+    #[serde(rename = "service_conf.def_write")]
+    ServiceConfDefWrite { key: String, yaml: String },
+    /// 通用服务配置·删除自定义服务定义（仅管理员自建的）
+    #[serde(rename = "service_conf.def_delete")]
+    ServiceConfDefDelete { key: String },
+    /// 通用服务配置·读取自定义服务定义原文（编辑回填用）
+    #[serde(rename = "service_conf.def_read")]
+    ServiceConfDefRead { key: String },
+    /// 通用服务配置·生成并启用单元文件（仅 systemd：渲染 <key>.service + daemon-reload + enable）
+    #[serde(rename = "service_conf.unit_write")]
+    ServiceConfUnitWrite { key: String },
+    /// 通用服务配置·移除由面板生成的单元文件（disable + 删 <key>.service + daemon-reload）
+    #[serde(rename = "service_conf.unit_remove")]
+    ServiceConfUnitRemove { key: String },
     /// PHP 扩展·清单：已启用 / 已编译未启用 / 内置，扩展目录与可用安装工具。
     #[serde(rename = "php_ext.list")]
     PhpExtList { service: String },

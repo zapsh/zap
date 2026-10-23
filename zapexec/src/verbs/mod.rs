@@ -686,6 +686,11 @@ pub async fn dispatch(req: Request) -> Response {
         }
         Request::ServiceConfInstances { service } => service_conf::instances(&service).await,
         Request::ServiceConfDefs => service_conf::defs_list().await,
+        Request::ServiceConfDefWrite { key, yaml } => service_conf::def_write(key, yaml).await,
+        Request::ServiceConfDefDelete { key } => service_conf::def_delete(key).await,
+        Request::ServiceConfDefRead { key } => service_conf::def_read(key).await,
+        Request::ServiceConfUnitWrite { key } => service_conf::unit_write(key).await,
+        Request::ServiceConfUnitRemove { key } => service_conf::unit_remove(key).await,
         Request::ServiceConfDefault { service, enable } => {
             service_conf::set_default(&service, enable).await
         }

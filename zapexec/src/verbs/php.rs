@@ -531,7 +531,7 @@ fn reload_master(ver: &str, root: &Path) -> Result<(), String> {
         // 退化到下面的 USR2 路径
         "{ctl} reload php-fpm-{v} 2>/dev/null && exit 0; \
          for p in {pids}; do if [ -f \"$p\" ]; then kill -USR2 \"$(cat \"$p\")\" 2>/dev/null && exit 0; fi; done; exit 3",
-        ctl = super::svc::CTL,
+        ctl = super::svc::SYSTEMD_CTL,
         v = esc(ver),
         pids = pid_candidates
             .iter()

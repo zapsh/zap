@@ -660,6 +660,26 @@ fn api_routers() -> Router {
             "/system/service-conf/defs",
             get(system_service_conf::defs_list),
         )
+        .route(
+            "/system/service-conf/def/write",
+            post(system_service_conf::def_write),
+        )
+        .route(
+            "/system/service-conf/def/delete",
+            post(system_service_conf::def_delete),
+        )
+        .route(
+            "/system/service-conf/def/read",
+            get(system_service_conf::def_read),
+        )
+        .route(
+            "/system/service-conf/def/unit/write",
+            post(system_service_conf::unit_write),
+        )
+        .route(
+            "/system/service-conf/def/unit/remove",
+            post(system_service_conf::unit_remove),
+        )
         // PHP 扩展管理（服务配置 → PHP → 扩展）
         .route(
             "/system/service-conf/php-ext/list",

@@ -45,6 +45,8 @@ const emit = defineEmits<{
 
 const host = ref<HTMLElement | null>(null)
 let view: EditorView | null = null
+/** 外部（父级 modelValue 变化）同步标记：同步期间由 updateListener 产生的 docChanged 不算用户编辑，不回传 */
+let syncing = false
 
 /**
  * 语言与只读状态各用一个 Compartment：切换时 dispatch reconfigure 即可，
@@ -212,7 +214,8 @@ function createView() {
     themeConf.of(themeExtensions()),
     EditorView.lineWrapping,
     EditorView.updateListener.of((u) => {
-      if (u.docChanged) emit('update:modelValue', u.state.doc.toString())
+      // syncing 期间的 docChanged 来自外部同步，非用户编辑，不回传，避免父级误判为"已修改"
+      if (u.docChanged && !syncing) emit('update:modelValue', u.state.doc.toString())
       if (u.docChanged || u.selectionSet) emit('cursor', cursorOf(u.state))
     }),
   ]
@@ -240,7 +243,13 @@ watch(
     const doc = view.state.doc.toString()
     const next = val ?? ''
     if (doc === next) return
-    view.dispatch({ changes: { from: 0, to: doc.length, insert: next } })
+    // 标记为"外部同步"：本次 dispatch 触发 docChanged 时不上抛 update:modelValue
+    syncing = true
+    try {
+      view.dispatch({ changes: { from: 0, to: doc.length, insert: next } })
+    } finally {
+      syncing = false
+    }
   },
 )
 

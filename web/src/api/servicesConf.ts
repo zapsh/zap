@@ -15,6 +15,8 @@ export interface ServiceConfStatus {
   unit?: string | null
   running?: boolean
   systemd?: boolean
+  /** 服务管理器类型：systemd / openrc */
+  manager?: string
   conf_file?: string | null
   conf_dir?: string | null
   main_exists?: boolean
@@ -160,6 +162,21 @@ export interface ServiceConfDefaultResult {
   removed?: string[]
 }
 
+/** 由面板自动生成并启用的系统单元模板（service_conf.def/unit/write 使用） */
+export interface ServiceConfUnitTemplate {
+  description?: string
+  after?: string[]
+  wants?: string[]
+  requires?: string[]
+  exec_start?: string
+  working_dir?: string
+  user?: string
+  group?: string
+  environment?: string[]
+  restart?: string
+  restart_sec?: number
+}
+
 /** 服务定义清单：来自 yaml（内置 + /etc/zap/services 覆盖），新增服务丢一份 yaml 即可 */
 export interface ServiceConfDef {
   key: string
@@ -168,12 +185,65 @@ export interface ServiceConfDef {
   format: string
   exts: string[]
   fields: number
+  /** 服务管理器类型：systemd / openrc */
+  manager?: string
+  /** 来源：builtin（内置，随包）/ user（管理员自建或可覆盖） */
+  origin?: string
+  /** 是否已注册为系统服务（unit 文件存在） */
+  registered?: boolean
+  /** 定义里是否带 unit 模板（无则无法注册为服务） */
+  has_unit?: boolean
+  /** 可选的单元文件模板（管理员希望面板代为生成 systemd 自启文件时填写） */
+  unit?: ServiceConfUnitTemplate | null
 }
 
 export function getServiceConfDefs() {
   return http.get<{ code: number; message: string; data: { items: ServiceConfDef[] } }>(
     '/system/service-conf/defs',
   )
+}
+
+/** 读取一份自定义服务定义的原文（编辑回填用） */
+export function getServiceConfDef(key: string) {
+  return http.get<{
+    code: number
+    message: string
+    data: { key: string; exists: boolean; content: string | null }
+  }>('/system/service-conf/def/read', { params: { key } })
+}
+
+/** 写入 / 覆盖一份自定义服务定义（落盘到 ZAP_SERVICE_CONF_DIR） */
+export function writeServiceConfDef(key: string, yaml: string) {
+  return http.post<{ code: number; message: string; data: { saved?: boolean; path?: string } }>(
+    '/system/service-conf/def/write',
+    { key, yaml },
+  )
+}
+
+/** 删除一份自定义服务定义（仅能删管理员自建的） */
+export function deleteServiceConfDef(key: string) {
+  return http.post<{ code: number; message: string; data: { deleted?: boolean } }>(
+    '/system/service-conf/def/delete',
+    { key },
+  )
+}
+
+/** 根据定义里的 unit 模板，渲染并启用单元文件（仅 systemd：写 <key>.service + daemon-reload + enable） */
+export function generateServiceUnit(key: string) {
+  return http.post<{
+    code: number
+    message: string
+    data: { unit?: string; notes?: string[] }
+  }>('/system/service-conf/def/unit/write', { key })
+}
+
+/** 移除由面板生成的单元文件（disable + 删 <key>.service + daemon-reload） */
+export function removeServiceUnit(key: string) {
+  return http.post<{
+    code: number
+    message: string
+    data: { unit?: string; removed?: boolean }
+  }>('/system/service-conf/def/unit/remove', { key })
 }
 
 /** 设置 / 取消某实例的「全局默认访问」（注册到 /usr/local/bin） */

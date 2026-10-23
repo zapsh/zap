@@ -18,12 +18,18 @@
 //! 安全边界：文件路径必须位于该服务主配置所在目录树内且扩展名白名单；
 //! 不执行任何用户输入命令，只运行服务定义内置的命令模板。
 
+use std::collections::BTreeSet;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use serde_json::{Value, json};
 use zap_proto::Response;
 
 use super::root_cmd;
+use super::svc::{
+    Manager, OPENRC_INIT_DIR, OPENRC_UPDATE, SYSTEMD_CTL, act_m, exists_m, is_active_m,
+};
 
 /// 单个配置文件体积上限（读 / 写通用）。
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -75,10 +81,25 @@ struct FieldDef {
     options: Vec<String>,
 }
 
+/// 服务定义来源：内置（随包发布）还是管理员自建（落在 `ZAP_SERVICE_CONF_DIR`）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize)]
+pub(crate) enum DefOrigin {
+    #[default]
+    Builtin,
+    User,
+}
+
 #[derive(Clone, Debug, serde::Deserialize)]
 struct ServiceDef {
     key: String,
     label: String,
+    /// 定义文件里登记的服务版本（如 `version: "1.0.0"`）；仅用于展示。
+    #[serde(default)]
+    version: String,
+    /// 服务管理器类型：决定启停 / 自启走哪套实现（systemd / openrc …）。
+    /// 省略时按当前系统实际 init 自动识别（见 `default_manager`）。
+    #[serde(default = "default_manager")]
+    manager: Manager,
     /// systemd unit 名候选（依次取第一个存在的）
     #[serde(default)]
     unit_candidates: Vec<String>,
@@ -95,6 +116,11 @@ struct ServiceDef {
     /// 全部不存在但服务已安装时取首个不含通配的候选（允许从 UI 新建）
     #[serde(default)]
     main_candidates: Vec<String>,
+    /// 显式配置文件列表：自定义服务可填写多个（一行一个路径），首个作为主配置；
+    /// 列出的文件均可直接编辑（无需 bin / unit 已存在即可编辑）。
+    /// 兼容 `main: "/a"`（单值）与 `main: ["/a","/b"]`（多文件）两种写法。
+    #[serde(default, deserialize_with = "de_one_or_many")]
+    main: Vec<String>,
     /// 可编辑文件的扩展名白名单（不含点）
     #[serde(default)]
     exts: Vec<String>,
@@ -104,6 +130,59 @@ struct ServiceDef {
     ini_comment: String,
     #[serde(default)]
     fields: Vec<FieldDef>,
+    /// 可选：由面板**自动生成并启用**的单元文件模板（systemd 的 .service /
+    /// openrc 的 init.d）。存在该模板即表示管理员希望面板代为落地自启文件，
+    /// 经 `service_conf.unit_write` 渲染写入系统目录并 enable。
+    #[serde(default)]
+    unit: Option<UnitTemplate>,
+    /// 来源：内置或被管理员覆盖 / 自建（不来自 yaml，由加载逻辑填写）。
+    #[serde(skip)]
+    pub(crate) origin: DefOrigin,
+}
+
+/// 自动生成服务单元所需的模板字段（结构化，避免让管理员手写整段文件造成注入）。
+/// 渲染为 systemd `[Service]` 单元；openrc 暂未实现自动生成。
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+struct UnitTemplate {
+    /// Description=（缺省取 def.label）
+    #[serde(default)]
+    description: Option<String>,
+    /// After=（启动顺序依赖的单元名列表）
+    #[serde(default)]
+    after: Vec<String>,
+    /// Wants=
+    #[serde(default)]
+    wants: Vec<String>,
+    /// Requires=
+    #[serde(default)]
+    requires: Vec<String>,
+    /// ExecStart=（systemd 必填）
+    #[serde(default)]
+    exec_start: Option<String>,
+    /// WorkingDirectory=（绝对路径，不含 ..）
+    #[serde(default)]
+    working_dir: Option<String>,
+    /// User=
+    #[serde(default)]
+    user: Option<String>,
+    /// Group=
+    #[serde(default)]
+    group: Option<String>,
+    /// 环境变量列表，每项 "KEY=VALUE"，渲染为多条 Environment=
+    #[serde(default)]
+    environment: Vec<String>,
+    /// 启动前命令（systemd 的 ExecStartPre= / openrc 的 precmd()），一行一条
+    #[serde(default)]
+    precmd: Vec<String>,
+    /// Restart=（no/always/on-failure…）
+    #[serde(default)]
+    restart: Option<String>,
+    /// RestartSec=（秒）
+    #[serde(default)]
+    restart_sec: Option<u64>,
+    /// Type=（simple/exec/forking/oneshot/notify/dbus/idle；缺省 simple）
+    #[serde(default, rename = "type")]
+    type_: Option<String>,
 }
 
 // ── 服务定义加载 ──────────────────────────────────────────────
@@ -123,21 +202,89 @@ const BUILTIN_DEFS: &[&str] = &[
 /// 运行时覆盖目录
 const OVERRIDE_DIR: &str = "/etc/zap/services";
 
-static DEFS: std::sync::OnceLock<Vec<ServiceDef>> = std::sync::OnceLock::new();
+/// 全部服务定义（内置 + 运行时覆盖）。用读写锁包成 Arc，便于管理员新增 / 删除
+/// 自定义服务后**免重启**立即生效。
+static DEFS: std::sync::OnceLock<RwLock<Arc<Vec<ServiceDef>>>> = std::sync::OnceLock::new();
 
-/// 全部服务定义（内置 + 运行时覆盖），进程内只加载一次。
-fn defs() -> &'static Vec<ServiceDef> {
-    DEFS.get_or_init(load_defs)
+/// 覆盖目录最近一次 mtime：用于无侵入地探测「有人往 `/etc/zap/services` 丢/改/删了
+/// 定义文件」，从而自动重新扫描，免去手动 reload 或重启守护进程。
+static OVERRIDE_MTIME: std::sync::OnceLock<RwLock<Option<std::time::SystemTime>>> =
+    std::sync::OnceLock::new();
+
+/// 取定义快照（拷贝 Arc 指针，廉价）。
+///
+/// 若覆盖目录的 mtime 自上次以来变了（手动丢文件、改文件、删文件），先重新扫描磁盘，
+/// 保证定义清单始终与 `/etc/zap/services` 实际内容一致——不依赖进程内 `reload_defs`。
+fn defs() -> Arc<Vec<ServiceDef>> {
+    if let Some(mt) = std::fs::metadata(override_dir()).ok().and_then(|m| m.modified().ok()) {
+        let last = OVERRIDE_MTIME.get_or_init(|| RwLock::new(None));
+        if let (Ok(mut g), Ok(mut w)) = (last.write(), defs_lock().write()) {
+            if *g != Some(mt) {
+                *w = Arc::new(load_defs());
+                *g = Some(mt);
+            }
+        }
+    }
+    defs_lock().read().unwrap().clone()
+}
+
+/// 读写锁（懒初始化为首次加载结果）。
+fn defs_lock() -> &'static RwLock<Arc<Vec<ServiceDef>>> {
+    DEFS.get_or_init(|| RwLock::new(Arc::new(load_defs())))
+}
+
+/// 重新扫描内置 + 覆盖目录，替换内存中的定义快照（新增 / 删除自定义服务后调用）。
+/// 另外 `defs()` 也会按覆盖目录 mtime 自动重新扫描，所以手动改动文件同样即时生效。
+///
+/// 加锁顺序与 `defs()` 保持一致（先 `OVERRIDE_MTIME` 后 `defs_lock`），避免反向死锁。
+pub(crate) fn reload_defs() {
+    let mt = std::fs::metadata(override_dir()).ok().and_then(|m| m.modified().ok());
+    let last = OVERRIDE_MTIME.get_or_init(|| RwLock::new(None));
+    if let (Ok(mut g), Ok(mut w)) = (last.write(), defs_lock().write()) {
+        *w = Arc::new(load_defs());
+        *g = mt;
+    }
+}
+
+/// 服务定义在 YAML 里省略 `manager` 时的缺省值：按当前系统实际 init 自动识别。
+/// 供 `serde(default = "default_manager")` 调用，使新建自定义服务无需手动选管理器。
+fn default_manager() -> Manager {
+    super::svc::active_manager()
+}
+
+/// 兼容 `main: "/a"`（单值）与 `main: ["/a","/b"]`（多文件列表）两种写法。
+fn de_one_or_many<'de, D>(de: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    let v: Option<OneOrMany> = serde::Deserialize::deserialize(de)?;
+    Ok(match v {
+        None => Vec::new(),
+        Some(OneOrMany::One(s)) => vec![s],
+        Some(OneOrMany::Many(list)) => list,
+    })
+}
+
+/// 覆盖目录：默认 `/etc/zap/services`，可用 `ZAP_SERVICE_CONF_DIR` 覆盖。
+/// 与 [`load_defs`] 保持一致，管理员 CRUD 也写这里。
+pub(crate) fn override_dir() -> PathBuf {
+    std::env::var("ZAP_SERVICE_CONF_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(OVERRIDE_DIR))
 }
 
 fn load_defs() -> Vec<ServiceDef> {
     let mut out: Vec<ServiceDef> = Vec::new();
     for raw in BUILTIN_DEFS {
-        push_def(&mut out, raw, "内置");
+        push_def(&mut out, raw, DefOrigin::Builtin);
     }
-    let dir = std::env::var("ZAP_SERVICE_CONF_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(OVERRIDE_DIR));
+    let dir = override_dir();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         let mut files: Vec<PathBuf> = entries
             .flatten()
@@ -151,7 +298,7 @@ fn load_defs() -> Vec<ServiceDef> {
         files.sort();
         for f in files {
             if let Ok(raw) = std::fs::read_to_string(&f) {
-                push_def(&mut out, &raw, &f.display().to_string());
+                push_def(&mut out, &raw, DefOrigin::User);
             }
         }
     }
@@ -159,26 +306,64 @@ fn load_defs() -> Vec<ServiceDef> {
 }
 
 /// 解析一份定义：同 key 覆盖，新 key 追加；坏文件跳过（不拖垮其它服务）。
-fn push_def(out: &mut Vec<ServiceDef>, raw: &str, origin: &str) {
+fn push_def(out: &mut Vec<ServiceDef>, raw: &str, origin: DefOrigin) {
     match serde_yaml::from_str::<ServiceDef>(raw) {
-        Ok(def) => match out.iter_mut().find(|d| d.key == def.key) {
-            Some(existing) => *existing = def,
-            None => out.push(def),
-        },
-        Err(e) => eprintln!("[service-conf] 服务定义（{origin}）解析失败，已跳过: {e}"),
+        Ok(mut def) => {
+            def.origin = origin;
+            match out.iter_mut().find(|d| d.key == def.key) {
+                Some(existing) => *existing = def,
+                None => out.push(def),
+            }
+        }
+        Err(e) => eprintln!("[service-conf] 服务定义（{origin:?}）解析失败，已跳过: {e}"),
     }
+}
+
+/// 自定义服务（origin=user）当前可管控的 systemd / openrc unit 集合。
+///
+/// 供 `services` 总览的启停 / 开机自启白名单复用：自定义服务在总览里「看得见」也要
+/// 「点得动」，否则只展示却不能管理反而更困惑。未检测到（没有任何候选 unit 命中、
+/// 且 key 本身也不是已存在的 unit）的服务不会进入此集合，从而保持安全边界。
+pub(crate) fn custom_active_units() -> BTreeSet<String> {
+    defs()
+        .iter()
+        .filter(|d| d.origin == DefOrigin::User)
+        .filter_map(|d| active_unit(d))
+        .collect()
+}
+
+/// 自定义服务总览摘要（给 `services.overview` 用）：返回
+/// `(key, 显示名, 用作 svc 的 unit 名或退化为 key, 是否已检测到 unit, 定义里登记的版本)`。
+pub(crate) fn custom_def_summaries() -> Vec<(String, String, String, bool, String)> {
+    defs()
+        .iter()
+        .filter(|d| d.origin == DefOrigin::User)
+        .map(|d| {
+            let u = active_unit(d);
+            let detected = u.is_some();
+            (
+                d.key.clone(),
+                d.label.clone(),
+                u.unwrap_or_else(|| d.key.clone()),
+                detected,
+                d.version.clone(),
+            )
+        })
+        .collect()
 }
 
 /// 服务注册表：内置定义 + `/etc/zap/services/*.yaml`。
 /// php<版本号>（php74 / php81 …）作为 PHP 实例 svc 一并识别，复用 php 定义的
 /// 字段 / 白名单 / 关键项，探测与路径在 `php_inst` / `installed_info` 覆写。
-fn supported(key: &str) -> Option<&'static ServiceDef> {
+///
+/// 返回 owned（`ServiceDef` 较小），调用方无需持有缓存锁；新增 / 删除后快照可热更新。
+fn supported(key: &str) -> Option<ServiceDef> {
     let target = if php_inst_svc(key).is_some() {
         "php"
     } else {
         key
     };
-    defs().iter().find(|d| d.key == target)
+    defs().iter().find(|d| d.key == target).cloned()
 }
 
 /// PHP 实例短名识别：svc = "php" + 版本号数字（php74 / php81 …，
@@ -313,18 +498,19 @@ fn probe_main(d: &ServiceDef) -> Option<(PathBuf, PathBuf, bool)> {
     None
 }
 
-/// 支持单个 `*` 的极简 glob：`*` 匹配**一层目录名**。
+/// 支持单个 `*` 的极简 glob，两种模式：
 ///
-/// - `/etc/php/*/fpm/php.ini` → 在 `/etc/php` 下遍历版本目录（7.4 / 8.1 / 8.2 …），
-///   取 `<版本目录>/fpm/php.ini`；多个命中时取**版本号最大**的一个。
-/// - 兼容 `*` 前带目录名前缀的写法（如 `/etc/php-*/x.ini`）：前缀参与过滤。
+/// - **目录名通配**（`*` 后紧跟路径分隔符，如 `/etc/php/*/fpm/php.ini`）：
+///   在 `/etc/php` 下遍历版本目录（7.4 / 8.1 / 8.2 …），取 `<版本目录>/fpm/php.ini`。
+/// - **文件名通配**（`*` 位于文件名中，如 `/etc/app/*.conf`、`/etc/app/pre*fix.conf`）：
+///   匹配该目录下名字符合 `前缀*后缀` 的文件。
 ///
-/// 注意：`*` 前必须以 `/` 结尾才是"遍历该目录下的子目录"，否则最后一个路径段
-/// 视为目录名前缀（旧实现把 `/etc/php/` 的最后一段当成前缀、去扫 `/etc`，
-/// 导致 Debian/Ubuntu 的 `/etc/php/8.1/fpm/php.ini` 永远探测不到）。
-fn glob_first(pattern: &str) -> Option<PathBuf> {
-    let (head, tail) = pattern.split_once('*')?;
-    let tail = tail.trim_start_matches('/');
+/// 兼容 `*` 前带目录名前缀的写法（如 `/etc/php-*/x.ini`）：前缀参与过滤。
+/// 仅支持**一个** `*`；多个 `*` 时只展开第一个，其余按字面处理。
+fn glob_matches(pattern: &str) -> Vec<(PathBuf, String)> {
+    let Some((head, raw_tail)) = pattern.split_once('*') else {
+        return vec![];
+    };
     let (dir, prefix): (PathBuf, String) = if head.ends_with('/') {
         (PathBuf::from(head), String::new())
     } else {
@@ -336,26 +522,53 @@ fn glob_first(pattern: &str) -> Option<PathBuf> {
                 .unwrap_or_default(),
         )
     };
-
-    let rd = std::fs::read_dir(&dir).ok()?;
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
+    // `*` 后以 `/` 开头 → `*` 匹配一层目录名；否则 `*` 属于文件名 → 文件名通配
+    let dir_mode = raw_tail.starts_with('/');
     let mut hits: Vec<(PathBuf, String)> = Vec::new();
     for entry in rd.flatten() {
-        let sub = entry.path();
-        if !sub.is_dir() {
-            continue;
-        }
+        let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if !name.starts_with(&prefix) {
             continue;
         }
-        let target = sub.join(tail);
-        if target.is_file() {
-            hits.push((target, name));
+        if dir_mode {
+            if !path.is_dir() {
+                continue;
+            }
+            let target = path.join(raw_tail.trim_start_matches('/'));
+            if target.is_file() {
+                hits.push((target, name));
+            }
+        } else {
+            if !path.is_file() {
+                continue;
+            }
+            // 文件名通配：前缀（prefix）+ `*` + 后缀（raw_tail）
+            if name.ends_with(raw_tail) {
+                hits.push((path, name));
+            }
         }
     }
-    // 版本号最大的优先；无法解析为数字的目录名退化为字典序
+    hits
+}
+
+/// 取通配命中的**版本号最大**的一个（用于主配置探测）；无命中返回 `None`。
+fn glob_first(pattern: &str) -> Option<PathBuf> {
+    // 版本号最大的优先；无法解析为数字的名字退化为字典序
+    let mut hits = glob_matches(pattern);
     hits.sort_by(|a, b| version_key(&a.1).cmp(&version_key(&b.1)));
     hits.pop().map(|(p, _)| p)
+}
+
+/// 返回**所有**命中的文件（用于自定义服务 `main` 里的通配配置列表展开）。
+fn glob_all(pattern: &str) -> Vec<PathBuf> {
+    glob_matches(pattern)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect()
 }
 
 /// 兜底探测：用 `php --ini` 自报的 `Loaded Configuration File` 定位 php.ini。
@@ -510,10 +723,16 @@ pub(crate) fn php_inst(svc: &str) -> Option<PhpInst> {
 
 /// 候选探测：取第一个存在的 systemd unit 名（无 .service 后缀）。
 fn active_unit(d: &ServiceDef) -> Option<String> {
-    d.unit_candidates
+    // 优先按 unit_candidates 探测（内置 / 外部服务的真实单元名）
+    if let Some(u) = d
+        .unit_candidates
         .iter()
-        .find(|u| super::svc::exists(u))
-        .map(|u| u.to_string())
+        .find(|u| exists_m(d.manager, u))
+    {
+        return Some(u.to_string());
+    }
+    // 兜底：本服务定义的 key 自身即为单元名（由面板生成并落盘的 <key>.service）
+    exists_m(d.manager, &d.key).then_some(d.key.clone())
 }
 
 /// 实际使用的 systemd unit 名（无 .service 后缀）。
@@ -522,12 +741,12 @@ fn effective_unit(d: &ServiceDef, svc: &str) -> Option<String> {
     if let Some(inst) = php_inst(svc) {
         // 优先 info.yaml 登记的 svc_name，兜底 php-fpm-<版本>
         if let Some(u) = php_reg_of(svc).and_then(|r| r.unit)
-            && super::svc::exists(&u)
+            && exists_m(d.manager, &u)
         {
             return Some(u);
         }
         let u = format!("php-fpm-{}", inst.digits);
-        return super::svc::exists(&u).then_some(u);
+        return exists_m(d.manager, &u).then_some(u);
     }
     active_unit(d)
 }
@@ -535,7 +754,7 @@ fn effective_unit(d: &ServiceDef, svc: &str) -> Option<String> {
 /// 服务当前运行态。
 fn service_running(d: &ServiceDef, svc: &str, bin: Option<&Path>) -> bool {
     if let Some(unit) = effective_unit(d, svc) {
-        if super::svc::is_active(&unit) {
+        if is_active_m(d.manager, &unit) {
             return true;
         }
         // unit 存在但未 active 即未运行（不继续看进程，避免误判）
@@ -594,35 +813,49 @@ fn validate_path(
     let main_canon = main.canonicalize().unwrap_or_else(|_| main.to_path_buf());
     let p = PathBuf::from(raw);
     let canon = p.canonicalize().unwrap_or_else(|_| p.clone());
-    let is_main = canon == main_canon;
-    if !canon.starts_with(root) {
-        return Err(format!(
-            "仅允许编辑 {} 主配置目录（{}）内的配置文件",
-            d.label,
-            root.display()
-        ));
+    // 显式登记的自定义配置（main 列表，含 * 通配展开）视为白名单路径，不受目录/扩展名限制
+    let mut whitelist: Vec<PathBuf> = Vec::new();
+    for m in &d.main {
+        if m.contains('*') {
+            whitelist.extend(glob_all(m));
+        } else {
+            whitelist.push(PathBuf::from(m));
+        }
     }
-    let fname = canon
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let ok_ext = exts.iter().any(|e| fname.ends_with(&format!(".{e}")));
-    if !ok_ext {
-        return Err(format!(
-            "仅支持编辑 {}",
-            exts.iter()
-                .map(|e| format!(".{e}"))
-                .collect::<Vec<_>>()
-                .join(" / ")
-        ));
-    }
-    if fname.starts_with("zap-")
-        || fname.ends_with(".bak")
-        || fname.ends_with(".tmp")
-        || fname.contains(".zap")
-    {
-        return Err("该文件为面板托管/备份文件，请勿直接编辑".to_string());
+    let explicit_pos = whitelist.iter().position(|mp| {
+        mp.canonicalize().unwrap_or_else(|_| mp.clone()) == canon
+    });
+    let is_main = canon == main_canon || explicit_pos == Some(0);
+    if explicit_pos.is_none() {
+        if !canon.starts_with(root) {
+            return Err(format!(
+                "仅允许编辑 {} 主配置目录（{}）内的配置文件",
+                d.label,
+                root.display()
+            ));
+        }
+        let fname = canon
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let ok_ext = exts.iter().any(|e| fname.ends_with(&format!(".{e}")));
+        if !ok_ext {
+            return Err(format!(
+                "仅支持编辑 {}",
+                exts.iter()
+                    .map(|e| format!(".{e}"))
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            ));
+        }
+        if fname.starts_with("zap-")
+            || fname.ends_with(".bak")
+            || fname.ends_with(".tmp")
+            || fname.contains(".zap")
+        {
+            return Err("该文件为面板托管/备份文件，请勿直接编辑".to_string());
+        }
     }
     Ok((canon, is_main))
 }
@@ -1008,6 +1241,30 @@ fn installed_info(d: &ServiceDef, svc: &str) -> InstalledInfo {
     let unit = active_unit(d);
     let installed = bin.is_some() || unit.is_some();
     let mut main = if installed { probe_main(d) } else { None };
+    // 自定义服务可在定义里显式指定配置文件列表（main），首个作为主配置；无需 bin/unit 探测即可编辑
+    if main.is_none() {
+        if let Some(m) = d.main.first() {
+            let resolved: Option<(PathBuf, PathBuf, bool)> = if m.contains('*') {
+                glob_first(m).map(|p| {
+                    (
+                        p.clone(),
+                        p.parent().unwrap_or(Path::new("/")).to_path_buf(),
+                        true,
+                    )
+                })
+            } else {
+                let p = PathBuf::from(m);
+                Some((
+                    p.clone(),
+                    p.parent().unwrap_or(Path::new("/")).to_path_buf(),
+                    p.is_file(),
+                ))
+            };
+            if let Some(t) = resolved {
+                main = Some(t);
+            }
+        }
+    }
     // PHP 兜底：静态候选一个都没命中（main_exists=false）时，改用二进制自报的 php.ini
     if d.key == "php"
         && let Some(b) = bin.as_deref()
@@ -1084,7 +1341,7 @@ pub async fn status(svc: &str) -> Response {
         let Some(d) = supported(&svc) else {
             return Err(format!("不支持的服务类型: {svc}"));
         };
-        let (bin, unit, main) = installed_info(d, &svc);
+        let (bin, unit, main) = installed_info(&d, &svc);
         if bin.is_none() && unit.is_none() {
             return Ok(Response::ok(
                 "ok",
@@ -1093,7 +1350,7 @@ pub async fn status(svc: &str) -> Response {
         }
         let version = bin
             .as_deref()
-            .map(|b| detect_version(d, b))
+            .map(|b| detect_version(&d, b))
             .unwrap_or_default();
         let (conf_file, conf_dir, main_exists) = match &main {
             Some((m, dir, exists)) => (
@@ -1112,7 +1369,7 @@ pub async fn status(svc: &str) -> Response {
             .then(|| db_install_dir(bin.as_deref()))
             .flatten()
             .map(|d| d.display().to_string());
-        let running = service_running(d, &svc, bin.as_deref());
+        let running = service_running(&d, &svc, bin.as_deref());
         let bin_path = bin.as_deref().map(|b| b.display().to_string());
         // 探测失败时把尝试过的候选路径一起回传，便于定位"没检测到配置文件"的原因
         // （实例安装走固定路径，静态候选不适用，故仅在非实例时返回）
@@ -1121,12 +1378,17 @@ pub async fn status(svc: &str) -> Response {
         } else {
             Some(d.main_candidates.iter().map(|s| s.as_str()).collect())
         };
+        let manager = match d.manager {
+            Manager::Systemd => "systemd",
+            Manager::Openrc => "openrc",
+        };
         Ok(Response::ok(
             "ok",
             Some(json!({
                 "installed": true,
                 "service": svc,
                 "label": d.label,
+                "manager": manager,
                 "bin": bin_path,
                 "engine": engine,
                 "dir": dir,
@@ -1185,8 +1447,9 @@ pub async fn conf_list(svc: &str) -> Response {
         let Some(d) = supported(&svc) else {
             return Err(format!("不支持的服务类型: {svc}"));
         };
-        let (bin, unit, main) = installed_info(d, &svc);
-        if bin.is_none() && unit.is_none() {
+        let (bin, unit, main) = installed_info(&d, &svc);
+        // 自定义服务即便未安装（无 bin/unit），只要登记了配置文件也应列出以便编辑
+        if bin.is_none() && unit.is_none() && d.main.is_empty() {
             return Ok(Response::ok(
                 "ok",
                 Some(json!({ "installed": false, "files": [] })),
@@ -1204,14 +1467,44 @@ pub async fn conf_list(svc: &str) -> Response {
                 })),
             ));
         };
+        // 显式登记的配置文件（可多个，支持 * 通配），首个即主配置；其余也一并列出
+        let mut explicit: Vec<PathBuf> = Vec::new();
+        for m in &d.main {
+            if m.contains('*') {
+                explicit.extend(glob_all(m));
+            } else {
+                explicit.push(PathBuf::from(m));
+            }
+        }
+        if explicit.is_empty() {
+            explicit.push(main.clone());
+        }
         let scanned = if root.is_dir() {
             let mut scanned: Vec<Value> = Vec::new();
-            collect_files(&service_exts(d, &root), &root, &mut scanned);
+            collect_files(&service_exts(&d, &root), &root, &mut scanned);
             scanned
         } else {
             Vec::new()
         };
-        let files = merge_main_and_scanned(&main, &root, main_exists, scanned);
+        let mut files: Vec<Value> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = Default::default();
+        for (i, p) in explicit.iter().enumerate() {
+            if seen.insert(p.display().to_string()) {
+                let exists = p.is_file();
+                let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                files.push(file_entry(p, &root, i == 0, size, exists));
+            }
+        }
+        for f in scanned {
+            let p = f
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if seen.insert(p) {
+                files.push(f);
+            }
+        }
         Ok(Response::ok(
             "ok",
             Some(json!({
@@ -1233,11 +1526,11 @@ pub async fn conf_read(svc: &str, path: String) -> Response {
         let Some(d) = supported(&svc) else {
             return Err(format!("不支持的服务类型: {svc}"));
         };
-        let (_, _, Some((main, root, _))) = installed_info(d, &svc) else {
+        let (_, _, Some((main, root, _))) = installed_info(&d, &svc) else {
             return Err(format!("{} 未安装或未探测到配置，请先在应用商店安装", d.label));
         };
         let (canon, is_main) =
-            validate_path(d, &service_exts(d, &root), &main, &root, &path)?;
+            validate_path(&d, &service_exts(&d, &root), &main, &root, &path)?;
         if !canon.exists() {
             return Ok(Response::ok(
                 "ok",
@@ -1280,10 +1573,10 @@ pub async fn conf_save(svc: &str, path: String, content: String) -> Response {
         if content.len() as u64 > MAX_FILE_BYTES {
             return Err("内容超过 2MB，请精简后重试".to_string());
         }
-        let (_, _, Some((main, root, _))) = installed_info(d, &svc) else {
+        let (_, _, Some((main, root, _))) = installed_info(&d, &svc) else {
             return Err(format!("{} 未安装或未探测到配置", d.label));
         };
-        let (canon, is_main) = validate_path(d, &service_exts(d, &root), &main, &root, &path)?;
+        let (canon, is_main) = validate_path(&d, &service_exts(&d, &root), &main, &root, &path)?;
         if d.format == ConfFormat::Json && !content.trim().is_empty() {
             serde_json::from_str::<Value>(&content)
                 .map_err(|e| format!("JSON 语法错误，未保存：{e}"))?;
@@ -1315,6 +1608,7 @@ pub async fn conf_save(svc: &str, path: String, content: String) -> Response {
 /// service_conf.defs：yaml 里注册的服务定义清单。
 ///
 /// 前端据此生成「其它服务」入口：新增服务只要丢一份 yaml 进去，不需要改代码。
+/// `origin` 标出是内置还是管理员自建，便于 UI 区分是否可编辑 / 删除。
 pub async fn defs_list() -> Response {
     let items: Vec<Value> = defs()
         .iter()
@@ -1322,13 +1616,515 @@ pub async fn defs_list() -> Response {
             json!({
                 "key": d.key,
                 "label": d.label,
+                "version": d.version,
                 "format": if d.format == ConfFormat::Json { "json" } else { "ini" },
                 "exts": d.exts,
                 "fields": d.fields.len(),
+                "manager": match d.manager { Manager::Systemd => "systemd", Manager::Openrc => "openrc" },
+                "origin": match d.origin { DefOrigin::Builtin => "builtin", DefOrigin::User => "user" },
+                // 是否已注册为系统服务（unit 文件存在）；has_unit 表示定义里是否带 unit 模板（无则不能注册）
+                "registered": active_unit(d).is_some(),
+                "has_unit": d.unit.is_some(),
             })
         })
         .collect();
     Response::ok("ok", Some(json!({ "items": items })))
+}
+
+/// service_conf.def_write：写入 / 覆盖一份自定义服务定义（落盘到 `ZAP_SERVICE_CONF_DIR`）。
+///
+/// 仅校验结构与文件名安全，不执行任何命令；写完后热重载，前端无需重启即可看到新服务。
+pub async fn def_write(key: String, yaml: String) -> Response {
+    if !super::valid_token(&key) {
+        return Response::err(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        );
+    }
+    let mut def: ServiceDef = match serde_yaml::from_str(&yaml) {
+        Ok(d) => d,
+        Err(e) => return Response::err(-1, format!("服务定义解析失败: {e}")),
+    };
+    if def.key != key {
+        return Response::err(-1, format!("yaml 里的 key（{}）与文件名不符（{}）", def.key, key));
+    }
+    // 若带了 unit 模板，校验其合法性（避免生成阶段才报错）
+    if let Some(u) = &def.unit {
+        if let Err(e) = validate_unit(u, def.manager) {
+            return Response::err(-1, format!("unit 模板校验失败: {e}"));
+        }
+    }
+    let dir = override_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Response::err(-1, format!("创建服务定义目录失败 {}: {e}", dir.display()));
+    }
+    let path = dir.join(format!("{key}.yaml"));
+    // 原子写：临时文件 + rename，避免半截文件被读到
+    let tmp = path.with_extension("yaml.tmp");
+    if let Err(e) = std::fs::write(&tmp, &yaml) {
+        return Response::err(-1, format!("写入临时文件失败 {}: {e}", tmp.display()));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        return Response::err(-1, format!("落盘服务定义失败 {}: {e}", path.display()));
+    }
+    def.origin = DefOrigin::User;
+    reload_defs();
+    Response::ok(
+        "ok",
+        Some(json!({ "key": key, "path": path.display().to_string(), "saved": true })),
+    )
+}
+
+/// service_conf.def_delete：删除一份自定义服务定义（仅能删管理员自建的）。
+pub async fn def_delete(key: String) -> Response {
+    if !super::valid_token(&key) {
+        return Response::err(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        );
+    }
+    let path = override_dir().join(format!("{key}.yaml"));
+    if !path.is_file() {
+        return Response::err(-1, format!("服务定义 {key} 不存在（内置服务不可删除）"));
+    }
+    if let Err(e) = std::fs::remove_file(&path) {
+        return Response::err(-1, format!("删除服务定义失败 {}: {e}", path.display()));
+    }
+    reload_defs();
+    Response::ok("ok", Some(json!({ "key": key, "deleted": true })))
+}
+
+/// service_conf.def_read：读取一份自定义服务定义的原文（编辑时回填表单用）。
+pub async fn def_read(key: String) -> Response {
+    if !super::valid_token(&key) {
+        return Response::err(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        );
+    }
+    let path = override_dir().join(format!("{key}.yaml"));
+    let (exists, content) = if path.is_file() {
+        match std::fs::read_to_string(&path) {
+            Ok(c) => (true, Some(c)),
+            Err(_) => (true, None),
+        }
+    } else {
+        (false, None)
+    };
+    Response::ok(
+        "ok",
+        Some(json!({ "key": key, "exists": exists, "content": content })),
+    )
+}
+
+// ── 单元文件自动生成 ───────────────────────────────────────────
+//
+// 管理员在定义里附 `unit` 模板后，可由面板一键渲染成系统单元文件并 enable，
+// 实现「创建自动启动文件」：systemd 渲染 `<key>.service` 并 `systemctl enable`；
+// openrc 渲染 `/etc/init.d/<key>`（init.d 脚本）并 `rc-update add default`。
+
+/// 单元名安全字符（systemd 单元 / openrc 脚本名）。
+fn is_unit_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
+/// 用户名 / 组名安全字符。
+fn is_safe_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 32 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// 环境变量条目必须形如 `KEY=VALUE`。
+fn is_env_entry(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+    match s.split_once('=') {
+        Some((k, _)) => !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        None => false,
+    }
+}
+
+/// 把多行 / 含换行的文本压成单行（systemd 单元值不支持裸换行）。
+fn one_line(s: &str) -> String {
+    s.replace(['\n', '\r'], " ").trim().to_string()
+}
+
+/// 校验 unit 模板：systemd 要求 exec_start；路径 / 名称 / 策略做白名单约束，
+/// 防止生成出非法单元文件（或借此注入系统命令）。
+fn validate_unit(u: &UnitTemplate, _mgr: Manager) -> Result<(), String> {
+    // ExecStart 同时是 systemd 的 ExecStart= 与 openrc 的 command=，两种管理器都必填
+    let exec = u.exec_start.as_deref().unwrap_or("").trim();
+    if exec.is_empty() {
+        return Err("unit 模板缺少 exec_start（启动命令必填）".into());
+    }
+    if exec.contains(['\n', '\r', '\0']) {
+        return Err("exec_start 不能包含换行 / NUL".into());
+    }
+    if let Some(wd) = &u.working_dir {
+        let wd = wd.trim();
+        if !wd.starts_with('/') || wd.contains("..") || wd.contains(['\n', '\r']) {
+            return Err("working_dir 必须是绝对路径且不含 ..".into());
+        }
+    }
+    for n in [&u.user, &u.group].into_iter().flatten() {
+        if !is_safe_name(n) {
+            return Err(format!("user/group 含非法字符: {n}"));
+        }
+    }
+    for e in &u.environment {
+        if !is_env_entry(e) {
+            return Err(format!("环境变量格式应为 KEY=VALUE: {e}"));
+        }
+    }
+    for c in &u.precmd {
+        if c.contains(['\n', '\r', '\0']) {
+            return Err("precmd 不能包含换行 / NUL".into());
+        }
+    }
+    for dep in u.after.iter().chain(u.wants.iter()).chain(u.requires.iter()) {
+        if !is_unit_name(dep) {
+            return Err(format!("依赖单元名非法: {dep}"));
+        }
+    }
+    if let Some(r) = &u.restart {
+        const OK: &[&str] = &[
+            "no", "always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog",
+        ];
+        if !OK.contains(&r.as_str()) {
+            return Err(format!("非法的 Restart 策略: {r}"));
+        }
+    }
+    if let Some(t) = &u.type_ {
+        const TYPES: &[&str] = &[
+            "simple", "exec", "forking", "oneshot", "notify", "notify-reload", "dbus", "idle",
+        ];
+        if !TYPES.contains(&t.as_str()) {
+            return Err(format!("非法的 Type 类型: {t}"));
+        }
+    }
+    Ok(())
+}
+
+/// 渲染 systemd 单元文件内容（结构化字段 → 标准 .service）。
+fn render_systemd_unit(d: &ServiceDef, u: &UnitTemplate) -> String {
+    let mut s = String::new();
+    s.push_str("[Unit]\n");
+    let desc = one_line(u.description.as_deref().unwrap_or(d.label.as_str()));
+    s.push_str(&format!("Description={desc}\n"));
+    if !u.after.is_empty() {
+        s.push_str(&format!("After={}\n", u.after.iter().map(|x| x.trim()).collect::<Vec<_>>().join(" ")));
+    }
+    if !u.wants.is_empty() {
+        s.push_str(&format!("Wants={}\n", u.wants.iter().map(|x| x.trim()).collect::<Vec<_>>().join(" ")));
+    }
+    if !u.requires.is_empty() {
+        s.push_str(&format!("Requires={}\n", u.requires.iter().map(|x| x.trim()).collect::<Vec<_>>().join(" ")));
+    }
+    s.push('\n');
+    s.push_str("[Service]\n");
+    // Type=（服务类型，缺省 simple）
+    let ty = u
+        .type_
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("simple");
+    s.push_str(&format!("Type={}\n", one_line(ty)));
+    for c in &u.precmd {
+        if !c.trim().is_empty() {
+            s.push_str(&format!("ExecStartPre={}\n", one_line(c)));
+        }
+    }
+    s.push_str(&format!("ExecStart={}\n", one_line(u.exec_start.as_deref().unwrap_or(""))));
+    if let Some(wd) = &u.working_dir {
+        if !wd.trim().is_empty() {
+            s.push_str(&format!("WorkingDirectory={}\n", one_line(wd)));
+        }
+    }
+    if let Some(user) = &u.user {
+        if !user.trim().is_empty() {
+            s.push_str(&format!("User={}\n", one_line(user)));
+        }
+    }
+    if let Some(group) = &u.group {
+        if !group.trim().is_empty() {
+            s.push_str(&format!("Group={}\n", one_line(group)));
+        }
+    }
+    for e in &u.environment {
+        if !e.trim().is_empty() {
+            s.push_str(&format!("Environment={}\n", one_line(e)));
+        }
+    }
+    if let Some(r) = &u.restart {
+        if !r.trim().is_empty() {
+            s.push_str(&format!("Restart={}\n", one_line(r)));
+        }
+    }
+    if let Some(rs) = u.restart_sec {
+        s.push_str(&format!("RestartSec={rs}\n"));
+    }
+    s.push('\n');
+    s.push_str("[Install]\n");
+    s.push_str("WantedBy=multi-user.target\n");
+    s
+}
+
+/// 把 systemd 单元名映射为 openrc 服务名：去掉 `.service/.target/.socket/.timer` 后缀，
+/// 常见网络目标统一映射到 openrc 的 `net`（openrc 的 depend 用的是 init.d 服务名，不是 unit 名）。
+fn openrc_svc_name(unit: &str) -> String {
+    let base = unit
+        .trim()
+        .trim_end_matches(".service")
+        .trim_end_matches(".target")
+        .trim_end_matches(".socket")
+        .trim_end_matches(".timer");
+    match base {
+        "network-online" | "network" | "network-pre" | "netmount" | "net.lo" => "net".to_string(),
+        _ => base.to_string(),
+    }
+}
+
+/// 渲染 openrc 初始化脚本（结构化字段 → `/etc/init.d/<key>` 的 shell 脚本）。
+///
+/// openrc 用 `command=` / `command_args=` / `command_user=` / `directory=` /
+/// `env_*` / `pidfile` 等变量托管前台进程；`rc-update add <key> default` 即开机自启。
+fn render_openrc_unit(d: &ServiceDef, u: &UnitTemplate) -> String {
+    let mut s = String::new();
+    s.push_str("#!/sbin/openrc-run\n\n");
+    let desc = one_line(u.description.as_deref().unwrap_or(d.label.as_str()));
+    s.push_str(&format!("description=\"{desc}\"\n\n"));
+    // ExecStart 拆成 command（首个 token）+ command_args（其余）
+    let exec = one_line(u.exec_start.as_deref().unwrap_or(""));
+    let mut parts = exec.split_whitespace();
+    let command = parts.next().unwrap_or("");
+    let args: Vec<&str> = parts.collect();
+    s.push_str(&format!("command=\"{command}\"\n"));
+    if !args.is_empty() {
+        s.push_str(&format!("command_args=\"{}\"\n", args.join(" ")));
+    }
+    // 运行用户 / 组（openrc 用 command_user="user[:group]"）
+    if let Some(user) = &u.user {
+        if !user.trim().is_empty() {
+            let mut cu = one_line(user);
+            if let Some(g) = &u.group {
+                if !g.trim().is_empty() {
+                    cu.push(':');
+                    cu.push_str(&one_line(g));
+                }
+            }
+            s.push_str(&format!("command_user=\"{cu}\"\n"));
+        }
+    }
+    if let Some(wd) = &u.working_dir {
+        if !wd.trim().is_empty() {
+            s.push_str(&format!("directory=\"{}\"\n", one_line(wd)));
+        }
+    }
+    s.push_str(&format!("pidfile=\"/run/{}.pid\"\n", d.key));
+    // 环境变量：openrc 用 env_KEY="value" 透传
+    for e in &u.environment {
+        if let Some((k, v)) = e.split_once('=') {
+            let k = k.trim();
+            if !k.is_empty() {
+                s.push_str(&format!("env_{}=\"{}\"\n", k, one_line(v)));
+            }
+        }
+    }
+    // 重启策略：openrc 的 supervise-daemon 默认会在进程退出时拉起；
+    // 仅当显式要求 always / on-failure / on-abnormal 时给出 respawn_delay。
+    match u.restart.as_deref() {
+        Some("always") | Some("on-failure") | Some("on-abnormal") => {
+            let sec = u.restart_sec.unwrap_or(1);
+            s.push_str(&format!("respawn_delay={sec}\n"));
+        }
+        _ => {}
+    }
+    // 依赖映射（systemd → openrc，按依赖强度对应）：
+    //   Requires= → need （强依赖，缺了起不来）
+    //   Wants=     → use  （弱依赖，有则用）
+    //   After=     → after（仅排序，不构成依赖）
+    // 单元名去后缀后作为 openrc 服务名；常见网络目标统一为 net。
+    let need: Vec<String> = u
+        .requires
+        .iter()
+        .map(|x| openrc_svc_name(x))
+        .filter(|x| !x.is_empty())
+        .collect();
+    let soft: Vec<String> = u
+        .wants
+        .iter()
+        .map(|x| openrc_svc_name(x))
+        .filter(|x| !x.is_empty())
+        .collect();
+    let after: Vec<String> = u
+        .after
+        .iter()
+        .map(|x| openrc_svc_name(x))
+        .filter(|x| !x.is_empty())
+        .collect();
+    if !need.is_empty() || !soft.is_empty() || !after.is_empty() {
+        s.push_str("\ndepend() {\n");
+        if !need.is_empty() {
+            s.push_str(&format!("\tneed {}\n", need.join(" ")));
+        }
+        if !soft.is_empty() {
+            s.push_str(&format!("\tuse {}\n", soft.join(" ")));
+        }
+        if !after.is_empty() {
+            s.push_str(&format!("\tafter {}\n", after.join(" ")));
+        }
+        s.push_str("}\n");
+    }
+    // 启动前命令：openrc 用 precmd() 钩子（在 start 之前执行）
+    if !u.precmd.is_empty() {
+        s.push_str("\nprecmd() {\n");
+        for c in &u.precmd {
+            if !c.trim().is_empty() {
+                s.push_str(&format!("\t{}\n", one_line(c)));
+            }
+        }
+        s.push_str("}\n");
+    }
+    s
+}
+
+/// service_conf.unit_write：渲染并落盘单元文件（systemd 的 .service / openrc 的 init.d），
+/// 再按管理器使能（开机自启）。
+///
+/// 仅处理以 key 命名的单元（`<key>.service` 或 `/etc/init.d/<key>`），路径由已校验的
+/// key 拼接，不可能越权写其它路径；只有定义了 `unit` 模板的服务才允许生成。
+pub async fn unit_write(key: String) -> Response {
+    if !super::valid_token(&key) {
+        return Response::err(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        );
+    }
+    let def = match supported(&key) {
+        Some(d) => d,
+        None => return Response::err(-1, format!("服务定义 {key} 不存在")),
+    };
+    let unit = match &def.unit {
+        Some(u) => u,
+        None => {
+            return Response::err(
+                -1,
+                format!("服务 {key} 未配置 unit 模板，无法生成单元文件（请在定义里加 unit 段）"),
+            )
+        }
+    };
+    if let Err(e) = validate_unit(unit, def.manager) {
+        return Response::err(-1, format!("unit 模板校验失败: {e}"));
+    }
+    let (content, unit_name, path) = match def.manager {
+        Manager::Systemd => {
+            let content = render_systemd_unit(&def, unit);
+            let name = format!("{key}.service");
+            (content, name.clone(), Path::new("/etc/systemd/system").join(name))
+        }
+        Manager::Openrc => {
+            let content = render_openrc_unit(&def, unit);
+            (
+                content,
+                key.clone(),
+                Path::new(OPENRC_INIT_DIR).join(&key),
+            )
+        }
+    };
+    let tmp = match def.manager {
+        Manager::Systemd => path.with_extension("service.tmp"),
+        Manager::Openrc => path.with_extension("tmp"),
+    };
+    if let Err(e) = std::fs::write(&tmp, &content) {
+        return Response::err(-1, format!("写入临时单元失败 {}: {e}", tmp.display()));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        return Response::err(-1, format!("落盘单元文件失败 {}: {e}", path.display()));
+    }
+    let mut notes = vec![format!("已生成 {}", path.display())];
+    match def.manager {
+        Manager::Systemd => {
+            // 重新加载 systemd 并使能（best-effort，失败也告知）
+            let reload = root_cmd(SYSTEMD_CTL).arg("daemon-reload").output();
+            let enable = root_cmd(SYSTEMD_CTL).arg("enable").arg(&unit_name).output();
+            match reload {
+                Ok(o) if o.status.success() => notes.push("daemon-reload 成功".into()),
+                Ok(o) => notes.push(format!(
+                    "daemon-reload 失败: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                )),
+                Err(e) => notes.push(format!("daemon-reload 执行失败: {e}")),
+            }
+            match enable {
+                Ok(o) if o.status.success() => notes.push(format!("已 enable {unit_name}")),
+                Ok(o) => notes.push(format!(
+                    "enable 失败: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                )),
+                Err(e) => notes.push(format!("enable 执行失败: {e}")),
+            }
+        }
+        Manager::Openrc => {
+            // init.d 脚本必须可执行
+            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)) {
+                notes.push(format!("设置可执行权限失败: {e}"));
+            }
+            // rc-update add <key> default：开机自启（best-effort）
+            let add = root_cmd(OPENRC_UPDATE).arg("add").arg(&unit_name).arg("default").output();
+            match add {
+                Ok(o) if o.status.success() => {
+                    notes.push(format!("已 rc-update add {unit_name}（开机自启）"))
+                }
+                Ok(o) => notes.push(format!(
+                    "rc-update add 失败: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                )),
+                Err(e) => notes.push(format!("rc-update 执行失败: {e}")),
+            }
+        }
+    }
+    Response::ok("ok", Some(json!({ "unit": unit_name, "notes": notes })))
+}
+
+/// service_conf.unit_remove：disable 并删除由面板生成的单元文件
+/// （systemd 的 `<key>.service` 或 openrc 的 `/etc/init.d/<key>`）。
+///
+/// 按实际落盘位置识别管理器（不依赖定义是否仍在），路径由已校验的 key 拼接，
+/// 不会误删包管理器自带的同名单元（那些服务本就没有 unit 模板，不会走到生成逻辑）。
+pub async fn unit_remove(key: String) -> Response {
+    if !super::valid_token(&key) {
+        return Response::err(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        );
+    }
+    let sysd = Path::new("/etc/systemd/system").join(format!("{key}.service"));
+    let openrc = Path::new(OPENRC_INIT_DIR).join(&key);
+    let (path, name, is_sysd) = if sysd.is_file() {
+        (sysd, format!("{key}.service"), true)
+    } else if openrc.is_file() {
+        (openrc, key.clone(), false)
+    } else {
+        return Response::err(
+            -1,
+            format!("单元文件 {key}.service / {OPENRC_INIT_DIR}/{key} 均不存在（无需移除）"),
+        );
+    };
+    // 先 best-effort 取消自启
+    if is_sysd {
+        let _ = root_cmd(SYSTEMD_CTL).arg("disable").arg(&name).output();
+    } else {
+        let _ = root_cmd(OPENRC_UPDATE).arg("del").arg(&name).arg("default").output();
+    }
+    if let Err(e) = std::fs::remove_file(&path) {
+        return Response::err(-1, format!("删除单元文件失败 {}: {e}", path.display()));
+    }
+    if is_sysd {
+        let _ = root_cmd(SYSTEMD_CTL).arg("daemon-reload").output();
+    }
+    Response::ok("ok", Some(json!({ "unit": name, "removed": true })))
 }
 
 /// service_conf.keys：关键项表单定义 + 当前值。
@@ -1338,7 +2134,7 @@ pub async fn keys_get(svc: &str) -> Response {
         let Some(d) = supported(&svc) else {
             return Err(format!("不支持的服务类型: {svc}"));
         };
-        let (bin, unit, main) = installed_info(d, &svc);
+        let (bin, unit, main) = installed_info(&d, &svc);
         if bin.is_none() && unit.is_none() {
             return Ok(Response::ok(
                 "ok",
@@ -1405,7 +2201,7 @@ pub async fn keys_save(svc: &str, keys: std::collections::BTreeMap<String, Strin
         let Some(d) = supported(&svc) else {
             return Err(format!("不支持的服务类型: {svc}"));
         };
-        let (_, _, Some((main, _, _))) = installed_info(d, &svc) else {
+        let (_, _, Some((main, _, _))) = installed_info(&d, &svc) else {
             return Err(format!("{} 未安装或未探测到配置", d.label));
         };
         let old = if main.exists() {
@@ -1514,9 +2310,9 @@ pub async fn control(svc: &str, action: &str) -> Response {
         let Some(d) = supported(&svc) else {
             return Err(format!("不支持的服务类型: {svc}"));
         };
-        let bin = find_bin(d);
+        let bin = find_bin(&d);
         // 优先已注册/存在的 unit（实例 svc 走 php-fpm-<ver>）；其次用二进制的 systemd 名做一次尝试
-        let unit = effective_unit(d, &svc).or_else(|| {
+        let unit = effective_unit(&d, &svc).or_else(|| {
             bin.as_ref()
                 .and_then(|b| b.file_stem())
                 .and_then(|s| s.to_str())
@@ -1526,8 +2322,8 @@ pub async fn control(svc: &str, action: &str) -> Response {
             return Err(format!("{} 未安装或未检测到对应服务", d.label));
         }
         let unit = unit.unwrap();
-        let method = if super::svc::exists(&unit) {
-            super::svc::act(&action, &unit).map_err(|e| format!("{action} {unit} 失败：{e}"))?;
+        let method = if exists_m(d.manager, &unit) {
+            act_m(d.manager, &action, &unit).map_err(|e| format!("{action} {unit} 失败：{e}"))?;
             if action == "restart" {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
@@ -1539,7 +2335,7 @@ pub async fn control(svc: &str, action: &str) -> Response {
         if action == "start" || action == "restart" {
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
-        let running = service_running(d, &svc, bin.as_deref());
+        let running = service_running(&d, &svc, bin.as_deref());
         let state = if running { "running" } else { "stopped" };
         Ok(Response::ok(
             "ok",
@@ -1583,7 +2379,7 @@ fn instance_summary(svc: &str) -> Result<Value, String> {
     let Some(d) = supported(svc) else {
         return Err(format!("不支持的服务类型: {svc}"));
     };
-    let (bin, unit, main) = installed_info(d, svc);
+    let (bin, unit, main) = installed_info(&d, svc);
     let installed = bin.is_some() || unit.is_some();
     let (conf_file, main_exists) = match &main {
         Some((m, _, exists)) => (Some(m.display().to_string()), *exists),
@@ -1591,7 +2387,7 @@ fn instance_summary(svc: &str) -> Result<Value, String> {
     };
     let version = if installed {
         bin.as_deref()
-            .map(|b| detect_version(d, b))
+            .map(|b| detect_version(&d, b))
             .unwrap_or_default()
     } else {
         String::new()
@@ -1607,7 +2403,7 @@ fn instance_summary(svc: &str) -> Result<Value, String> {
         "version": version,
         "dir": dir,
         "installed": installed,
-        "running": installed && service_running(d, svc, bin.as_deref()),
+        "running": installed && service_running(&d, svc, bin.as_deref()),
         "bin": bin.as_deref().map(|b| b.display().to_string()),
         "unit": unit,
         "systemd": unit.is_some(),
@@ -1829,6 +2625,148 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// `glob_all` 返回所有命中文件（不止版本号最大的一个）。
+    #[test]
+    fn glob_all_expands_every_match() {
+        let base = fixture_root("globall");
+        fs::create_dir_all(base.join("app-1.0")).unwrap();
+        fs::create_dir_all(base.join("app-2.0")).unwrap();
+        fs::write(base.join("app-1.0/x.ini"), "; a").unwrap();
+        fs::write(base.join("app-2.0/x.ini"), "; b").unwrap();
+        // 后缀不同的文件不应命中
+        fs::write(base.join("app-1.0/y.txt"), "no").unwrap();
+
+        let pattern = format!("{}/app-*/x.ini", base.display());
+        let hits = glob_all(&pattern);
+        assert_eq!(hits.len(), 2);
+        assert!(hits.contains(&base.join("app-1.0/x.ini")));
+        assert!(hits.contains(&base.join("app-2.0/x.ini")));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 文件名通配 `/dir/*.conf` 能匹配同目录下所有 .conf（也支持 `pre*fix`）。
+    #[test]
+    fn glob_all_supports_filename_wildcard() {
+        let base = fixture_root("globfile");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("a.conf"), "1").unwrap();
+        fs::write(base.join("b.conf"), "2").unwrap();
+        fs::write(base.join("note.txt"), "no").unwrap();
+
+        let all = format!("{}/*.conf", base.display());
+        let hits = glob_all(&all);
+        assert_eq!(hits.len(), 2, "应命中 a.conf / b.conf");
+        assert!(hits.contains(&base.join("a.conf")));
+        assert!(hits.contains(&base.join("b.conf")));
+        // 目录名通配模式仍可用：`*` 后接 `/` 表示匹配一层目录
+        fs::create_dir_all(base.join("v1")).unwrap();
+        fs::write(base.join("v1/x.conf"), "3").unwrap();
+        let dirs = glob_all(&format!("{}/*/x.conf", base.display()));
+        assert_eq!(dirs, vec![base.join("v1/x.conf")]);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 覆盖目录里管理员自写的定义能被正确解析（含 unit 模板），并标为 User。
+    #[test]
+    fn user_def_from_override_dir_is_loaded() {
+        let dir = fixture_root("userdef");
+        fs::create_dir_all(&dir).unwrap();
+        let yaml = r#"
+key: "myhello"
+label: "myhello"
+version: "1.0.0"
+manager: "systemd"
+format: "ini"
+unit:
+  exec_start: "python3 -m http.server 4000"
+"#;
+        fs::write(dir.join("myhello.yaml"), yaml).unwrap();
+        unsafe { std::env::set_var("ZAP_SERVICE_CONF_DIR", &dir) };
+
+        let defs = load_defs();
+        let found = defs.iter().find(|d| d.key == "myhello");
+        assert!(found.is_some(), "myhello 应被解析加载");
+        let d = found.unwrap();
+        assert_eq!(d.origin, DefOrigin::User);
+        assert_eq!(d.manager, Manager::Systemd);
+        assert_eq!(d.format, ConfFormat::Ini);
+        assert_eq!(d.version, "1.0.0", "version 应被解析供总览展示");
+        assert!(d.unit.is_some(), "unit 模板应被解析");
+        assert_eq!(
+            d.unit.as_ref().unwrap().exec_start.as_deref(),
+            Some("python3 -m http.server 4000")
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 省略 manager 时回退到系统实际管理器；`main` 被解析；`unit.precmd` 渲染为
+    /// systemd 的 ExecStartPre= 与 openrc 的 precmd() 钩子。
+    #[test]
+    fn unit_precmd_rendered_and_main_parsed() {
+        let yaml = r#"
+key: "precmdtest"
+label: "precmdtest"
+format: "ini"
+main: "/etc/precmdtest/app.conf"
+unit:
+  exec_start: "myapp run"
+  precmd:
+    - "mkdir -p /run/precmdtest"
+    - "chown app /run/precmdtest"
+"#;
+        let def: ServiceDef = serde_yaml::from_str(yaml).expect("解析自定义服务定义");
+        assert_eq!(
+            def.main.first().map(|s| s.as_str()),
+            Some("/etc/precmdtest/app.conf")
+        );
+        // manager 省略 → 回退到系统管理器（合法值，不 panic）
+        let _m = def.manager;
+        let u = def.unit.as_ref().expect("unit 模板");
+        assert_eq!(u.precmd.len(), 2);
+
+        let sd = render_systemd_unit(&def, &u);
+        assert!(sd.contains("ExecStartPre=mkdir -p /run/precmdtest"));
+        assert!(sd.contains("ExecStartPre=chown app /run/precmdtest"));
+        assert!(sd.contains("ExecStart=myapp run"));
+
+        let orc = render_openrc_unit(&def, &u);
+        assert!(orc.contains("precmd() {"));
+        assert!(orc.contains("\tmkdir -p /run/precmdtest"));
+        assert!(orc.contains("\tchown app /run/precmdtest"));
+    }
+
+    /// openrc 依赖映射：Requires→need、Wants→use、After→after；单元名去后缀，网络目标→net。
+    #[test]
+    fn openrc_depend_mapping() {
+        let yaml = r#"
+key: "deptest"
+label: "deptest"
+format: "ini"
+unit:
+  exec_start: "myapp run"
+  after:
+    - "network-online.target"
+    - "nginx.service"
+  wants:
+    - "logging.service"
+  requires:
+    - "docker.service"
+"#;
+        let def: ServiceDef = serde_yaml::from_str(yaml).expect("解析自定义服务定义");
+        let u = def.unit.as_ref().expect("unit 模板");
+        let orc = render_openrc_unit(&def, u);
+        assert!(orc.contains("depend() {"), "应生成 depend() 块");
+        assert!(orc.contains("\tneed docker\n"), "Requires→need（docker.service→docker）");
+        assert!(orc.contains("\tuse logging\n"), "Wants→use（logging.service→logging）");
+        assert!(
+            orc.contains("\tafter net nginx\n"),
+            "After→after，network-online.target→net、nginx.service→nginx"
+        );
+    }
+
     /// 主配置必须保留在列表首位；扫描到的重复条目被去掉（旧实现相反，
     /// 把主配置删了、列表里唯独没有 php.ini）。
     #[test]
@@ -1901,7 +2839,8 @@ mod tests {
     /// 服务定义来自 yaml（内置 + /etc/zap/services 覆盖），内置三件套必须能解析出来
     #[test]
     fn yaml_defs_are_loaded() {
-        let keys: Vec<&str> = defs().iter().map(|d| d.key.as_str()).collect();
+        let defs = defs();
+        let keys: Vec<&str> = defs.iter().map(|d| d.key.as_str()).collect();
         for k in ["php", "mysql", "docker"] {
             assert!(keys.contains(&k), "内置定义缺少 {k}");
         }
@@ -1953,16 +2892,20 @@ mod tests {
         push_def(
             &mut out,
             "key: php\nlabel: PHP 覆盖\nformat: ini\nini_comment: \";\"\n",
-            "测试",
+            DefOrigin::User,
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].label, "PHP 覆盖");
         // 同 key 再推一次 = 覆盖
-        push_def(&mut out, "key: php\nlabel: 再覆盖\nformat: ini\n", "测试");
+        push_def(
+            &mut out,
+            "key: php\nlabel: 再覆盖\nformat: ini\n",
+            DefOrigin::User,
+        );
         assert_eq!(out.len(), 1, "同 key 应覆盖而不是追加");
         assert_eq!(out[0].label, "再覆盖");
         // 坏文件：跳过
-        push_def(&mut out, "key: [broken\n", "测试");
+        push_def(&mut out, "key: [broken\n", DefOrigin::User);
         assert_eq!(out.len(), 1, "坏定义应被跳过");
     }
 

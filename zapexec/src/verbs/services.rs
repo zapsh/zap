@@ -38,6 +38,10 @@ fn known_units() -> BTreeSet<String> {
             set.insert(s.trim().to_string());
         }
     }
+    // 管理员自建且已检测到 unit 的自定义服务，同样纳入启停 / 自启白名单
+    for u in super::service_conf::custom_active_units() {
+        set.insert(u);
+    }
     set
 }
 
@@ -88,6 +92,27 @@ pub async fn overview() -> Response {
                 "state": appstore::normalize_state(&svc::raw_state(svc)),
                 "enabled": svc::is_enabled(svc),
                 "exists": svc::exists(svc),
+            }));
+        }
+        // 自定义服务（管理员在「服务配置 → 自定义服务」里登记的定义）也进总览，
+        // 与内置服务区分：带 `custom: true` 标记；未检测到 unit 的标为未安装。
+        for (key, label, svc, detected, version) in super::service_conf::custom_def_summaries() {
+            items.push(json!({
+                "key": key,
+                "pkg": "",
+                "name": label,
+                "version": version,
+                "category": "",
+                "instance": "-",
+                "svc": svc,
+                "state": if detected {
+                    appstore::normalize_state(&svc::raw_state(&svc))
+                } else {
+                    "unknown".to_string()
+                },
+                "enabled": detected && svc::is_enabled(&svc),
+                "exists": detected && svc::exists(&svc),
+                "custom": true,
             }));
         }
         items.sort_by(|a, b| {

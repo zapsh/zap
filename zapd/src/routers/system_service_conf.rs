@@ -48,33 +48,27 @@ async fn exec(req: Request) -> Result<Json<serde_json::Value>, ZapError> {
     ))
 }
 
-/// yaml 注册的服务 key 缓存：新增一份服务定义后重启 zapd 生效。
+/// 取 exec 侧注册的服务 key 列表（每次实时取，保证新增 / 删除自定义服务后即时生效；
+/// 失败时回退内置三项，不至于整页不可用）。
 ///
-/// 服务定义在 zapexec 侧（内置 yaml + /etc/zap/services 覆盖），zapd 只能通过
-/// 一次 exec 拿到清单；这里进程内缓存一次，避免每次读写配置都多打一次 exec。
-static SERVICE_KEYS: tokio::sync::OnceCell<Vec<String>> = tokio::sync::OnceCell::const_new();
-
-/// 取 exec 侧注册的服务 key 列表（失败时回退内置三项，不至于整页不可用）。
-async fn registered_services() -> &'static Vec<String> {
-    SERVICE_KEYS
-        .get_or_init(|| async {
-            match crate::zapexec::call(Request::ServiceConfDefs).await {
-                Ok(resp) if resp.code == 0 => resp
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("items"))
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|it| it.get("key").and_then(|k| k.as_str()))
-                            .map(|k| k.to_string())
-                            .collect()
-                    })
-                    .unwrap_or_else(fallback_keys),
-                _ => fallback_keys(),
-            }
-        })
-        .await
+/// 服务定义在 zapexec 侧（内置 yaml + /etc/zap/services 覆盖，写定义后免重启热重载），
+/// 这里不再做进程内长缓存——否则新增的服务会被 `validate_service` 永久判为「不支持」。
+async fn registered_services() -> Vec<String> {
+    match crate::zapexec::call(Request::ServiceConfDefs).await {
+        Ok(resp) if resp.code == 0 => resp
+            .data
+            .as_ref()
+            .and_then(|d| d.get("items"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|it| it.get("key").and_then(|k| k.as_str()))
+                    .map(|k| k.to_string())
+                    .collect()
+            })
+            .unwrap_or_else(fallback_keys),
+        _ => fallback_keys(),
+    }
 }
 
 fn fallback_keys() -> Vec<String> {
@@ -83,7 +77,7 @@ fn fallback_keys() -> Vec<String> {
 
 /// 校验服务名：必须在 exec 侧 yaml 注册的服务里（PHP 版本实例额外放行）。
 ///
-/// 服务清单来自 yaml 注册，这里是异步的（第一次调用拉一次 exec 并缓存）。
+/// 服务清单来自 yaml 注册，这里是异步的（实时向 exec 侧取，新增 / 删除自定义服务即时生效）。
 async fn validate_service(service: &str) -> Result<String, ZapError> {
     // 服务名会拼进 shell 命令与文件路径，字符先收紧
     let well_formed = !service.is_empty()
@@ -319,6 +313,174 @@ pub async fn php_ext_remove(
 pub async fn defs_list(claims: ValidatedClaims) -> ZapJsonResult {
     require_admin(&claims)?;
     exec(Request::ServiceConfDefs).await
+}
+
+/// 自定义服务名的字符白名单：与 zapexec 侧 `valid_token` 一致（文件名安全）。
+fn valid_def_key(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 48
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceDefWriteBody {
+    pub key: String,
+    pub yaml: String,
+}
+
+/// POST /system/service-conf/def/write：写入 / 覆盖一份自定义服务定义。
+pub async fn def_write(
+    claims: ValidatedClaims,
+    client_addr: Extension<SocketAddr>,
+    Json(body): Json<ServiceDefWriteBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    if !valid_def_key(&body.key) {
+        return Err(ZapError::New(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        ));
+    }
+    let result = exec(Request::ServiceConfDefWrite {
+        key: body.key.clone(),
+        yaml: body.yaml.clone(),
+    })
+    .await;
+    if result.is_ok() {
+        audit::log(
+            Some(&claims),
+            Some(client_addr.ip().to_string().as_str()),
+            "service_conf_def_write",
+            "service-conf",
+            &format!("写入自定义服务定义 {}", body.key),
+        )
+        .await;
+    }
+    result
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceDefDeleteBody {
+    pub key: String,
+}
+
+/// POST /system/service-conf/def/delete：删除一份自定义服务定义。
+pub async fn def_delete(
+    claims: ValidatedClaims,
+    client_addr: Extension<SocketAddr>,
+    Json(body): Json<ServiceDefDeleteBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    if !valid_def_key(&body.key) {
+        return Err(ZapError::New(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        ));
+    }
+    let result = exec(Request::ServiceConfDefDelete {
+        key: body.key.clone(),
+    })
+    .await;
+    if result.is_ok() {
+        audit::log(
+            Some(&claims),
+            Some(client_addr.ip().to_string().as_str()),
+            "service_conf_def_delete",
+            "service-conf",
+            &format!("删除自定义服务定义 {}", body.key),
+        )
+        .await;
+    }
+    result
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceDefReadQuery {
+    pub key: String,
+}
+
+/// GET /system/service-conf/def/read：读取自定义服务定义原文。
+pub async fn def_read(
+    claims: ValidatedClaims,
+    Query(q): Query<ServiceDefReadQuery>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    if !valid_def_key(&q.key) {
+        return Err(ZapError::New(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        ));
+    }
+    exec(Request::ServiceConfDefRead { key: q.key }).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceDefKeyBody {
+    pub key: String,
+}
+
+/// POST /system/service-conf/def/unit/write：渲染并启用单元文件（仅 systemd）。
+///
+/// 不走 `validate_service`（避免受 zapexec 服务清单缓存影响）；仅做字符白名单，
+/// 是否存在 / 是否带 unit 模板由 zapexec 侧判定。
+pub async fn unit_write(
+    claims: ValidatedClaims,
+    client_addr: Extension<SocketAddr>,
+    Json(body): Json<ServiceDefKeyBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    if !valid_def_key(&body.key) {
+        return Err(ZapError::New(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        ));
+    }
+    let result = exec(Request::ServiceConfUnitWrite {
+        key: body.key.clone(),
+    })
+    .await;
+    if result.is_ok() {
+        audit::log(
+            Some(&claims),
+            Some(client_addr.ip().to_string().as_str()),
+            "service_conf_unit_write",
+            "service-conf",
+            &format!("生成并启用单元文件 {}", body.key),
+        )
+        .await;
+    }
+    result
+}
+
+/// POST /system/service-conf/def/unit/remove：移除由面板生成的单元文件。
+pub async fn unit_remove(
+    claims: ValidatedClaims,
+    client_addr: Extension<SocketAddr>,
+    Json(body): Json<ServiceDefKeyBody>,
+) -> ZapJsonResult {
+    require_admin(&claims)?;
+    if !valid_def_key(&body.key) {
+        return Err(ZapError::New(
+            -1,
+            "非法的服务名（仅允许字母数字与 -/_，长度 1..=48）".to_string(),
+        ));
+    }
+    let result = exec(Request::ServiceConfUnitRemove {
+        key: body.key.clone(),
+    })
+    .await;
+    if result.is_ok() {
+        audit::log(
+            Some(&claims),
+            Some(client_addr.ip().to_string().as_str()),
+            "service_conf_unit_remove",
+            "service-conf",
+            &format!("移除单元文件 {}", body.key),
+        )
+        .await;
+    }
+    result
 }
 
 /// GET /system/service-conf/status
