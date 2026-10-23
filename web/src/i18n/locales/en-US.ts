@@ -5850,6 +5850,17 @@ const enUS: Messages = {
     resyncDone: 'Triggered FPM resync for {n} user(s)',
     quotaDone: 'Processed {n} user(s)',
     noSelection: 'Please select users first',
+    rebuildSite: 'Rebuild config',
+    rebuildSiteSel: 'Rebuild selected sites config',
+    rebuildUserSites: 'Rebuild this user sites',
+    rebuildSiteDone: 'Rebuilt config for {n} site(s)',
+    noSites: 'This user has no sites',
+    siteName: 'Site',
+    sitePhp: 'PHP',
+    siteStatus: 'Status',
+    siteRunning: 'Running',
+    siteStopped: 'Stopped',
+    siteCount: 'Sites ({n})',
   },
 }
 

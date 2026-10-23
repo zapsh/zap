@@ -378,3 +378,16 @@ export function restoreSites(ids: number[]) {
 export function purgeSites(ids: number[], remove_data = false) {
   return http.post<ApiResponse>('/site/purge', { ids, remove_data })
 }
+
+// ── 重建站点配置（按站点档案重新渲染 Nginx vhost + PHP-FPM pool 并 reload）────
+/** 单站点重建配置结果（data 为渲染出的 vhost 内容，前端一般忽略） */
+export interface SiteRebuildResult {
+  code: number
+  message: string
+  data?: unknown
+}
+
+/** 按站点主键重建其配置：后端依据站点档案（域名/状态/PHP 实例/SSL 等）重新渲染并 reload */
+export function rebuildSiteVhost(id: number) {
+  return http.post<ApiResponse>('/site/sync', { id })
+}

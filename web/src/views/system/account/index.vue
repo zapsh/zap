@@ -22,6 +22,9 @@
       <el-button :icon="DataLine" :disabled="!hasSelection" @click="onResetBw">
         {{ t('accountMng.resetBwSel') }}
       </el-button>
+      <el-button :icon="Refresh" :disabled="!hasSelection" @click="onRebuildSitesSel">
+        {{ t('accountMng.rebuildSiteSel') }}
+      </el-button>
       <span v-if="hasSelection" class="sel-hint">
         {{ t('accountMng.bulkHint', { n: selectedIds.length }) }}
       </span>
@@ -36,6 +39,41 @@
       @selection-change="onSelect"
     >
       <el-table-column type="selection" width="46" />
+      <el-table-column type="expand">
+        <template #default="{ row }">
+          <div class="site-expand">
+            <div class="site-expand-head">
+              <span>{{ t('accountMng.siteCount', { n: (row.sites || []).length }) }}</span>
+              <el-button
+                link
+                type="primary"
+                :icon="Refresh"
+                :disabled="!((row.sites || []).length)"
+                @click="onRebuildUserSites(row)"
+              >{{ t('accountMng.rebuildUserSites') }}</el-button>
+            </div>
+            <el-table v-if="(row.sites || []).length" :data="row.sites" size="small" border>
+              <el-table-column prop="name" :label="t('accountMng.siteName')" min-width="160" />
+              <el-table-column prop="php_instance" :label="t('accountMng.sitePhp')" min-width="120" />
+              <el-table-column :label="t('accountMng.siteStatus')" min-width="100">
+                <template #default="{ row: s }">
+                  <el-tag :type="s.status === 1 ? 'success' : 'info'" size="small">
+                    {{ s.status === 1 ? t('accountMng.siteRunning') : t('accountMng.siteStopped') }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('accountMng.rebuildSite')" min-width="120">
+                <template #default="{ row: s }">
+                  <el-button link type="primary" :icon="Refresh" @click="onRebuildSite(s)">
+                    {{ t('accountMng.rebuildSite') }}
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <span v-else class="muted">{{ t('accountMng.noSites') }}</span>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column :label="t('accountMng.colUser')" min-width="160">
         <template #default="{ row }">
           <div class="user-cell">
@@ -114,7 +152,9 @@ import {
   type PoolResyncResult,
   type QuotaOpResult,
   type UserListItem,
+  type UserSiteItem,
 } from '@/api/user'
+import { rebuildSiteVhost } from '@/api/site'
 
 const { t } = useI18n()
 
@@ -209,6 +249,44 @@ async function onResetBwOne(row: UserListItem) {
   await loadList()
 }
 
+// 重建单站点配置：复用后端 /site/sync（依据站点档案重新渲染 Nginx vhost + PHP-FPM pool）
+async function onRebuildSite(site: UserSiteItem) {
+  const res = await rebuildSiteVhost(site.id)
+  if (res.code === 0) ElMessage.success(`[${site.name}] ${res.message}`)
+  else ElMessage.error(`[${site.name}] ${res.message}`)
+}
+
+// 重建单个用户下的全部站点配置
+async function onRebuildUserSites(user: UserListItem) {
+  const ids = (user.sites || []).map((s) => s.id)
+  if (!ids.length) return ElMessage.warning(t('accountMng.noSites'))
+  const rows: QuotaOpResult[] = []
+  for (const id of ids) {
+    const res = await rebuildSiteVhost(id)
+    rows.push({ id, ok: res.code === 0, message: res.message })
+  }
+  showResult(rows)
+}
+
+// 批量重建选中用户下的全部站点配置（逐站点调用，聚合结果）
+async function onRebuildSitesSel() {
+  if (!hasSelection.value) return ElMessage.warning(t('accountMng.noSelection'))
+  const ids: number[] = []
+  for (const u of selectedRows.value) for (const s of u.sites || []) ids.push(s.id)
+  if (!ids.length) return ElMessage.warning(t('accountMng.noSites'))
+  const rows: QuotaOpResult[] = []
+  for (const id of ids) {
+    try {
+      const res = await rebuildSiteVhost(id)
+      rows.push({ id, ok: res.code === 0, message: res.message })
+    } catch (e) {
+      rows.push({ id, ok: false, message: (e as Error)?.message || '请求失败' })
+    }
+  }
+  ElMessage.success(t('accountMng.rebuildSiteDone', { n: ids.length }))
+  showResult(rows)
+}
+
 loadList()
 </script>
 
@@ -258,6 +336,15 @@ loadList()
 }
 .muted {
   color: var(--el-text-color-secondary);
+}
+.site-expand {
+  padding: 8px 12px;
+}
+.site-expand-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
 }
 .result-msg {
   margin-left: 8px;
