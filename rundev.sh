@@ -270,11 +270,11 @@ if [ "$RESET_DB" = true ]; then
   # 别人的站点目录。reset-db 顺手清掉它们（00-default.conf 不匹配 zap-site-*，安全）。
   warn "cleaning orphan nginx vhost configs ..."
   for d in sites-available sites-enabled; do
-    rm -f /etc/zap/webservers/nginx/$d/zap-site-*.conf
+    "${SUDO_CMD[@]}" rm -f /etc/zap/webservers/nginx/$d/zap-site-*.conf
   done
   # 仍运行就重载 nginx，让 include 立即生效（配置无误才 reload，否则跳过）
   if command -v nginx >/dev/null 2>&1; then
-    nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1 || true
+    "${SUDO_CMD[@]}" nginx -t >/dev/null 2>&1 && "${SUDO_CMD[@]}" nginx -s reload >/dev/null 2>&1 || true
   fi
   ok "orphan vhost configs cleaned"
 fi
