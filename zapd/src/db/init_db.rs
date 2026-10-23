@@ -1469,4 +1469,50 @@ async fn table_exists(table_name: &str) -> bool {
     result.is_ok()
 }
 
+/// 幂等补列：列已存在则跳过，否则 `ALTER TABLE ... ADD COLUMN`。
+///
+/// 为「将来系统升级」预留的工具函数——老库升级时按需调用即可（列名探查见 [`column_exists`]）。
+/// 开发阶段所有列都直接写在对应的 `CREATE TABLE` 里、建库即完整，故当前不调用，仅作升级迁移备用。
+#[allow(dead_code)]
+async fn ensure_column(table: &str, column: &str, decl: &str) {
+    if !table_exists(table).await {
+        return;
+    }
+    let pool = get_db_pool().await;
+    let exists: bool =
+        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info(?) WHERE name = ?")
+            .bind(table)
+            .bind(column)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(false);
+    if exists {
+        return;
+    }
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {decl}");
+    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(pool)
+        .await
+    {
+        eprintln!("补列失败 {table}.{column}: {e}");
+    }
+}
+
+/// 列是否存在（`pragma_table_info` 查表结构，用于幂等改名 / 补列）。
+///
+/// 预留给将来的系统升级迁移（判断老库是否还需要 `ALTER TABLE`）。
+#[allow(dead_code)]
+async fn column_exists(table: &str, column: &str) -> bool {
+    if !table_exists(table).await {
+        return false;
+    }
+    let pool = get_db_pool().await;
+    sqlx::query_scalar::<_, bool>("SELECT COUNT(*) > 0 FROM pragma_table_info(?) WHERE name = ?")
+        .bind(table)
+        .bind(column)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false)
+}
+
 
