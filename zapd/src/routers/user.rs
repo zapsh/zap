@@ -425,7 +425,11 @@ async fn resync_user_pool(caller_id: i64, is_admin: bool, uid: i64) -> Value {
         return json!({ "id": uid, "ok": true, "message": "该用户无站点，无需重生成 pool" });
     }
     let spec = crate::routers::fpm_spec::resolve_user_spec(
-        if account.fpm_pool.is_empty() { None } else { Some(account.fpm_pool.as_str()) },
+        if account.fpm_pool.is_empty() {
+            None
+        } else {
+            Some(account.fpm_pool.as_str())
+        },
         &account.fpm_spec_ref,
         Some(account.owner_id),
     )
@@ -443,8 +447,12 @@ async fn resync_user_pool(caller_id: i64, is_admin: bool, uid: i64) -> Value {
             Ok(r) if r.code == 0 => {
                 details.push(json!({ "php_instance": inst, "ok": true, "message": r.message }))
             }
-            Ok(r) => details.push(json!({ "php_instance": inst, "ok": false, "message": r.message })),
-            Err(e) => details.push(json!({ "php_instance": inst, "ok": false, "message": e.to_string() })),
+            Ok(r) => {
+                details.push(json!({ "php_instance": inst, "ok": false, "message": r.message }))
+            }
+            Err(e) => {
+                details.push(json!({ "php_instance": inst, "ok": false, "message": e.to_string() }))
+            }
         }
     }
     json!({ "id": uid, "username": account.linux_user, "ok": true, "message": "已重生成", "details": details })
@@ -508,11 +516,12 @@ async fn reset_bandwidth_usage(caller_id: i64, is_admin: bool, uid: i64) -> Valu
     }
     let period = chrono::Utc::now().format("%Y%m").to_string();
     let pool = db::get_db_pool().await;
-    let _ = sqlx::query("UPDATE user SET bandwidth_used_bytes = 0, bandwidth_period = ? WHERE id = ?")
-        .bind(period)
-        .bind(uid)
-        .execute(pool)
-        .await;
+    let _ =
+        sqlx::query("UPDATE user SET bandwidth_used_bytes = 0, bandwidth_period = ? WHERE id = ?")
+            .bind(period)
+            .bind(uid)
+            .execute(pool)
+            .await;
     json!({ "id": uid, "ok": true, "message": "已重置带宽用量" })
 }
 

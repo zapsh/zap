@@ -298,7 +298,10 @@ fn api_routers() -> Router {
         // 账号能力（客户管理 → account）：批量重生成 FPM pool / 设置·重置磁盘·带宽配额
         .route("/system/user/pool_resync", post(user::user_pool_resync))
         .route("/system/user/disk_quota", post(user::user_disk_quota_set))
-        .route("/system/user/bandwidth_quota", post(user::user_bandwidth_quota_set))
+        .route(
+            "/system/user/bandwidth_quota",
+            post(user::user_bandwidth_quota_set),
+        )
         // 家目录备份：把用户家目录打包进 {home}/backups/（自己 / admin 可触发）
         .route("/system/user/backup-home", post(user::backup_home))
         // 仪表盘统计卡片（按角色可见范围统计用户 / 站点 / 数据库数量）
