@@ -102,9 +102,6 @@ pub async fn init_schema() {
     // 备份策略全局 KV（是否允许用户自助备份 / 全局保留份数 / 全量备份开关与调度）
     init_backup_policy_table().await;
 
-    // 向前迁移：user 表补「按用户配额覆盖列」（存量库安全，列已存在则跳过）
-    ensure_column("user", "disk_quota_mb", "INTEGER NOT NULL DEFAULT 0").await;
-    ensure_column("user", "bandwidth_quota_mb", "INTEGER NOT NULL DEFAULT 0").await;
     // 向前迁移：客户管理下补「账号能力」子菜单（存量库安全，name 唯一自动跳过）
     ensure_account_menu().await;
 
@@ -267,10 +264,6 @@ async fn init_system_user_table_schema() {
         -- 流量统计周期（YYYYMM）：跨月自动重置本月计数
         bandwidth_period TEXT NOT NULL DEFAULT '',
         bandwidth_stat_at INTEGER NOT NULL DEFAULT 0,
-        -- 按用户覆盖的磁盘配额（MB）：0 = 跟随套餐（实际下发见 sync_package_quota）
-        disk_quota_mb INTEGER NOT NULL DEFAULT 0,
-        -- 按用户覆盖的带宽配额（MB）：0 = 跟随套餐；仅记录用于展示/超额判断，当前未实际限速
-        bandwidth_quota_mb INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER,
         updated_at INTEGER
     )

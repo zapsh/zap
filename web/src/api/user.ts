@@ -32,6 +32,23 @@ export interface UserSiteItem {
   created_at: number
 }
 
+/** 用户绑定套餐的概要（用户列表行内只读展示用；配额由套餐配置，不另存 user 表） */
+export interface UserPackageInfo {
+  id: number
+  name: string
+  remark: string
+  disk_quota_mb: number
+  max_sites: number
+  max_domains: number
+  max_bandwidth_mb: number
+  max_mysql_dbs: number
+  max_pgsql_dbs: number
+  max_ftp_users: number
+  fpm_spec_ref: string
+  allow_ssh: boolean
+  allow_proxy: boolean
+}
+
 export interface UserListItem {
   id: number
   username: string
@@ -78,10 +95,8 @@ export interface UserListItem {
   /** 流量统计周期（YYYYMM） */
   bandwidth_period: string
   bandwidth_stat_at: number
-  /** 按用户覆盖的磁盘配额（MB，0 = 跟随套餐） */
-  disk_quota_mb: number
-  /** 按用户覆盖的带宽配额（MB，0 = 跟随套餐） */
-  bandwidth_quota_mb: number
+  /** 绑定套餐概要（只读展示：套餐配额 vs 实际用量）；不含按用户覆盖列 */
+  package?: UserPackageInfo
   /** 该用户名下的站点摘要；展开行的「站点详细」直接取用 */
   sites: UserSiteItem[]
   created_at: number
@@ -490,12 +505,12 @@ export function resyncUserPools(ids: number[]) {
   return http.post<AccountOpResponse>('/system/user/pool_resync', { user_ids: ids })
 }
 
-/** 设置 / 重置磁盘配额（mb=0 重置为套餐值，>0 覆盖为该值，单位 MB） */
-export function setUserDiskQuota(ids: number[], mb: number) {
-  return http.post<AccountOpResponse>('/system/user/disk_quota', { user_ids: ids, mb })
+/** 重新应用套餐磁盘配额到用户系统账号（配额来自套餐，不另存 user 表） */
+export function setUserDiskQuota(ids: number[]) {
+  return http.post<AccountOpResponse>('/system/user/disk_quota', { user_ids: ids })
 }
 
-/** 设置 / 重置带宽配额（mb=0 重置为套餐值，>0 覆盖为该值，单位 MB） */
-export function setUserBandwidthQuota(ids: number[], mb: number) {
-  return http.post<AccountOpResponse>('/system/user/bandwidth_quota', { user_ids: ids, mb })
+/** 重置用户本月带宽用量计数（超额后手动清零；带宽配额来自套餐，当前未实际限速） */
+export function setUserBandwidthQuota(ids: number[]) {
+  return http.post<AccountOpResponse>('/system/user/bandwidth_quota', { user_ids: ids })
 }

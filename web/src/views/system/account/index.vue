@@ -11,26 +11,15 @@
       </el-button>
     </div>
 
-    <!-- 工具栏：作用于多选 -->
+    <!-- 工具栏：作用于多选。磁盘配额来自套餐，故「应用」= 把套餐配额重新下发到系统账号 -->
     <div class="toolbar">
-      <el-button
-        type="primary"
-        :icon="Refresh"
-        :disabled="!hasSelection"
-        @click="onResync"
-      >
+      <el-button type="primary" :icon="Refresh" :disabled="!hasSelection" @click="onResync">
         {{ t('accountMng.resyncSel') }}
       </el-button>
-      <el-button :icon="HardDrive" :disabled="!hasSelection" @click="openSetDisk">
-        {{ t('accountMng.setDisk') }}
+      <el-button :icon="HardDrive" :disabled="!hasSelection" @click="onApplyDisk">
+        {{ t('accountMng.applyDiskSel') }}
       </el-button>
-      <el-button :icon="DataLine" :disabled="!hasSelection" @click="openSetBw">
-        {{ t('accountMng.setBw') }}
-      </el-button>
-      <el-button :disabled="!hasSelection" @click="onResetDisk">
-        {{ t('accountMng.resetDiskSel') }}
-      </el-button>
-      <el-button :disabled="!hasSelection" @click="onResetBw">
+      <el-button :icon="DataLine" :disabled="!hasSelection" @click="onResetBw">
         {{ t('accountMng.resetBwSel') }}
       </el-button>
       <span v-if="hasSelection" class="sel-hint">
@@ -56,26 +45,17 @@
         </template>
       </el-table-column>
       <el-table-column :label="t('accountMng.colPackage')" min-width="120">
-        <template #default="{ row }">
-          {{ row.package_name || t('accountMng.followPackage') }}
-        </template>
+        <template #default="{ row }">{{ row.package?.name || '—' }}</template>
       </el-table-column>
+      <!-- 磁盘配额 / 带宽配额：来自套餐（只读），与用量并列以便核对 -->
       <el-table-column :label="t('accountMng.colDiskQuota')" min-width="120" align="right">
-        <template #default="{ row }">
-          <span :class="{ muted: !row.disk_quota_mb }">
-            {{ row.disk_quota_mb || t('accountMng.followPackage') }}
-          </span>
-        </template>
+        <template #default="{ row }">{{ row.package?.disk_quota_mb ?? 0 }}</template>
       </el-table-column>
       <el-table-column :label="t('accountMng.colDiskUsed')" min-width="120" align="right">
         <template #default="{ row }">{{ fmtBytes(row.disk_used_bytes) }}</template>
       </el-table-column>
       <el-table-column :label="t('accountMng.colBwQuota')" min-width="120" align="right">
-        <template #default="{ row }">
-          <span :class="{ muted: !row.bandwidth_quota_mb }">
-            {{ row.bandwidth_quota_mb || t('accountMng.followPackage') }}
-          </span>
-        </template>
+        <template #default="{ row }">{{ row.package?.max_bandwidth_mb ?? 0 }}</template>
       </el-table-column>
       <el-table-column :label="t('accountMng.colBwUsed')" min-width="120" align="right">
         <template #default="{ row }">{{ fmtBytes(row.bandwidth_used_bytes) }}</template>
@@ -86,35 +66,20 @@
           <span v-if="!phpVersions(row).length" class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('accountMng.resync')" min-width="220" fixed="right">
+      <el-table-column :label="t('accountMng.resyncOne')" min-width="240" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" :icon="Refresh" @click="onResyncOne(row)">
-            {{ t('accountMng.resync') }}
+            {{ t('accountMng.resyncOne') }}
           </el-button>
-          <el-button link type="primary" @click="onResetDiskOne(row)">
-            {{ t('accountMng.resetDisk') }}
+          <el-button link type="primary" @click="onApplyDiskOne(row)">
+            {{ t('accountMng.applyDiskOne') }}
           </el-button>
           <el-button link type="primary" @click="onResetBwOne(row)">
-            {{ t('accountMng.resetBw') }}
+            {{ t('accountMng.resetBwOne') }}
           </el-button>
         </template>
       </el-table-column>
     </el-table>
-
-    <!-- 设置配额弹窗 -->
-    <el-dialog v-model="quotaDialog.visible" :title="t('accountMng.setQuotaTitle')" width="420px">
-      <el-form label-width="auto">
-        <el-form-item :label="t('accountMng.mbLabel')">
-          <el-input-number v-model="quotaDialog.mb" :min="0" :step="100" style="width: 100%" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="quotaDialog.visible = false">{{ t('accountMng.cancel') }}</el-button>
-        <el-button type="primary" :loading="quotaDialog.loading" @click="confirmSetQuota">
-          {{ t('accountMng.confirm') }}
-        </el-button>
-      </template>
-    </el-dialog>
 
     <!-- 操作结果弹窗 -->
     <el-dialog v-model="result.visible" :title="t('accountMng.opResult')" width="560px">
@@ -159,7 +124,6 @@ const selectedRows = ref<UserListItem[]>([])
 const selectedIds = computed(() => selectedRows.value.map((r) => r.id))
 const hasSelection = computed(() => selectedIds.value.length > 0)
 
-const quotaDialog = reactive({ visible: false, loading: false, mb: 0, kind: 'disk' as 'disk' | 'bw' })
 const result = reactive({ visible: false, rows: [] as (QuotaOpResult | PoolResyncResult)[] })
 
 function fmtBytes(n: number): string {
@@ -215,60 +179,32 @@ async function onResyncOne(row: UserListItem) {
   await loadList()
 }
 
-function openSetDisk() {
-  openSetQuota('disk')
-}
-function openSetBw() {
-  openSetQuota('bw')
-}
-function openSetQuota(kind: 'disk' | 'bw') {
+// 磁盘配额来自套餐：把套餐 disk_quota_mb 重新下发到该用户系统账号（Linux quota 重新同步）
+async function onApplyDisk() {
   if (!hasSelection.value) return ElMessage.warning(t('accountMng.noSelection'))
-  quotaDialog.kind = kind
-  quotaDialog.mb = 0
-  quotaDialog.visible = true
-}
-
-async function confirmSetQuota() {
-  quotaDialog.loading = true
-  try {
-    const ids = selectedIds.value
-    const res =
-      quotaDialog.kind === 'disk'
-        ? await setUserDiskQuota(ids, quotaDialog.mb)
-        : await setUserBandwidthQuota(ids, quotaDialog.mb)
-    ElMessage.success(t('accountMng.quotaDone', { n: ids.length }))
-    showResult(res.data)
-    quotaDialog.visible = false
-    await loadList()
-  } finally {
-    quotaDialog.loading = false
-  }
-}
-
-async function onResetDisk() {
-  if (!hasSelection.value) return ElMessage.warning(t('accountMng.noSelection'))
-  const res = await setUserDiskQuota(selectedIds.value, 0)
+  const res = await setUserDiskQuota(selectedIds.value)
   ElMessage.success(t('accountMng.quotaDone', { n: selectedIds.value.length }))
   showResult(res.data)
   await loadList()
 }
 
+async function onApplyDiskOne(row: UserListItem) {
+  const res = await setUserDiskQuota([row.id])
+  showResult(res.data)
+  await loadList()
+}
+
+// 带宽：配额由套餐配置、当前未实际限速，这里仅清空本月用量计数（超额后手动重置）
 async function onResetBw() {
   if (!hasSelection.value) return ElMessage.warning(t('accountMng.noSelection'))
-  const res = await setUserBandwidthQuota(selectedIds.value, 0)
+  const res = await setUserBandwidthQuota(selectedIds.value)
   ElMessage.success(t('accountMng.quotaDone', { n: selectedIds.value.length }))
-  showResult(res.data)
-  await loadList()
-}
-
-async function onResetDiskOne(row: UserListItem) {
-  const res = await setUserDiskQuota([row.id], 0)
   showResult(res.data)
   await loadList()
 }
 
 async function onResetBwOne(row: UserListItem) {
-  const res = await setUserBandwidthQuota([row.id], 0)
+  const res = await setUserBandwidthQuota([row.id])
   showResult(res.data)
   await loadList()
 }
