@@ -1067,10 +1067,11 @@ mod tests {
             );
         }
         // 与「旧库最终态」对齐的可见条数（防止重构悄悄改了可见范围）
-        // 注：「系统设置」目录已收紧为仅 admin，故 demo 少 1 项
+        // 注：「系统设置」目录已收紧为仅 admin，故 demo 少 1 项；
+        // 「账号能力」(reseller-account) 作为客户管理下的入口纳入 reseller/admin 可见，reseller 故 +1。
         assert_eq!(demo.len(), 15, "demo 可见菜单数变化");
         let reseller = grants(&pool, "reseller").await;
-        assert_eq!(reseller.len(), 30, "reseller 可见菜单数变化");
+        assert_eq!(reseller.len(), 31, "reseller 可见菜单数变化");
         // 客户管理（admin / reseller 都可见）
         assert!(reseller.iter().any(|n| n == "reseller-users"));
         assert!(admin.iter().any(|n| n == "reseller-users"));
