@@ -16,8 +16,8 @@ const APP_SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 建表与种子数据入口。
 ///
-/// 迁移策略：所有建表采用「`CREATE TABLE IF NOT EXISTS` + 幂等 `ADD COLUMN`」的向前迁移，
-/// 天然可重复执行、对存量库安全。本函数在此之上补上**版本记录**与**回滚检测**：
+/// 迁移策略：所有建表采用 `CREATE TABLE IF NOT EXISTS`，完整 schema（含全部列）直接写在建表语句里，
+/// 建库即完整、天然可重复执行。本函数在此之上补上**版本记录**与**回滚检测**：
 /// - 记录 `schema_migrations` 中已应用的版本，使升级可观测、可回溯；
 /// - 升级前的一致性快照由 `zapupgrade` 在备份二进制的同一步完成（见升级器源码），
 ///   与二进制备份落在同一个 `data/upgrade/backup/<ts>-<ver>/` 目录，回滚时一并恢复；
@@ -101,9 +101,6 @@ pub async fn init_schema() {
     init_backup_paths_table().await;
     // 备份策略全局 KV（是否允许用户自助备份 / 全局保留份数 / 全量备份开关与调度）
     init_backup_policy_table().await;
-
-    // 向前迁移：客户管理下补「账号能力」子菜单（存量库安全，name 唯一自动跳过）
-    ensure_account_menu().await;
 
     // 记录当前已应用 schema 版本（upsert）
     record_version(current, "auto-migrate").await;
@@ -776,14 +773,6 @@ async fn init_audit_table() {
         "#;
         let _ = get_db_pool().await.execute(sql).await;
     }
-    // 存量库补列（幂等：列已存在则跳过），补全审计的 result / user_agent 字段
-    ensure_column("audit_logs", "result", "VARCHAR(16) NOT NULL DEFAULT ''").await;
-    ensure_column(
-        "audit_logs",
-        "user_agent",
-        "VARCHAR(512) NOT NULL DEFAULT ''",
-    )
-    .await;
 }
 
 // ── login attempt lockout ──────────────────────────────────
@@ -980,6 +969,9 @@ async fn init_site_table() {
             -- 站点磁盘占用（字节）：web_root + log_root 的 du 结果（0 = 尚未采集）
             disk_used_bytes INTEGER NOT NULL DEFAULT 0,
             disk_stat_at INTEGER NOT NULL DEFAULT 0,
+            -- 软删标记：1 = 已删除（进回收站；site_list 过滤时排除），由 drop_db 写入
+            deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_at INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER,
             updated_at INTEGER
         );
@@ -1026,8 +1018,7 @@ async fn init_site_table() {
 
     let pool = get_db_pool().await;
 
-    // 回收站（数据库删除）：db_trash 记录表。必须在「建表 or 旧库」两种情况下都创建，
-    // 否则已存在的库不会建表，drop_db 写入 db_trash 时会因表不存在而报错。
+    // 回收站（数据库删除）：db_trash 记录表。无论新旧库都创建（drop_db 写入依赖它）。
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS db_trash (\
             id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, \
@@ -1038,15 +1029,6 @@ async fn init_site_table() {
     )
     .execute(pool)
     .await;
-
-    // 回收站：站点软删标记列。必须在「建表 or 旧库」两种情况下都执行，
-    // 否则已存在的库不会补列，site_list 过滤 s.deleted 时会因列不存在而整列报错空白。
-    let _ = sqlx::query("ALTER TABLE site ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE site ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
 }
 
 // ── site_profile（站点扩展档案，1:1 site.id）────────────────────
@@ -1145,16 +1127,6 @@ async fn init_site_sec_table() {
     "#;
     let pool = get_db_pool().await;
     let _ = pool.execute(sql).await;
-    // 老库（表已存在）补三列：列已存在时 ALTER 报错可安全忽略
-    let _ = pool
-        .execute("ALTER TABLE site_sec ADD COLUMN anti_hotlink_enable INTEGER NOT NULL DEFAULT 0")
-        .await;
-    let _ = pool
-        .execute("ALTER TABLE site_sec ADD COLUMN anti_hotlink_exts TEXT NOT NULL DEFAULT ''")
-        .await;
-    let _ = pool
-        .execute("ALTER TABLE site_sec ADD COLUMN anti_hotlink_referers TEXT NOT NULL DEFAULT ''")
-        .await;
 }
 
 async fn init_site_profile_table() {
@@ -1408,10 +1380,6 @@ async fn init_backup_tables() {
     )
     .execute(pool)
     .await;
-    // 存量库补列：backup_records.sha256（旧归档 sha256 为空，还原时不强制校验）
-    let _ = sqlx::query("ALTER TABLE backup_records ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
 }
 
 // ── fpm_spec（PHP-FPM 规格模板库，仅 admin 维护）────────────────
@@ -1487,11 +1455,6 @@ async fn init_mail_templates_table() {
     );
     "#;
     let _ = get_db_pool().await.execute(sql).await;
-    // 兼容存量库：新增 template_id 列（已存在则忽略错误）
-    let _ = get_db_pool()
-        .await
-        .execute("ALTER TABLE mail_templates ADD COLUMN template_id TEXT NOT NULL DEFAULT ''")
-        .await;
 }
 
 // ── helper ─────────────────────────────────────────────────
@@ -1506,112 +1469,4 @@ async fn table_exists(table_name: &str) -> bool {
     result.is_ok()
 }
 
-/// 幂等补列：列已存在则跳过，否则 `ALTER TABLE ... ADD COLUMN`。
-///
-/// **当前不调用**：开发阶段所有列都直接写在对应的 `CREATE TABLE` 里、建库即完整；
-/// 这是为「将来系统升级」预留的工具函数——老库升级时按需调用即可（列名探查见 [`column_exists`]）。
-#[allow(dead_code)]
-async fn ensure_column(table: &str, column: &str, decl: &str) {
-    if !table_exists(table).await {
-        return;
-    }
-    let pool = get_db_pool().await;
-    let exists: bool =
-        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info(?) WHERE name = ?")
-            .bind(table)
-            .bind(column)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(false);
-    if exists {
-        return;
-    }
-    let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {decl}");
-    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
-        .execute(pool)
-        .await
-    {
-        eprintln!("补列失败 {table}.{column}: {e}");
-    }
-}
 
-/// 向前迁移：客户管理（reseller-users）下补「账号能力」子菜单。
-///
-/// 存量库安全——`menus.name` 唯一，`INSERT OR IGNORE` 已存在则跳过；随后按 name 查回
-/// 真实 id 补 `role_menus` 授权（admin / reseller）。仅作用于本菜单，不触碰其它种子。
-async fn ensure_account_menu() {
-    let pool = get_db_pool().await;
-    let parent_id: i64 = sqlx::query_scalar("SELECT id FROM menus WHERE name = 'reseller-users'")
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(0);
-    if parent_id == 0 {
-        return; // 父菜单不存在，跳过
-    }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO menus
-            (parent_id, name, path, component, redirect, type, title, icon,
-             hidden, affix, feature, roles, sort_order, status, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    )
-    .bind(parent_id)
-    .bind("reseller-account")
-    .bind("account")
-    .bind("system/account/index")
-    .bind("")
-    .bind("menu")
-    .bind("账号能力")
-    .bind("material-symbols:tune")
-    .bind(0)
-    .bind(0)
-    .bind("")
-    .bind("admin,reseller")
-    .bind(5)
-    .bind(1)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await;
-    let menu_id: i64 = sqlx::query_scalar("SELECT id FROM menus WHERE name = 'reseller-account'")
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(0);
-    if menu_id == 0 {
-        return;
-    }
-    for role in ["admin", "reseller"] {
-        let _ = sqlx::query(
-            "INSERT OR IGNORE INTO role_menus (role_id, menu_id)
-             SELECT r.id, ? FROM roles r WHERE r.role_key = ?",
-        )
-        .bind(menu_id)
-        .bind(role)
-        .execute(pool)
-        .await;
-    }
-}
-
-/// 列是否存在（`pragma_table_info` 查表结构，用于幂等改名 / 补列）。
-///
-/// **当前不调用**：预留给将来的系统升级迁移（判断老库是否还需要 `ALTER TABLE`）。
-#[allow(dead_code)]
-async fn column_exists(table: &str, column: &str) -> bool {
-    if !table_exists(table).await {
-        return false;
-    }
-    let pool = get_db_pool().await;
-    sqlx::query_scalar::<_, bool>("SELECT COUNT(*) > 0 FROM pragma_table_info(?) WHERE name = ?")
-        .bind(table)
-        .bind(column)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(false)
-}
