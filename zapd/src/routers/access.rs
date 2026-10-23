@@ -809,6 +809,23 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::User,
         Some(Perm::action("system.user", "backup")),
     ),
+    // 账号能力（客户管理）：批量重生成 FPM / 应用套餐磁盘配额 / 重置带宽用量。
+    // reseller 仅可对自己所属客户操作（handler 内 owner_id 收敛），admin 可操作全部；普通用户 403。
+    (
+        "/system/user/pool_resync",
+        Required::Reseller,
+        Some(Perm::action("system.user", "fpm")),
+    ),
+    (
+        "/system/user/disk_quota",
+        Required::Reseller,
+        Some(Perm::action("system.user", "quota")),
+    ),
+    (
+        "/system/user/bandwidth_quota",
+        Required::Reseller,
+        Some(Perm::action("system.user", "quota")),
+    ),
     // ── 备份中心：个人备份（我的备份 / 自己的库与站点 / 自己的定时任务）登录即可，
     //    数据范围与「用户自助备份」开关由 handler 收敛；系统级备份仅管理员 ──
     ("/system/backup/my", Required::User, None),
@@ -1428,6 +1445,8 @@ const ACTION_LABELS: &[(&str, &str)] = &[
     ("delete", "删除"),
     ("write", "写入"),
     ("sync", "同步"),
+    ("fpm", "FPM 重生成"),
+    ("quota", "配额"),
     ("state", "启停/维护"),
     ("install", "安装"),
     ("uninstall", "卸载"),
