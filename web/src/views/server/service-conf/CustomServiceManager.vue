@@ -690,6 +690,44 @@ function mergeYaml(original: string, generated: string): string {
   return out.join('\n') + '\n'
 }
 
+/**
+ * 把 YAML 编辑器里的「表单未管理」额外参数叠加到 base 上（避免保存时被覆盖）：
+ * - 顶层 / unit 下的非托管键（ini_comment、自定义 unit 指令等）一律补入；
+ * - 托管键（key/label/format/main 与 unit 子键…）仅当 base 中缺失（即表单没填）时才从编辑器补入，
+ *   表单已填则以表单为准。
+ */
+function overlayExtras(editor: string, base: string): string {
+  const edTop = splitBlocks(editor.split('\n'), 0)
+  const baseTop = splitBlocks(base.split('\n'), 0)
+  const baseTopKeys = new Set(baseTop.map((b) => b.key))
+  const baseUnit = baseTop.find((b) => b.key === 'unit')
+  const baseSubs = new Map(
+    (baseUnit ? splitBlocks(baseUnit.lines.slice(1), 2) : []).map((s) => [s.key, s.lines]),
+  )
+  const edUnit = edTop.find((b) => b.key === 'unit')
+  const mergedSubs = new Map(baseSubs)
+  if (edUnit) {
+    for (const s of splitBlocks(edUnit.lines.slice(1), 2)) {
+      if (!MANAGED_UNIT.has(s.key) || !baseSubs.has(s.key)) mergedSubs.set(s.key, s.lines)
+    }
+  }
+  const out: string[] = []
+  for (const b of baseTop) {
+    if (b.key === 'unit') continue
+    out.push(...b.lines)
+  }
+  if (mergedSubs.size) {
+    out.push('unit:')
+    for (const lines of mergedSubs.values()) out.push(...lines)
+  }
+  for (const b of edTop) {
+    if (b.key === 'unit') continue
+    if (!MANAGED_TOP.has(b.key) || !baseTopKeys.has(b.key)) out.push(...b.lines)
+  }
+  while (out.length && out[out.length - 1].trim() === '') out.pop()
+  return out.join('\n') + '\n'
+}
+
 async function openCreate() {
   resetForm()
   editing.value = false
@@ -728,17 +766,20 @@ async function save() {
     return
   }
   // 保存时决定最终 YAML：
-  // 1) 用户在编辑器里手改过 → 用其手写内容；
-  // 2) 否则始终按当前表单生成；编辑既有服务时再与磁盘原 YAML 合并，
-  //    保留表单未覆盖的手写字段（bin_candidates / fields / unit 下的 user、restart 等）。
-  if (yamlDirty.value) {
-    // 以手改内容为准
-  } else {
-    generateYaml()
-    if (editing.value && originalYaml.value.trim()) {
-      form.yaml = mergeYaml(originalYaml.value, form.yaml)
-    }
+  // ① 始终按当前表单生成（表单字段为托管键的权威来源）；
+  // ② 编辑既有服务时先与磁盘原 YAML 合并，保留手写字段（bin_candidates/fields 等）；
+  // ③ 再把 YAML 编辑器里「表单未管理的额外参数」（ini_comment、自定义 unit 指令等）
+  //    叠加进来，避免被覆盖；表单没填的托管键（如仅在 YAML 写的 exec_start）也从编辑器补入。
+  const editorContent = form.yaml
+  generateYaml()
+  let finalYaml = form.yaml
+  if (editing.value && originalYaml.value.trim()) {
+    finalYaml = mergeYaml(originalYaml.value, finalYaml)
   }
+  if (editorContent.trim()) {
+    finalYaml = overlayExtras(editorContent, finalYaml)
+  }
+  form.yaml = finalYaml
   if (!form.yaml.trim()) {
     ElMessage.warning(t('servicesCustom.yamlRequired'))
     return
