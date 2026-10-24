@@ -525,10 +525,16 @@ function generateYaml() {
   form.yaml = lines.join('\n') + '\n'
 }
 
-/** 折叠/展开 YAML 编辑器；首次展开且未手改时，按当前表单预览生成内容 */
+/** 折叠/展开 YAML 编辑器；首次展开且未手改时，按当前表单预览生成内容。
+ *  重生成时会保留 YAML 中「表单未管理」的额外参数（exts/ini_comment/自定义 unit 指令…），
+ *  避免打开编辑器时被整份覆盖、看不到已保存的手写参数。 */
 function toggleYaml() {
   showYaml.value = !showYaml.value
-  if (showYaml.value && !yamlDirty.value) generateYaml()
+  if (showYaml.value && !yamlDirty.value) {
+    const current = form.yaml
+    generateYaml()
+    if (current.trim()) form.yaml = overlayExtras(current, form.yaml)
+  }
 }
 
 /** 用户在编辑器里手改 YAML 时标记，保存即以此为准（不再用表单覆盖） */
@@ -699,30 +705,32 @@ function mergeYaml(original: string, generated: string): string {
 function overlayExtras(editor: string, base: string): string {
   const edTop = splitBlocks(editor.split('\n'), 0)
   const baseTop = splitBlocks(base.split('\n'), 0)
-  const baseTopKeys = new Set(baseTop.map((b) => b.key))
+  const edUnit = edTop.find((b) => b.key === 'unit')
   const baseUnit = baseTop.find((b) => b.key === 'unit')
   const baseSubs = new Map(
     (baseUnit ? splitBlocks(baseUnit.lines.slice(1), 2) : []).map((s) => [s.key, s.lines]),
   )
-  const edUnit = edTop.find((b) => b.key === 'unit')
-  const mergedSubs = new Map(baseSubs)
-  if (edUnit) {
-    for (const s of splitBlocks(edUnit.lines.slice(1), 2)) {
-      if (!MANAGED_UNIT.has(s.key) || !baseSubs.has(s.key)) mergedSubs.set(s.key, s.lines)
-    }
-  }
-  const out: string[] = []
-  for (const b of baseTop) {
-    if (b.key === 'unit') continue
-    out.push(...b.lines)
-  }
-  if (mergedSubs.size) {
-    out.push('unit:')
-    for (const lines of mergedSubs.values()) out.push(...lines)
-  }
+  const edSubs = new Map(
+    (edUnit ? splitBlocks(edUnit.lines.slice(1), 2) : []).map((s) => [s.key, s.lines]),
+  )
+  // 顶层块用 Map 收敛：base 先入、editor 补充，同名键取最后一份 → 任意来源重复都去重
+  const top = new Map<string, string[]>()
+  for (const b of baseTop) if (b.key !== 'unit') top.set(b.key, b.lines)
   for (const b of edTop) {
     if (b.key === 'unit') continue
-    if (!MANAGED_TOP.has(b.key) || !baseTopKeys.has(b.key)) out.push(...b.lines)
+    // 非托管键：editor 为准（覆盖 base 同名）；托管键：仅 base 缺失时用 editor（表单为准）
+    if (!MANAGED_TOP.has(b.key) || !top.has(b.key)) top.set(b.key, b.lines)
+  }
+  // unit 子键：非托管直接覆盖；托管仅 base 缺失时补
+  const subs = new Map(baseSubs)
+  for (const [k, v] of edSubs) {
+    if (!MANAGED_UNIT.has(k) || !baseSubs.has(k)) subs.set(k, v)
+  }
+  const out: string[] = []
+  for (const lines of top.values()) out.push(...lines)
+  if (subs.size) {
+    out.push('unit:')
+    for (const lines of subs.values()) out.push(...lines)
   }
   while (out.length && out[out.length - 1].trim() === '') out.pop()
   return out.join('\n') + '\n'
@@ -761,6 +769,11 @@ async function openEdit(row: ServiceConfDef) {
 }
 
 async function save() {
+  // 表单未填服务名时，允许从 YAML 编辑器的顶层 `key:` 取（用户直接在编辑器里写定义）
+  if (!form.key.trim()) {
+    const km = form.yaml.match(/^\s*key:\s*["']?([^"'\n]+)["']?\s*$/m)
+    if (km) form.key = km[1].trim()
+  }
   if (!form.key.trim()) {
     ElMessage.warning(t('servicesCustom.keyRequired'))
     return
