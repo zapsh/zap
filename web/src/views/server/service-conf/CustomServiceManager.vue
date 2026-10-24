@@ -99,25 +99,6 @@
               <el-input v-model="form.label" :placeholder="t('servicesCustom.labelPlaceholder')" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
-            <el-form-item :label="t('servicesCustom.format')">
-              <el-select v-model="form.format" class="w-full">
-                <el-option label="ini" value="ini" />
-                <el-option label="json" value="json" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="24">
-            <el-form-item :label="t('servicesCustom.configFile')">
-              <el-input
-                v-model="form.main"
-                type="textarea"
-                :rows="3"
-                :placeholder="t('servicesCustom.configFilePlaceholder')"
-              />
-              <div class="field-hint">{{ t('servicesCustom.configFileHint') }}</div>
-            </el-form-item>
-          </el-col>
           <el-col :span="24">
             <el-form-item :label="t('servicesCustom.execStart')">
               <el-input
@@ -140,32 +121,11 @@
               <el-input v-model="form.working_dir" :placeholder="t('servicesCustom.workingDirPlaceholder')" />
             </el-form-item>
           </el-col>
-          <el-col :span="24">
-            <el-form-item :label="t('servicesCustom.environment')">
-              <el-input
-                v-model="form.environment"
-                type="textarea"
-                :rows="3"
-                :placeholder="t('servicesCustom.envPlaceholder')"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :span="24">
-            <el-form-item :label="t('servicesCustom.precmd')">
-              <el-input
-                v-model="form.precmd"
-                type="textarea"
-                :rows="3"
-                :placeholder="t('servicesCustom.precmdPlaceholder')"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :span="24">
-            <el-form-item :label="t('servicesCustom.unitDescription')">
-              <el-input
-                v-model="form.description"
-                :placeholder="t('servicesCustom.unitDescriptionPlaceholder')"
-              />
+          <el-col :span="12">
+            <el-form-item :label="t('servicesCustom.unitType')">
+              <el-select v-model="form.type" class="w-full">
+                <el-option v-for="opt in unitTypeOptions" :key="opt" :label="opt" :value="opt" />
+              </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -184,33 +144,117 @@
               />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
-            <el-form-item :label="t('servicesCustom.unitType')">
-              <el-select v-model="form.type" class="w-full">
-                <el-option v-for="opt in unitTypeOptions" :key="opt" :label="opt" :value="opt" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item :label="t('servicesCustom.unitRestart')">
-              <el-select v-model="form.restart" class="w-full">
-                <el-option :label="t('servicesCustom.unitRestartDefault')" value="" />
-                <el-option label="no" value="no" />
-                <el-option label="on-success" value="on-success" />
-                <el-option label="on-failure" value="on-failure" />
-                <el-option label="always" value="always" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item :label="t('servicesCustom.unitRestartSec')">
-              <el-input
-                v-model="form.restart_sec"
-                :placeholder="t('servicesCustom.unitRestartSecPlaceholder')"
-              />
-            </el-form-item>
-          </el-col>
         </el-row>
+
+        <!-- 重启策略：Restart / RestartSec / StartLimit*，默认折叠，集中设置 -->
+        <el-collapse v-model="restartCollapse" class="restart-collapse">
+          <el-collapse-item name="restart" :title="t('servicesCustom.restartPolicy')">
+            <el-row :gutter="16">
+              <el-col :span="12">
+                <el-form-item :label="t('servicesCustom.unitRestart')">
+                  <el-select v-model="form.restart" class="w-full">
+                    <el-option :label="t('servicesCustom.unitRestartDefault')" value="" />
+                    <el-option label="no" value="no" />
+                    <el-option label="on-success" value="on-success" />
+                    <el-option label="on-failure" value="on-failure" />
+                    <el-option label="always" value="always" />
+                  </el-select>
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item :label="t('servicesCustom.unitRestartSec')">
+                  <el-input
+                    v-model="form.restart_sec"
+                    :placeholder="t('servicesCustom.unitRestartSecPlaceholder')"
+                  />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item :label="t('servicesCustom.unitStartLimitInterval')">
+                  <el-input
+                    v-model="form.start_limit_interval_sec"
+                    :placeholder="t('servicesCustom.unitStartLimitIntervalPlaceholder')"
+                  />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item :label="t('servicesCustom.unitStartLimitBurst')">
+                  <el-input
+                    v-model="form.start_limit_burst"
+                    :placeholder="t('servicesCustom.unitStartLimitBurstPlaceholder')"
+                  />
+                </el-form-item>
+              </el-col>
+            </el-row>
+          </el-collapse-item>
+        </el-collapse>
+
+        <!-- 高级选项：配置文件 / 环境变量 / 启动前命令 / 服务描述 / 自定义指令，默认折叠 -->
+        <el-collapse v-model="advCollapse" class="adv-collapse">
+          <el-collapse-item name="adv" :title="t('servicesCustom.advOptions')">
+            <el-row :gutter="16">
+              <el-col :span="24">
+                <el-form-item :label="t('servicesCustom.configFile')">
+                  <el-input
+                    v-model="form.main"
+                    type="textarea"
+                    :rows="3"
+                    :placeholder="t('servicesCustom.configFilePlaceholder')"
+                  />
+                  <div class="field-hint">{{ t('servicesCustom.configFileHint') }}</div>
+                </el-form-item>
+              </el-col>
+              <el-col v-if="form.main.trim()" :span="24">
+                <el-form-item :label="t('servicesCustom.format')">
+                  <el-select v-model="form.format" class="w-full">
+                    <el-option label="ini" value="ini" />
+                    <el-option label="json" value="json" />
+                  </el-select>
+                  <div class="field-hint">{{ t('servicesCustom.formatHint') }}</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="24">
+                <el-form-item :label="t('servicesCustom.environment')">
+                  <el-input
+                    v-model="form.environment"
+                    type="textarea"
+                    :rows="3"
+                    :placeholder="t('servicesCustom.envPlaceholder')"
+                  />
+                </el-form-item>
+              </el-col>
+              <el-col :span="24">
+                <el-form-item :label="t('servicesCustom.precmd')">
+                  <el-input
+                    v-model="form.precmd"
+                    type="textarea"
+                    :rows="3"
+                    :placeholder="t('servicesCustom.precmdPlaceholder')"
+                  />
+                </el-form-item>
+              </el-col>
+              <el-col :span="24">
+                <el-form-item :label="t('servicesCustom.unitDescription')">
+                  <el-input
+                    v-model="form.description"
+                    :placeholder="t('servicesCustom.unitDescriptionPlaceholder')"
+                  />
+                </el-form-item>
+              </el-col>
+              <el-col :span="24">
+                <el-form-item :label="t('servicesCustom.unitExtra')">
+                  <el-input
+                    v-model="form.extra"
+                    type="textarea"
+                    :rows="4"
+                    :placeholder="t('servicesCustom.unitExtraPlaceholder')"
+                  />
+                  <div class="field-hint">{{ t('servicesCustom.unitExtraHint') }}</div>
+                </el-form-item>
+              </el-col>
+            </el-row>
+          </el-collapse-item>
+        </el-collapse>
 
         <!-- 启动依赖（After / Wants / Requires）：默认折叠，减少常用项干扰 -->
         <el-collapse v-model="depsCollapse" class="deps-collapse">
@@ -362,6 +406,9 @@ const form = reactive({
   restart: '',
   restart_sec: '',
   type: 'simple',
+  extra: '',
+  start_limit_interval_sec: '',
+  start_limit_burst: '',
   yaml: '',
 })
 
@@ -383,6 +430,9 @@ function resetForm() {
   form.restart = ''
   form.restart_sec = ''
   form.type = 'simple'
+  form.extra = ''
+  form.start_limit_interval_sec = ''
+  form.start_limit_burst = ''
   form.yaml = ''
   originalYaml.value = ''
   editing.value = false
@@ -458,9 +508,16 @@ function generateYaml() {
   uPush('restart', form.restart)
   // Type=（服务类型，缺省 simple）
   uPush('type', form.type)
-  // restart_sec 为后端 u64：仅在合法非负整数时输出，且不加引号
-  const rs = form.restart_sec.trim()
-  if (rs !== '' && /^\d+$/.test(rs)) unitLines.push(`  restart_sec: ${Number(rs)}`)
+  // 数字型（后端为整数）：仅在合法非负整数时输出，且不加引号
+  const pushNum = (k: string, v: string) => {
+    const n = v.trim()
+    if (n !== '' && /^\d+$/.test(n)) unitLines.push(`  ${k}: ${Number(n)}`)
+  }
+  pushNum('restart_sec', form.restart_sec)
+  pushNum('start_limit_interval_sec', form.start_limit_interval_sec)
+  pushNum('start_limit_burst', form.start_limit_burst)
+  // 自定义指令（每行 Key=Value，原样注入 systemd 单元）
+  uPushList('extra', listOf(form.extra))
   if (unitLines.length) {
     lines.push('unit:')
     lines.push(...unitLines)
@@ -532,6 +589,8 @@ function parseDef(yaml: string): Record<string, string> {
         k === 'group' ||
         k === 'restart' ||
         k === 'restart_sec' ||
+        k === 'start_limit_interval_sec' ||
+        k === 'start_limit_burst' ||
         k === 'type'
       ) {
         out[k] = v
@@ -540,7 +599,8 @@ function parseDef(yaml: string): Record<string, string> {
         k === 'precmd' ||
         k === 'after' ||
         k === 'wants' ||
-        k === 'requires'
+        k === 'requires' ||
+        k === 'extra'
       ) {
         if (v) out[k] = v
         else listKey = k
@@ -584,12 +644,19 @@ const MANAGED_UNIT = new Set([
   'group',
   'restart',
   'restart_sec',
+  'start_limit_interval_sec',
+  'start_limit_burst',
   'type',
+  'extra',
 ])
 /** systemd Type 可选项 */
 const unitTypeOptions = ['simple', 'exec', 'forking', 'oneshot', 'notify', 'dbus', 'idle']
 /** 启动依赖折叠面板的展开项（默认折叠） */
 const depsCollapse = ref<string[]>([])
+/** 高级选项折叠面板的展开项（默认折叠） */
+const advCollapse = ref<string[]>([])
+/** 重启策略折叠面板的展开项（默认折叠） */
+const restartCollapse = ref<string[]>([])
 
 /**
  * 以 `original` 为基底、用 `generated`（由表单生成）覆盖表单管理的部分：

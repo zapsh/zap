@@ -183,6 +183,17 @@ struct UnitTemplate {
     /// Type=（simple/exec/forking/oneshot/notify/dbus/idle；缺省 simple）
     #[serde(default, rename = "type")]
     type_: Option<String>,
+    /// 自定义附加指令：每行 "Key=Value"，原样注入生成的 systemd 单元
+    /// （`StartLimitIntervalSec`/`StartLimitBurst`/`StartLimitBurstSec` 归 [Unit]，其余归 [Service]）。
+    /// openrc 不使用该字段。
+    #[serde(default)]
+    extra: Vec<String>,
+    /// StartLimitIntervalSec=（秒，[Unit] 段重启限流窗口；配合 Restart=on-failure）
+    #[serde(default)]
+    start_limit_interval_sec: Option<u64>,
+    /// StartLimitBurst=（[Unit] 段限流窗口内允许的重启次数）
+    #[serde(default)]
+    start_limit_burst: Option<u32>,
 }
 
 // ── 服务定义加载 ──────────────────────────────────────────────
@@ -1803,6 +1814,28 @@ fn validate_unit(u: &UnitTemplate, _mgr: Manager) -> Result<(), String> {
             return Err(format!("非法的 Type 类型: {t}"));
         }
     }
+    // 自定义指令：每行必须形如 Key=Value（Key 为字母数字），且不含换行 / NUL；
+    // 形如段头（[Service] 等，无 '=' 或 Key 含 '['）会被拒，避免破坏单元结构。
+    for line in &u.extra {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if l.contains(['\n', '\r', '\0']) {
+            return Err("自定义指令不能包含换行 / NUL".into());
+        }
+        let ok = match l.split_once('=') {
+            Some((k, _)) => {
+                !k.is_empty()
+                    && k.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                    && k.chars().all(|c| c.is_ascii_alphanumeric())
+            }
+            None => false,
+        };
+        if !ok {
+            return Err(format!("自定义指令格式应为 Key=Value: {l}"));
+        }
+    }
     Ok(())
 }
 
@@ -1820,6 +1853,32 @@ fn render_systemd_unit(d: &ServiceDef, u: &UnitTemplate) -> String {
     }
     if !u.requires.is_empty() {
         s.push_str(&format!("Requires={}\n", u.requires.iter().map(|x| x.trim()).collect::<Vec<_>>().join(" ")));
+    }
+    // 归 [Unit] 段：结构化的重启限流（若设置）
+    if let Some(v) = u.start_limit_interval_sec {
+        s.push_str(&format!("StartLimitIntervalSec={v}\n"));
+    }
+    if let Some(v) = u.start_limit_burst {
+        s.push_str(&format!("StartLimitBurst={v}\n"));
+    }
+    // extra 里手写的 [Unit] 指令（StartLimit* 等；与结构化字段重复的跳过，避免重复行）
+    for l in &u.extra {
+        if l.trim().is_empty() {
+            continue;
+        }
+        let key = l.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
+        if matches!(
+            key,
+            "StartLimitIntervalSec" | "StartLimitBurst" | "StartLimitBurstSec" | "StartLimitInterval"
+        ) {
+            if key == "StartLimitIntervalSec" && u.start_limit_interval_sec.is_some() {
+                continue;
+            }
+            if key == "StartLimitBurst" && u.start_limit_burst.is_some() {
+                continue;
+            }
+            s.push_str(&format!("{}\n", one_line(l)));
+        }
     }
     s.push('\n');
     s.push_str("[Service]\n");
@@ -1864,6 +1923,19 @@ fn render_systemd_unit(d: &ServiceDef, u: &UnitTemplate) -> String {
     }
     if let Some(rs) = u.restart_sec {
         s.push_str(&format!("RestartSec={rs}\n"));
+    }
+    // 归 [Service] 段的自定义指令（NoNewPrivileges / ProtectSystem 等高级项）
+    for l in &u.extra {
+        if l.trim().is_empty() {
+            continue;
+        }
+        let key = l.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
+        if !matches!(
+            key,
+            "StartLimitIntervalSec" | "StartLimitBurst" | "StartLimitBurstSec" | "StartLimitInterval"
+        ) {
+            s.push_str(&format!("{}\n", one_line(l)));
+        }
     }
     s.push('\n');
     s.push_str("[Install]\n");
@@ -2764,6 +2836,76 @@ unit:
         assert!(
             orc.contains("\tafter net nginx\n"),
             "After→after，network-online.target→net、nginx.service→nginx"
+        );
+    }
+
+    /// 自定义指令：普通 Key=Value 注入 [Service]，StartLimit* 归到 [Unit]。
+    #[test]
+    fn systemd_extra_directives_routed() {
+        let yaml = r#"
+key: "extratest"
+label: "extratest"
+format: "ini"
+unit:
+  exec_start: "myapp run"
+  restart: "on-failure"
+  restart_sec: 5
+  extra:
+    - "NoNewPrivileges=yes"
+    - "ProtectSystem=strict"
+    - "ProtectHome=yes"
+    - "PrivateTmp=yes"
+    - "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"
+    - "StartLimitIntervalSec=60s"
+    - "StartLimitBurst=5"
+"#;
+        let def: ServiceDef = serde_yaml::from_str(yaml).expect("解析自定义服务定义");
+        let u = def.unit.as_ref().expect("unit 模板");
+        let sd = render_systemd_unit(&def, u);
+        let unit_idx = sd.find("[Unit]").expect("[Unit]");
+        let svc_idx = sd.find("[Service]").expect("[Service]");
+        // 加固项落在 [Service]
+        assert!(sd.contains("NoNewPrivileges=yes"));
+        assert!(sd.contains("ProtectSystem=strict"));
+        assert!(sd.contains("ProtectHome=yes"));
+        assert!(sd.contains("PrivateTmp=yes"));
+        assert!(sd.contains("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"));
+        for key in ["NoNewPrivileges=yes", "ProtectSystem=strict"] {
+            let i = sd.find(key).expect(key);
+            assert!(i > svc_idx, "{key} 应在 [Service] 段");
+        }
+        // StartLimit* 归到 [Unit]
+        for key in ["StartLimitIntervalSec=60s", "StartLimitBurst=5"] {
+            let i = sd.find(key).expect(key);
+            assert!(i > unit_idx && i < svc_idx, "{key} 应在 [Unit] 段");
+        }
+    }
+
+    /// 结构化的 StartLimitIntervalSec / StartLimitBurst 渲染到 [Unit]；
+    /// extra 中与结构化字段重复的 StartLimitBurst 被跳过，避免重复行。
+    #[test]
+    fn systemd_start_limit_structured() {
+        let yaml = r#"
+key: "sltest"
+label: "sltest"
+format: "ini"
+unit:
+  exec_start: "myapp run"
+  restart: "on-failure"
+  restart_sec: 5
+  start_limit_interval_sec: 60
+  start_limit_burst: 5
+  extra:
+    - "StartLimitBurst=99"
+"#;
+        let def: ServiceDef = serde_yaml::from_str(yaml).expect("解析自定义服务定义");
+        let u = def.unit.as_ref().expect("unit 模板");
+        let sd = render_systemd_unit(&def, u);
+        assert!(sd.contains("StartLimitIntervalSec=60"));
+        assert!(sd.contains("StartLimitBurst=5"));
+        assert!(
+            !sd.contains("StartLimitBurst=99"),
+            "extra 里重复的 StartLimitBurst 应被跳过"
         );
     }
 
