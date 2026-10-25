@@ -366,6 +366,7 @@ async fn init_packages_table() {
         max_ftp_users INTEGER NOT NULL DEFAULT 0,
         fpm_spec_ref TEXT NOT NULL DEFAULT '',
         allow_ssh INTEGER NOT NULL DEFAULT 0,
+        allow_terminal INTEGER NOT NULL DEFAULT 0,
         allow_proxy INTEGER NOT NULL DEFAULT 0,
         allow_php INTEGER NOT NULL DEFAULT 1,
         allow_docker INTEGER NOT NULL DEFAULT 0,
@@ -395,6 +396,7 @@ async fn init_packages_table() {
         fpm_spec_ref,
         -- ── feature ( 0 = deny / 1 = allow)──
         allow_ssh,
+        allow_terminal,
         allow_proxy,
         allow_php,
         allow_docker,          -- beta: only run when podman is available
@@ -412,6 +414,7 @@ async fn init_packages_table() {
         0, 0, 0,               -- max_mysql_dbs / max_pgsql_dbs / max_ftp_users
         '',                    -- fpm_spec_ref   : default
         0,                     -- allow_ssh      : SSH Terminal
+        0,                     -- allow_terminal : local terminal (own Linux account)
         0,                     -- allow_proxy    : reverse proxy (upstream / location)
         1,                     -- allow_php      : PHP sites
         0,                     -- allow_docker   : containers
@@ -425,6 +428,9 @@ async fn init_packages_table() {
     if let Err(e) = sqlx::query(seed).execute(pool).await {
         eprintln!("播种默认套餐失败（可忽略，重复启动会触发唯一约束）: {e}");
     }
+
+    // 老库升级：本地终端能力列（新库由上面的 CREATE TABLE 带上）
+    ensure_column("packages", "allow_terminal", "INTEGER NOT NULL DEFAULT 0").await;
 }
 
 // ── nginx_stream（四层转发）────────────────────────────────

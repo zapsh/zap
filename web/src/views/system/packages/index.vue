@@ -88,6 +88,13 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column :label="t('packages.terminal')" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.allow_terminal ? 'success' : 'info'" size="small" effect="plain">
+              {{ row.allow_terminal ? t('packages.allow') : t('packages.deny') }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('packages.proxy')" width="110" align="center">
           <template #default="{ row }">
             <el-tag :type="row.allow_proxy ? 'success' : 'info'" size="small" effect="plain">
@@ -338,6 +345,10 @@
           <el-switch v-model="form.allow_ssh" />
           <span class="form-hint">{{ t('packages.sshHint') }}</span>
         </el-form-item>
+        <el-form-item :label="t('packages.terminal')">
+          <el-switch v-model="form.allow_terminal" />
+          <span class="form-hint">{{ t('packages.terminalHint') }}</span>
+        </el-form-item>
         <el-form-item :label="t('packages.proxy')">
           <el-switch v-model="form.allow_proxy" />
           <span class="form-hint">{{ t('packages.proxyHint') }}</span>
@@ -442,6 +453,7 @@ const form = reactive({
   max_ftp_users: 10,
   fpm_spec_ref: '',
   allow_ssh: false,
+  allow_terminal: false,
   allow_apps: false,
   app_types: [] as string[],
   max_apps: 0,
@@ -527,6 +539,7 @@ function resetForm() {
   form.max_ftp_users = 10
   form.fpm_spec_ref = ''
   form.allow_ssh = false
+  form.allow_terminal = false
   form.allow_proxy = false
   form.allow_php = true
   form.allow_waf = false
@@ -574,6 +587,7 @@ function openEdit(row: PackageItem) {
   form.max_ftp_users = row.max_ftp_users > 0 ? row.max_ftp_users : 10
   form.fpm_spec_ref = row.fpm_spec_ref || ''
   form.allow_ssh = !!row.allow_ssh
+  form.allow_terminal = !!row.allow_terminal
   form.allow_proxy = !!row.allow_proxy
   form.allow_php = row.allow_php !== false
   form.allow_waf = !!row.allow_waf
@@ -608,6 +622,7 @@ async function submitForm() {
     max_ftp_users: unlimitedFtp.value ? 0 : form.max_ftp_users,
     fpm_spec_ref: form.fpm_spec_ref,
     allow_ssh: form.allow_ssh,
+    allow_terminal: form.allow_terminal,
     allow_proxy: form.allow_proxy,
     allow_php: form.allow_php,
     allow_waf: form.allow_waf,

@@ -22,8 +22,8 @@
       :style="winStyle"
       @mousedown="bringToFront"
     >
-      <!-- 顶部工具栏：标题 + 保存/保存全部/重新加载/最小化/关闭，整条可拖动（按钮区除外） -->
-      <div class="few-header" @mousedown="startDrag">
+      <!-- 顶部工具栏：标题 + 保存/保存全部/重新加载/最小化/关闭，整条可拖动（按钮区除外）；双击标题栏最大化 / 还原 -->
+      <div class="few-header" @mousedown="startDrag" @dblclick="onHeaderDblClick">
         <div class="few-header-left">
           <el-icon class="few-header-icon"><Edit /></el-icon>
           <span class="few-title">{{ activeName || t('fileEditor.title') }}</span>
@@ -205,6 +205,23 @@
         </div>
       </div>
 
+      <!-- 内嵌终端面板：以「本人 Linux 账号」运行（后端降权），关闭面板即断开并回收 shell -->
+      <div v-if="terminalOpen" class="few-terminal">
+        <div class="few-terminal-bar">
+          <el-icon><Monitor /></el-icon>
+          <span class="few-terminal-name">{{ t('fileEditor.terminal') }}</span>
+          <span class="few-terminal-cwd" :title="currentDir">{{ currentDir || '~' }}</span>
+          <span class="few-terminal-spacer" />
+          <el-button size="small" text :title="t('fileEditor.terminalRestart')" @click="restartTerminal">
+            <el-icon><Refresh /></el-icon>
+          </el-button>
+          <el-button size="small" text :title="t('common.close')" @click="terminalOpen = false">
+            <el-icon><Close /></el-icon>
+          </el-button>
+        </div>
+        <LocalTerminal :key="termKey" :cwd="currentDir" :active="active" />
+      </div>
+
       <!-- 底部状态栏：光标位置 / 路径 / 语言 / 大小与权限 / 保存状态 -->
       <div class="few-status">
         <span class="few-status-item">
@@ -229,6 +246,17 @@
         <span v-if="activeTab?.meta" class="few-status-item">
           {{ formatSize(activeTab.meta.size) }} · {{ activeTab.meta.permissions }}
         </span>
+        <!-- 底部 Terminal 入口：点击展开 / 收起内嵌终端 -->
+        <button
+          type="button"
+          class="few-status-link"
+          :class="{ 'is-on': terminalOpen }"
+          :title="t('fileEditor.terminalHint')"
+          @click="terminalOpen = !terminalOpen"
+        >
+          <el-icon><Monitor /></el-icon>
+          {{ t('fileEditor.terminal') }}
+        </button>
         <span class="few-status-item" :class="activeDirty ? 'is-dirty' : 'is-saved'">
           {{ activeDirty ? t('fileEditor.unsaved') : t('fileEditor.savedState') }}
         </span>
@@ -319,11 +347,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import CodeEditor from '@/components/CodeEditor.vue'
 import PluginSlot from '@/components/PluginSlot.vue'
+
+// 终端依赖 xterm（约 330KB），按需加载：只有真正展开 Terminal 面板时才拉取
+const LocalTerminal = defineAsyncComponent(() => import('@/components/LocalTerminal.vue'))
 import { getFileInfo, listFiles, readFile, writeFile, mkdir, deleteFile, renameFile, type FileEntry } from '@/api/file'
 import {
   LANG_OPTIONS,
@@ -346,6 +386,7 @@ import {
   HardDrive,
   Home,
   Minimize,
+  Monitor,
   MoreFilled,
   Refresh,
   Save,
@@ -471,7 +512,10 @@ const y = ref(0)
 const w = ref(980)
 const h = ref(620)
 
-/** 全屏 / 最大化：铺满整个视口（优先用浏览器 Fullscreen API，禁用时退化为填满窗口） */
+/**
+ * 最大化：只铺满「浏览器窗口」的可视区（100vw/100vh），不调用浏览器 Fullscreen API，
+ * 所以不会占满整个物理屏幕；记录原几何，退出时还原。
+ */
 const winRoot = ref<HTMLElement | null>(null)
 const expanded = ref(false)
 let savedGeo: { x: number; y: number; w: number; h: number } | null = null
@@ -479,16 +523,10 @@ let savedGeo: { x: number; y: number; w: number; h: number } | null = null
 const shown = computed(() => props.active && !minimized.value)
 const dockShown = computed(() => props.active && minimized.value)
 
-/** 退出浏览器 Fullscreen API（若无全屏态则空操作） */
-function exitFullscreenApi() {
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
-}
-
-/** 切换全屏 / 最大化：记录原几何，退出时还原 */
-async function toggleExpand() {
+/** 切换最大化 / 还原：记录原几何，退出时还原 */
+function toggleExpand() {
   if (expanded.value) {
     expanded.value = false
-    exitFullscreenApi()
     if (savedGeo) {
       x.value = savedGeo.x
       y.value = savedGeo.y
@@ -500,14 +538,23 @@ async function toggleExpand() {
   }
   savedGeo = { x: x.value, y: y.value, w: w.value, h: h.value }
   expanded.value = true
-  const el = winRoot.value
-  if (el && document.fullscreenEnabled && el.requestFullscreen) {
-    try {
-      await el.requestFullscreen()
-    } catch {
-      // 被拒绝（如 iframe 限制、非用户手势）：保留「填满窗口」即可
-    }
-  }
+}
+
+/** 双击标题栏切换最大化；按钮区（保存 / 最小化 / 关闭…）不响应 */
+function onHeaderDblClick(e: MouseEvent) {
+  if ((e.target as HTMLElement)?.closest('.few-header-right')) return
+  toggleExpand()
+}
+
+// ── 内嵌终端（以本人 Linux 账号运行）────────────────────────
+
+/** 是否展开底部终端面板 */
+const terminalOpen = ref(false)
+/** 换 key 强制 LocalTerminal 重新挂载 = 重连一条新会话 */
+const termKey = ref(0)
+
+function restartTerminal() {
+  termKey.value++
 }
 const winStyle = computed(() => {
   // 全屏 / 最大化：直接铺满视口，忽略 x/y/w/h
@@ -577,6 +624,8 @@ function stopDrag() {
 }
 
 function startDrag(e: MouseEvent) {
+  // 最大化时不拖动（否则会把铺满的窗口拖出视口）
+  if (expanded.value) return
   // 按钮区不触发拖动（它自己 @mousedown.stop 了，这里再兜一层）
   if ((e.target as HTMLElement)?.closest('.few-header-right')) return
   dragging = true
@@ -1595,6 +1644,51 @@ watch(
   color: var(--el-text-color-placeholder);
 }
 
+// ── 内嵌终端面板 ────────────────────────────────────────────
+
+.few-terminal {
+  flex: 0 0 auto;
+  height: 220px;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--el-border-color-lighter);
+  background: #1e1e1e;
+}
+
+.few-terminal-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  font-size: 12px;
+  color: #d4d4d4;
+  background: #252526;
+  border-bottom: 1px solid #333;
+
+  .el-button {
+    color: #cfcfcf;
+  }
+}
+
+.few-terminal-name {
+  font-weight: 600;
+}
+
+.few-terminal-cwd {
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9d9d9d;
+}
+
+.few-terminal-spacer {
+  flex: 1;
+}
+
 // ── 底部状态栏 ──────────────────────────────────────────────
 
 .few-status {
@@ -1617,6 +1711,31 @@ watch(
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  // 底部 Terminal 入口：看起来像链接，展开时高亮
+  &-link {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--el-color-primary);
+      background: var(--el-fill-color);
+    }
+
+    &.is-on {
+      color: var(--el-color-primary);
+    }
   }
 
   // 语言选择：状态栏里压扁一点，别把路径挤没了

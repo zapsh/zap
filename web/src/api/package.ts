@@ -24,6 +24,8 @@ export interface PackageItem {
   fpm_spec_ref: string
   /** 是否允许使用 SSH 终端 */
   allow_ssh: boolean
+  /** 是否允许使用「本地终端」（以本人 Linux 账号运行的 shell） */
+  allow_terminal: boolean
   /** 是否允许客户（普通用户）使用反向代理（upstream / location） */
   allow_proxy: boolean
   /** 是否允许客户建 PHP 站点（默认 true） */
@@ -68,6 +70,8 @@ export interface PackagePayload {
   max_ftp_users?: number
   fpm_spec_ref?: string
   allow_ssh?: boolean
+  /** 允许使用本地终端（以本人 Linux 账号运行的 shell） */
+  allow_terminal?: boolean
   /** 允许客户使用反向代理（upstream / location） */
   allow_proxy?: boolean
   /** 允许客户建 PHP 站点；不传时后端取默认（新建=开放） */

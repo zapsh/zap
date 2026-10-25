@@ -2266,6 +2266,19 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
+    /// 主机上的交互式终端（编辑器内嵌 Terminal）：以指定 Linux 账号运行一个 PTY shell。
+    ///
+    /// 同样是长会话，走 `Message::StreamOpen`。这里刻意**不接受任意命令**：
+    /// 固定启动登录 shell（bash → sh），并强制降权到 `user`，避免变成任意提权通道。
+    #[serde(rename = "host.shell_exec")]
+    HostShellExec {
+        /// 目标 Linux 账号（必须已存在且非 root）
+        user: String,
+        /// 起始目录；为空则用该账号家目录，非法则回退家目录
+        cwd: String,
+        cols: u16,
+        rows: u16,
+    },
     /// 守护进程实时事件流（`docker events` 的等价物）。
     ///
     /// 同样是长会话：连接期间持续推送事件，断开即结束，因此也走 `Message::StreamOpen`。

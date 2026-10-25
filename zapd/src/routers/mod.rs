@@ -54,6 +54,7 @@ pub mod site;
 pub mod ssh_record;
 pub mod ssh_sftp;
 pub mod ssh_terminal;
+pub mod local_terminal;
 pub mod ssh_user_keys;
 pub mod ssl;
 pub mod system_audit;
@@ -885,6 +886,8 @@ fn api_routers() -> Router {
         )
         .route("/terminal/push-key", post(ssh_terminal::push_key_direct))
         .route("/terminal/ws/{id}", get(ssh_terminal::ws_terminal))
+        // 本地终端：以「本人 Linux 账号」运行的 shell（区别于上面的远程 SSH）
+        .route("/terminal/local/ws", get(local_terminal::ws_local))
         // SFTP 文件管理（复用终端连接与同一套准入）
         .route("/terminal/sftp/list", get(ssh_sftp::list_dir))
         .route("/terminal/sftp/download", get(ssh_sftp::download))

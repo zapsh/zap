@@ -66,6 +66,8 @@ pub struct PackageRow {
     pub max_ftp_users: i64,
     pub fpm_spec_ref: String,
     pub allow_ssh: i32,
+    /// 允许该套餐的用户使用「本地终端」（以本人 Linux 账号身份运行的 shell）
+    pub allow_terminal: i32,
     /// 允许普通用户使用反向代理（upstream / location）
     pub allow_proxy: i32,
     /// 允许该套餐的用户建 PHP 站点（默认开放；关闭后普通用户不能新建/编辑 PHP 站点）
@@ -93,8 +95,8 @@ pub struct PackageRow {
 
 const COLS: &str = "id, name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, \
                     max_mysql_dbs, max_pgsql_dbs, max_ftp_users, \
-                    fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, \
-                    allow_apps, app_types, max_apps, app_port_span, app_max_total, \
+                    fpm_spec_ref, allow_ssh, allow_terminal, allow_proxy, allow_php, allow_docker, \
+                    allow_waf, allow_apps, app_types, max_apps, app_port_span, app_max_total, \
                     owner_id, status, \
                     created_at, updated_at";
 
@@ -136,6 +138,7 @@ struct ResellerSubVals {
     max_apps: i64,
     app_port_span: i64,
     allow_ssh: i32,
+    allow_terminal: i32,
     allow_proxy: i32,
     allow_php: i32,
     allow_docker: i32,
@@ -187,6 +190,7 @@ fn enforce_reseller_subpackage(parent: &PackageRow, v: &ResellerSubVals) -> Resu
         Ok(())
     };
     flag("SSH 终端", v.allow_ssh, parent.allow_ssh)?;
+    flag("本地终端", v.allow_terminal, parent.allow_terminal)?;
     flag("反向代理", v.allow_proxy, parent.allow_proxy)?;
     flag("PHP 站点", v.allow_php, parent.allow_php)?;
     flag("Docker 容器", v.allow_docker, parent.allow_docker)?;
@@ -242,6 +246,7 @@ fn row_json(r: &PackageRow, users_count: i64) -> Value {
         "max_ftp_users": r.max_ftp_users,
         "fpm_spec_ref": r.fpm_spec_ref,
         "allow_ssh": r.allow_ssh == 1,
+        "allow_terminal": r.allow_terminal == 1,
         "allow_proxy": r.allow_proxy == 1,
         "allow_php": r.allow_php == 1,
         "allow_docker": r.allow_docker == 1,
@@ -373,6 +378,8 @@ pub struct PackageAddPayload {
     pub fpm_spec_ref: Option<String>,
     /// 是否允许 SSH 终端
     pub allow_ssh: Option<bool>,
+    /// 是否允许使用本地终端（以本人 Linux 账号身份运行的 shell）
+    pub allow_terminal: Option<bool>,
     /// 是否允许普通用户使用反向代理（upstream / location）
     pub allow_proxy: Option<bool>,
     /// 是否允许建 PHP 站点（默认 true：PHP 站点是默认能力）
@@ -478,6 +485,8 @@ pub async fn package_add(
     let app_port_span = validate_port_span(payload.app_port_span.unwrap_or(0))?;
     let app_max_total = validate_limit(payload.app_max_total.unwrap_or(0), "用户应用总数上限")?;
     let allow_ssh = i32::from(payload.allow_ssh.unwrap_or(false));
+    // 本地终端默认关闭：等于把「以本人系统账号执行命令」的能力放给客户
+    let allow_terminal = i32::from(payload.allow_terminal.unwrap_or(false));
     let allow_proxy = i32::from(payload.allow_proxy.unwrap_or(false));
     // PHP 默认开放；容器默认关闭（容器还要求运行时是 Podman，见 routers::docker 门禁）
     let allow_php = i32::from(payload.allow_php.unwrap_or(true));
@@ -512,6 +521,7 @@ pub async fn package_add(
                     max_apps,
                     app_port_span,
                     allow_ssh,
+                    allow_terminal,
                     allow_proxy,
                     allow_php,
                     allow_docker,
@@ -534,10 +544,10 @@ pub async fn package_add(
     let result = sqlx::query(
         "INSERT INTO packages (name, remark, disk_quota_mb, max_sites, max_domains, max_bandwidth_mb, \
          max_mysql_dbs, max_pgsql_dbs, max_ftp_users, \
-         fpm_spec_ref, allow_ssh, allow_proxy, allow_php, allow_docker, allow_waf, \
+         fpm_spec_ref, allow_ssh, allow_terminal, allow_proxy, allow_php, allow_docker, allow_waf, \
          allow_apps, app_types, max_apps, app_port_span, app_max_total, \
          owner_id, status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&name)
     .bind(&remark)
@@ -550,6 +560,7 @@ pub async fn package_add(
     .bind(max_ftp_users)
     .bind(&fpm_spec_ref)
     .bind(allow_ssh)
+    .bind(allow_terminal)
     .bind(allow_proxy)
     .bind(allow_php)
     .bind(allow_docker)
@@ -607,6 +618,8 @@ pub struct PackageUpdatePayload {
     pub max_ftp_users: Option<i64>,
     pub fpm_spec_ref: Option<String>,
     pub allow_ssh: Option<bool>,
+    /// 是否允许使用本地终端；未传则保持不变
+    pub allow_terminal: Option<bool>,
     /// 是否允许普通用户使用反向代理（upstream / location）
     pub allow_proxy: Option<bool>,
     /// 是否允许建 PHP 站点；未传则保持不变
@@ -669,6 +682,11 @@ pub async fn package_update(
             max_apps: payload.max_apps.unwrap_or(current.max_apps),
             app_port_span: payload.app_port_span.unwrap_or(current.app_port_span),
             allow_ssh: i32::from(payload.allow_ssh.unwrap_or(current.allow_ssh == 1)),
+            allow_terminal: i32::from(
+                payload
+                    .allow_terminal
+                    .unwrap_or(current.allow_terminal == 1),
+            ),
             allow_proxy: i32::from(payload.allow_proxy.unwrap_or(current.allow_proxy == 1)),
             allow_php: i32::from(payload.allow_php.unwrap_or(current.allow_php == 1)),
             allow_docker: i32::from(payload.allow_docker.unwrap_or(current.allow_docker == 1)),
@@ -804,6 +822,14 @@ pub async fn package_update(
     }
     if let Some(v) = payload.allow_ssh {
         sqlx::query("UPDATE packages SET allow_ssh = ?, updated_at = ? WHERE id = ?")
+            .bind(i32::from(v))
+            .bind(now)
+            .bind(payload.id)
+            .execute(pool)
+            .await?;
+    }
+    if let Some(v) = payload.allow_terminal {
+        sqlx::query("UPDATE packages SET allow_terminal = ?, updated_at = ? WHERE id = ?")
             .bind(i32::from(v))
             .bind(now)
             .bind(payload.id)

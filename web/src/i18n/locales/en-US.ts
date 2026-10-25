@@ -635,6 +635,7 @@ const enUS: Messages = {
     ftpUsers: 'FTP Users',
     fpmSpec: 'FPM Spec',
     ssh: 'SSH',
+    terminal: 'Terminal',
     proxy: 'Reverse Proxy',
     php: 'PHP Sites',
     docker: 'Containers',
@@ -658,6 +659,8 @@ const enUS: Messages = {
     ftpUnit: 'FTP accounts',
     fpmSpecHint: 'Leave empty to use the panel default spec',
     sshHint: 'When off, customers on this package cannot use the SSH terminal',
+    terminalHint:
+      'When on, customers on this package can use the built-in local terminal (runs with their own Linux account)',
     proxyHint:
       'When on, customers on this package can create and edit reverse proxy sites (upstream / location)',
     phpHint:
@@ -1613,8 +1616,12 @@ const enUS: Messages = {
     dirtyClose: '"{name}" has unsaved changes.',
     saveAndClose: 'Save and Close',
     discard: 'Discard',
-    fullscreen: 'Fullscreen',
-    exitFullscreen: 'Exit Fullscreen',
+    fullscreen: 'Maximize Window',
+    exitFullscreen: 'Restore Window',
+    terminal: 'Terminal',
+    terminalHint: 'Open the built-in terminal (runs with your Linux account permissions)',
+    terminalRestart: 'Reconnect',
+    terminalClosed: 'Terminal disconnected (click refresh to reconnect)',
     allTabs: 'All tabs',
     close: 'Close',
     closeOthers: 'Close Others',

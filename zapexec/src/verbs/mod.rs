@@ -14,6 +14,7 @@ mod env;
 mod file;
 mod firewall;
 mod fs;
+mod host_shell;
 mod logs;
 mod network;
 mod nginx;
@@ -822,6 +823,9 @@ pub async fn dispatch(req: Request) -> Response {
         Request::DockerContainerExec { .. } => {
             Response::err(-1, "容器终端请使用流式会话".to_string())
         }
+        Request::HostShellExec { .. } => {
+            Response::err(-1, "主机终端请使用流式会话".to_string())
+        }
         Request::DockerEvents => Response::err(-1, "事件流请使用流式会话".to_string()),
         // ── 备份（目录 / 数据库）──────────────────────────────
         Request::BackupList { dir, backup_root } => backup::list(dir, backup_root).await,
@@ -991,6 +995,15 @@ pub async fn dispatch_stream(
         } => {
             let sink = StreamSink::new(&id, wr);
             docker_exec::run(container, cmd, user, cols, rows, stdin_rx, resize_rx, sink).await;
+        }
+        Request::HostShellExec {
+            user,
+            cwd,
+            cols,
+            rows,
+        } => {
+            let sink = StreamSink::new(&id, wr);
+            host_shell::run(user, cwd, cols, rows, stdin_rx, resize_rx, sink).await;
         }
         // 事件流只有下行：stdin / resize 通道用不上，丢弃即代表客户端断开
         Request::DockerEvents => {
