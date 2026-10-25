@@ -415,9 +415,13 @@ function activateTab(tab: EditorTab) {
   scrollActiveIntoView()
 }
 
-/** 当前所在目录：左侧树基准目录优先，没有则取当前文件的父目录（供插件如 Git 作为工作目录） */
-const currentDir = computed(() =>
-  treeRootPath.value || (activePath.value ? parentOf(activePath.value) : ''),
+/** 当前所在目录：左侧树基准目录优先，其次当前文件父目录，最后回退家目录（供插件如 Git 作为工作目录） */
+const currentDir = computed(
+  () =>
+    treeRootPath.value ||
+    (activePath.value ? parentOf(activePath.value) : '') ||
+    props.homePath ||
+    '',
 )
 
 /** 标签条滚动容器；切换标签后把当前标签滚进可视区 */
