@@ -2,7 +2,7 @@
 /**
  * 终端剪贴板快捷键（所有 xterm 终端统一接入）：
  * - Ctrl+C / Cmd+C：有选中 → 复制到剪贴板并清空选中；无选中 → 照常发送 ^C（SIGINT）
- * - Ctrl+V / Cmd+V（含 Ctrl+Shift+V）：粘贴剪贴板内容
+ * - 粘贴（Ctrl+V / 右键）不做任何接管：xterm 内核原生处理，接管反而会粘两次
  *
  * 注意：Ctrl+Shift+C 是浏览器保留快捷键（打开 DevTools），网页无法拦截，
  * 因此不依赖它 —— 统一由 Ctrl+C 智能区分「复制 / 中断」。
@@ -51,18 +51,7 @@ export function attachClipboardShortcuts(term: Terminal): void {
       return !ev.shiftKey
     }
 
-    if (key === 'v') {
-      // 非安全上下文读不到剪贴板：交回 xterm 原生粘贴（浏览器默认行为）
-      if (!navigator.clipboard?.readText) return true
-      navigator.clipboard
-        .readText()
-        .then((text) => {
-          if (text) term.paste(text)
-        })
-        .catch(() => {})
-      return false
-    }
-
+    // 其余按键（含 Ctrl+V 粘贴）一律交回 xterm 内核 / 浏览器原生处理
     return true
   })
 }
