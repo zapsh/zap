@@ -18,6 +18,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useI18n } from 'vue-i18n'
 import { getToken } from '@/utils/auth'
 import { wsUrl } from '@/utils/base'
+import { attachClipboardShortcuts } from '@/utils/termClipboard'
 
 const props = withDefaults(
   defineProps<{
@@ -113,6 +114,7 @@ function initTerm() {
   term.loadAddon(fitAddon)
   term.loadAddon(new WebLinksAddon())
   term.open(host.value)
+  attachClipboardShortcuts(term)
 
   term.onData((data) => {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(data)

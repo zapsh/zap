@@ -56,6 +56,7 @@ import { ArrowDown, InfoFilled, Refresh } from '@/icons'
 import { DOCKER_SHELLS, type DockerShell } from '@/api/docker'
 import { getToken } from '@/utils/auth'
 import { wsUrl } from '@/utils/base'
+import { attachClipboardShortcuts } from '@/utils/termClipboard'
 
 const props = defineProps<{ modelValue: boolean; containerId: string; containerName: string }>()
 const emit = defineEmits<{ 'update:modelValue': [boolean] }>()
@@ -150,6 +151,7 @@ function initTerminal() {
   term.loadAddon(fitAddon)
   term.loadAddon(new WebLinksAddon())
   term.open(termRef.value)
+  attachClipboardShortcuts(term)
 
   // 输入 → WS（二进制帧：UTF-8 字节，保证中文/控制字符原样进入容器）
   term.onData((data) => send(new TextEncoder().encode(data)))

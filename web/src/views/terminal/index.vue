@@ -586,6 +586,7 @@ import {
 import { getToken } from '@/utils/auth'
 import { wsUrl } from '@/utils/base'
 import { useUserStore } from '@/stores/user'
+import { attachClipboardShortcuts } from '@/utils/termClipboard'
 import { useI18n } from 'vue-i18n'
 import SftpPanel from './SftpPanel.vue'
 import RecordingPanel from './RecordingPanel.vue'
@@ -1264,6 +1265,7 @@ async function openTerminal(conn: SshConnection) {
   term.loadAddon(new WebLinksAddon())
 
   term.open(el)
+  attachClipboardShortcuts(term)
 
   tab.term = term
   tab.fitAddon = fitAddon
