@@ -29,9 +29,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # 内置 AppStore 源是 submodule，默认不检出；发行包必须带上它（data/appstore/repos/appstore），
-      # 否则装好的面板没有内置应用。地址 / 分支与 ci.yml、data/appstore/repos.yaml 保持一致，
-      # --depth 1 会带上一个真实的 .git，目标机首次「更新」走 fetch 而不是全量 clone。
       - name: Clone builtin appstore repo
         run: |
           mkdir -p data/appstore/repos
@@ -46,8 +43,6 @@ jobs:
       - name: Install cross (pinned)
         run: cargo install cross --version 0.2.5 --locked
 
-      # 版本号唯一来源：根 Cargo.toml 的 [workspace.package].version（与 build.sh 一致）。
-      # 打 tag 发布时顺带核对 tag 与 Cargo.toml 是否一致，避免发错版本。
       - name: Resolve version
         id: version
         run: |
@@ -69,8 +64,6 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # 前端必须先在 cargo build 之前构建：zapd 通过 rust-embed 在编译期把 ../web/dist 打进二进制。
-      # 否则 GitHub Release 的二进制只会内嵌陈旧/空的 web/dist（与 build.sh 行为一致）。
       - name: Build web frontend
         working-directory: web
         env:
@@ -80,24 +73,20 @@ jobs:
           npm run build:prod
 
       - name: Build release binaries
+        env:
+          RUSTFLAGS: "-A linker_messages"
         run: cross build --release --target ${{ matrix.target }} --locked
 
-      # 按 build.sh 的完整布局打包（zap/ 目录：四个二进制 + scripts + data），
-      # 产物名 zap-v<version>-linux-<arch>.tar.gz，与 scripts/install.sh 期望一致。
-      #
-      # package.sh 会先 cd 到 <outdir>/.pkg 再 tar（脚本内已把 outdir 归一成绝对路径，
-      # 传相对路径也不会再失败），这里仍显式传 ${{ github.workspace }}/dist 更直观。
+     
       - name: Package artifact (build.sh layout)
         env:
-          # package.sh 里 VERSION 优先于 GitHub 注入的 GITHUB_REF_NAME，
-          # 所以传 Cargo.toml 解析出的版本号即可，workflow_dispatch 也能得到正确包名。
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           chmod +x scripts/release/package.sh
           bash scripts/release/package.sh package-full "${{ matrix.arch }}" "${{ matrix.target }}" "target/${{ matrix.target }}/release" "${{ github.workspace }}/dist"
 
       - name: Upload tar.gz
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.arch }}
           path: dist/*.tar.gz
@@ -107,15 +96,11 @@ jobs:
     name: GitHub Release
     needs: [build]
     runs-on: ubuntu-latest
-    # 只有 tag 推送才建 GitHub Release；workflow_dispatch 仅用于验证构建，产物留在 artifacts 里
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # 版本号唯一来源：根 Cargo.toml 的 [workspace.package].version。
-      # release job 自己解析一份，供 latest.txt / latest 别名资产使用
-      # （也修掉此前「Add latest alias assets」引用 steps.version 时的空值问题）。
       - name: Resolve version
         id: version
         run: |
@@ -128,7 +113,7 @@ jobs:
         with:
           path: dist
 
-      # download-artifact 会把每个 matrix 产物放进各自子目录，先拍平到 dist/ 下。
+      # download-artifact 会把每个 matrix 产物放进各自子目录，mv to dist/ 
       - name: Flatten artifacts
         run: |
           find dist -type f -name '*.tar.gz' -exec mv -t dist {} +
@@ -139,13 +124,6 @@ jobs:
           chmod +x scripts/release/package.sh
           bash scripts/release/package.sh checksum "dist"
 
-      # 注：原先还有一步用 SSH_PRIVATE_KEY 给 .sha256 签 SSH 签名（.sha256.sig），
-      # 该文件没有任何消费方（zapd/zapupgrade 不校验它），属于无用的第二把私钥，
-      # 已整体移除，避免把 SSH 私钥引入发布流水线。
-      # Ed25519 发布签名（{pkg}.sig，hex 分离签名）：zapd/zapupgrade 用编译期 pin 的
-      # 公钥验证包体，这是自动更新信任根的关键一层（sha256 可被中间人静默跳过）。
-      # 私钥为 Repository secret ZAP_SIGN_KEY（PKCS#8 Ed25519 PEM 文本，与 build.sh
-      # 本地发版同一把）。未配置时跳过，目标机需开启 allow_insecure_update 才能安装。
       - name: Sign packages (Ed25519)
         env:
           ZAP_SIGN_KEY: ${{ secrets.ZAP_SIGN_KEY }}
@@ -157,7 +135,6 @@ jobs:
           keyfile=$(mktemp)
           printf '%s\n' "$ZAP_SIGN_KEY" > "$keyfile"
           chmod 600 "$keyfile"
-          # 确认是 Ed25519 私钥（算法不符时立刻失败，而不是产出无效签名）
           openssl pkey -in "$keyfile" -noout -text 2>/dev/null | grep -q "ED25519" \
             || { echo "error: ZAP_SIGN_KEY is not an Ed25519 private key"; rm -f "$keyfile"; exit 1; }
           for pkg in dist/*.tar.gz; do
@@ -170,7 +147,7 @@ jobs:
           rm -f "$keyfile"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz
