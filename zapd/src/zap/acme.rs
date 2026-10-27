@@ -578,10 +578,12 @@ pub async fn create_order(p: CreateParams) -> Result<OrderView, String> {
 
     let (account, account_id) = ensure_account(p.user_id, directory, &p.email).await?;
 
+    // 标识符必须保留 `*.` 前缀，否则 Let's Encrypt 不会把通配符写进 SAN；
+    // 只有计算 DNS 验证记录主机名时才用 `strip_wildcard` 剥掉前缀（见 collect_challenges）。
     let identifiers: Vec<Identifier> = p
         .domains
         .iter()
-        .map(|d| Identifier::Dns(strip_wildcard(d)))
+        .map(|d| Identifier::Dns(d.trim().to_string()))
         .collect();
 
     // 续期订单带上 ARI 的 replaces 字段，让 CA 识别为续期并豁免频率限制；
