@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
 # ZAP release tool
 #
-# Orchestrates a release:
-#   1. bump [workspace.package].version in Cargo.toml
-#   2. commit + push (default on a version-bump branch; --no-branch on current branch)
-#   3. (--tag only) tag v<version> + push tag — GitHub Actions then builds & publishes
-#      the GitHub Release. 镜像发布不在 CI 做（大包体上传对象存储太慢），改由本地 --sync。
-#   4. (--sync only) download GitHub Release assets for <version>, mirror them to
-#      COS + Cloudflare, 并发布 latest.txt + 安装脚本（一条命令完成完整镜像）。
-#
-# 构建/打包在 .github/workflows/release.yml（on tag push）；镜像发布回退到本地
-# `./release.sh <ver> --sync`（zaposs + 本地 ~/.bashrc 里的 COS_ID/COS_KEY/AWS_*）。
+# Examples:
+#   ./release.sh 1.5.0 // bump on a new branch (default, open PR to merge)
+#   ./release.sh 1.5.0 --no-branch // bump on current branch (no new branch, no tag)
+#   ./release.sh 1.5.0 --tag    // 打 tag 后再跑 --sync
+#   ./release.sh 1.5.0 --sync  // mirror GitHub Release assets to COS + Cloudflare, publish latest.txt + install scripts
+#   ./release.sh 1.5.0 --sync-tag     // sync latest.txt only, no re-upload of assets
 #
 # Usage:
 #   ./release.sh <version> [--no-branch] [--tag] [--no-latest] [--sync] [--sync-tag]
@@ -35,8 +31,10 @@
 # Env:
 #   RELEASE_BRANCH  base branch to bump from / tag on (default: main)
 #   BUMP_BRANCH     branch name for the default PR flow (default: bump-version-v<ver>)
-#   GITHUB_REPO     owner/repo for --sync download (default: zapsh/zap; override for forks)
 #   COS_ID/COS_KEY  zaposs 凭证（COS）；AWS_* 为 Cloudflare R2(--aws)。放 ~/.bashrc。
+#
+#
+#
 # __END_USAGE__
 if [ -z "${BASH_VERSION:-}" ]; then
     exec bash "$0" "$@"
@@ -135,7 +133,7 @@ ensure_zaposs() {
 sync_github_assets() {
     local ver="$1"
     local tag="v$ver" tmp repo
-    repo="${GITHUB_REPO:-zapsh/zap}"
+    repo="zapsh/zap"
     tmp=$(mktemp -d)
     info "downloading GitHub Release assets for $tag (repo: $repo) ..."
     if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
