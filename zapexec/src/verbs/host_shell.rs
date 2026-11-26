@@ -318,6 +318,11 @@ fn spawn(p: &Prepared, cols: u16, rows: u16) -> Result<(std::fs::File, Child), S
     cmd.env("LOGNAME", &p.user);
     cmd.env("SHELL", &p.shell);
     cmd.env("TERM", "xterm-256color");
+    // env_clear() 之后没有 LANG/LC_*，shell 与 vi/vim 会退回 POSIX/C locale，
+    // 把 UTF-8 中文按单字节显示成乱码。C.UTF-8 在 glibc / musl 上都可用，
+    // 不依赖系统是否生成了 zh_CN.UTF-8 之类的区域。
+    cmd.env("LANG", "C.UTF-8");
+    cmd.env("LC_ALL", "C.UTF-8");
     cmd.env(
         "PATH",
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
