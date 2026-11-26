@@ -40,7 +40,6 @@ sudo bash install.sh --pkg ./zap-v1.5.0-linux-amd64.tar.gz --offline
 
 Notes:
 
-- A `-pro` tarball installs as Zap Pro (the edition is baked into the binary); no need to pass `--pro`
 - AppStore falls back to the seed packages shipped inside the release; retry the update from the panel
 
 ## Offline upgrade (air-gapped / intranet hosts)
@@ -61,11 +60,10 @@ is far more likely offline than a bad download):
 
 | Rejected | Why | What to do |
 | --- | --- | --- |
-| version unparseable from the filename | offline the filename is the only metadata | name it `zap-v<version>[-pro]-linux-<arch>.tar.gz`, or pass `--to` |
+| version unparseable from the filename | offline the filename is the only metadata | name it `zap-v<version>-linux-<arch>.tar.gz`, or pass `--to` |
 | wrong architecture | would brick the host | copy the tarball for this architecture |
 | no binaries inside | usually an outer bundle, not the release tarball | use the `zap-v*.tar.gz` release package |
 | sha256 mismatch | corrupted in transit, or wrong file | re-copy; `--no-verify` if you're sure |
-| different edition than installed | avoid clobbering Pro with Community (or vice versa) | pass `--pro` / `--community` to confirm |
 
 ## CLI upgrade
 
@@ -90,14 +88,14 @@ upstream) → unpack → back up the current binaries to
 | `--dir` | ZAP installation root | `/usr/local/zap` |
 | `--log` | upgrade log (append) | `data/upgrade/logs/run-cli-<timestamp>.log` |
 | `--force` | install even when the target is not newer | off |
-| `--pkg` | **offline upgrade**: use a local tarball, no network (version / edition / arch from the filename) | none |
+| `--pkg` | **offline upgrade**: use a local tarball, no network (version / arch from the filename) | none |
 | `--sha256` | expected hash for the local tarball (defaults to `<tarball>.sha256`; no hash → skip) | none |
 | `--no-verify` | skip the sha256 check for the local tarball | off |
 
 Notes:
 
 - With both `--pkg` and `--to`, the version comes from `--to` (a mismatch is logged), but the
-  architecture and edition are always taken from the filename — offline, that is the trustworthy part.
+  architecture is always taken from the filename — offline, that is the trustworthy part.
 - The panel is briefly unavailable during the upgrade (`zapd` restarts last).
 - Without systemd (docker, bare `rundev.sh` processes) the binaries are replaced but not
   restarted; the log says a manual restart is required.

@@ -108,23 +108,9 @@ impl MenuSeed {
     }
 }
 
-/// 商业模块（Zap Pro）追加的菜单种子。
-///
-/// 未启用 `commercial` 时返回空表 —— 播种循环只写一处，不用到处 `#[cfg]`。
-pub(crate) fn pro_seeds() -> &'static [MenuSeed] {
-    #[cfg(feature = "commercial")]
-    {
-        crate::pro::menu::SEEDS
-    }
-    #[cfg(not(feature = "commercial"))]
-    {
-        &[]
-    }
-}
-
-/// 全部种子：内置清单 + 商业模块追加的部分。
+/// 全部种子：内置菜单清单。
 pub(crate) fn all_seeds() -> impl Iterator<Item = &'static MenuSeed> {
-    MENU_SEEDS.iter().chain(pro_seeds())
+    MENU_SEEDS.iter()
 }
 
 /// 菜单清单：声明顺序 = 插入顺序 = id 自增顺序 = 侧栏显示顺序；父菜单必须先声明。

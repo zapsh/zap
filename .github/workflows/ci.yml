@@ -57,17 +57,6 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      # create zappro stub to let cargo fmt --all resolve zapd mod pro declaration
-      - name: Create zappro stub (commercial module placeholder)
-        run: |
-          mkdir -p zappro/src
-          # create a stub mod.rs to let cargo fmt --all resolve zapd mod pro declaration
-          printf '%s\n' \
-            '// Placeholder for the Zap Pro (commercial) module mount point.' \
-            '// Real source is cloned into zappro/ externally.' \
-            '// This stub only lets cargo fmt --all resolve zapd mod pro declaration.' \
-            > zappro/src/mod.rs
-
       - name: Check formatting
         run: cargo fmt --all --check
 

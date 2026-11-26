@@ -351,7 +351,7 @@ dependencies = [
  "sha1 0.10.7",
  "sync_wrapper",
  "tokio",
- "tokio-tungstenite 0.29.0",
+ "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",
@@ -5242,21 +5242,6 @@ dependencies = [
 
 [[package]]
 name = "tokio-tungstenite"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
-dependencies = [
- "futures-util",
- "log",
- "rustls",
- "rustls-pki-types",
- "tokio",
- "tokio-rustls",
- "tungstenite 0.26.2",
-]
-
-[[package]]
-name = "tokio-tungstenite"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
@@ -5264,7 +5249,7 @@ dependencies = [
  "futures-util",
  "log",
  "tokio",
- "tungstenite 0.29.0",
+ "tungstenite",
 ]
 
 [[package]]
@@ -5403,25 +5388,6 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tungstenite"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
-dependencies = [
- "bytes",
- "data-encoding",
- "http",
- "httparse",
- "log",
- "rand 0.9.5",
- "rustls",
- "rustls-pki-types",
- "sha1 0.10.7",
- "thiserror 2.0.21",
- "utf-8",
-]
-
-[[package]]
-name = "tungstenite"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
@@ -5540,12 +5506,6 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
-
-[[package]]
-name = "utf-8"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
 name = "utf8_iter"
@@ -6206,7 +6166,7 @@ dependencies = [
 
 [[package]]
 name = "zap-crypto"
-version = "1.7.0"
+version = "1.7.8"
 dependencies = [
  "aes-gcm 0.10.3",
  "base64 0.22.1",
@@ -6216,7 +6176,7 @@ dependencies = [
 
 [[package]]
 name = "zap-platform"
-version = "1.7.0"
+version = "1.7.8"
 dependencies = [
  "libc",
  "thiserror 2.0.21",
@@ -6224,7 +6184,7 @@ dependencies = [
 
 [[package]]
 name = "zap-proto"
-version = "1.7.0"
+version = "1.7.8"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.17",
@@ -6238,7 +6198,7 @@ dependencies = [
 
 [[package]]
 name = "zapctl"
-version = "1.7.0"
+version = "1.7.8"
 dependencies = [
  "bcrypt",
  "chrono",
@@ -6255,7 +6215,7 @@ dependencies = [
 
 [[package]]
 name = "zapd"
-version = "1.7.0"
+version = "1.7.8"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -6312,7 +6272,6 @@ dependencies = [
  "tokio",
  "tokio-cron-scheduler",
  "tokio-rustls",
- "tokio-tungstenite 0.26.2",
  "tokio-util",
  "tower",
  "tower-http",
@@ -6321,7 +6280,6 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "vergen",
- "webpki-roots 0.26.11",
  "x509-parser",
  "zap-crypto",
  "zap-proto",
@@ -6329,7 +6287,7 @@ dependencies = [
 
 [[package]]
 name = "zapexec"
-version = "1.7.0"
+version = "1.7.8"
 dependencies = [
  "base64 0.22.1",
  "bollard",
@@ -6358,7 +6316,7 @@ dependencies = [
 
 [[package]]
 name = "zapupgrade"
-version = "1.7.0"
+version = "1.7.8"
 dependencies = [
  "clap",
  "flate2",

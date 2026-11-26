@@ -38,10 +38,9 @@ pub struct Claims {
     /// 它们反序列化后得到 0，而存量用户的版本号同样从 0 起算，因此不会被误杀。
     #[serde(default, rename = "tv")]
     pub token_version: i64,
-    /// 凭据作用域（`api_token.scope`）：`''` 普通用户 Token，`'cluster'` 集群节点机器凭据。
+    /// 凭据作用域：`''` 普通用户 Token，`'sudo'` 代登录票据。
     ///
-    /// 带 `default` 是为了兼容本次改动之前签发的 JWT（payload 里没有该字段）。
-    /// `cluster` 凭据由 `access::guard` 收口，只能访问 `/pro/cluster/agent/**`。
+    /// 带 `default` 是为了兼容旧版本签发的 JWT（payload 里没有该字段）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub scope: String,
 }
@@ -139,11 +138,6 @@ pub fn refresh_jwt_token(orig: &Claims, expire: u64) -> Result<String, Error> {
     )
 }
 
-/// 凭据作用域：一次性终端票据（v3 一键 SSH，由**被控端自己**签发）。
-///
-/// 带这个 scope 的 token 只能访问终端 WebSocket，见 `access::guard`。
-pub const SSH_SCOPE: &str = "ssh";
-
 /// 代登录（一键登录客户面板）作用域：由 admin / reseller 向目标客户签发，
 /// 把会话绑定到目标客户身份。
 ///
@@ -153,9 +147,8 @@ pub const SUDO_SCOPE: &str = "sudo";
 
 /// 签发一枚**限定作用域**的短时效 JWT。
 ///
-/// 与 [`generate_jwt_token_with_expire`] 的唯一区别是可以指定 `scope` 与 `sub`：
-/// 终端票据用它把凭据绑死在一条 SSH 连接上（`sub = "ssh:{conn_id}"`），
-/// 并让 `access::guard` 能把它收口到终端接口。
+/// 与 [`generate_jwt_token_with_expire`] 的唯一区别是可以指定 `scope` 与 `sub`
+/// （当前用于代登录票据）。
 pub fn generate_scoped_jwt(
     id: u64,
     sub: &str,
@@ -388,7 +381,7 @@ struct ApiTokenLookup {
     /// 该 Token 记录的会话版本号：创建后不变，「下线所有设备」时统一被推高，
     /// 于是版本号落后的 Token 在下次请求时判为已下线。
     token_version: i64,
-    /// 作用域：`''` 普通用户 Token；`'cluster'` 集群节点机器凭据（只能访问集群上报接口）。
+    /// 作用域：`''` 普通用户 Token；非空的按具体作用域处理。
     scope: String,
 }
 
@@ -410,7 +403,6 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
     // 静态 Token 与 JWT 走同一套「下线所有设备」吊销规则：Token 的 `token_version`
     // 固定在创建时（= 用户当时版本号），而 `session::bump`「下线所有设备」只推高
     // `user.token_version`（不再同步 Token 行），于是落后即判为已下线。
-    // 集群节点凭据（scope='cluster'）豁免，否则管理员「下线所有设备」会把整舰队踢下线。
 
     let now = time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -425,8 +417,8 @@ async fn resolve_api_token(raw: &str) -> Option<Claims> {
     }
 
     // 「下线所有设备」把用户版本号推高；静态 Token 的 token_version 落后于它即已作废
-    // （与 JWT 共用 session::version_of 校验）。集群节点凭据豁免，避免误踢整舰队。
-    if r.scope != "cluster" && crate::zap::session::version_of(r.user_id as u64) > r.token_version {
+    // （与 JWT 共用 session::version_of 校验）。
+    if crate::zap::session::version_of(r.user_id as u64) > r.token_version {
         return None;
     }
 

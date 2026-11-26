@@ -351,19 +351,6 @@ fn normalize_stage(stage: &Path) {
     }
 }
 
-/// 包名里的「发行线」后缀：商业版是 `-pro`，社区版没有。
-///
-/// 商业版与社区版同版本号、不同包名：装的是哪条线就一直升哪条线，Pro 不会被社区版包
-/// 覆盖回去。以本二进制的编译期特性（`commercial` feature）为准 —— 二进制本身就是
-/// 发行线的唯一真相源，不需要外部文件记录。
-fn pkg_suffix() -> &'static str {
-    if cfg!(feature = "commercial") {
-        "-pro"
-    } else {
-        ""
-    }
-}
-
 /// 下载发行包 → sha256 校验 → 解包 → 规整到 `stage/{run_id}/`（含 version 文件）。
 /// 返回绝对路径（zapexec 端的前缀白名单校验需要绝对路径）。
 pub async fn download_and_stage(
@@ -383,7 +370,7 @@ pub async fn download_and_stage(
     }
     let version = version.trim_start_matches('v').to_string();
     let arch = target_arch()?.to_string();
-    let pkg = format!("zap-v{version}{}-linux-{arch}.tar.gz", pkg_suffix());
+    let pkg = format!("zap-v{version}-linux-{arch}.tar.gz");
     let stage = stage_dir_for(run_id);
     // 在闭包外算好并 move 进去：闭包需 'static，不能捕获 run_id(&str)
     let log_path = log_path_for(run_id);

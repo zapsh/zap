@@ -52,6 +52,8 @@ pub async fn init_schema() {
     init_role_menus_table(&menu_ids).await;
     // 用户级菜单例外：给单个用户开小灶 / 收窄入口（仅渲染层）
     init_user_menus_table().await;
+    // 老库可能残留已移除的 Zap Pro 菜单，清掉避免侧栏出现指向空白页的入口
+    remove_legacy_pro_menus().await;
     // 菜单与授权在建表那一步一次性播种完毕（见 menu_seed），加入口只改种子清单。
     // 动作级权限点（请求级鉴权依据；role_menus 仅用于菜单渲染）
     init_role_permissions_table().await;
@@ -648,6 +650,23 @@ async fn init_menus_table() -> HashMap<String, i64> {
     menu_seed::seed_menus(pool).await
 }
 
+/// 清理旧库里已下线的 Zap Pro 菜单及其角色 / 用户授权（幂等，每次启动执行）。
+async fn remove_legacy_pro_menus() {
+    let pool = get_db_pool().await;
+    let sqls: [&str; 3] = [
+        "DELETE FROM role_menus WHERE menu_id IN \
+         (SELECT id FROM menus WHERE name IN ('pro','pro-dash','pro-cluster','pro-license'))",
+        "DELETE FROM user_menus WHERE menu_id IN \
+         (SELECT id FROM menus WHERE name IN ('pro','pro-dash','pro-cluster','pro-license'))",
+        "DELETE FROM menus WHERE name IN ('pro','pro-dash','pro-cluster','pro-license')",
+    ];
+    for sql in sqls {
+        if let Err(e) = sqlx::query(sql).execute(pool).await {
+            warn!("清理旧版 Pro 菜单失败: {e}");
+        }
+    }
+}
+
 // ── role_menus ─────────────────────────────────────────────
 
 /// 角色 → 菜单授权（仅新建库）。
@@ -1174,8 +1193,7 @@ async fn init_api_token_table() {
         -- token_version：该 Token 记录的会话版本号。「下线所有设备」时统一推高，
         --   版本号落后的 Token 在下次请求时判为已下线（见 zap::session::bump）
         token_version INTEGER NOT NULL DEFAULT 0,
-        -- scope：'' 普通用户 Token / 'cluster' 集群节点机器凭据（Zap Pro）。
-        --   'cluster' 凭据由 access::guard 收口：只能访问 /pro/cluster/agent/**
+        -- scope：'' 普通用户 Token（预留给其它受限用途，如 'sudo' 代登录）
         scope TEXT NOT NULL DEFAULT '',
         created_at INTEGER,
         updated_at INTEGER
@@ -1520,5 +1538,3 @@ async fn column_exists(table: &str, column: &str) -> bool {
         .await
         .unwrap_or(false)
 }
-
-

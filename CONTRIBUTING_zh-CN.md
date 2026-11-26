@@ -141,4 +141,4 @@ export COS_ID=xxx COS_KEY=xxx
 
 ## 10. 许可
 
-ZAP 为 AGPL-3.0 / 商业许可**双许可**。提交 PR 即视为同意以 [AGPL-3.0](./LICENSE) 授权；闭源集成或企业版功能需购买 [商业许可](./COMMERCIAL-LICENSE.md)。
+ZAP 采用 [AGPL-3.0](./LICENSE) 许可。提交 PR 即视为同意以相同许可授权你的贡献。

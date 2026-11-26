@@ -81,15 +81,8 @@ Issues and pull requests are welcome. Before submitting, run `cargo fmt --all &&
 
 For the full workflow (fork setup, branch model, local development, release packaging) see [Contributing / Development Guide](./CONTRIBUTING.md).
 
-By submitting a PR you agree to license your contribution under [AGPL-3.0](./LICENSE), or (where applicable) under the [Commercial License](./COMMERCIAL-LICENSE.md).
+By submitting a PR you agree to license your contribution under [AGPL-3.0](./LICENSE).
 
 ## License
 
-ZAP is **dual licensed**:
-
-- **AGPL-3.0 (open source)**: free to use, modify and distribute. Under AGPL §13, if you offer ZAP's functionality to others over a network (e.g. as SaaS), you must also provide the complete corresponding source code.
-- **Commercial License (Zap Pro)**: required for closed-source integration, modification or redistribution, or for enterprise features such as cluster management.
-
-In short: **open source with proper disclosure → free under AGPL-3.0; closed-source integration / commercial use → purchase a commercial license.**
-
-For commercial licensing, contact <sales@zap.cn>.
+ZAP is licensed under **AGPL-3.0**: free to use, modify and distribute. Under AGPL §13, if you offer ZAP's functionality to others over a network (e.g. as SaaS), you must also provide the complete corresponding source code.

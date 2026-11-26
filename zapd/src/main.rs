@@ -29,18 +29,10 @@ pub mod storage;
 pub mod zap;
 pub mod zapexec;
 
-/// Zap Pro（商业模块）。
-#[cfg(feature = "commercial")]
-#[path = "../../zappro/src/mod.rs"]
-mod pro;
-
 #[derive(clap::Parser)]
 struct Cli {
     #[clap(short, long, action)]
     version: bool,
-
-    #[clap(long, action)]
-    edition: bool,
 
     /// 初始化管理员账号后退出（install.sh 部署完成后调用，不启动面板服务）。
     /// 库不存在则建库建表；已有管理员则原样不动。
@@ -50,38 +42,6 @@ struct Cli {
     /// `--init-admin` 的密码；省略时生成随机密码并打印到标准输出
     #[clap(long, value_name = "PASSWORD", requires = "init_admin")]
     admin_password: Option<String>,
-
-    /// Zap Pro：接入主控（主控基址，**含前缀**，如 https://ctrl.example.com:2600/zap）。
-    /// 成功后凭据加密存本地，由后台循环持续上报。
-    #[cfg(feature = "commercial")]
-    #[clap(long, value_name = "URL")]
-    join_url: Option<String>,
-
-    /// `--join-url` 附带的注册口令（有且有效 → 主控当场通过，无需管理员审批）
-    #[cfg(feature = "commercial")]
-    #[clap(long, value_name = "CODE", requires = "join_url")]
-    join_token: Option<String>,
-
-    /// 在主控列表里显示的节点名（默认用主机名）
-    #[cfg(feature = "commercial")]
-    #[clap(long, value_name = "NAME", requires = "join_url")]
-    join_name: Option<String>,
-
-    /// 主控是自签证书：只信任**第一次**接入看到的证书，随后把它的指纹钉死
-    /// （不再是一路放行；主控换证书将被拒绝，需重新接入）
-    #[cfg(feature = "commercial")]
-    #[clap(long, action, requires = "join_url")]
-    join_insecure: bool,
-
-    /// Zap Pro：打印本机接入主控的状态后退出
-    #[cfg(feature = "commercial")]
-    #[clap(long, action)]
-    join_status: bool,
-
-    /// Zap Pro：断开与主控的接入（清本地凭据，不影响主控记录）
-    #[cfg(feature = "commercial")]
-    #[clap(long, action)]
-    unjoin: bool,
 }
 
 /// Default Log Level（ENV `RUST_LOG` Override）：
@@ -105,18 +65,6 @@ async fn main() {
         println!("zapd version {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    if cli.edition {
-        println!(
-            "{}",
-            if cfg!(feature = "commercial") {
-                "pro"
-            } else {
-                "community"
-            }
-        );
-        return;
-    }
-
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -155,14 +103,6 @@ async fn main() {
 
     // init db
     db::init_db::init_schema().await;
-
-    #[cfg(feature = "commercial")]
-    pro::init().await;
-
-    #[cfg(feature = "commercial")]
-    if let Some(code) = pro::cluster::cli::run_cli(&cli).await {
-        std::process::exit(code)
-    }
 
     if let Err(e) = config::init_config() {
         error!("Configuration initialization failed. Zapd start failed : {e}");

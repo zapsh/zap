@@ -141,4 +141,4 @@ export COS_ID=xxx COS_KEY=xxx
 
 ## 10. License
 
-ZAP is **dual-licensed** under AGPL-3.0 and a commercial license. Submitting a PR means you agree to license your contribution under [AGPL-3.0](./LICENSE); closed-source integration or enterprise features require a [commercial license](./COMMERCIAL-LICENSE.md).
+ZAP is licensed under [AGPL-3.0](./LICENSE). Submitting a PR means you agree to license your contribution under the same license.

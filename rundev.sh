@@ -8,9 +8,6 @@
 #                               #  driver to recompile the entire workspace, so waiting several
 #                               #  minutes after changing one line isn't worth it)
 #   ./rundev.sh --release       # Use a release build
-#   ./rundev.sh --with-pro      # Enable the commercial module Zap Pro (cargo --features zapd/commercial);
-#                               # requires zappro/ to be cloned into the repo root (see zappro/README.md),
-#                               # automatically runs zappro/pro.sh setup to sync pages before building
 #   ./rundev.sh --skip-web      # Skip frontend build
 #   ./rundev.sh --skip-build    # Skip cargo build
 #   ./rundev.sh --skip-install  # Skip nodejs install (node_modules)
@@ -47,19 +44,12 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
 usage() { awk 'NR>2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
-if [ ! -d "zappro" ]; then
-  mkdir -p "zappro/src"
-  echo '// placehlder' > "zappro/src/mod.rs"
-fi
-
 # ── arguments parsing ────────────────────────────────────────────────
 RELEASE=false; SKIP_WEB=false; SKIP_BUILD=false; SKIP_INSTALL=false; CHECK_CODE=false; RESET_DB=false; CHECK=false; FMT_ONLY=false; CLIPPY_FIX=false
-WITH_PRO=false
 ADMIN_USER=""; ADMIN_PASS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --release)      RELEASE=true; shift ;;
-    --with-pro)     WITH_PRO=true; shift ;;
     --skip-web)     SKIP_WEB=true; shift ;;
     --skip-build)   SKIP_BUILD=true; shift ;;
     --skip-install) SKIP_INSTALL=true; shift ;;
@@ -96,21 +86,6 @@ done
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-# --with-pro 是手动开关（同 build.sh）：不带就是开源构建，产物与现在完全一致
-if [ "$WITH_PRO" = true ]; then
-  [ -f "$ROOT_DIR/zappro/pro.sh" ] \
-    || die "specified --with-pro but failed to find $ROOT_DIR/zappro (please clone the commercial module repository first)"
-  info "sync pro page ..."
-  bash "$ROOT_DIR/zappro/pro.sh" setup || die "failed to sync Pro pages"
-  info "enable Zap Pro(-features zapd/commercial)"
-fi
-
-if [ -f "$ROOT_DIR/zappro/pro.sh" ]; then
-  CLIPPY_FEATURES=(--all-features)
-else
-  CLIPPY_FEATURES=()
-fi
-
 if [ "$CHECK" = true ] && [ "$SKIP_BUILD" = true ]; then
   die "--check 与 --skip-build 互斥（--check 本就不构建，只做 fmt / clippy 检查）"
 fi
@@ -123,8 +98,8 @@ if [ "$CHECK" = true ]; then
     die "格式检查未通过：执行 cargo fmt --all 自动修复后重试"
   fi
   ok "格式检查通过"
-  info "检查代码 (cargo clippy --all-targets --all-features -- -D warnings) ..."
-  cargo clippy --all-targets "${CLIPPY_FEATURES[@]}" -- -D warnings || die "代码检查未通过（详见上方 clippy 输出）"
+  info "检查代码 (cargo clippy --all-targets -- -D warnings) ..."
+  cargo clippy --all-targets -- -D warnings || die "代码检查未通过（详见上方 clippy 输出）"
   ok "代码检查通过，一切正常"
   exit 0
 fi
@@ -142,7 +117,7 @@ fi
 if [ "$CLIPPY_FIX" = true ]; then
   command -v cargo >/dev/null 2>&1 || die "未找到 cargo，请先安装 Rust"
   info "自动修复 clippy 告警 (cargo clippy --fix) ..."
-  cargo clippy --fix "${CLIPPY_FEATURES[@]}" --all-targets --allow-dirty \
+  cargo clippy --fix --all-targets --allow-dirty \
     || warn "clippy 自动修复未全部完成（部分告警需手动修复，或存在编译错误）"
   ok "clippy 自动修复完成"
   exit 0
@@ -179,11 +154,6 @@ if [ "$RELEASE" = true ]; then
 else
   BIN_DIR="$ROOT_DIR/target/debug"
   CARGO_FLAGS=()
-fi
-
-# commercial mode
-if [ "$WITH_PRO" = true ]; then
-  CARGO_FLAGS+=(--features zapd/commercial)
 fi
 
 # ── dependencies check ────────────────────────────────────────────────
@@ -224,8 +194,8 @@ else
   if [ "$CHECK_CODE" = true ]; then
     info "Format Code (cargo fmt --all) ..."
     cargo fmt --all
-    info "Clippy Check Code (cargo clippy --all-targets --all-features -- -D warnings) ..."
-    cargo clippy --all-targets "${CLIPPY_FEATURES[@]}" -- -D warnings || die "Code Check Failed (see clippy output above)"
+    info "Clippy Check Code (cargo clippy --all-targets -- -D warnings) ..."
+    cargo clippy --all-targets -- -D warnings || die "Code Check Failed (see clippy output above)"
   else
     warn "Skip fmt / clippy check (add --check-code to run)"
   fi

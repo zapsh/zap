@@ -21,7 +21,6 @@
 //! [`manager_impl`] 注册，无需改动上层调用方。
 
 use std::path::Path;
-use std::process::Command;
 
 use serde::Deserialize;
 
@@ -34,7 +33,7 @@ pub(crate) const OPENRC_UPDATE: &str = "rc-update";
 /// openrc 初始化脚本目录。
 pub(crate) const OPENRC_INIT_DIR: &str = "/etc/init.d";
 
-/// 服务管理器类型：决定 exists / is_active / is_enabled / act 走哪一套实现。
+/// 服务管理器类型：决定 exists / is_active / act 走哪一套实现。
 ///
 /// 默认 systemd（绝大多数 Linux 发行版）；openrc 用于 Alpine 等。未来再加
 /// sys-v / runit 也只是新增一个 `ServiceManager` 实现。
@@ -46,11 +45,10 @@ pub(crate) enum Manager {
     Openrc,
 }
 
-/// init 系统的统一抽象：给定服务名，提供存在 / 运行 / 自启 / 动作四类查询。
+/// init 系统的统一抽象：给定服务名，提供存在 / 运行 / 动作三类查询。
 pub(crate) trait ServiceManager {
     fn exists(&self, name: &str) -> bool;
     fn is_active(&self, name: &str) -> bool;
-    fn is_enabled(&self, name: &str) -> bool;
     fn act(&self, action: &str, name: &str) -> Result<(), String>;
 }
 
@@ -79,9 +77,6 @@ impl ServiceManager for Systemd {
     }
     fn is_active(&self, name: &str) -> bool {
         systemd_active(name)
-    }
-    fn is_enabled(&self, name: &str) -> bool {
-        systemd_enabled(name)
     }
     fn act(&self, action: &str, name: &str) -> Result<(), String> {
         act_with(SYSTEMD_CTL, &[action, name])
@@ -137,16 +132,6 @@ impl ServiceManager for Openrc {
     }
     fn is_active(&self, name: &str) -> bool {
         run_ok("rc-service", &[name, "status"])
-    }
-    fn is_enabled(&self, name: &str) -> bool {
-        match Command::new("rc-update").args(["show", "default"]).output() {
-            Ok(o) => {
-                let s = String::from_utf8_lossy(&o.stdout);
-                s.lines()
-                    .any(|l| l.split_whitespace().any(|w| w == name))
-            }
-            Err(_) => false,
-        }
     }
     fn act(&self, action: &str, name: &str) -> Result<(), String> {
         act_with("rc-service", &[name, action])

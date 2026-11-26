@@ -20,11 +20,11 @@ data/ssh_recordings/*
 data/services/*
 data/apps/*/
 data/sites/*
-data/pro/*
 data/ssl/*
 data/tmp/*
 data/plugins/schedules.yaml
 data/plugins/logs/*
+# 历史 Pro 集群运行期残留（不再使用，仅避免旧库文件出现在 git 状态里）
 data/cluster.*
 data/backups/
 data/task-logs/
@@ -40,9 +40,6 @@ plugins/
 !data/plugins/
 !data/plugins/_lib/
 !data/plugins/_lib/*
-
-/zappro/
-/web/src/views/pro/
 
 secret.key
 

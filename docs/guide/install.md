@@ -23,9 +23,6 @@ sudo bash install.sh
 
 # 指定版本与管理员凭据
 sudo bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
-
-# 商业版 Zap Pro（包名带 -pro）
-sudo bash install.sh latest --pro
 ```
 
 装完会打印访问地址 `https://<服务器 IP>:2663` 与管理员凭据。
@@ -35,11 +32,8 @@ sudo bash install.sh latest --pro
 | 参数 | 说明 |
 | --- | --- |
 | `[VERSION]` | 要安装的版本号，默认 `latest` |
-| `--pro` | 安装 Zap Pro；发行线由所安装的二进制决定（pro / 社区），之后升级自动跟同一条线（也可显式 `--pro` / `--community`） |
 | `--admin-user <name>` | 管理员用户名（也是 Linux 账号名，家目录 `/home/<name>`），默认 `admin` |
 | `--admin-pass <pass>` | 管理员密码，可用字符 `字母 数字 . _ -`；不指定则随机生成 |
-| `--join-url <url>` | **Zap Pro**：接入主控的完整基址 |
-| `--join-token <code>` | 注册口令（建议用环境变量 `ZAP_JOIN_TOKEN` 传，避免留在 history） |
 | `--pkg <路径>` | 使用本地安装包，不联网下载 |
 | `--offline` | 全程不访问外网 |
 | `--lang <zh\|en>` | 安装脚本输出语言（默认按 `$LANG` 推断，兜底中文；也可用环境变量 `ZAP_LANG`） |
@@ -81,7 +75,7 @@ sudo zapupgrade upgrade --pkg ./zap-v1.5.0-linux-amd64.tar.gz
 ```
 
 它走的是与在线升级同一套替换流程（备份 → 原子替换 → 重启 → 失败自动回滚），
-拷错架构 / 发行线的包会在替换二进制之前被拒绝。
+拷错架构的包会在替换二进制之前被拒绝。
 
 ## 安装目录
 

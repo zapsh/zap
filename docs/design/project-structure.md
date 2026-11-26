@@ -13,7 +13,6 @@ zap/
 ├── zapctl/         # 命令行运维工具
 ├── zapupgrade/     # 系统升级器（upgrade / rollback）
 ├── zap-platform/   # 跨 UNIX 平台抽象层（开发中，尚未接入 zapd / zapexec）
-├── zappro/         # 商业版模块（开源构建下为空占位）
 ├── web/            # Vue 3 + Element Plus 前端
 ├── docs/           # 文档站（VitePress，中英双语）
 └── scripts/        # 安装 / 卸载、离线打包、systemd 单元

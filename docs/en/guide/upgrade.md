@@ -43,8 +43,6 @@ sudo bash install.sh --pkg ./zap-v1.5.0-linux-amd64.tar.gz --offline
 
 Key points:
 
-- A `-pro` package name means install as the commercial edition (the release line is carried by the binary),
-  so `--pro` is not needed.
 - The AppStore uses the seed package bundled in the release instead of cloning a remote repository;
   it can be retried from the panel at any time.
 
@@ -66,11 +64,10 @@ Offline upgrades reject these kinds of packages **before replacing any binary**
 
 | Rejected | Why | How to fix |
 | --- | --- | --- |
-| Version cannot be parsed from the filename | Offline, the filename is the only source of metadata | Name it `zap-v<version>[-pro]-linux-<arch>.tar.gz`, or specify the version with `--to` |
+| Version cannot be parsed from the filename | Offline, the filename is the only source of metadata | Name it `zap-v<version>-linux-<arch>.tar.gz`, or specify the version with `--to` |
 | Package is for another architecture | Loading a wrong-architecture binary breaks the machine outright | Copy the release package for the matching architecture |
 | Package contains no binary | Usually you passed the outer bundle, not the release tarball | Use the `zap-v*.tar.gz` release package |
 | sha256 mismatch | Corrupted in transit, or wrong version | Re-copy; use `--no-verify` when you are certain |
-| Release line differs from this machine | Prevents overwriting Pro with community (or vice versa) | Confirm and pass `--pro` / `--community` explicitly |
 
 ## CLI upgrade
 
@@ -94,14 +91,14 @@ Flow: read the channel's `latest.txt` → download `zap-v<version>-linux-<arch>.
 | `--dir` | ZAP installation root | `/usr/local/zap` |
 | `--log` | Upgrade log (appended) | `data/upgrade/logs/run-cli-<timestamp>.log` |
 | `--force` | Install even when the target version is not newer than the current one | off |
-| `--pkg` | **Offline upgrade**: use a local release package, no network (version / release line / architecture parsed from the filename) | none |
+| `--pkg` | **Offline upgrade**: use a local release package, no network (version / architecture parsed from the filename) | none |
 | `--sha256` | Checksum for the local package (defaults to reading `<package>.sha256`; verification is skipped if neither exists) | none |
 | `--no-verify` | Skip sha256 verification of the local package | off |
 
 Notes:
 
 - When `--pkg` and `--to` are both given, `--to` wins for the version (a mismatch is logged),
-  but architecture and release line are always derived from the filename — offline, the filename
+  but architecture is always derived from the filename — offline, the filename
   is the only trustworthy metadata.
 - The panel is briefly unavailable during the upgrade (`zapd` restarts last).
 - On non-systemd environments (Docker, bare processes started by `rundev.sh`) the binaries are replaced

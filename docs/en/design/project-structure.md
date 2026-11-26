@@ -13,7 +13,6 @@ zap/
 ├── zapctl/         # Command-line operations tool
 ├── zapupgrade/     # System upgrader (upgrade / rollback)
 ├── zap-platform/   # Cross-UNIX platform abstraction layer (in progress, not wired in yet)
-├── zappro/         # Commercial module (empty placeholder in open-source builds)
 ├── web/            # Vue 3 + Element Plus frontend
 ├── docs/           # Documentation site (VitePress)
 └── scripts/        # Install / uninstall, offline packaging, systemd units

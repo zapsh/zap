@@ -141,13 +141,7 @@ async fn read_chunk(pty: &AsyncFd<std::fs::File>) -> io::Result<Vec<u8>> {
         let mut guard = pty.readable().await?;
         match guard.try_io(|inner| {
             let fd = inner.get_ref().as_raw_fd();
-            let n = unsafe {
-                libc::read(
-                    fd,
-                    buf.as_mut_ptr() as *mut libc::c_void,
-                    buf.len(),
-                )
-            };
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if n < 0 {
                 Err(io::Error::last_os_error())
             } else {
@@ -171,13 +165,7 @@ async fn write_all(pty: &AsyncFd<std::fs::File>, data: &[u8]) -> io::Result<()> 
         let chunk = &data[off..];
         match guard.try_io(|inner| {
             let fd = inner.get_ref().as_raw_fd();
-            let n = unsafe {
-                libc::write(
-                    fd,
-                    chunk.as_ptr() as *const libc::c_void,
-                    chunk.len(),
-                )
-            };
+            let n = unsafe { libc::write(fd, chunk.as_ptr() as *const libc::c_void, chunk.len()) };
             if n < 0 {
                 Err(io::Error::last_os_error())
             } else {
@@ -260,8 +248,9 @@ fn resolve_cwd(home: &str, requested: &str) -> String {
 
 /// 账号被创建为 nologin（`useradd -s nologin`），这里换成可用的交互 shell。
 fn resolve_shell(from_passwd: &str) -> String {
-    let bad =
-        from_passwd.is_empty() || from_passwd.ends_with("nologin") || from_passwd.ends_with("/false");
+    let bad = from_passwd.is_empty()
+        || from_passwd.ends_with("nologin")
+        || from_passwd.ends_with("/false");
     if !bad {
         return from_passwd.to_string();
     }
@@ -376,10 +365,7 @@ fn spawn(p: &Prepared, cols: u16, rows: u16) -> Result<(std::fs::File, Child), S
 unsafe fn open_pty(cols: u16, rows: u16) -> Result<(libc::c_int, libc::c_int), String> {
     let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
     if master < 0 {
-        return Err(format!(
-            "创建 PTY 失败: {}",
-            io::Error::last_os_error()
-        ));
+        return Err(format!("创建 PTY 失败: {}", io::Error::last_os_error()));
     }
     if unsafe { libc::grantpt(master) } != 0 || unsafe { libc::unlockpt(master) } != 0 {
         let err = io::Error::last_os_error();

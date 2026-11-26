@@ -74,9 +74,6 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
 ] }
 rustls-pemfile = "2"
-#  cluster
-tokio-tungstenite = { version = "0.26", features = ["__rustls-tls"] }
-webpki-roots = "0.26"
 time = "0.3"
 local-ip-address = "0.6.5"
 bcrypt = "0.17.1"
@@ -128,6 +125,3 @@ anyhow = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-
-[features]
-commercial = []

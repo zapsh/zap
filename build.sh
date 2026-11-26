@@ -104,19 +104,14 @@ BIN_DIR="$CUR_DIR/target/$TARGET/release"
 BIN_STAGE="$DIST_DIR/.bins"
 PACKAGES=()
 
-# Usage: build_variant <community|pro>
-# Community edition has no commercial features (the --features zapd/commercial build is split into zappro/build_pro.sh).
 build_variant() {
-    local edition="$1"
-    info "Building ${edition} release binaries (${TARGET})..."
-    cargo build --release --target "$TARGET" \
-        || die "build failed (${edition})"
-    mkdir -p "$BIN_STAGE/$edition"
+    info "Building release binaries (${TARGET})..."
+    cargo build --release --target "$TARGET" || die "build failed"
+    mkdir -p "$BIN_STAGE"
     for bin in zapd zapctl zapexec zapupgrade; do
-        cp -f "$BIN_DIR/$bin" "$BIN_STAGE/$edition/$bin" \
-            || die "failed to copy $bin (${edition})"
+        cp -f "$BIN_DIR/$bin" "$BIN_STAGE/$bin" || die "failed to copy $bin"
     done
-    ok "${edition} binaries ready"
+    ok "binaries ready"
 }
 
 # Release packages use a single-level "zap/" directory layout:
@@ -126,14 +121,11 @@ build_variant() {
 DIST_ZAP="$DIST_DIR/zap"
 mkdir -p "$DIST_ZAP"
 
-# Usage: package_variant <community|pro> <package name suffix>
 package_variant() {
-    local edition="$1" suffix="$2"
     for bin in zapd zapctl zapexec zapupgrade; do
-        cp -f "$BIN_STAGE/$edition/$bin" "$DIST_ZAP/$bin" \
-            || die "failed to copy $bin (${edition})"
+        cp -f "$BIN_STAGE/$bin" "$DIST_ZAP/$bin" || die "failed to copy $bin"
     done
-    local name="zap-v${VERSION}${suffix}-${OS_NAME}-${ARCH}.tar.gz"
+    local name="zap-v${VERSION}-${OS_NAME}-${ARCH}.tar.gz"
     info "Packaging ${name} ..."
     (cd "$DIST_DIR" && tar -czf "$name" zap) || die "packaging failed (${name})"
     PACKAGES+=("$name")
@@ -226,8 +218,8 @@ ok "Resources copied (scripts / data shipped with package)"
 # Note: always use absolute paths below; do not `cd dist` -- cargo must stay under the repo-root target/.
 # ── Build + package ───────────────────────────────────────────────
 build_web
-build_variant community
-package_variant community ""
+build_variant
+package_variant
 
 # Upload install.sh and uninstall.sh (used by zapd for upgrade downloads)
 if command -v zapfile >/dev/null 2>&1; then

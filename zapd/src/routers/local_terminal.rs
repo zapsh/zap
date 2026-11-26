@@ -26,8 +26,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::sync::mpsc;
-use zap_proto::types::Message as ExecMessage;
 use zap_proto::Request;
+use zap_proto::types::Message as ExecMessage;
 
 use crate::db;
 use crate::zap::jwt::Claims;
@@ -144,17 +144,13 @@ async fn check_access(claims: &Claims) -> Result<(), String> {
     Ok(())
 }
 
-async fn load_linux_user(
-    pool: &sqlx::SqlitePool,
-    user_id: i64,
-) -> Result<String, String> {
+async fn load_linux_user(pool: &sqlx::SqlitePool, user_id: i64) -> Result<String, String> {
     let row: Option<(String,)> = sqlx::query_as("SELECT linux_user FROM user WHERE id = ?")
         .bind(user_id)
         .fetch_optional(pool)
         .await
         .map_err(|e| e.to_string())?;
-    row.map(|(lu,)| lu)
-        .ok_or_else(|| "用户不存在".to_string())
+    row.map(|(lu,)| lu).ok_or_else(|| "用户不存在".to_string())
 }
 
 /// 解析面板用户对应的 Linux 账号；老账号缺运行实体时补齐。
@@ -315,13 +311,7 @@ async fn handle(
     }
 
     // 收尾：通知 zapexec 关闭会话（丢弃 stdin 即让 shell 退出），再关 WS
-    let _ = crate::zapexec::send(
-        &mut exec_wr,
-        &ExecMessage::StreamClose {
-            id: stream_id,
-        },
-    )
-    .await;
+    let _ = crate::zapexec::send(&mut exec_wr, &ExecMessage::StreamClose { id: stream_id }).await;
     let _ = ws_tx.close().await;
 
     crate::zap::audit::log(

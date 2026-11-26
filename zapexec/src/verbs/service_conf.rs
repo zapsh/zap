@@ -227,13 +227,16 @@ static OVERRIDE_MTIME: std::sync::OnceLock<RwLock<Option<std::time::SystemTime>>
 /// 若覆盖目录的 mtime 自上次以来变了（手动丢文件、改文件、删文件），先重新扫描磁盘，
 /// 保证定义清单始终与 `/etc/zap/services` 实际内容一致——不依赖进程内 `reload_defs`。
 fn defs() -> Arc<Vec<ServiceDef>> {
-    if let Some(mt) = std::fs::metadata(override_dir()).ok().and_then(|m| m.modified().ok()) {
+    if let Some(mt) = std::fs::metadata(override_dir())
+        .ok()
+        .and_then(|m| m.modified().ok())
+    {
         let last = OVERRIDE_MTIME.get_or_init(|| RwLock::new(None));
-        if let (Ok(mut g), Ok(mut w)) = (last.write(), defs_lock().write()) {
-            if *g != Some(mt) {
-                *w = Arc::new(load_defs());
-                *g = Some(mt);
-            }
+        if let (Ok(mut g), Ok(mut w)) = (last.write(), defs_lock().write())
+            && *g != Some(mt)
+        {
+            *w = Arc::new(load_defs());
+            *g = Some(mt);
         }
     }
     defs_lock().read().unwrap().clone()
@@ -249,7 +252,9 @@ fn defs_lock() -> &'static RwLock<Arc<Vec<ServiceDef>>> {
 ///
 /// 加锁顺序与 `defs()` 保持一致（先 `OVERRIDE_MTIME` 后 `defs_lock`），避免反向死锁。
 pub(crate) fn reload_defs() {
-    let mt = std::fs::metadata(override_dir()).ok().and_then(|m| m.modified().ok());
+    let mt = std::fs::metadata(override_dir())
+        .ok()
+        .and_then(|m| m.modified().ok());
     let last = OVERRIDE_MTIME.get_or_init(|| RwLock::new(None));
     if let (Ok(mut g), Ok(mut w)) = (last.write(), defs_lock().write()) {
         *w = Arc::new(load_defs());
@@ -339,7 +344,7 @@ pub(crate) fn custom_active_units() -> BTreeSet<String> {
     defs()
         .iter()
         .filter(|d| d.origin == DefOrigin::User)
-        .filter_map(|d| active_unit(d))
+        .filter_map(active_unit)
         .collect()
 }
 
@@ -576,10 +581,7 @@ fn glob_first(pattern: &str) -> Option<PathBuf> {
 
 /// 返回**所有**命中的文件（用于自定义服务 `main` 里的通配配置列表展开）。
 fn glob_all(pattern: &str) -> Vec<PathBuf> {
-    glob_matches(pattern)
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect()
+    glob_matches(pattern).into_iter().map(|(p, _)| p).collect()
 }
 
 /// 兜底探测：用 `php --ini` 自报的 `Loaded Configuration File` 定位 php.ini。
@@ -735,11 +737,7 @@ pub(crate) fn php_inst(svc: &str) -> Option<PhpInst> {
 /// 候选探测：取第一个存在的 systemd unit 名（无 .service 后缀）。
 fn active_unit(d: &ServiceDef) -> Option<String> {
     // 优先按 unit_candidates 探测（内置 / 外部服务的真实单元名）
-    if let Some(u) = d
-        .unit_candidates
-        .iter()
-        .find(|u| exists_m(d.manager, u))
-    {
+    if let Some(u) = d.unit_candidates.iter().find(|u| exists_m(d.manager, u)) {
         return Some(u.to_string());
     }
     // 兜底：本服务定义的 key 自身即为单元名（由面板生成并落盘的 <key>.service）
@@ -833,9 +831,9 @@ fn validate_path(
             whitelist.push(PathBuf::from(m));
         }
     }
-    let explicit_pos = whitelist.iter().position(|mp| {
-        mp.canonicalize().unwrap_or_else(|_| mp.clone()) == canon
-    });
+    let explicit_pos = whitelist
+        .iter()
+        .position(|mp| mp.canonicalize().unwrap_or_else(|_| mp.clone()) == canon);
     let is_main = canon == main_canon || explicit_pos == Some(0);
     if explicit_pos.is_none() {
         if !canon.starts_with(root) {
@@ -1253,27 +1251,27 @@ fn installed_info(d: &ServiceDef, svc: &str) -> InstalledInfo {
     let installed = bin.is_some() || unit.is_some();
     let mut main = if installed { probe_main(d) } else { None };
     // 自定义服务可在定义里显式指定配置文件列表（main），首个作为主配置；无需 bin/unit 探测即可编辑
-    if main.is_none() {
-        if let Some(m) = d.main.first() {
-            let resolved: Option<(PathBuf, PathBuf, bool)> = if m.contains('*') {
-                glob_first(m).map(|p| {
-                    (
-                        p.clone(),
-                        p.parent().unwrap_or(Path::new("/")).to_path_buf(),
-                        true,
-                    )
-                })
-            } else {
-                let p = PathBuf::from(m);
-                Some((
+    if main.is_none()
+        && let Some(m) = d.main.first()
+    {
+        let resolved: Option<(PathBuf, PathBuf, bool)> = if m.contains('*') {
+            glob_first(m).map(|p| {
+                (
                     p.clone(),
                     p.parent().unwrap_or(Path::new("/")).to_path_buf(),
-                    p.is_file(),
-                ))
-            };
-            if let Some(t) = resolved {
-                main = Some(t);
-            }
+                    true,
+                )
+            })
+        } else {
+            let p = PathBuf::from(m);
+            Some((
+                p.clone(),
+                p.parent().unwrap_or(Path::new("/")).to_path_buf(),
+                p.is_file(),
+            ))
+        };
+        if let Some(t) = resolved {
+            main = Some(t);
         }
     }
     // PHP 兜底：静态候选一个都没命中（main_exists=false）时，改用二进制自报的 php.ini
@@ -1417,26 +1415,21 @@ pub async fn status(svc: &str) -> Response {
     .await
 }
 
-/// 主配置置首 + 目录扫描结果按路径去重。
-///
-/// 旧实现先 push 主配置、再对整个列表 `retain(seen.insert)` —— 主配置的路径
-/// 已在集合里，`insert` 返回 false，**主配置自己被当成重复项删掉了**，
-/// 表现为列表里唯独没有 php.ini（截图实锤）。
-fn merge_main_and_scanned(
-    main: &Path,
+/// 主配置置首 + 目录扫描结果按路径去重
+fn merge_explicit_and_scanned(
+    explicit: &[PathBuf],
     root: &Path,
-    main_exists: bool,
     scanned: Vec<Value>,
 ) -> Vec<Value> {
-    let mut files = vec![file_entry(
-        main,
-        root,
-        true,
-        std::fs::metadata(main).map(|m| m.len()).unwrap_or(0),
-        main_exists,
-    )];
+    let mut files = Vec::new();
     let mut seen: std::collections::HashSet<String> = Default::default();
-    seen.insert(main.display().to_string());
+    for (i, p) in explicit.iter().enumerate() {
+        if seen.insert(p.display().to_string()) {
+            let exists = p.is_file();
+            let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+            files.push(file_entry(p, root, i == 0, size, exists));
+        }
+    }
     for f in scanned {
         let p = f
             .get("path")
@@ -1497,25 +1490,7 @@ pub async fn conf_list(svc: &str) -> Response {
         } else {
             Vec::new()
         };
-        let mut files: Vec<Value> = Vec::new();
-        let mut seen: std::collections::HashSet<String> = Default::default();
-        for (i, p) in explicit.iter().enumerate() {
-            if seen.insert(p.display().to_string()) {
-                let exists = p.is_file();
-                let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-                files.push(file_entry(p, &root, i == 0, size, exists));
-            }
-        }
-        for f in scanned {
-            let p = f
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if seen.insert(p) {
-                files.push(f);
-            }
-        }
+        let files = merge_explicit_and_scanned(&explicit, &root, scanned);
         Ok(Response::ok(
             "ok",
             Some(json!({
@@ -1657,13 +1632,16 @@ pub async fn def_write(key: String, yaml: String) -> Response {
         Err(e) => return Response::err(-1, format!("服务定义解析失败: {e}")),
     };
     if def.key != key {
-        return Response::err(-1, format!("yaml 里的 key（{}）与文件名不符（{}）", def.key, key));
+        return Response::err(
+            -1,
+            format!("yaml 里的 key（{}）与文件名不符（{}）", def.key, key),
+        );
     }
     // 若带了 unit 模板，校验其合法性（避免生成阶段才报错）
-    if let Some(u) = &def.unit {
-        if let Err(e) = validate_unit(u, def.manager) {
-            return Response::err(-1, format!("unit 模板校验失败: {e}"));
-        }
+    if let Some(u) = &def.unit
+        && let Err(e) = validate_unit(u, def.manager)
+    {
+        return Response::err(-1, format!("unit 模板校验失败: {e}"));
     }
     let dir = override_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -1736,12 +1714,18 @@ pub async fn def_read(key: String) -> Response {
 
 /// 单元名安全字符（systemd 单元 / openrc 脚本名）。
 fn is_unit_name(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
 }
 
 /// 用户名 / 组名安全字符。
 fn is_safe_name(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 32 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    !s.is_empty()
+        && s.len() <= 32
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
 /// 环境变量条目必须形如 `KEY=VALUE`。
@@ -1793,14 +1777,25 @@ fn validate_unit(u: &UnitTemplate, _mgr: Manager) -> Result<(), String> {
             return Err("precmd 不能包含换行 / NUL".into());
         }
     }
-    for dep in u.after.iter().chain(u.wants.iter()).chain(u.requires.iter()) {
+    for dep in u
+        .after
+        .iter()
+        .chain(u.wants.iter())
+        .chain(u.requires.iter())
+    {
         if !is_unit_name(dep) {
             return Err(format!("依赖单元名非法: {dep}"));
         }
     }
     if let Some(r) = &u.restart {
         const OK: &[&str] = &[
-            "no", "always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog",
+            "no",
+            "always",
+            "on-success",
+            "on-failure",
+            "on-abnormal",
+            "on-abort",
+            "on-watchdog",
         ];
         if !OK.contains(&r.as_str()) {
             return Err(format!("非法的 Restart 策略: {r}"));
@@ -1808,7 +1803,14 @@ fn validate_unit(u: &UnitTemplate, _mgr: Manager) -> Result<(), String> {
     }
     if let Some(t) = &u.type_ {
         const TYPES: &[&str] = &[
-            "simple", "exec", "forking", "oneshot", "notify", "notify-reload", "dbus", "idle",
+            "simple",
+            "exec",
+            "forking",
+            "oneshot",
+            "notify",
+            "notify-reload",
+            "dbus",
+            "idle",
         ];
         if !TYPES.contains(&t.as_str()) {
             return Err(format!("非法的 Type 类型: {t}"));
@@ -1846,13 +1848,34 @@ fn render_systemd_unit(d: &ServiceDef, u: &UnitTemplate) -> String {
     let desc = one_line(u.description.as_deref().unwrap_or(d.label.as_str()));
     s.push_str(&format!("Description={desc}\n"));
     if !u.after.is_empty() {
-        s.push_str(&format!("After={}\n", u.after.iter().map(|x| x.trim()).collect::<Vec<_>>().join(" ")));
+        s.push_str(&format!(
+            "After={}\n",
+            u.after
+                .iter()
+                .map(|x| x.trim())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
     }
     if !u.wants.is_empty() {
-        s.push_str(&format!("Wants={}\n", u.wants.iter().map(|x| x.trim()).collect::<Vec<_>>().join(" ")));
+        s.push_str(&format!(
+            "Wants={}\n",
+            u.wants
+                .iter()
+                .map(|x| x.trim())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
     }
     if !u.requires.is_empty() {
-        s.push_str(&format!("Requires={}\n", u.requires.iter().map(|x| x.trim()).collect::<Vec<_>>().join(" ")));
+        s.push_str(&format!(
+            "Requires={}\n",
+            u.requires
+                .iter()
+                .map(|x| x.trim())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
     }
     // 归 [Unit] 段：结构化的重启限流（若设置）
     if let Some(v) = u.start_limit_interval_sec {
@@ -1869,7 +1892,10 @@ fn render_systemd_unit(d: &ServiceDef, u: &UnitTemplate) -> String {
         let key = l.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
         if matches!(
             key,
-            "StartLimitIntervalSec" | "StartLimitBurst" | "StartLimitBurstSec" | "StartLimitInterval"
+            "StartLimitIntervalSec"
+                | "StartLimitBurst"
+                | "StartLimitBurstSec"
+                | "StartLimitInterval"
         ) {
             if key == "StartLimitIntervalSec" && u.start_limit_interval_sec.is_some() {
                 continue;
@@ -1895,31 +1921,34 @@ fn render_systemd_unit(d: &ServiceDef, u: &UnitTemplate) -> String {
             s.push_str(&format!("ExecStartPre={}\n", one_line(c)));
         }
     }
-    s.push_str(&format!("ExecStart={}\n", one_line(u.exec_start.as_deref().unwrap_or(""))));
-    if let Some(wd) = &u.working_dir {
-        if !wd.trim().is_empty() {
-            s.push_str(&format!("WorkingDirectory={}\n", one_line(wd)));
-        }
+    s.push_str(&format!(
+        "ExecStart={}\n",
+        one_line(u.exec_start.as_deref().unwrap_or(""))
+    ));
+    if let Some(wd) = &u.working_dir
+        && !wd.trim().is_empty()
+    {
+        s.push_str(&format!("WorkingDirectory={}\n", one_line(wd)));
     }
-    if let Some(user) = &u.user {
-        if !user.trim().is_empty() {
-            s.push_str(&format!("User={}\n", one_line(user)));
-        }
+    if let Some(user) = &u.user
+        && !user.trim().is_empty()
+    {
+        s.push_str(&format!("User={}\n", one_line(user)));
     }
-    if let Some(group) = &u.group {
-        if !group.trim().is_empty() {
-            s.push_str(&format!("Group={}\n", one_line(group)));
-        }
+    if let Some(group) = &u.group
+        && !group.trim().is_empty()
+    {
+        s.push_str(&format!("Group={}\n", one_line(group)));
     }
     for e in &u.environment {
         if !e.trim().is_empty() {
             s.push_str(&format!("Environment={}\n", one_line(e)));
         }
     }
-    if let Some(r) = &u.restart {
-        if !r.trim().is_empty() {
-            s.push_str(&format!("Restart={}\n", one_line(r)));
-        }
+    if let Some(r) = &u.restart
+        && !r.trim().is_empty()
+    {
+        s.push_str(&format!("Restart={}\n", one_line(r)));
     }
     if let Some(rs) = u.restart_sec {
         s.push_str(&format!("RestartSec={rs}\n"));
@@ -1932,7 +1961,10 @@ fn render_systemd_unit(d: &ServiceDef, u: &UnitTemplate) -> String {
         let key = l.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
         if !matches!(
             key,
-            "StartLimitIntervalSec" | "StartLimitBurst" | "StartLimitBurstSec" | "StartLimitInterval"
+            "StartLimitIntervalSec"
+                | "StartLimitBurst"
+                | "StartLimitBurstSec"
+                | "StartLimitInterval"
         ) {
             s.push_str(&format!("{}\n", one_line(l)));
         }
@@ -1977,22 +2009,22 @@ fn render_openrc_unit(d: &ServiceDef, u: &UnitTemplate) -> String {
         s.push_str(&format!("command_args=\"{}\"\n", args.join(" ")));
     }
     // 运行用户 / 组（openrc 用 command_user="user[:group]"）
-    if let Some(user) = &u.user {
-        if !user.trim().is_empty() {
-            let mut cu = one_line(user);
-            if let Some(g) = &u.group {
-                if !g.trim().is_empty() {
-                    cu.push(':');
-                    cu.push_str(&one_line(g));
-                }
-            }
-            s.push_str(&format!("command_user=\"{cu}\"\n"));
+    if let Some(user) = &u.user
+        && !user.trim().is_empty()
+    {
+        let mut cu = one_line(user);
+        if let Some(g) = &u.group
+            && !g.trim().is_empty()
+        {
+            cu.push(':');
+            cu.push_str(&one_line(g));
         }
+        s.push_str(&format!("command_user=\"{cu}\"\n"));
     }
-    if let Some(wd) = &u.working_dir {
-        if !wd.trim().is_empty() {
-            s.push_str(&format!("directory=\"{}\"\n", one_line(wd)));
-        }
+    if let Some(wd) = &u.working_dir
+        && !wd.trim().is_empty()
+    {
+        s.push_str(&format!("directory=\"{}\"\n", one_line(wd)));
     }
     s.push_str(&format!("pidfile=\"/run/{}.pid\"\n", d.key));
     // 环境变量：openrc 用 env_KEY="value" 透传
@@ -2084,7 +2116,7 @@ pub async fn unit_write(key: String) -> Response {
             return Response::err(
                 -1,
                 format!("服务 {key} 未配置 unit 模板，无法生成单元文件（请在定义里加 unit 段）"),
-            )
+            );
         }
     };
     if let Err(e) = validate_unit(unit, def.manager) {
@@ -2094,15 +2126,15 @@ pub async fn unit_write(key: String) -> Response {
         Manager::Systemd => {
             let content = render_systemd_unit(&def, unit);
             let name = format!("{key}.service");
-            (content, name.clone(), Path::new("/etc/systemd/system").join(name))
+            (
+                content,
+                name.clone(),
+                Path::new("/etc/systemd/system").join(name),
+            )
         }
         Manager::Openrc => {
             let content = render_openrc_unit(&def, unit);
-            (
-                content,
-                key.clone(),
-                Path::new(OPENRC_INIT_DIR).join(&key),
-            )
+            (content, key.clone(), Path::new(OPENRC_INIT_DIR).join(&key))
         }
     };
     let tmp = match def.manager {
@@ -2140,11 +2172,16 @@ pub async fn unit_write(key: String) -> Response {
         }
         Manager::Openrc => {
             // init.d 脚本必须可执行
-            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)) {
+            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            {
                 notes.push(format!("设置可执行权限失败: {e}"));
             }
             // rc-update add <key> default：开机自启（best-effort）
-            let add = root_cmd(OPENRC_UPDATE).arg("add").arg(&unit_name).arg("default").output();
+            let add = root_cmd(OPENRC_UPDATE)
+                .arg("add")
+                .arg(&unit_name)
+                .arg("default")
+                .output();
             match add {
                 Ok(o) if o.status.success() => {
                     notes.push(format!("已 rc-update add {unit_name}（开机自启）"))
@@ -2188,7 +2225,11 @@ pub async fn unit_remove(key: String) -> Response {
     if is_sysd {
         let _ = root_cmd(SYSTEMD_CTL).arg("disable").arg(&name).output();
     } else {
-        let _ = root_cmd(OPENRC_UPDATE).arg("del").arg(&name).arg("default").output();
+        let _ = root_cmd(OPENRC_UPDATE)
+            .arg("del")
+            .arg(&name)
+            .arg("default")
+            .output();
     }
     if let Err(e) = std::fs::remove_file(&path) {
         return Response::err(-1, format!("删除单元文件失败 {}: {e}", path.display()));
@@ -2799,12 +2840,12 @@ unit:
         let u = def.unit.as_ref().expect("unit 模板");
         assert_eq!(u.precmd.len(), 2);
 
-        let sd = render_systemd_unit(&def, &u);
+        let sd = render_systemd_unit(&def, u);
         assert!(sd.contains("ExecStartPre=mkdir -p /run/precmdtest"));
         assert!(sd.contains("ExecStartPre=chown app /run/precmdtest"));
         assert!(sd.contains("ExecStart=myapp run"));
 
-        let orc = render_openrc_unit(&def, &u);
+        let orc = render_openrc_unit(&def, u);
         assert!(orc.contains("precmd() {"));
         assert!(orc.contains("\tmkdir -p /run/precmdtest"));
         assert!(orc.contains("\tchown app /run/precmdtest"));
@@ -2831,8 +2872,14 @@ unit:
         let u = def.unit.as_ref().expect("unit 模板");
         let orc = render_openrc_unit(&def, u);
         assert!(orc.contains("depend() {"), "应生成 depend() 块");
-        assert!(orc.contains("\tneed docker\n"), "Requires→need（docker.service→docker）");
-        assert!(orc.contains("\tuse logging\n"), "Wants→use（logging.service→logging）");
+        assert!(
+            orc.contains("\tneed docker\n"),
+            "Requires→need（docker.service→docker）"
+        );
+        assert!(
+            orc.contains("\tuse logging\n"),
+            "Wants→use（logging.service→logging）"
+        );
         assert!(
             orc.contains("\tafter net nginx\n"),
             "After→after，network-online.target→net、nginx.service→nginx"
@@ -2923,7 +2970,7 @@ unit:
             file_entry(&base.join("pear.conf"), &base, false, 7, true),
             file_entry(&main, &base, false, 5, true), // 扫描再次命中主配置
         ];
-        let files = merge_main_and_scanned(&main, &base, true, scanned);
+        let files = merge_explicit_and_scanned(std::slice::from_ref(&main), &base, scanned);
 
         assert_eq!(
             files.len(),
@@ -2959,7 +3006,7 @@ unit:
             6,
             true,
         )];
-        let files = merge_main_and_scanned(&main, &base, false, scanned);
+        let files = merge_explicit_and_scanned(std::slice::from_ref(&main), &base, scanned);
 
         assert_eq!(files.len(), 2);
         assert_eq!(files[0]["is_main"], Value::Bool(true));

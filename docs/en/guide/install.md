@@ -24,9 +24,6 @@ sudo bash install.sh
 
 # Pin a version and set the admin credentials explicitly
 sudo bash install.sh latest --admin-user zapops --admin-pass 'S3cret-Pass'
-
-# Zap Pro (commercial edition; package name carries the -pro suffix)
-sudo bash install.sh latest --pro
 ```
 
 When it finishes it prints the access URL `https://<server IP>:2600` together with the admin credentials.
@@ -36,11 +33,8 @@ When it finishes it prints the access URL `https://<server IP>:2600` together wi
 | Option | Description |
 | --- | --- |
 | `[VERSION]` | Version to install; defaults to `latest` |
-| `--pro` | Install Zap Pro. The release line is decided by the binary being installed (pro / community) and subsequent upgrades follow the same line (can also be forced with `--pro` / `--community`) |
 | `--admin-user <name>` | Admin username (also the Linux account name, home directory `/home/<name>`); defaults to `admin` |
 | `--admin-pass <pass>` | Admin password. Allowed characters: `letters digits . _ -`. If omitted, one is generated randomly |
-| `--join-url <url>` | **Zap Pro**: full base URL of the controller to join |
-| `--join-token <code>` | Registration token (prefer the `ZAP_JOIN_TOKEN` environment variable so it does not linger in shell history) |
 | `--pkg <path>` | Use a local release package instead of downloading |
 | `--offline` | Never access the internet |
 | `--lang <zh\|en>` | Language of the installer output (inferred from `$LANG`, falls back to Chinese; `ZAP_LANG` also works) |

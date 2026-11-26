@@ -81,15 +81,8 @@ wget -O install.sh https://mirrors.zap.cn/zap/install.sh && bash install.sh
 
 完整流程（fork 搭建、分支模型、本地运行、发布打包）见 [参与贡献 / 开发文档](./CONTRIBUTING_zh-CN.md)。
 
-提交 PR 即视为同意以 [AGPL-3.0](./LICENSE) 授权，或（如适用）以 [商业许可](./COMMERCIAL-LICENSE.md) 授权。
+提交 PR 即视为同意以 [AGPL-3.0](./LICENSE) 授权。
 
 ## 许可证
 
-ZAP 采用**双重许可（Dual Licensing）**：
-
-- **AGPL-3.0（开源版）**：可免费使用、修改与分发。受 AGPL 第 13 条约束，若以 SaaS / 网络服务形式向他人提供 ZAP 功能，必须一并提供完整源代码。
-- **商业许可（Zap Pro）**：闭源集成、修改或再分发，或需要使用集群管理等企业版功能，须购买 [商业许可](./COMMERCIAL-LICENSE.md)。
-
-简而言之：**依规开源 → 免费使用 AGPL-3.0；闭源集成 / 企业商用 → 购买商业许可。**
-
-商业授权请联系 <sales@zap.cn>。
+ZAP 采用 **AGPL-3.0** 许可：可免费使用、修改与分发。受 AGPL 第 13 条约束，若以 SaaS / 网络服务形式向他人提供 ZAP 功能，必须一并提供完整源代码。

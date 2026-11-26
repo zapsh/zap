@@ -101,7 +101,6 @@ import IconUpgrade from '~icons/material-symbols/upgrade'
 import IconArrowBack from '~icons/material-symbols/arrow-back'
 import IconPlayArrow from '~icons/material-symbols/play-arrow'
 import IconElectricBoltOutline from '~icons/material-symbols/electric-bolt-outline' 
-import IconShieldWatchOutline from '~icons/material-symbols/shield-watch-outline'
 import IconRocketLaunch from '~icons/material-symbols/rocket-launch'
 import IconSave from '~icons/material-symbols/save'
 import IconNetworkNode from '~icons/material-symbols/network-node'
@@ -179,7 +178,6 @@ export const ICON_MAP: Record<string, Component> = {
   search: IconSearch,
   settings: IconSettings,
   'settings-applications': IconSettingsApplications,
-  'shield-watch-outline': IconShieldWatchOutline,
   'shopping-cart': IconShoppingCart,
   sort: IconSort,
   speed: IconSpeed,
@@ -282,9 +280,6 @@ export const ArrowBack = IconArrowBack
 
 // Logo Icon
 export const ElectricBoltOutline = IconElectricBoltOutline
-
-// Zap Pro 菜单（侧栏「Zap Pro」目录）用
-export const ShieldWatchOutline = IconShieldWatchOutline
 
 /** 「构建镜像」与「镜像列表行内启动」两个按钮用：Material Symbols 的“扳手”与“播放” */
 export const Play = IconPlayArrow

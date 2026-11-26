@@ -823,9 +823,7 @@ pub async fn dispatch(req: Request) -> Response {
         Request::DockerContainerExec { .. } => {
             Response::err(-1, "容器终端请使用流式会话".to_string())
         }
-        Request::HostShellExec { .. } => {
-            Response::err(-1, "主机终端请使用流式会话".to_string())
-        }
+        Request::HostShellExec { .. } => Response::err(-1, "主机终端请使用流式会话".to_string()),
         Request::DockerEvents => Response::err(-1, "事件流请使用流式会话".to_string()),
         // ── 备份（目录 / 数据库）──────────────────────────────
         Request::BackupList { dir, backup_root } => backup::list(dir, backup_root).await,
