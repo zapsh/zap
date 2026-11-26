@@ -10,7 +10,7 @@
 #      COS + Cloudflare, 并发布 latest.txt + 安装脚本（一条命令完成完整镜像）。
 #
 # 构建/打包在 .github/workflows/release.yml（on tag push）；镜像发布回退到本地
-# `./release.sh <ver> --sync`（zapfile + 本地 ~/.bashrc 里的 COS_ID/COS_KEY/AWS_*）。
+# `./release.sh <ver> --sync`（zaposs + 本地 ~/.bashrc 里的 COS_ID/COS_KEY/AWS_*）。
 #
 # Usage:
 #   ./release.sh <version> [--no-branch] [--tag] [--no-latest] [--sync] [--sync-tag]
@@ -36,7 +36,7 @@
 #   RELEASE_BRANCH  base branch to bump from / tag on (default: main)
 #   BUMP_BRANCH     branch name for the default PR flow (default: bump-version-v<ver>)
 #   GITHUB_REPO     owner/repo for --sync download (default: zapsh/zap; override for forks)
-#   COS_ID/COS_KEY  zapfile 凭证（COS）；AWS_* 为 Cloudflare R2(--aws)。放 ~/.bashrc。
+#   COS_ID/COS_KEY  zaposs 凭证（COS）；AWS_* 为 Cloudflare R2(--aws)。放 ~/.bashrc。
 # __END_USAGE__
 if [ -z "${BASH_VERSION:-}" ]; then
     exec bash "$0" "$@"
@@ -111,23 +111,23 @@ REMOTE=$(git rev-parse "origin/$RELEASE_BRANCH" 2>/dev/null || true)
     || die "local $RELEASE_BRANCH is not in sync with origin/$RELEASE_BRANCH; pull first"
 fi
 
-# ── zapfile (only needed for --tag latest.txt) ───────────────
-ensure_zapfile() {
-    if ! command -v zapfile >/dev/null 2>&1; then
-        info "zapfile not found, installing from mirror..."
+# ── zaposs (only needed for --tag latest.txt) ───────────────
+ensure_zaposs() {
+    if ! command -v zaposs >/dev/null 2>&1; then
+        info "zaposs not found, installing from mirror..."
         if command -v wget >/dev/null 2>&1; then
-            wget -qO- https://mirrors.zap.cn/zapfile/zapfile-linux-amd64 -O /usr/bin/zapfile \
-                || wget -qO- https://mirrors.zap.sh/zapfile/zapfile-linux-amd64 -O /usr/bin/zapfile \
-                || die "zapfile install failed"
+            wget -qO- https://mirrors.zap.cn/zaposs/zaposs-linux-amd64 -O /usr/bin/zaposs \
+                || wget -qO- https://mirrors.zap.sh/zaposs/zaposs-linux-amd64 -O /usr/bin/zaposs \
+                || die "zaposs install failed"
         elif command -v curl >/dev/null 2>&1; then
-            curl -fsSL https://mirrors.zap.cn/zapfile/zapfile-linux-amd64 -o /usr/bin/zapfile \
-                || curl -fsSL https://mirrors.zap.sh/zapfile/zapfile-linux-amd64 -o /usr/bin/zapfile \
-                || die "zapfile install failed"
+            curl -fsSL https://mirrors.zap.cn/zaposs/zaposs-linux-amd64 -o /usr/bin/zaposs \
+                || curl -fsSL https://mirrors.zap.sh/zaposs/zaposs-linux-amd64 -o /usr/bin/zaposs \
+                || die "zaposs install failed"
         else
-            die "zapfile not found and neither wget nor curl available"
+            die "zaposs not found and neither wget nor curl available"
         fi
-        chmod +x /usr/bin/zapfile
-        ok "zapfile installed"
+        chmod +x /usr/bin/zaposs
+        ok "zaposs installed"
     fi
 }
 
@@ -151,36 +151,36 @@ sync_github_assets() {
             curl -fsSL -O "$u" || die "download failed: $u"
         done )
     fi
-    ensure_zapfile
-    [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zapfile mirror upload)"
-    [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zapfile mirror upload)"
+    ensure_zaposs
+    [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zaposs mirror upload)"
+    [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zaposs mirror upload)"
     local f n
     for f in "$tmp"/*; do
         [ -f "$f" ] || continue
         n=$(basename "$f")
         info "uploading $n -> COS mirror (zap/releases/)"
-        zapfile upload zap/releases/ "$f" \
-            || die "zapfile upload $n (COS) failed"
+        zaposs upload zap/releases/ "$f" \
+            || die "zaposs upload $n (COS) failed"
         info "uploading $n -> Cloudflare mirror (zap/releases/, --aws)"
-        zapfile upload zap/releases/ "$f" --aws \
-            || die "zapfile upload $n (Cloudflare, --aws) failed"
+        zaposs upload zap/releases/ "$f" --aws \
+            || die "zaposs upload $n (Cloudflare, --aws) failed"
     done
     # latest.txt（内容即版本号，面板/安装器据此判断是否可升级）；必须在包体之后发布，
     # 避免「latest.txt 先发、包体还没传完」导致的 404 升级 race
     info "publishing latest.txt -> $ver (COS + Cloudflare)"
-    zapfile put "zap/releases/latest.txt" "$ver" \
-        || die "zapfile put latest.txt (COS) failed"
-    zapfile put "zap/releases/latest.txt" "$ver" --aws \
-        || die "zapfile put latest.txt (Cloudflare, --aws) failed"
+    zaposs put "zap/releases/latest.txt" "$ver" \
+        || die "zaposs put latest.txt (COS) failed"
+    zaposs put "zap/releases/latest.txt" "$ver" --aws \
+        || die "zaposs put latest.txt (Cloudflare, --aws) failed"
     # 安装脚本（zap/install.sh, zap/uninstall.sh）
     for s in scripts/install.sh scripts/uninstall.sh; do
         [ -f "$s" ] || die "missing $s"
         info "uploading $s -> COS (zap/)"
-        zapfile upload zap/ "$s" \
-            || die "zapfile upload $s (COS) failed"
+        zaposs upload zap/ "$s" \
+            || die "zaposs upload $s (COS) failed"
         info "uploading $s -> Cloudflare (zap/, --aws)"
-        zapfile upload zap/ "$s" --aws \
-            || die "zapfile upload $s (Cloudflare, --aws) failed"
+        zaposs upload zap/ "$s" --aws \
+            || die "zaposs upload $s (Cloudflare, --aws) failed"
     done
     ok "synced GitHub Release $tag -> COS + Cloudflare ($(ls -1 "$tmp" | wc -l) files + latest.txt + scripts)"
     rm -rf "$tmp"
@@ -189,14 +189,14 @@ sync_github_assets() {
 # ── --sync-tag: only update the version label (latest.txt), no asset re-upload ──
 sync_tag_only() {
     local ver="$1"
-    ensure_zapfile
-    [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zapfile mirror upload)"
-    [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zapfile mirror upload)"
+    ensure_zaposs
+    [ -n "${COS_ID:-}" ]  || die "COS_ID not set (needed for: zaposs mirror upload)"
+    [ -n "${COS_KEY:-}" ] || die "COS_KEY not set (needed for: zaposs mirror upload)"
     info "publishing latest.txt -> $ver (COS + Cloudflare)  [仅标签，不重传包体/脚本]"
-    zapfile put "zap/releases/latest.txt" "$ver" \
-        || die "zapfile put latest.txt (COS) failed"
-    zapfile put "zap/releases/latest.txt" "$ver" --aws \
-        || die "zapfile put latest.txt (Cloudflare, --aws) failed"
+    zaposs put "zap/releases/latest.txt" "$ver" \
+        || die "zaposs put latest.txt (COS) failed"
+    zaposs put "zap/releases/latest.txt" "$ver" --aws \
+        || die "zaposs put latest.txt (Cloudflare, --aws) failed"
     ok "latest.txt -> $ver 已同步到 COS(mirrors.zap.cn) + Cloudflare(mirrors.zap.sh)"
 }
 

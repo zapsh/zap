@@ -52,12 +52,12 @@ info "OS: ${OS_NAME}   Arch: ${ARCH} (${TARGET})"
 command -v cargo >/dev/null 2>&1 || die "cargo not found, please install Rust first"
 command -v wget >/dev/null 2>&1 || die "wget not found, please install it"
 
-if ! command -v zapfile >/dev/null 2>&1; then
-    info "zapfile not found, installing..."
-    wget -qO- https://mirrors.zap.cn/zapfile/zapfile-linux-amd64 -O /usr/bin/zapfile \
-        || die "zapfile download failed"
-    chmod +x /usr/bin/zapfile
-    ok "zapfile installed"
+if ! command -v zaposs >/dev/null 2>&1; then
+    info "zaposs not found, installing..."
+    wget -qO- https://mirrors.zap.cn/zaposs/zaposs-linux-amd64 -O /usr/bin/zaposs \
+        || die "zaposs download failed"
+    chmod +x /usr/bin/zaposs
+    ok "zaposs installed"
 fi
 
 # ── Upload credentials ────────────────────────────────────────────────
@@ -222,23 +222,23 @@ build_variant
 package_variant
 
 # Upload install.sh and uninstall.sh (used by zapd for upgrade downloads)
-if command -v zapfile >/dev/null 2>&1; then
+if command -v zaposs >/dev/null 2>&1; then
     info "Uploading install.sh ..."
-    zapfile upload zap/ "$CUR_DIR/scripts/install.sh" || die "failed to upload install.sh"
+    zaposs upload zap/ "$CUR_DIR/scripts/install.sh" || die "failed to upload install.sh"
     info "Uploading uninstall.sh ..."
-    zapfile upload zap/ "$CUR_DIR/scripts/uninstall.sh" || die "failed to upload uninstall.sh"
+    zaposs upload zap/ "$CUR_DIR/scripts/uninstall.sh" || die "failed to upload uninstall.sh"
 else
-    warn "zapfile not installed: skipping install.sh / uninstall.sh upload (the panel's online upgrade needs them)"
+    warn "zaposs not installed: skipping install.sh / uninstall.sh upload (the panel's online upgrade needs them)"
 fi
 
 # ── Upload ────────────────────────────────────────────────────
 for pkg in "${PACKAGES[@]}"; do
     info "Uploading ${pkg} ..."
-    zapfile upload zap/releases/ "$DIST_DIR/$pkg" || die "upload failed: ${pkg}"
+    zaposs upload zap/releases/ "$DIST_DIR/$pkg" || die "upload failed: ${pkg}"
     # sha256 checksum file (compared by zapd on upgrade download; no trailing newline to avoid residue)
     printf '%s' "$(sha256sum "$DIST_DIR/$pkg" | awk '{print $1}')" > "$DIST_DIR/$pkg.sha256"
     info "Uploading checksum ${pkg}.sha256 ..."
-    zapfile upload zap/releases/ "$DIST_DIR/$pkg.sha256" || die "failed to upload checksum: ${pkg}"
+    zaposs upload zap/releases/ "$DIST_DIR/$pkg.sha256" || die "failed to upload checksum: ${pkg}"
 
     # Ed25519 发布签名（{pkg}.sig）：私钥由 CI 以 ZAP_SIGN_KEY（Ed25519 PEM 路径）提供。
     # 缺失时跳过（开发构建无签名，目标机需在 update_config.yaml 开启 allow_insecure_update 才能安装）。
@@ -251,14 +251,14 @@ for pkg in "${PACKAGES[@]}"; do
         sig_hex=$(od -An -tx1 -v "$DIST_DIR/$pkg.sig.bin" | tr -d ' \n')
         printf '%s' "$sig_hex" > "$DIST_DIR/$pkg.sig"
         info "Uploading signature ${pkg}.sig ..."
-        zapfile upload zap/releases/ "$DIST_DIR/$pkg.sig" || die "failed to upload signature: ${pkg}"
+        zaposs upload zap/releases/ "$DIST_DIR/$pkg.sig" || die "failed to upload signature: ${pkg}"
         rm -f "$DIST_DIR/$pkg.sig.bin"
     else
         warn "ZAP_SIGN_KEY 未设置，跳过发布签名（目标机需开启 allow_insecure_update 才能安装）"
     fi
 done
 
-zapfile put "zap/releases/latest.txt" $VERSION || die "failed to update version file"
+zaposs put "zap/releases/latest.txt" $VERSION || die "failed to update version file"
 ok "Upload complete"
 
 # ── Completion summary ────────────────────────────────────────────────
