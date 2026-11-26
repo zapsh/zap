@@ -911,9 +911,8 @@ async function closeAllTabs() {
   activePath.value = ''
 }
 
-/** 最小化：退出浏览器全屏（若有），窗口仍保持「最大化」直到还原 */
+/** 最小化：窗口仍保持「最大化」直到还原 */
 function minimizeWin() {
-  exitFullscreenApi()
   minimized.value = true
 }
 
@@ -1272,7 +1271,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown, true)
   window.removeEventListener('resize', clampToViewport)
   window.removeEventListener('click', hideTabMenu)
-  exitFullscreenApi()
   stopDrag()
   stopResize()
 })
