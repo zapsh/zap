@@ -113,9 +113,24 @@
 
       <div v-if="userStore.sudoMode" class="sudo-indicator">
         <el-icon><Warning /></el-icon>
-        <span class="sudo-indicator__text">{{ t('layout.sudoShort', { name: userStore.sudoUsername }) }}</span>
+        <span class="sudo-indicator__text">{{
+          t('layout.sudoShort', { name: userStore.sudoUsername })
+        }}</span>
         <el-button type="primary" size="small" @click="handleExitSudo">{{
           t('layout.sudoExit')
+        }}</el-button>
+      </div>
+
+      <!-- 节点视图常驻标识：面板数据来自远端节点（白名单只读代理） -->
+      <div v-if="nodeCtx" class="node-indicator">
+        <el-tooltip :content="t('cluster.nodeViewTip')" placement="bottom">
+          <el-icon><Monitor /></el-icon>
+        </el-tooltip>
+        <span class="node-indicator__text">{{
+          t('layout.nodeViewShort', { name: nodeCtx.name })
+        }}</span>
+        <el-button type="primary" size="small" @click="exitNodeView">{{
+          t('layout.nodeViewExit')
         }}</el-button>
       </div>
 
@@ -164,6 +179,7 @@ import { ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import { useAppStore } from '@/stores/app'
 import { useUserStore } from '@/stores/user'
+import { nodeContext, setNodeContext } from '@/utils/base'
 import { getNotices, getUnreadCount, readAllNotices, readNotice } from '@/api/notice'
 import type { NoticeMessage } from '@/api/notice'
 import TagsView from './TagsView.vue'
@@ -189,6 +205,9 @@ import type { Locale } from '@/i18n'
 // 组件内用 useI18n 的 t（绑定当前 locale，切换语言时模板会自动重渲染），
 // 不用 @/i18n 的全局 t（那个不参与响应式追踪）。
 const { t } = useI18n()
+
+// 节点视图上下文（模块级 ref，Navbar 常驻，天然全局可见）
+const nodeCtx = nodeContext
 
 // ── 语言切换 ────────────────────────────────────────────────
 const { locale, options: localeOptions, change: changeLocale } = useLocale()
@@ -327,6 +346,12 @@ async function handleLogout() {
   } catch (error) {
     console.error('Logout failed:', error)
   }
+}
+
+/** 退出节点视图：清上下文并重载，所有请求回到本机 */
+function exitNodeView() {
+  setNodeContext(null)
+  window.location.reload()
 }
 
 /** 退出代登录：确认后恢复操作员会话并重载 */
@@ -477,6 +502,45 @@ async function handleExitSudo() {
       &:hover {
         background: #000;
         border-color: #000;
+      }
+    }
+  }
+
+  /* 节点视图常驻标识：蓝底白字，与代登录的橙色区分开 */
+  .node-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 12px;
+    margin-right: 4px;
+    border-radius: 4px;
+    background: var(--el-color-primary);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+
+    .el-icon {
+      font-size: 16px;
+    }
+
+    .node-indicator__text {
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .el-button {
+      margin-left: 2px;
+      padding: 4px 8px;
+      background: rgba(0, 0, 0, 0.25);
+      border-color: rgba(0, 0, 0, 0.25);
+      color: #fff;
+
+      &:hover {
+        background: rgba(0, 0, 0, 0.4);
+        border-color: rgba(0, 0, 0, 0.4);
       }
     }
   }

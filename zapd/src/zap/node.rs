@@ -175,6 +175,13 @@ async fn api_get(base: &str, token: &str, insecure: bool, path: &str) -> Result<
             status.as_u16()
         ));
     }
+    // 404 最常见的原因是节点开了访问前缀而地址没带前缀（前缀之外的路径一律 404）
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(
+            "HTTP 404：接口不存在——若该节点启用了访问前缀，节点地址需带上前缀（如 https://10.0.0.5:2663/zap）"
+                .to_string(),
+        );
+    }
     if !status.is_success() {
         return Err(format!("HTTP {}", status.as_u16()));
     }
@@ -291,6 +298,101 @@ pub async fn test_connection(base: &str, token: &str, insecure: bool) -> Result<
         return Err("API Token 不能为空".to_string());
     }
     fetch_snapshot(&base, token, insecure, true).await
+}
+
+// ── 节点视图反向代理（/api/nodes/{id}/**）───────────────────────
+
+/// 代理转发超时（秒）：比采集宽松，监控曲线接口偶尔慢一轮不值得整屏报错。
+const PROXY_TIMEOUT_SECS: u64 = 10;
+
+/// 代理白名单：只放行**只读、且与节点监控 / 基础信息相关**的接口路径。
+///
+/// 有意排除的：
+/// - 写操作与交互式接口（终端 / 文件 / 站点管理…）——凭据是节点侧的 API Token，
+///   放开等于把节点的可写面经主控转发，必须等逐接口的交互代理（含 WS）设计好再开；
+/// - `node/*`——防止 A→B→A 的代理递归；
+/// - `auth/*`、`user/*`——会话语义属于本机，代理过去只会拿节点 Token 的身份混淆视听。
+///
+/// 远端仍会按**它自己的**权限矩阵校验转发的 Token，这里只是主控侧的第一道闸。
+pub const PROXY_ALLOW: &[&str] = &["system/info", "system/status", "system/about"];
+
+/// 白名单匹配：按路径段边界，`system/info` 放行 `system/info` 与 `system/info/x`，
+/// 但不放行 `system/infoo`。
+pub fn proxy_allowed(rest: &str) -> bool {
+    let rest = rest.trim_start_matches('/');
+    if rest.is_empty() {
+        return false;
+    }
+    PROXY_ALLOW
+        .iter()
+        .any(|p| rest == *p || rest.starts_with(&format!("{p}/")))
+}
+
+/// 代理目标：节点地址 + 解密后的 API Token + TLS 容忍开关。
+pub struct ProxyTarget {
+    pub base: String,
+    pub token: String,
+    pub insecure: bool,
+}
+
+/// 按 id 解析代理目标；节点不存在 / 已停用都拒绝（不落任何转发）。
+pub async fn resolve_target(id: i64) -> Result<ProxyTarget, String> {
+    let pool = get_db_pool().await;
+    let row: Option<(String, String, i64, i64)> =
+        sqlx::query_as("SELECT base_url, api_token, insecure_tls, status FROM nodes WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("查询节点失败: {e}"))?;
+    let Some((base, enc, insecure, status)) = row else {
+        return Err("节点不存在".to_string());
+    };
+    if status != 1 {
+        return Err("节点已停用".to_string());
+    }
+    let token = crypto::decrypt_password(&enc);
+    if token.is_empty() {
+        return Err("节点凭据不可用（解密失败），请重新保存节点".to_string());
+    }
+    Ok(ProxyTarget {
+        base,
+        token,
+        insecure: insecure != 0,
+    })
+}
+
+/// 把只读请求转发到 `{base}/api/{rest}`，原样带回（状态码 / Content-Type / body）。
+///
+/// 不流式：白名单接口都是小 JSON，整体缓冲换实现简单；将来放开大响应接口再改流式。
+pub async fn forward(
+    target: &ProxyTarget,
+    rest: &str,
+    query: Option<&str>,
+) -> Result<(u16, String, Vec<u8>), String> {
+    let mut url = format!("{}/api/{}", target.base, rest.trim_start_matches('/'));
+    if let Some(q) = query.filter(|q| !q.is_empty()) {
+        url = format!("{url}?{q}");
+    }
+    let resp = http(target.insecure)
+        .get(&url)
+        .timeout(Duration::from_secs(PROXY_TIMEOUT_SECS))
+        .bearer_auth(&target.token)
+        .send()
+        .await
+        .map_err(|e| format!("{}", short_reqwest_err(&e)))?;
+    let status = resp.status().as_u16();
+    let ctype = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("读取响应失败: {e}"))?
+        .to_vec();
+    Ok((status, ctype, body))
 }
 
 struct NodeRow {
@@ -484,6 +586,23 @@ mod tests {
         assert!(normalize_base("https://").is_err());
         // 没有点也不是 localhost 的 host 基本是填错了
         assert!(normalize_base("node-a1").is_err());
+    }
+
+    #[test]
+    fn proxy_allow_matches_segment_boundaries() {
+        // 白名单内：精确 + 子路径
+        assert!(proxy_allowed("system/info"));
+        assert!(proxy_allowed("/system/status"));
+        assert!(proxy_allowed("system/about/detail"));
+        // 前缀相似但不同段：拒绝
+        assert!(!proxy_allowed("system/infoo"));
+        assert!(!proxy_allowed("system/status-x"));
+        // 白名单外 / 空 / 递归面：全部拒绝
+        assert!(!proxy_allowed(""));
+        assert!(!proxy_allowed("site/list"));
+        assert!(!proxy_allowed("auth/current"));
+        assert!(!proxy_allowed("node/overview"));
+        assert!(!proxy_allowed("nodes/1/system/info"));
     }
 
     #[test]

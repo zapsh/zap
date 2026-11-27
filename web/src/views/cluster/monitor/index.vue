@@ -13,6 +13,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { formatBytes } from '@/utils/fmt'
+import { setNodeContext } from '@/utils/base'
 import { getNodesOverview, type NodeOverviewItem, type NodeSummary } from '@/api/node'
 import NodeTrend from './NodeTrend.vue'
 
@@ -94,6 +95,12 @@ function sparkPath(trend: NodeOverviewItem['trend'], key: 'cpu' | 'mem'): string
 function openNode(n: NodeOverviewItem) {
   active.value = n
   drawer.value = true
+}
+
+/** 进入节点视图：面板请求改走主控的 /api/nodes/{id}/** 白名单代理 */
+function enterNodeView(n: NodeOverviewItem) {
+  setNodeContext({ id: n.id, name: n.name })
+  router.push('/server-status/index')
 }
 
 async function load() {
@@ -323,7 +330,21 @@ onUnmounted(() => {
     </div>
 
     <!-- 下钻：单节点历史曲线 -->
-    <el-drawer v-model="drawer" :title="active?.name" size="720px" destroy-on-close>
+    <el-drawer v-model="drawer" size="720px" destroy-on-close>
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 12px">
+          <span style="font-size: 16px; font-weight: 600">{{ active?.name }}</span>
+          <el-button
+            v-if="active && active.online"
+            size="small"
+            type="primary"
+            plain
+            @click="enterNodeView(active)"
+          >
+            {{ t('cluster.enterNodeView') }}
+          </el-button>
+        </div>
+      </template>
       <NodeTrend v-if="active" :node-id="active.id" />
     </el-drawer>
   </div>

@@ -1099,6 +1099,12 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::action("system.monitor", "view")),
     ),
     ("/node", Required::Admin, Some(Perm::action("node", "edit"))),
+    // 节点视图代理：只读转发，门槛与监控大屏一致（白名单在 handler 内再收一道）
+    (
+        "/nodes",
+        Required::Admin,
+        Some(Perm::action("system.monitor", "view")),
+    ),
     (
         "/system/audit",
         Required::Admin,

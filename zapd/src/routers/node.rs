@@ -9,7 +9,9 @@
 //! 来自普通用户，不必在节点上开管理员；历史曲线全部由主控采样落库，查询不再访问节点。
 
 use axum::Json;
-use axum::extract::Query;
+use axum::extract::{Path, Query};
+use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -534,4 +536,52 @@ pub async fn status(_: ValidatedClaims, q: Query<HashMap<String, String>>) -> Za
         "data": {"node_id": id, "name": name, "range": if bucket > 0 { "history" } else { "live" },
                  "points": data}
     })))
+}
+
+/// `/api/nodes/{id}/**` 白名单反向代理：节点视图的远端请求入口。
+///
+/// 前端把 API_BASE / wsUrl 切到 `/api/nodes/{id}` 后，整个面板即以该节点为
+/// 当前机器；这里先过 access.rs 门禁（admin + system.monitor:view），
+/// 再校验方法 / 白名单 / 节点状态，最后以节点自己的 API Token 转发。
+/// 远端响应原样带回（含 `{code,message,data}` 信封），前端拦截器无感。
+pub async fn proxy(
+    Path((id, rest)): Path<(i64, String)>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Response {
+    // WS 升级请求：终端 / 实时日志的交互代理在后续版本开放，这里显式拒绝，
+    // 避免 axum 把带 Upgrade 头的请求当普通 GET 转发后得到莫名其妙的响应
+    if headers.get(header::UPGRADE).is_some() {
+        return proxy_err(
+            StatusCode::BAD_REQUEST,
+            "WebSocket 代理暂未开放，请退出节点视图后使用终端 / 实时日志",
+        );
+    }
+    if method != Method::GET && method != Method::HEAD {
+        return proxy_err(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "节点代理仅允许只读请求（GET）",
+        );
+    }
+    if !node::proxy_allowed(&rest) {
+        return proxy_err(StatusCode::FORBIDDEN, "该接口不在节点代理白名单内");
+    }
+    let target = match node::resolve_target(id).await {
+        Ok(t) => t,
+        Err(e) => return proxy_err(StatusCode::NOT_FOUND, &e),
+    };
+    match node::forward(&target, &rest, uri.query()).await {
+        Ok((status, ctype, body)) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+            [(header::CONTENT_TYPE, ctype)],
+            body,
+        )
+            .into_response(),
+        Err(e) => proxy_err(StatusCode::BAD_GATEWAY, &format!("节点不可达：{}", e)),
+    }
+}
+
+fn proxy_err(status: StatusCode, msg: &str) -> Response {
+    (status, Json(json!({ "code": -1, "message": msg }))).into_response()
 }

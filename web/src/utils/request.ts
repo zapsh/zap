@@ -3,7 +3,7 @@ import axios from 'axios'
 import type { AxiosInstance, AxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import { getToken, getTokenExpire, removeToken, setToken, setTokenExpire } from './auth'
-import { API_BASE, withBase } from './base'
+import { API_BASE, apiBase, nodeContext, withBase } from './base'
 // 非组件环境（拦截器）用全局 t：取调用瞬间的语言，无需响应式
 import { t } from '@/i18n'
 
@@ -36,9 +36,25 @@ const service: AxiosInstance = axios.create({
   timeout: 15000,
 })
 
+// ── 节点视图：请求改走主控代理 /api/nodes/{id}/** ──────────────
+//
+// 与后端 `zapd/src/zap/node.rs::PROXY_ALLOW` 一一对应：只有这些只读接口
+// 转发到节点
+const PROXY_ALLOW_PATHS = ['/system/info', '/system/status', '/system/about']
+
+function proxiedInNodeView(url?: string): boolean {
+  if (nodeContext.value == null) return false
+  const u = (url || '').split('?')[0]
+  return PROXY_ALLOW_PATHS.some((p) => u === p || u.startsWith(`${p}/`))
+}
+
 // ── 请求拦截器 ──────────────────────────────────────────────
 service.interceptors.request.use(
   async (config) => {
+    // 节点视图：业务请求改走主控的 /api/nodes/{id}/** 代理
+    if (proxiedInNodeView(config.url)) {
+      config.baseURL = apiBase() || import.meta.env.VITE_API_URL
+    }
     const token = getToken()
     if (token && config.headers) {
       // 检查 token 是否即将过期，提前刷新
@@ -86,7 +102,9 @@ service.interceptors.response.use(
     // 业务错误码：只 reject，由调用方自行处理 UI 提示（错误对象携带 code，供两步验证等场景判断）
     if (res.code !== 0) {
       // 后端 message 优先（业务错误自带文案），缺失时用前端兜底文案
-      const err: Error & { code?: number } = new Error(terr(res.key, res.message) || t('error.system'))
+      const err: Error & { code?: number } = new Error(
+        terr(res.key, res.message) || t('error.system'),
+      )
       err.code = res.code
       return Promise.reject(err)
     }
@@ -99,6 +117,17 @@ service.interceptors.response.use(
 
       switch (status) {
         case 401:
+          // 节点视图下远端拒绝了它的 API Token：与本机会话无关，
+          // 绝不能走本地刷新 / 登出流程，否则会把用户误踢回登录页
+          if (proxiedInNodeView(error.config?.url)) {
+            ElMessage({
+              message: terr(data?.key, data?.message) || t('cluster.remoteAuthFailed'),
+              type: 'error',
+              duration: 5000,
+              grouping: true,
+            })
+            break
+          }
           if (!isRefreshing) {
             isRefreshing = true
             try {
@@ -238,9 +267,7 @@ async function refreshToken(): Promise<string> {
     // 之后每个请求都会被判定为「已过期」，于是轮询接口（如 /system/status，
     // 每 5 秒一次）每次都伴随一次无意义的 reflash_token。
     const exp = tokenExpireFromJwt(resp.data.access_token)
-    const seconds =
-      Number(resp.data.expire_in) ||
-      (exp ? exp - Math.floor(Date.now() / 1000) : 0)
+    const seconds = Number(resp.data.expire_in) || (exp ? exp - Math.floor(Date.now() / 1000) : 0)
     if (seconds > 0) setTokenExpire(seconds)
     return resp.data.access_token
   }

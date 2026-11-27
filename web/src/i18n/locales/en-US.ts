@@ -106,6 +106,9 @@ const enUS: Messages = {
     sudoShort: 'Sudo: {name}',
     sudoExit: 'Exit sudo',
     sudoExitConfirm: 'Exit sudo login and return to your own account?',
+    // Node view (multi-node master proxy) top banner
+    nodeViewShort: 'Node view: {name}',
+    nodeViewExit: 'Back to local',
     // Persistent footer entry: docs now live under System Settings → About ZAP
     docs: 'Docs',
   },
@@ -2411,7 +2414,8 @@ const enUS: Messages = {
     name: 'Name',
     namePlaceholder: 'e.g. prod-a1',
     baseUrl: 'Node URL',
-    baseUrlHint: 'Panel address (IP or domain). Defaults to https when no scheme is given.',
+    baseUrlHint:
+      'Panel address (IP or domain). Defaults to https when no scheme is given. If the node has a URL prefix enabled, include it, e.g. https://10.0.0.5:2663/zap.',
     apiToken: 'API Token',
     tokenPlaceholderNew: 'API Token created on the node (starts with zap_)',
     tokenPlaceholderEdit: 'Leave blank to keep the stored token',
@@ -2449,6 +2453,12 @@ const enUS: Messages = {
     sortId: 'By add order',
     noNetworkHint:
       'History is sampled by this panel every 15s, so the line breaks when a node is offline. Network throughput is not collected yet.',
+    // Node view (read-only proxied allowlist)
+    enterNodeView: 'Enter node view',
+    nodeViewTip:
+      'Panel data comes from the remote node via a read-only proxy; writes, terminals and files are not available yet',
+    remoteAuthFailed:
+      'The node rejected the request: its API Token is invalid or expired. Update the node credentials in Node Management.',
   },
 
   monitorRange: {

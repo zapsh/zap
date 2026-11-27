@@ -112,6 +112,9 @@ export default {
     sudoShort: '代登录：{name}',
     sudoExit: '退出代登录',
     sudoExitConfirm: '确定要退出代登录并返回你自己的账号吗？',
+    // 节点视图（多节点主控代理）顶部横幅
+    nodeViewShort: '节点视图：{name}',
+    nodeViewExit: '返回本机',
     // 页脚常驻入口：文档已整合进「系统设置 → About ZAP」
     docs: '文档',
   },
@@ -2377,7 +2380,8 @@ export default {
     name: '名称',
     namePlaceholder: '如：生产-A1',
     baseUrl: '节点地址',
-    baseUrlHint: '面板访问地址，可填 IP 或域名，留空协议时默认按 https 处理。',
+    baseUrlHint:
+      '面板访问地址，可填 IP 或域名，留空协议时默认按 https 处理。若该节点启用了访问前缀，地址需带上前缀，如 https://10.0.0.5:2663/zap。',
     apiToken: 'API Token',
     tokenPlaceholderNew: '节点上创建的 API Token（zap_ 开头）',
     tokenPlaceholderEdit: '留空表示不修改已保存的 Token',
@@ -2412,6 +2416,10 @@ export default {
     sortName: '按名称',
     sortId: '按添加顺序',
     noNetworkHint: '历史数据由主控每 15 秒采样，节点掉线时曲线自然断开；网络速率暂未采集。',
+    // 节点视图（白名单只读代理）
+    enterNodeView: '进入节点视图',
+    nodeViewTip: '面板数据来自远端节点（只读代理）；写操作、终端与文件暂未开放',
+    remoteAuthFailed: '节点拒绝了请求：API Token 无效或已过期，请到「节点管理」更新该节点凭据',
   },
 
   monitorRange: {

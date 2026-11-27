@@ -7,7 +7,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{any, delete, get, post, put},
 };
 use rust_embed::RustEmbed;
 use serde_json::json;
@@ -309,6 +309,8 @@ fn api_routers() -> Router {
         .route("/node/refresh", post(node::refresh))
         .route("/node/overview", get(node::overview))
         .route("/node/status", get(node::status))
+        // 节点视图：白名单只读反代（详见 routers::node::proxy）
+        .route("/nodes/{id}/{*rest}", any(node::proxy))
         // 套餐（Packages）：创建客户时选择的资源套餐
         .route("/system/package/list", get(package::package_list))
         .route("/system/package/add", post(package::package_add))
