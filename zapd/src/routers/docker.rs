@@ -913,13 +913,14 @@ fn is_safe_ref(s: &str) -> bool {
 /// 浏览器 WebSocket 不能带自定义头，token 只能走 query（与 SSH 终端一致）；
 /// 门禁中间件同样接受 query token，这里是第二道校验。
 #[allow(clippy::result_large_err)] // axum 的 Response 本身体量就大，同 access.rs 的 guard
-fn ws_guard(params: &HashMap<String, String>) -> Result<(), HttpResponse> {
+async fn ws_guard(params: &HashMap<String, String>) -> Result<(), HttpResponse> {
     let Some(token) = params.get("token") else {
         return Err(plain_status(StatusCode::UNAUTHORIZED, "Missing token"));
     };
 
-    // 走统一校验入口：签名 + 有效期 + 会话版本号（被「下线所有设备」作废的一并拒绝）
-    let claims = match crate::zap::jwt::decode_verified(token) {
+    // 走统一校验入口：签名 + 有效期 + 会话版本号（被「下线所有设备」作废的一并拒绝）。
+    // 兼容 API Token：节点视图的 docker exec / 事件流由主控转发节点 Token。
+    let claims = match crate::zap::jwt::claims_from_token(token).await {
         Some(c) => c,
         None => return Err(plain_status(StatusCode::UNAUTHORIZED, "Invalid token")),
     };
@@ -943,7 +944,7 @@ pub async fn ws_exec(
     ws: WebSocketUpgrade,
     Query(params): Query<HashMap<String, String>>,
 ) -> HttpResponse {
-    if let Err(resp) = ws_guard(&params) {
+    if let Err(resp) = ws_guard(&params).await {
         return resp;
     }
 
@@ -1146,7 +1147,7 @@ pub async fn ws_events(
     ws: WebSocketUpgrade,
     Query(params): Query<HashMap<String, String>>,
 ) -> HttpResponse {
-    if let Err(resp) = ws_guard(&params) {
+    if let Err(resp) = ws_guard(&params).await {
         return resp;
     }
     ws.on_upgrade(handle_events)

@@ -106,9 +106,9 @@ const enUS: Messages = {
     sudoShort: 'Sudo: {name}',
     sudoExit: 'Exit sudo',
     sudoExitConfirm: 'Exit sudo login and return to your own account?',
-    // Node view (multi-node master proxy) top banner
-    nodeViewShort: 'Node view: {name}',
-    nodeViewExit: 'Back to local',
+    // Node view (operate a managed node through the master proxy) top banner
+    nodeViewShort: 'Controlling: {name}',
+    nodeViewExit: 'Back to master',
     // Persistent footer entry: docs now live under System Settings → About ZAP
     docs: 'Docs',
   },
@@ -2420,7 +2420,7 @@ const enUS: Messages = {
     tokenPlaceholderNew: 'API Token created on the node (starts with zap_)',
     tokenPlaceholderEdit: 'Leave blank to keep the stored token',
     tokenHint:
-      'Tokens are stored encrypted and never shown again; re-issue one on the node to rotate.',
+      'Tokens are stored encrypted and never shown again; re-issue one on the node to rotate. Node view reads the node’s sites, files and processes, so issue the token from an admin account — a normal user’s token will show “permission denied” on those pages.',
     insecureTls: 'Self-signed TLS',
     insecureHint:
       'Keep enabled when the node uses a self-signed certificate; disable it for trusted certs.',
@@ -2453,12 +2453,23 @@ const enUS: Messages = {
     sortId: 'By add order',
     noNetworkHint:
       'History is sampled by this panel every 15s, so the line breaks when a node is offline. Network throughput is not collected yet.',
-    // Node view (read-only proxied allowlist)
-    enterNodeView: 'Enter node view',
+    // Node view (full takeover: reads, writes, terminals, downloads, WebSockets)
+    takeover: 'Take over',
+    enterNodeView: 'Take over this machine',
+    nodeViewActive: 'Taken over',
     nodeViewTip:
-      'Panel data comes from the remote node via a read-only proxy; writes, terminals and files are not available yet',
+      'This panel directly controls that node: reads, writes, terminals and downloads all happen there, under the account that owns the node’s API Token',
+    nodeBlockedWrite:
+      'The master did not forward this request: it belongs to a master-only surface (sign-in, node registry), unrelated to the takeover',
+    nodeNeedEdit:
+      'Your account on the master lacks the “Manage nodes” permission (node:edit), so it cannot write to or open terminals on a taken-over node; browsing is unaffected',
+    nodeEmpty: 'No nodes available to switch to',
     remoteAuthFailed:
       'The node rejected the request: its API Token is invalid or expired. Update the node credentials in Node Management.',
+    remoteForbiddenFailed:
+      'Node “{name}” rejected this request ({detail}): the node’s API Token lacks this permission — it is unrelated to your role on the master',
+    remoteNotFoundFailed:
+      'Node “{name}” has no such endpoint (404): that node is usually older than this panel — upgrade it to use this feature',
   },
 
   monitorRange: {
@@ -4960,6 +4971,8 @@ const enUS: Messages = {
     prefixFilter: '· showing only databases with the {prefix}* prefix',
     adminView: '· admin view (all databases)',
     btnUsers: 'Database Users',
+    localOnlyInNodeView:
+      'phpMyAdmin is hosted by the master itself — while controlling “{name}” it would still open the master’s databases. Return to the master first',
     btnRemote: 'Remote Access',
     listTitle: 'Database List',
     fastModeTip:

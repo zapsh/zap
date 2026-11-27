@@ -165,7 +165,7 @@ import {
   type PluginOption,
 } from '@/api/plugin'
 import { getToken } from '@/utils/auth'
-import { API_BASE } from '@/utils/base'
+import { apiBase } from '@/utils/base'
 import { Icon } from '@/icons'
 
 const props = defineProps<{
@@ -419,7 +419,7 @@ function watchFrameLog(
   resolve: (s: string) => void,
   reject: (e: Error) => void,
 ) {
-  const url = `${API_BASE}/plugin/watch?token=${encodeURIComponent(getToken())}&log_path=${encodeURIComponent(logPath)}`
+  const url = `${apiBase()}/plugin/watch?token=${encodeURIComponent(getToken())}&log_path=${encodeURIComponent(logPath)}`
   const es = new EventSource(url)
   let acc = ''
   const finish = (code?: number) => {
@@ -663,7 +663,7 @@ async function run() {
 
 /// 通过 SSE 订阅异步插件的日志流，逐行追加到 result。
 function watchLog(logPath: string) {
-  const url = `${API_BASE}/plugin/watch?token=${encodeURIComponent(getToken())}&log_path=${encodeURIComponent(logPath)}`
+  const url = `${apiBase()}/plugin/watch?token=${encodeURIComponent(getToken())}&log_path=${encodeURIComponent(logPath)}`
   const es = new EventSource(url)
   es.onmessage = (ev) => {
     try {

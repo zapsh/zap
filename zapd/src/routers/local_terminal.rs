@@ -83,7 +83,8 @@ pub async fn ws_local(
     let Some(token) = params.get("token") else {
         return err_response(StatusCode::UNAUTHORIZED, "Missing token");
     };
-    let Some(claims) = crate::zap::jwt::decode_verified(token) else {
+    // 同样兼容 API Token：节点视图的终端由主控用节点 Token 转发过来
+    let Some(claims) = crate::zap::jwt::claims_from_token(token).await else {
         return err_response(StatusCode::UNAUTHORIZED, "Invalid token");
     };
 

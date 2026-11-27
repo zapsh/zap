@@ -725,8 +725,9 @@ pub async fn ws_terminal(
         }
     };
 
-    // 走统一校验入口：签名 + 有效期 + 会话版本号（被「下线所有设备」作废的一并拒绝）
-    let Some(claims) = crate::zap::jwt::decode_verified(&token) else {
+    // 走统一校验入口：签名 + 有效期 + 会话版本号（被「下线所有设备」作废的一并拒绝）。
+    // 兼容 API Token，节点视图的 SSH 终端由主控转发节点 Token。
+    let Some(claims) = crate::zap::jwt::claims_from_token(&token).await else {
         return axum::response::Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .body(axum::body::Body::from("Invalid token"))

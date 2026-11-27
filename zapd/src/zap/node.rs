@@ -302,34 +302,78 @@ pub async fn test_connection(base: &str, token: &str, insecure: bool) -> Result<
 
 // ── 节点视图反向代理（/api/nodes/{id}/**）───────────────────────
 
-/// 代理转发超时（秒）：比采集宽松，监控曲线接口偶尔慢一轮不值得整屏报错。
-const PROXY_TIMEOUT_SECS: u64 = 10;
-
-/// 代理白名单：只放行**只读、且与节点监控 / 基础信息相关**的接口路径。
+/// 代理等到响应头的超时（秒）：必须短于前端 axios 的 15s，否则浏览器先 abort，
+/// 用户看到的是「网络错误」而不是节点给出的真实原因。
 ///
-/// 有意排除的：
-/// - 写操作与交互式接口（终端 / 文件 / 站点管理…）——凭据是节点侧的 API Token，
-///   放开等于把节点的可写面经主控转发，必须等逐接口的交互代理（含 WS）设计好再开；
-/// - `node/*`——防止 A→B→A 的代理递归；
-/// - `auth/*`、`user/*`——会话语义属于本机，代理过去只会拿节点 Token 的身份混淆视听。
-///
-/// 远端仍会按**它自己的**权限矩阵校验转发的 Token，这里只是主控侧的第一道闸。
-pub const PROXY_ALLOW: &[&str] = &["system/info", "system/status", "system/about"];
+/// 只约束「响应头到达」：SSE 日志跟随、备份包下载、终端 WS 在拿到 200/101 之后
+/// 按流转发，不受这个限制——写成一个整体 timeout 会在 12s 掐断它们。
+const PROXY_TIMEOUT_SECS: u64 = 12;
 
-/// 白名单匹配：按路径段边界，`system/info` 放行 `system/info` 与 `system/info/x`，
-/// 但不放行 `system/infoo`。
-pub fn proxy_allowed(rest: &str) -> bool {
-    let rest = rest.trim_start_matches('/');
-    if rest.is_empty() {
-        return false;
-    }
-    PROXY_ALLOW
-        .iter()
-        .any(|p| rest == *p || rest.starts_with(&format!("{p}/")))
+/// 要改写凭据的 JSON body 上限：超过它就不解析（原样流式转发）。
+/// 带 `token` 字段的 body 只有「插件取消任务」这类小 JSON，64 KB 绰绰有余；
+/// 文件上传走 multipart，体积可能很大，必须流式、也不含会话凭据。
+pub const PROXY_JSON_SNIFF_BYTES: u64 = 64 * 1024;
+
+/// 主控自有面：这些前缀的接口**永远打主控**，即使在节点视图里。
+///
+/// - `auth`：登录 / 登出 / 刷新 / 验证码。会话属于主控，节点没有这个会话；
+///   代理过去等于拿远端身份去刷新本机会话，会把登录态彻底搅乱。
+/// - `node` / `nodes`：主控的节点台账与跨节点监控，代理过去就是 A→B→A 的递归代理。
+/// - `dev`：API Token 控制台，管的始终是「谁在调用这个面板」。
+/// - `health` / `docs`：主控进程自己的探针与内置文档（两台机器上是同一份）。
+///
+/// 刻意**不含** `user` 与 `system/menus`：接管的目标是「像直接登录那台机器一样」，
+/// 身份（`/user/info` 的 roles / permissions）和菜单树必须来自节点，前端才会按
+/// 远端 Token 归属账号的权限渲染菜单与按钮，而不是「主控 admin 看得见按钮、
+/// 点下去节点报 403」。
+const PROXY_DENY_ROOTS: &[&str] = &["auth", "node", "nodes", "dev", "health", "docs"];
+
+/// 拒绝原因：只剩「这条请求不该由节点回答」，不再区分只读与写。
+pub enum ProxyDeny {
+    /// 路径非法（空 / 含 `.` `..`）
+    BadPath,
+    /// 属于主控自有面
+    MasterOwned,
 }
 
-/// 代理目标：节点地址 + 解密后的 API Token + TLS 容忍开关。
+impl ProxyDeny {
+    pub fn message(&self) -> &'static str {
+        match self {
+            ProxyDeny::BadPath => "代理路径不合法",
+            ProxyDeny::MasterOwned => {
+                "该接口属于主控自身（会话 / 节点台账 / Token 控制台），不经节点代理"
+            }
+        }
+    }
+}
+
+/// 节点视图代理放行判定：**除主控自有面外全部转发，任意 HTTP 方法**。
+pub fn proxy_deny_reason(rest: &str) -> Option<ProxyDeny> {
+    let rest = rest.trim_start_matches('/');
+    let segments: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() || segments.iter().any(|s| *s == "." || *s == "..") {
+        return Some(ProxyDeny::BadPath);
+    }
+    // 按段边界比对而不是字符串前缀，免得 `nodex`、`/devtools` 这类同前缀不同段的路径被误伤
+    if PROXY_DENY_ROOTS
+        .iter()
+        .any(|root| segments.starts_with(&root.split('/').collect::<Vec<_>>()[..]))
+    {
+        return Some(ProxyDeny::MasterOwned);
+    }
+    None
+}
+
+/// 节点视图代理是否转发该路径。
+pub fn proxy_allowed(rest: &str) -> bool {
+    proxy_deny_reason(rest).is_none()
+}
+
+/// 代理目标：节点名 + 地址 + 解密后的 API Token + TLS 容忍开关。
+///
+/// `name` 只用于审计与错误文案（「无法连接到节点 web-01」），不参与请求构造。
 pub struct ProxyTarget {
+    pub name: String,
     pub base: String,
     pub token: String,
     pub insecure: bool,
@@ -338,13 +382,14 @@ pub struct ProxyTarget {
 /// 按 id 解析代理目标；节点不存在 / 已停用都拒绝（不落任何转发）。
 pub async fn resolve_target(id: i64) -> Result<ProxyTarget, String> {
     let pool = get_db_pool().await;
-    let row: Option<(String, String, i64, i64)> =
-        sqlx::query_as("SELECT base_url, api_token, insecure_tls, status FROM nodes WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| format!("查询节点失败: {e}"))?;
-    let Some((base, enc, insecure, status)) = row else {
+    let row: Option<(String, String, String, i64, i64)> = sqlx::query_as(
+        "SELECT name, base_url, api_token, insecure_tls, status FROM nodes WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("查询节点失败: {e}"))?;
+    let Some((name, base, enc, insecure, status)) = row else {
         return Err("节点不存在".to_string());
     };
     if status != 1 {
@@ -355,44 +400,212 @@ pub async fn resolve_target(id: i64) -> Result<ProxyTarget, String> {
         return Err("节点凭据不可用（解密失败），请重新保存节点".to_string());
     }
     Ok(ProxyTarget {
+        name,
         base,
         token,
         insecure: insecure != 0,
     })
 }
 
-/// 把只读请求转发到 `{base}/api/{rest}`，原样带回（状态码 / Content-Type / body）。
-///
-/// 不流式：白名单接口都是小 JSON，整体缓冲换实现简单；将来放开大响应接口再改流式。
-pub async fn forward(
-    target: &ProxyTarget,
-    rest: &str,
-    query: Option<&str>,
-) -> Result<(u16, String, Vec<u8>), String> {
+/// 面板凭据参数名：WS 握手、EventSource、下载链接都靠 `?token=` 带凭据
+/// （浏览器给这些请求加不了自定义请求头）。
+const TOKEN_PARAM: &str = "token";
+
+/// 拼节点侧完整 URL：`{base}/api/{rest}[?{query}]`。
+fn node_url(target: &ProxyTarget, rest: &str, query: Option<&str>) -> String {
     let mut url = format!("{}/api/{}", target.base, rest.trim_start_matches('/'));
     if let Some(q) = query.filter(|q| !q.is_empty()) {
         url = format!("{url}?{q}");
     }
+    url
+}
+
+/// 把查询串里的凭据换成节点自己的 API Token。
+///
+/// 浏览器带上来的是**主控会话 JWT**。原样转出去有两个后果：节点不认它（必然 401），
+/// 更要紧的是把主控凭据泄露给了受控端——那台机器拿着它就能反过来调主控。
+///
+/// 是「替换」而不是「删掉」：终端、docker exec、插件日志这些 handler 自己从
+/// query 取凭据（走 `jwt::claims_from_token`，已支持 API Token），删掉等于把它们判死。
+pub fn swap_query_token(query: Option<&str>, node_token: &str) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    for pair in query.unwrap_or("").split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        // 只认键名，不 URL 解码：token 是 JWT 或 `zap_` + 十六进制，无需转义字符
+        if pair.split('=').next().unwrap_or("") != TOKEN_PARAM {
+            kept.push(pair.to_string());
+        }
+    }
+    kept.push(format!("{TOKEN_PARAM}={node_token}"));
+    kept.join("&")
+}
+
+/// 小 JSON body 里的 `token` 字段同样置换（`/plugin/cancel` 属于这类）。
+///
+/// 解析失败、不是对象、字段不是字符串，一律原样返回——代理只换凭据，
+/// 不该改写业务载荷，更不该因为 body 长得不像预期就把请求打断。
+pub fn swap_body_token(body: &[u8], node_token: &str) -> Vec<u8> {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return body.to_vec();
+    };
+    let Some(mut obj) = value.as_object().cloned() else {
+        return body.to_vec();
+    };
+    if obj.get(TOKEN_PARAM).and_then(Value::as_str).is_none() {
+        return body.to_vec();
+    }
+    obj.insert(
+        TOKEN_PARAM.to_string(),
+        Value::String(node_token.to_string()),
+    );
+    serde_json::to_vec(&Value::Object(obj)).unwrap_or_else(|_| body.to_vec())
+}
+
+/// 把请求转发到 `{base}/api/{rest}`，返回**尚未读体**的响应，由调用方按流回给浏览器。
+///
+/// 两端都不缓冲：接管后既有几 KB 的 JSON，也有备份包下载、multipart 上传、
+/// SSE 日志跟随。缓冲式实现要么把主控内存吃掉，要么把大文件截断——上一版
+/// 那个 16 MB 的响应上限就是缓冲的代价，现在按流走，连上限都不需要了。
+///
+/// 凭据在这里换：query 走 `swap_query_token`，请求头用节点 Token 覆盖
+/// （节点的 `access::token_from_request` 优先读 `Authorization`）。
+pub async fn forward(
+    target: &ProxyTarget,
+    rest: &str,
+    query: Option<&str>,
+    method: reqwest::Method,
+    body: Option<reqwest::Body>,
+    content_type: Option<String>,
+) -> Result<reqwest::Response, String> {
+    let q = swap_query_token(query, &target.token);
+    let url = node_url(target, rest, Some(&q));
+    let mut req = http(target.insecure)
+        .request(method, &url)
+        .bearer_auth(&target.token);
+    // Content-Type 必须带上：multipart 的 boundary、JSON 的 charset 都在里面，
+    // 丢了远端按 form 解析 JSON 会直接 400。
+    if let Some(ct) = content_type {
+        req = req.header(reqwest::header::CONTENT_TYPE, ct);
+    }
+    if let Some(b) = body {
+        req = req.body(b);
+    }
+    // 只给「响应头到达」限时：整体 timeout 会掐断 SSE 与大文件下载
+    tokio::time::timeout(Duration::from_secs(PROXY_TIMEOUT_SECS), req.send())
+        .await
+        .map_err(|_| format!("节点 {PROXY_TIMEOUT_SECS}s 内未返回响应"))?
+        .map_err(|e| short_reqwest_err(&e))
+}
+
+/// 已握手的到节点 WebSocket：裸流由 reqwest 提供，帧协议由 tungstenite 负责。
+pub type NodeWs = tokio_tungstenite::WebSocketStream<reqwest::Upgraded>;
+
+/// 以节点 Token 打开到 `{base}/api/{rest}` 的 WebSocket。
+///
+/// 握手刻意复用 reqwest 而不是 `tokio_tungstenite::client_async`：节点面板多是
+/// 自签证书，`http(insecure)` 已经把 TLS 与 `insecure_tls` 走通；自己拨号还得再配
+/// 一套 rustls 危险校验器。拿到 101 之后用 `from_raw_socket` 接管已升级的裸流。
+pub async fn open_node_ws(
+    target: &ProxyTarget,
+    rest: &str,
+    query: Option<&str>,
+) -> Result<NodeWs, String> {
+    use base64::Engine as _;
+    let q = swap_query_token(query, &target.token);
+    let url = node_url(target, rest, Some(&q));
+    // Sec-WebSocket-Key 由客户端随机生成，节点据此回 Sec-WebSocket-Accept
+    let mut raw = [0u8; 16];
+    rand::Rng::fill(&mut rand::thread_rng(), &mut raw);
+    let key = base64::engine::general_purpose::STANDARD.encode(raw);
+
     let resp = http(target.insecure)
         .get(&url)
-        .timeout(Duration::from_secs(PROXY_TIMEOUT_SECS))
+        .header(reqwest::header::CONNECTION, "Upgrade")
+        .header(reqwest::header::UPGRADE, "websocket")
+        .header("Sec-WebSocket-Key", key)
+        .header("Sec-WebSocket-Version", "13")
         .bearer_auth(&target.token)
         .send()
         .await
-        .map_err(|e| format!("{}", short_reqwest_err(&e)))?;
-    let status = resp.status().as_u16();
-    let ctype = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/json")
-        .to_string();
-    let body = resp
-        .bytes()
+        .map_err(|e| short_reqwest_err(&e))?;
+    if resp.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS {
+        return Err(format!("节点拒绝升级（HTTP {}）", resp.status().as_u16()));
+    }
+    let upgraded = resp
+        .upgrade()
         .await
-        .map_err(|e| format!("读取响应失败: {e}"))?
-        .to_vec();
-    Ok((status, ctype, body))
+        .map_err(|e| format!("连接升级失败: {e}"))?;
+    Ok(NodeWs::from_raw_socket(
+        upgraded,
+        tokio_tungstenite::tungstenite::protocol::Role::Client,
+        None,
+    )
+    .await)
+}
+
+/// 浏览器 ↔ 节点双向泵帧：任一侧断开即结束，并关掉另一侧。
+///
+/// 消息按类型原样搬运（文本 / 二进制 / ping / pong / close），终端是二进制或文本
+/// 帧、docker exec 走文本帧，都不需要在这里理解内容。
+pub async fn pump_ws(mut browser: axum::extract::ws::WebSocket, mut node: NodeWs) {
+    use axum::extract::ws::Message as BMsg;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as TMsg;
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame as TClose;
+
+    fn to_node(m: BMsg) -> TMsg {
+        match m {
+            BMsg::Text(t) => TMsg::Text(t.as_str().to_string().into()),
+            BMsg::Binary(b) => TMsg::Binary(b),
+            BMsg::Ping(p) => TMsg::Ping(p),
+            BMsg::Pong(p) => TMsg::Pong(p),
+            BMsg::Close(c) => TMsg::Close(c.map(|f| TClose {
+                code: f.code.into(),
+                reason: f.reason.as_str().to_string().into(),
+            })),
+        }
+    }
+
+    fn to_browser(m: TMsg) -> BMsg {
+        match m {
+            TMsg::Text(t) => BMsg::Text(t.as_str().to_string().into()),
+            TMsg::Binary(b) => BMsg::Binary(b),
+            TMsg::Ping(p) => BMsg::Ping(p),
+            TMsg::Pong(p) => BMsg::Pong(p),
+            TMsg::Close(c) => BMsg::Close(c.map(|f| axum::extract::ws::CloseFrame {
+                code: f.code.into(),
+                reason: f.reason.as_str().to_string().into(),
+            })),
+            // 分片帧（Frame）由 tungstenite 自己聚合，正常不会走到这里
+            TMsg::Frame(_) => BMsg::Close(None),
+        }
+    }
+
+    loop {
+        tokio::select! {
+            biased;
+            from_browser = browser.recv() => match from_browser {
+                Some(Ok(m)) => {
+                    if node.send(to_node(m)).await.is_err() {
+                        break;
+                    }
+                }
+                _ => break,
+            },
+            from_node = node.next() => match from_node {
+                Some(Ok(m)) => {
+                    if browser.send(to_browser(m)).await.is_err() {
+                        break;
+                    }
+                }
+                _ => break,
+            },
+        }
+    }
+    let _ = node.close(None).await;
+    let _ = browser.close().await;
 }
 
 struct NodeRow {
@@ -588,21 +801,116 @@ mod tests {
         assert!(normalize_base("node-a1").is_err());
     }
 
+    /// 接管的目标是「像直接登录那台机器」，所以策略反过来：**除主控自有面全放行**，
+    /// 且不再区分读写。这里钉住各业务模块的代表性接口，确保它们都走代理，
+    /// 而不是悄悄回到主控本机（那正是「切了节点还是在看本机」的根因）。
     #[test]
-    fn proxy_allow_matches_segment_boundaries() {
-        // 白名单内：精确 + 子路径
-        assert!(proxy_allowed("system/info"));
-        assert!(proxy_allowed("/system/status"));
-        assert!(proxy_allowed("system/about/detail"));
-        // 前缀相似但不同段：拒绝
-        assert!(!proxy_allowed("system/infoo"));
-        assert!(!proxy_allowed("system/status-x"));
-        // 白名单外 / 空 / 递归面：全部拒绝
-        assert!(!proxy_allowed(""));
-        assert!(!proxy_allowed("site/list"));
-        assert!(!proxy_allowed("auth/current"));
-        assert!(!proxy_allowed("node/overview"));
-        assert!(!proxy_allowed("nodes/1/system/info"));
+    fn proxy_policy_covers_business_surfaces() {
+        for path in [
+            "system/info",
+            "/system/status",
+            "system/overview",
+            "system/config/processes",
+            "system/nginx/status",
+            "system/files/list",
+            "site/list",
+            "ssl/cert/list",
+            "database/list",
+            "docker/containers",
+            // 身份与菜单必须来自节点，前端才按远端 Token 的权限渲染菜单与按钮
+            "user/info",
+            "system/menus",
+            // 终端 / 实时日志 / 下载：接管后才算「能直接控制那台机器」
+            "terminal/local/ws",
+            "terminal/ws/1",
+            "docker/exec/ws",
+            "task/ws/9",
+            "system/files/download",
+            "database/export",
+        ] {
+            assert!(proxy_allowed(path), "{path} 应在节点视图可代理");
+        }
+    }
+
+    /// 主控自有面：这几类代理过去会**改错对象**，必须永远打主控。
+    #[test]
+    fn proxy_policy_blocks_master_owned_surfaces() {
+        for path in [
+            "",
+            // 会话属于主控：节点没有这个登录态
+            "auth/current",
+            "auth/logout",
+            // 节点台账：代理过去就是 A→B→A 的递归代理
+            "node/list",
+            "node/overview",
+            "nodes/1/system/info",
+            // Token 控制台管的始终是「谁在调用这个面板」
+            "dev/api-token/list",
+            // 主控进程自己的探针与内置文档
+            "health",
+            "docs/zap-api",
+        ] {
+            assert!(!proxy_allowed(path), "{path} 不该经节点代理");
+        }
+        // 同前缀但不同段的路径不能被误伤（按段边界比对）
+        assert!(proxy_allowed("nodex/ping"));
+        assert!(proxy_allowed("devtools/panel"));
+        assert!(proxy_allowed("authored/list"));
+    }
+
+    /// 路径非法（空段 / 穿越）仍然拒绝，且与「主控自有面」区分开，
+    /// 否则前端提示会把人引到完全无关的方向。
+    #[test]
+    fn proxy_policy_rejects_traversal() {
+        assert!(matches!(
+            proxy_deny_reason("system/overview/../../auth/current"),
+            Some(ProxyDeny::BadPath)
+        ));
+        assert!(matches!(
+            proxy_deny_reason("node/list"),
+            Some(ProxyDeny::MasterOwned)
+        ));
+        assert!(proxy_deny_reason("site/add").is_none());
+    }
+
+    /// 凭据置换是接管的底线：浏览器带的是**主控会话 JWT**，
+    /// 原样转出去等于把主控凭据交给受控端，那台机器可以拿它反打主控。
+    #[test]
+    fn proxy_swaps_query_credential() {
+        let q = swap_query_token(
+            Some("token=MASTERJWT&path=%2Fvar&follow=1"),
+            "zap_node_token",
+        );
+        assert!(q.contains("token=zap_node_token"), "{q}");
+        assert!(!q.contains("MASTERJWT"), "主控凭据不得外流：{q}");
+        // 其余参数原样保留
+        assert!(q.contains("path=%2Fvar") && q.contains("follow=1"), "{q}");
+        // 没有 token 参数时补一个；query 为 None 也要产出可用串
+        assert!(swap_query_token(Some("id=3"), "T").contains("token=T"));
+        assert_eq!(swap_query_token(None, "T"), "token=T");
+        // 只认键名 `token`，不误伤 `token_id` 这类业务参数
+        let q2 = swap_query_token(Some("token_id=7&token=X"), "T");
+        assert!(q2.contains("token_id=7") && !q2.contains("token=X"), "{q2}");
+    }
+
+    /// body 里带凭据的接口（`/plugin/cancel`）同样置换；
+    /// 非 JSON、非对象、字段不是字符串时**原样返回**——代理不该改写业务载荷。
+    #[test]
+    fn proxy_swaps_body_credential() {
+        let out = swap_body_token(br#"{"token":"MASTERJWT","id":3}"#, "zap_node_token");
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["token"], "zap_node_token");
+        assert_eq!(v["id"], 3);
+
+        for raw in [
+            br#"{"id":3}"#.as_slice(),
+            br#"{"token":123}"#.as_slice(),
+            br#"[["token","x"]]"#.as_slice(),
+            b"not json".as_slice(),
+            b"".as_slice(),
+        ] {
+            assert_eq!(swap_body_token(raw, "T").as_slice(), raw, "不该被改写");
+        }
     }
 
     #[test]

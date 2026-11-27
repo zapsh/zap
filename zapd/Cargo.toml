@@ -61,12 +61,18 @@ instant-acme = { version = "0.8", default-features = false, features = [
 # ARI acme cert
 rustls-pki-types = "1"
 # without OpenSSL
+# stream：节点视图代理按流转发请求体与响应体（上传 / 大文件下载 / SSE）
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
     "query",
     "form",
     "rustls",
+    "stream",
 ] }
+# 节点视图的 WebSocket 代理：握手复用 reqwest（TLS 与 insecure_tls 已走通），
+# 之后用 from_raw_socket 接管已升级的字节流。版本须与 axum 0.8 的一致，
+# 否则两边是不同的 tungstenite 类型，消息无法互转。
+tokio-tungstenite = "0.29"
 async-trait = "0.1"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",

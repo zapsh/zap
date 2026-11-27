@@ -279,8 +279,19 @@ onMounted(load)
       <el-table-column :label="t('cluster.colLastSeen')" width="180">
         <template #default="{ row }">{{ ago(row.last_seen) }}</template>
       </el-table-column>
-      <el-table-column :label="t('cluster.colActions')" width="200" fixed="right">
+      <el-table-column :label="t('cluster.colActions')" width="250" fixed="right">
         <template #default="{ row }">
+          <!-- 接管：整页重载后面板直接操作这台机器 -->
+          <el-tooltip v-if="row.online && row.status === 1" :content="t('cluster.nodeViewTip')">
+            <el-button
+              link
+              type="warning"
+              :disabled="nodeContext?.id === row.id"
+              @click="takeover(row)"
+            >
+              {{ nodeContext?.id === row.id ? t('cluster.nodeViewActive') : t('cluster.takeover') }}
+            </el-button>
+          </el-tooltip>
           <el-button link type="primary" @click="openEdit(row)">{{ t('common.edit') }}</el-button>
           <el-button link type="primary" @click="toggleStatus(row)">
             {{ row.status === 1 ? t('cluster.disable') : t('cluster.enable') }}

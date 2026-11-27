@@ -50,6 +50,12 @@ export function withBase(path: string): string {
 export interface NodeContext {
   id: number
   name: string
+  /**
+   * 节点自己的面板地址（含 url_prefix，如 `https://10.0.0.5:2663/zap`）。
+   * 仅用于「必须由外部直接访问」的链接（插件回调 URL 等）——这类地址的调用方
+   * 没有主控会话，走 `/api/nodes/{id}/…` 代理会被 401 挡掉。
+   */
+  baseUrl?: string
 }
 
 const NODE_CTX_KEY = 'zap_node_context'
@@ -59,7 +65,12 @@ function readNodeContext(): NodeContext | null {
     const raw = sessionStorage.getItem(NODE_CTX_KEY)
     if (!raw) return null
     const v = JSON.parse(raw)
-    return typeof v?.id === 'number' ? { id: v.id, name: String(v.name ?? '') } : null
+    if (typeof v?.id !== 'number') return null
+    return {
+      id: v.id,
+      name: String(v.name ?? ''),
+      baseUrl: typeof v.baseUrl === 'string' && v.baseUrl ? v.baseUrl : undefined,
+    }
   } catch {
     return null
   }
@@ -88,14 +99,80 @@ export function apiBase(): string {
   return `${API_BASE}${nodeSegment()}`
 }
 
+/**
+ * 指向「当前这台机器自己」的完整 API 地址，**不经代理**。
+ *
+ * 给需要被外部系统直接调用的链接用（插件回调 URL、节点上的定时器）：接管状态下
+ * 页面展示的是节点的数据，这类地址必须落在节点自己的面板上，而不是主控的代理路径
+ * ——外部调用方没有主控会话，走代理只会拿到 401。
+ *
+ * 注意 `base_url` 已含 url 前缀但不含 `/api`（后端 node_url 拼的也是 `{base}/api/…`），
+ * 所以这里接 `/api` 而不是 API_BASE，否则带前缀的部署会出现 `/zap/zap/api`。
+ */
+export function nodeSelfApiBase(): string {
+  const raw = nodeContext.value?.baseUrl
+  if (raw) return `${raw.replace(/\/+$/, '')}/api`
+  return `${window.location.origin}${API_BASE}`
+}
+
+// ── 节点视图下的请求归属 ──────────────────────────────────────
+//
+// 「接管整台机器」= 除下面几类外，所有请求（含写操作与 WebSocket）都改走主控的节点代理。
+// 分类口径必须与后端 `zapd/src/zap/node.rs::PROXY_DENY_ROOTS` 一致：
+// 两边任一处改动都要同步，否则前端把请求送到代理、后端再拒掉，
+// 用户看到的是莫名其妙的 403。
+
+/**
+ * 主控自有接口：只有这几类即使在节点视图里也仍打主控。
+ *
+ * - `/auth`：登录 / 登出 / 刷新 / 验证码。会话属于主控，节点没有这个会话，
+ *   代理过去等于拿远端身份去刷新本机会话；
+ * - `/node`、`/nodes`：主控的节点台账与跨节点曲线（`/nodes/{id}/history`），
+ *   代理过去就是 A→B→A 的递归代理；
+ * - `/dev`：API Token 控制台，管的是「谁在调用这个面板」；
+ * - `/docs`、`/health`：主控自己的文档与探针，两台机器上是同一份。
+ *
+ * 刻意**不含** `/user` 与 `/system/menus`：接管要「像直接登录那台机器」，
+ * 身份（roles / permissions）和菜单树必须来自节点，前端才会按远端 Token
+ * 归属账号的权限渲染菜单与按钮，而不是「主控 admin 看得见按钮、点下去节点报 403」。
+ * 进入 / 退出节点视图都整页重载，就是为了让这两份数据重新拉一次。
+ */
+const MASTER_OWNED = ['/auth', '/node', '/nodes', '/dev', '/docs', '/health']
+
+/**
+ * 节点视图下这条 API 的去向：`master` 仍打主控，`proxy` 经 `/api/nodes/{id}` 转发。
+ * 本机视图返回 null（不参与判定）。传入的是 axios 的相对路径（不含 baseURL）。
+ */
+export type NodeViewRoute = 'master' | 'proxy'
+
+export function nodeViewRoute(url?: string): NodeViewRoute | null {
+  if (nodeContext.value == null) return null
+  const u = (url || '').split('?')[0]
+  return MASTER_OWNED.some((p) => u === p || u.startsWith(`${p}/`)) ? 'master' : 'proxy'
+}
+
+/**
+ * 切换接管目标时用的**整页跳转地址**：把 SPA 路由解析成带 history 前缀的完整 href，
+ * 交给 `window.location.href`。
+ *
+ * 必须整页重载而不是 `router.push`：接管后的身份（`/user/info`）与菜单
+ * （`/system/menus`）现在都来自节点，而这两份数据在应用启动时只拉一次。
+ * SPA 内跳路由会沿用主控的菜单，用户看到的仍是主控的权限。
+ */
+export function nodeViewPath(
+  router: { resolve: (to: string) => { href: string } },
+  target = '/dashboard',
+): string {
+  return router.resolve(target).href
+}
+
 /** 构造同前缀下的 WebSocket 地址（相对路径 WebSocket 在部分场景下不可靠，这里拼全 URL） */
 export function wsUrl(path: string): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const seg = nodeSegment()
   if (seg) {
-    // path 形如 `/api/terminal/ws/...`，插入节点段变成 `/api/nodes/3/terminal/ws/...`。
-    // 主控当前会显式拒绝 WS 升级（远端终端 / 实时日志在后续版本开放），
-    // 失败要发生在「远端」而不是悄悄连回本机。
+    // path 形如 `/api/terminal/ws/...`，插入节点段变成 `/api/nodes/3/terminal/ws/...`，
+    // 由主控与节点之间再建一条上游 WS 并双向转发（见 routers/node.rs 的升级分支）。
     const rest = path.startsWith('/api') ? path.slice(4) : path
     return `${proto}//${window.location.host}${API_BASE}${seg}${rest.startsWith('/') ? '' : '/'}${rest}`
   }

@@ -13,7 +13,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { formatBytes } from '@/utils/fmt'
-import { setNodeContext } from '@/utils/base'
+import { nodeContext, nodeViewPath, setNodeContext } from '@/utils/base'
 import { getNodesOverview, type NodeOverviewItem, type NodeSummary } from '@/api/node'
 import NodeTrend from './NodeTrend.vue'
 
@@ -97,10 +97,14 @@ function openNode(n: NodeOverviewItem) {
   drawer.value = true
 }
 
-/** 进入节点视图：面板请求改走主控的 /api/nodes/{id}/** 白名单代理 */
+/**
+ * 进入节点视图：这是一次**完整接管**，面板请求改走主控的 /api/nodes/{id}/** 代理。
+ * 必须整页重载 —— 登录身份、菜单与权限矩阵都要改由该节点给出（代理会带上节点
+ * API Token），而这些都在应用启动时拉取，SPA 内跳路由拿不到远端结果。
+ */
 function enterNodeView(n: NodeOverviewItem) {
-  setNodeContext({ id: n.id, name: n.name })
-  router.push('/server-status/index')
+  setNodeContext({ id: n.id, name: n.name, baseUrl: n.base_url })
+  window.location.href = nodeViewPath(router, '/server-status/index')
 }
 
 async function load() {
@@ -132,6 +136,14 @@ function startTicker() {
 }
 
 onMounted(async () => {
+  // 大屏只读主控自己的注册表与采样库，属于**主控页面**。若正处在节点视图里打开它，
+  // 就等于离开了那台机器的上下文：这里直接退出接管并整页重载，让身份/菜单回到主控。
+  // 否则下钻的历史曲线（`/nodes/{id}/history` 由主控服务、不经代理）会被发到节点上报错。
+  if (nodeContext.value) {
+    setNodeContext(null)
+    window.location.reload()
+    return
+  }
   await load()
   if (destroyed) return
   countdown.value = interval.value

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
-import { BASE } from '@/utils/base'
+import { BASE, nodeContext, setNodeContext } from '@/utils/base'
 
 import Layout from '@/layout/index.vue'
 import { useUserStore } from '@/stores/user'
@@ -551,6 +551,15 @@ router.beforeEach(async (to, from, next) => {
           const nextData = to.path === redirect ? { ...to, replace: true } : { path: redirect }
           next(nextData)
         } catch (error) {
+          // 接管状态下取不到身份，几乎一定是**那台机器**的凭据失效（API Token 被删 /
+          // 过期），而不是本机会话问题——本机会话往往仍然有效。先退出接管、原地重试
+          // 一次把人交还给主控；直接 resetToken 会连本机会话一起清掉，白逼用户重登。
+          // 重试至多一次：此时 nodeContext 已为空，再失败就走下面的登出分支。
+          if (nodeContext.value) {
+            setNodeContext(null)
+            next({ ...to, replace: true })
+            return
+          }
           // 移除 token 并跳转登录页
           await userStore.resetToken()
           next(`/login?redirect=${to.path}`)

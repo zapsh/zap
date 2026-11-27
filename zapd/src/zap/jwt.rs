@@ -31,11 +31,8 @@ pub struct Claims {
     pub iss: String,   // 发布者
     pub exp: u64,      // 过期时间
     pub roles: String, // 用户角色，逗号分隔
-    /// 会话版本号（对应 `user.token_version`，序列化为 `tv`）。
-    ///
-    /// 小于库中当前值的 token 一律视为已下线，用于「下线所有设备」。
-    /// 带 `default` 是为了兼容**本次改动之前签发**的 token（payload 里没有该字段）：
-    /// 它们反序列化后得到 0，而存量用户的版本号同样从 0 起算，因此不会被误杀。
+
+    /// 用于校验 JWT 签名：若会话版本号落后于库中当前值，则拒绝该 JWT。
     #[serde(default, rename = "tv")]
     pub token_version: i64,
     /// 凭据作用域：`''` 普通用户 Token，`'sudo'` 代登录票据。
@@ -210,9 +207,9 @@ pub fn sha256_hex(input: &str) -> String {
 
 /// 解析并校验一个 JWT：签名、有效期，外加会话版本号（tokenVersion）。
 ///
-/// 与 [`Claims`] extractor 走同一套规则，供不走 extractor 的入口复用——
-/// WebSocket 握手、下载/流式接口用的 `?token=` 等都是自己 decode 的，
-/// 统一调这里才不会漏掉「已下线」的校验。
+/// **只认面板 JWT**，不认 `zap_` API Token。浏览器带不上自定义请求头的入口
+/// （WebSocket 握手、EventSource、下载链接）应改用 [`claims_from_token`]，
+/// 否则节点视图经主控代理过来的 API Token 会在这里被判成未授权。
 pub fn decode_verified(raw_token: &str) -> Option<Claims> {
     let secure_key = config::get_config().read().ok()?.jwt.jwt_secure.clone();
     let claims = decode::<Claims>(

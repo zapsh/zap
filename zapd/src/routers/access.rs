@@ -1099,7 +1099,9 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::action("system.monitor", "view")),
     ),
     ("/node", Required::Admin, Some(Perm::action("node", "edit"))),
-    // 节点视图代理：只读转发，门槛与监控大屏一致（白名单在 handler 内再收一道）
+    // 节点视图代理：规则本身只到「看监控」，因为 `/nodes/{id}/history` 属于大屏曲线。
+    // 代理内的写与终端在 handler 里另校验 `node:edit`（见 routers::node::proxy），
+    // 主控自有面（auth / node / dev）由 `zap::node::proxy_deny_reason` 直接拒。
     (
         "/nodes",
         Required::Admin,

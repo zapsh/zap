@@ -329,7 +329,7 @@ import {
   type ScheduleTrigger,
 } from '@/api/plugin'
 import { listAllApps, type AllAppItem } from '@/api/site'
-import { API_BASE } from '@/utils/base'
+import { nodeSelfApiBase } from '@/utils/base'
 import { useUserStore } from '@/stores/user'
 
 const { t } = useI18n()
@@ -542,8 +542,10 @@ function selectedApp(): AllAppItem | null {
 }
 
 function hookUrl(row: PluginSchedule) {
-  // 带上 url_prefix（utils/base 的 API_BASE），否则部署在子路径下复制出来的地址是错的
-  return `${window.location.origin}${API_BASE}/plugin/hook/${row.token}`
+  // 带上 url_prefix（utils/base 的 API_BASE），否则部署在子路径下复制出来的地址是错的。
+  // 节点视图下取**节点自己的地址**：这个 URL 是给外部定时器 / 第三方调的，
+  // 它们没有主控会话，走 /api/nodes/{id} 代理必然 401。
+  return `${nodeSelfApiBase()}/plugin/hook/${row.token}`
 }
 
 async function loadSched() {

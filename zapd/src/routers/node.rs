@@ -9,12 +9,13 @@
 //! 来自普通用户，不必在节点上开管理员；历史曲线全部由主控采样落库，查询不再访问节点。
 
 use axum::Json;
-use axum::extract::{Path, Query};
+use axum::extract::{ConnectInfo, FromRequestParts, Path, Query};
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use crate::db;
 use crate::zap::{ZapError, ZapJsonResult, audit, crypto, jwt::ValidatedClaims, node};
@@ -538,50 +539,269 @@ pub async fn status(_: ValidatedClaims, q: Query<HashMap<String, String>>) -> Za
     })))
 }
 
-/// `/api/nodes/{id}/**` 白名单反向代理：节点视图的远端请求入口。
+/// 回给浏览器的响应头白名单。
 ///
-/// 前端把 API_BASE / wsUrl 切到 `/api/nodes/{id}` 后，整个面板即以该节点为
-/// 当前机器；这里先过 access.rs 门禁（admin + system.monitor:view），
-/// 再校验方法 / 白名单 / 节点状态，最后以节点自己的 API Token 转发。
-/// 远端响应原样带回（含 `{code,message,data}` 信封），前端拦截器无感。
-pub async fn proxy(
-    Path((id, rest)): Path<(i64, String)>,
-    method: Method,
-    headers: HeaderMap,
-    uri: Uri,
-) -> Response {
-    // WS 升级请求：终端 / 实时日志的交互代理在后续版本开放，这里显式拒绝，
-    // 避免 axum 把带 Upgrade 头的请求当普通 GET 转发后得到莫名其妙的响应
-    if headers.get(header::UPGRADE).is_some() {
-        return proxy_err(
-            StatusCode::BAD_REQUEST,
-            "WebSocket 代理暂未开放，请退出节点视图后使用终端 / 实时日志",
-        );
+/// 不整体透传：`Set-Cookie` 会把节点自己的会话 cookie 种到主控域名下，
+/// 之后每个请求都带一份对主控无用的凭据；`Transfer-Encoding` 由 axum 重算。
+/// 带上 `Content-Disposition` / `Last-Modified` 是为了接管后还能下载备份包与文件。
+const PASSTHROUGH_HEADERS: [header::HeaderName; 6] = [
+    header::CONTENT_TYPE,
+    header::CONTENT_DISPOSITION,
+    header::CONTENT_LENGTH,
+    header::ETAG,
+    header::LAST_MODIFIED,
+    header::CACHE_CONTROL,
+];
+
+/// `/api/nodes/{id}/**` 反向代理：节点视图的远端请求入口。
+///
+/// 前端把 API_BASE / wsUrl 切到 `/api/nodes/{id}` 后，整个面板即以那台机器为
+/// 当前主机，业务代码零改动。先过 access.rs 门禁（admin + `node:edit`），
+/// 再排除主控自有面，最后以**节点自己的 API Token** 转发；浏览器带来的主控
+/// JWT 不会出现在发往节点的请求里（query、header、小 JSON body 三处都置换）。
+///
+/// 写操作与 WebSocket 都会转发——「像直接登录那台机器」离不开这两样。
+/// 能不能执行由节点按它自己的权限矩阵判定；主控侧另外对非 GET 与终端会话记审计。
+/// 手工从 parts 取参数，而不是把它们写成提取器：axum 0.8 **没有**给
+/// `Option<T>` 实现提取器，`Option<WebSocketUpgrade>` 编不过，
+/// 而这条路由必须「是 WS 就当 WS 升级、否则当普通请求」——只能自己 parse。
+#[axum::debug_handler]
+pub async fn proxy(req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let (id, rest) = match Path::<(i64, String)>::from_request_parts(&mut parts, &()).await {
+        Ok(Path(v)) => v,
+        Err(_) => return proxy_err(StatusCode::BAD_REQUEST, "节点 id 或转发路径不合法"),
+    };
+    let method = parts.method.clone();
+    let uri = parts.uri.clone();
+    let headers = parts.headers.clone();
+    let ip = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string())
+        .unwrap_or_default();
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if let Some(reason) = node::proxy_deny_reason(&rest) {
+        return proxy_denied("master_owned", reason.message());
     }
-    if method != Method::GET && method != Method::HEAD {
-        return proxy_err(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "节点代理仅允许只读请求（GET）",
-        );
-    }
-    if !node::proxy_allowed(&rest) {
-        return proxy_err(StatusCode::FORBIDDEN, "该接口不在节点代理白名单内");
-    }
+    // 升级握手必须在节点侧完成：解析成功即这是一条 WS 请求
+    let upgrade = axum::extract::ws::WebSocketUpgrade::from_request_parts(&mut parts, &())
+        .await
+        .ok();
     let target = match node::resolve_target(id).await {
         Ok(t) => t,
         Err(e) => return proxy_err(StatusCode::NOT_FOUND, &e),
     };
-    match node::forward(&target, &rest, uri.query()).await {
-        Ok((status, ctype, body)) => (
-            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
-            [(header::CONTENT_TYPE, ctype)],
-            body,
-        )
-            .into_response(),
-        Err(e) => proxy_err(StatusCode::BAD_GATEWAY, &format!("节点不可达：{}", e)),
+    let caller = ProxyCaller {
+        claims: proxy_claims(&headers, &uri).await,
+        ip,
+        ua,
+    };
+    // WS 用的也是 GET，但它是「直接操作那台机器」，与写操作同级对待
+    let is_read = upgrade.is_none() && (method == Method::GET || method == Method::HEAD);
+
+    // 只读接管沿用 `system.monitor:view`（与监控大屏同级）；写与终端另要求
+    // `node:edit`——能把机器加进集群的人，才算有权以它的身份改那台机器。
+    // 不能直接把 `/nodes` 整条规则抬到 node:edit：`/nodes/{id}/history` 属于
+    // 监控大屏，只读角色也要能画曲线。
+    if !is_read {
+        let granted = match caller.claims.as_ref() {
+            // 面板凭据取不到时直接拒：审计归属不明却放行写操作是最坏组合
+            None => false,
+            Some(c) => {
+                let map = crate::routers::access::perm_map().await;
+                crate::zap::jwt::is_admin(c)
+                    || crate::routers::access::role_has_perm(&map, c, "node:edit")
+            }
+        };
+        if !granted {
+            return proxy_denied(
+                "perm",
+                "节点视图的写操作与终端需要「管理节点」权限（node:edit）",
+            );
+        }
     }
+
+    // WebSocket：终端 / docker exec / 任务实时日志 / 插件日志跟随。
+    // 必须先拨通节点再回 101：升级之后再失败就只能凭空断开，
+    // 浏览器只能看到「连不上」，拿不到节点给的原因。
+    if let Some(upgrade) = upgrade {
+        let opened = node::open_node_ws(&target, &rest, uri.query()).await;
+        audit_proxy(&caller, &target.name, id, "WS", &rest, opened.is_ok()).await;
+        return match opened {
+            Ok(stream) => upgrade.on_upgrade(move |socket| node::pump_ws(socket, stream)),
+            Err(e) => proxy_err(
+                StatusCode::BAD_GATEWAY,
+                &format!("无法连接到节点 {}：{e}", target.name),
+            ),
+        };
+    }
+
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    // 请求体按流转发：上传站点包、备份文件都不占主控内存。
+    // 唯一例外是小 JSON——`/plugin/cancel` 这类接口把凭据放在 body 的 `token`
+    // 字段里，不置换就等于把主控会话凭据交给受控端。
+    let req_body = if is_read {
+        None
+    } else if is_small_json(content_type.as_deref(), &headers) {
+        match axum::body::to_bytes(body, node::PROXY_JSON_SNIFF_BYTES as usize).await {
+            Ok(b) => Some(reqwest::Body::from(node::swap_body_token(
+                &b,
+                &target.token,
+            ))),
+            Err(_) => {
+                return proxy_err(StatusCode::PAYLOAD_TOO_LARGE, "JSON 请求体超过代理上限");
+            }
+        }
+    } else {
+        // axum 的 Body 只实现 http_body::Body，要转成 data stream 才满足
+        // reqwest 的 TryStream 约束
+        Some(reqwest::Body::wrap_stream(body.into_data_stream()))
+    };
+
+    match node::forward(
+        &target,
+        &rest,
+        uri.query(),
+        method.clone(),
+        req_body,
+        content_type,
+    )
+    .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            // 头要在把 body 流搬走之前取
+            let passthrough: Vec<(header::HeaderName, axum::http::HeaderValue)> =
+                PASSTHROUGH_HEADERS
+                    .iter()
+                    .filter_map(|n| resp.headers().get(n).cloned().map(|v| (n.clone(), v)))
+                    .collect();
+            if !is_read {
+                audit_proxy(
+                    &caller,
+                    &target.name,
+                    id,
+                    method.as_str(),
+                    &rest,
+                    status.is_success(),
+                )
+                .await;
+            }
+            let mut out = Response::new(axum::body::Body::from_stream(resp.bytes_stream()));
+            *out.status_mut() = status;
+            // 「这个响应确实由节点应答」的唯一凭据。只看 URL 分不开两种 401：
+            // 节点拒绝了它的 API Token，与主控在同一条代理 URL 上拒绝了浏览器的
+            // 会话——前者只能去「节点管理」换凭据，后者必须走刷新 / 重新登录。
+            // 误判成前者的后果是接管态永久卡死在登录页外（既不刷新也不登出）。
+            out.headers_mut().insert(
+                header::HeaderName::from_static("x-zap-node-proxy"),
+                axum::http::HeaderValue::from_static("1"),
+            );
+            for (k, v) in passthrough {
+                out.headers_mut().insert(k, v);
+            }
+            out
+        }
+        // 不可达 / 超时：明确 502 + 短原因（不转发底层错误体）
+        Err(e) => {
+            if !is_read {
+                audit_proxy(&caller, &target.name, id, method.as_str(), &rest, false).await;
+            }
+            proxy_err(
+                StatusCode::BAD_GATEWAY,
+                &format!("无法连接到节点 {}：{e}", target.name),
+            )
+        }
+    }
+}
+
+/// 取本次代理的操作者，仅用于审计归属。
+///
+/// 不能直接用 `Claims` extractor：它只认 `Authorization` 请求头，而浏览器给
+/// WebSocket / EventSource 加不了请求头，凭据在 `?token=` 里。
+async fn proxy_claims(headers: &HeaderMap, uri: &Uri) -> Option<crate::zap::jwt::Claims> {
+    let raw = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.strip_prefix("Bearer ").unwrap_or(v).to_string())
+        .or_else(|| {
+            uri.query()?
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("token=").map(str::to_string))
+        })?;
+    crate::zap::jwt::claims_from_token(&raw).await
+}
+
+/// 代理请求的调用方上下文：审计要知道「谁、从哪个 IP、用什么客户端」动的那台机器。
+struct ProxyCaller {
+    claims: Option<crate::zap::jwt::Claims>,
+    ip: String,
+    ua: String,
+}
+
+/// 节点视图的写操作与终端会话记一条主控审计。
+///
+/// 节点侧也会记（它只看到「某个 API Token 在动」），但那条查不到**是谁从主控点的**。
+/// 没有这条，「谁把生产站点的 nginx 配置改坏了」就只能靠时间点对猜。
+async fn audit_proxy(
+    caller: &ProxyCaller,
+    node_name: &str,
+    id: i64,
+    method: &str,
+    rest: &str,
+    ok: bool,
+) {
+    audit::log_with(
+        caller.claims.as_ref(),
+        Some(caller.ip.as_str()),
+        "node_proxy",
+        &format!("{node_name}(#{id})"),
+        &format!("{method} /{rest}"),
+        if ok { "success" } else { "failure" },
+        &caller.ua,
+    )
+    .await;
+}
+
+/// 是否「小 JSON」请求体：只有这种才值得缓冲下来置换 body 里的凭据。
+///
+/// 未带 `Content-Length`（chunked）时按不处理走：那类请求通常是上传，
+/// 既不含会话凭据，也不该被缓冲。
+fn is_small_json(content_type: Option<&str>, headers: &HeaderMap) -> bool {
+    if !content_type.is_some_and(|ct| ct.starts_with("application/json")) {
+        return false;
+    }
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .is_none_or(|n| n <= node::PROXY_JSON_SNIFF_BYTES)
 }
 
 fn proxy_err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({ "code": -1, "message": msg }))).into_response()
+}
+
+/// 主控侧代理策略拒绝：额外带一个响应头，让前端区分「主控没放行」和
+/// 「远端 Token 权限不足」——两者的下一步完全不同（前者要么换接口、要么找主控
+/// 管理员要 `node:edit`，后者去节点管理换 Token）。不带这个头，403 会被统一
+/// 解释成 Token 权限问题，把用户引到错误的排查方向。
+///
+/// `code`：`master_owned`（该接口本就不代理）/ `perm`（主控账号没有 node:edit）。
+fn proxy_denied(code: &str, msg: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        [("x-zap-node-denied", code)],
+        Json(json!({ "code": -1, "message": msg })),
+    )
+        .into_response()
 }

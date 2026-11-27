@@ -4,6 +4,7 @@ import { ref, computed } from 'vue'
 import { login, getUserInfo, logout as logoutApi } from '@/api/user'
 import { useTagsStore } from '@/stores/tags'
 import { setToken, removeToken, setTokenExpire, getToken, getTokenExpire } from '@/utils/auth'
+import { setNodeContext } from '@/utils/base'
 import { ElMessage } from 'element-plus'
 import { t } from '@/i18n'
 
@@ -190,6 +191,10 @@ export const useUserStore = defineStore(
         permissions.value = []
         userKind.value = 0
         readOnly.value = false
+        // 主控会话结束 = 接管结束。接管态存在 sessionStorage，不清就会跨会话残留：
+        // 重新登录后 /user/info、/system/menus 仍走节点代理，受控端一旦换 Token
+        // 就变成「登录成功 → 401 → 踢回登录页」的死循环，再也进不了面板。
+        setNodeContext(null)
         removeToken()
         ElMessage({ type: 'success', message: t('app.logoutSuccess') })
         return Promise.resolve()
@@ -211,6 +216,9 @@ export const useUserStore = defineStore(
       permissions.value = []
       userKind.value = 0
       readOnly.value = false
+      // 同上：路由守卫取身份失败会走到这里，此刻必须同时退出接管，
+      // 否则下一次登录仍然打向那台（凭据已失效的）节点。
+      setNodeContext(null)
       removeToken()
       return Promise.resolve()
     }

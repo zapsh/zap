@@ -112,9 +112,9 @@ export default {
     sudoShort: '代登录：{name}',
     sudoExit: '退出代登录',
     sudoExitConfirm: '确定要退出代登录并返回你自己的账号吗？',
-    // 节点视图（多节点主控代理）顶部横幅
-    nodeViewShort: '节点视图：{name}',
-    nodeViewExit: '返回本机',
+    // 节点视图（经主控代理直接操作受控节点）顶部横幅
+    nodeViewShort: '正在操作：{name}',
+    nodeViewExit: '返回主控',
     // 页脚常驻入口：文档已整合进「系统设置 → About ZAP」
     docs: '文档',
   },
@@ -2385,7 +2385,8 @@ export default {
     apiToken: 'API Token',
     tokenPlaceholderNew: '节点上创建的 API Token（zap_ 开头）',
     tokenPlaceholderEdit: '留空表示不修改已保存的 Token',
-    tokenHint: 'Token 加密存储，保存后不再回显；如需更换请在节点上重新签发。',
+    tokenHint:
+      'Token 加密存储，保存后不再回显；如需更换请在节点上重新签发。节点视图会读取远端的站点 / 文件 / 进程等接口，建议用管理员账号签发 Token——普通账号的 Token 会在这些页面报「权限不足」。',
     insecureTls: '自签证书',
     insecureHint: '节点使用自签 HTTPS 证书时保持开启；已配置受信证书可关闭。',
     remark: '备注',
@@ -2416,10 +2417,22 @@ export default {
     sortName: '按名称',
     sortId: '按添加顺序',
     noNetworkHint: '历史数据由主控每 15 秒采样，节点掉线时曲线自然断开；网络速率暂未采集。',
-    // 节点视图（白名单只读代理）
-    enterNodeView: '进入节点视图',
-    nodeViewTip: '面板数据来自远端节点（只读代理）；写操作、终端与文件暂未开放',
+    // 节点视图（完整接管：读 + 写 + 终端 / 下载 / WebSocket）
+    takeover: '接管',
+    enterNodeView: '接管这台机器',
+    nodeViewActive: '接管中',
+    nodeViewTip:
+      '面板已直接接管该节点：读、写、终端、下载都发生在那台机器上，权限以该节点 API Token 归属的账号为准',
+    nodeBlockedWrite:
+      '主控没有把这个请求转发给节点：它落在主控自有的接口上（登录、节点台账等），与接管无关',
+    nodeNeedEdit:
+      '你的主控账号没有「管理节点」权限（node:edit），不能接管这台机器执行写操作或打开终端；只读浏览不受影响',
+    nodeEmpty: '暂无可切换的节点',
     remoteAuthFailed: '节点拒绝了请求：API Token 无效或已过期，请到「节点管理」更新该节点凭据',
+    remoteForbiddenFailed:
+      '节点「{name}」拒绝了该请求（{detail}）：这是该节点 API Token 的权限不足，与主控角色无关',
+    remoteNotFoundFailed:
+      '节点「{name}」没有这个接口（404）：通常是该节点版本比当前面板旧，升级该节点后即可使用',
   },
 
   monitorRange: {
@@ -4837,6 +4850,8 @@ export default {
     prefixFilter: '· 仅显示 {prefix}* 前缀的库',
     adminView: '· 管理员视图（全部数据库）',
     btnUsers: '数据库用户',
+    localOnlyInNodeView:
+      'phpMyAdmin 由主控本机的 Web 服务托管，接管「{name}」期间打开它操作的仍是主控的库，请先返回主控',
     btnRemote: '远程访问',
     listTitle: '数据库列表',
     fastModeTip: '不统计大小时列表返回更快，适合库多/表大的场景',

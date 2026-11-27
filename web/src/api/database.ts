@@ -130,7 +130,11 @@ export const databaseApi = {
   /** 导出 .sql（结构 + 数据），返回 SQL 文本 */
   exportSql: (schema: string, tables?: string) =>
     http
-      .get<any>('/database/export', { params: tables ? { schema, tables } : { schema } })
+      .get<any>('/database/export', {
+        params: tables ? { schema, tables } : { schema },
+        // 整库 SQL 一次性返回，默认 15s 撑不住；节点视图下还要经主控代理多一跳
+        timeout: 10 * 60 * 1000,
+      })
       .then(unwrap<DbExportResult>),
 
   /** 导入 .sql（执行上传的语句） */

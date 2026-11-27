@@ -121,14 +121,36 @@
         }}</el-button>
       </div>
 
-      <!-- 节点视图常驻标识：面板数据来自远端节点（白名单只读代理） -->
+      <!-- 节点视图常驻标识：面板正在直接操作远端节点（读 / 写 / 终端都经主控代理），可切到另一台 -->
       <div v-if="nodeCtx" class="node-indicator">
         <el-tooltip :content="t('cluster.nodeViewTip')" placement="bottom">
           <el-icon><Monitor /></el-icon>
         </el-tooltip>
-        <span class="node-indicator__text">{{
-          t('layout.nodeViewShort', { name: nodeCtx.name })
-        }}</span>
+        <el-dropdown trigger="click" @command="switchNode">
+          <span class="node-indicator__text">
+            {{ t('layout.nodeViewShort', { name: nodeCtx.name }) }}
+            <el-icon class="node-indicator__caret"><ArrowDown /></el-icon>
+          </span>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                v-for="n in nodeOptions"
+                :key="n.id"
+                :command="n.id"
+                :disabled="n.id === nodeCtx?.id"
+              >
+                <span class="node-item">
+                  <el-icon><Check v-if="n.id === nodeCtx?.id" /></el-icon>
+                  <span>{{ n.name }}</span>
+                  <span v-if="!n.online" class="node-item__off">{{ t('cluster.offline') }}</span>
+                </span>
+              </el-dropdown-item>
+              <el-dropdown-item v-if="!nodeOptions.length" disabled>
+                {{ t('cluster.nodeEmpty') }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-button type="primary" size="small" @click="exitNodeView">{{
           t('layout.nodeViewExit')
         }}</el-button>
@@ -180,6 +202,7 @@ import dayjs from 'dayjs'
 import { useAppStore } from '@/stores/app'
 import { useUserStore } from '@/stores/user'
 import { nodeContext, setNodeContext } from '@/utils/base'
+import { listNodes } from '@/api/node'
 import { getNotices, getUnreadCount, readAllNotices, readNotice } from '@/api/notice'
 import type { NoticeMessage } from '@/api/notice'
 import TagsView from './TagsView.vue'
@@ -208,6 +231,32 @@ const { t } = useI18n()
 
 // 节点视图上下文（模块级 ref，Navbar 常驻，天然全局可见）
 const nodeCtx = nodeContext
+
+// 节点切换器：`/node/list` 属主控自有接口，节点视图下仍打主控，因此这里能直接列全量节点
+const nodeOptions = ref<{ id: number; name: string; online: boolean; baseUrl: string }[]>([])
+
+async function loadNodeOptions() {
+  if (!nodeCtx.value) return
+  try {
+    const res = await listNodes()
+    nodeOptions.value = (res.data ?? []).map((n) => ({
+      id: n.id,
+      name: n.name,
+      online: n.online,
+      baseUrl: n.base_url,
+    }))
+  } catch {
+    /* 非 admin 或主控接口异常：下拉留空即可，不打扰用户 */
+  }
+}
+
+/** 切到另一台节点：换上下文后整页重载，避免旧节点的响应与新上下文串台 */
+function switchNode(id: number) {
+  const target = nodeOptions.value.find((n) => n.id === id)
+  if (!target || target.id === nodeCtx.value?.id) return
+  setNodeContext({ id: target.id, name: target.name, baseUrl: target.baseUrl })
+  window.location.reload()
+}
 
 // ── 语言切换 ────────────────────────────────────────────────
 const { locale, options: localeOptions, change: changeLocale } = useLocale()
@@ -324,6 +373,7 @@ onMounted(async () => {
 onMounted(() => {
   refreshUnread()
   unreadTimer = window.setInterval(refreshUnread, 60_000)
+  loadNodeOptions()
 })
 
 onBeforeUnmount(() => {
@@ -529,6 +579,15 @@ async function handleExitSudo() {
       max-width: 200px;
       overflow: hidden;
       text-overflow: ellipsis;
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .node-indicator__caret {
+      font-size: 12px;
     }
 
     .el-button {

@@ -171,7 +171,11 @@ export function uploadFiles(
 
 /** Download file (returns Blob) */
 export function downloadFile(path: string) {
-  return http.download(`/system/files/download?path=${encodeURIComponent(path)}`)
+  // 整包进内存，大文件（站点备份 / 日志）在默认 15s 内根本传不完；
+  // 节点视图下还要多走一跳代理，这里给到 10 分钟。
+  return http.download(`/system/files/download?path=${encodeURIComponent(path)}`, {
+    timeout: 10 * 60 * 1000,
+  })
 }
 
 /** Get file/directory metadata */

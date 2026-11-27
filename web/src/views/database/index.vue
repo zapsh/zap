@@ -14,7 +14,16 @@
         </div>
       </div>
       <div class="head-actions">
-        <el-button :icon="Link" @click="openPhpMyAdmin">phpMyAdmin</el-button>
+        <!-- phpMyAdmin 是**本机** Web 服务托管的应用：接管节点时打开它，操作的仍是主控上的库，
+             与页面上展示的远端数据完全对不上，因此直接禁用而不是悄悄指向别处。 -->
+        <el-tooltip
+          v-if="nodeContext"
+          :content="t('database.localOnlyInNodeView', { name: nodeContext.name })"
+          placement="bottom"
+        >
+          <el-button :icon="Link" disabled>phpMyAdmin</el-button>
+        </el-tooltip>
+        <el-button v-else :icon="Link" @click="openPhpMyAdmin">phpMyAdmin</el-button>
         <el-button :icon="User" @click="openUsers">{{ t('database.btnUsers') }}</el-button>
         <el-button v-if="!prefix" :icon="List" @click="openSlow">{{ t('database.btnSlow') }}</el-button>
         <el-button :icon="Connection" @click="openRemote">{{ t('database.btnRemote') }}</el-button>
@@ -492,6 +501,7 @@ import {
   type DbUser,
 } from '@/api/database'
 import { http } from '@/utils/request'
+import { nodeContext } from '@/utils/base'
 
 const { t } = useI18n()
 

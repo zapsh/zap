@@ -269,8 +269,10 @@ pub async fn ws_log(
     let Some(token) = params.get("token").cloned() else {
         return unauthorized("Missing token");
     };
-    // 走统一校验入口：签名 + 有效期 + 会话版本号（被「下线所有设备」作废的一并拒绝）
-    let claims = match jwt::decode_verified(&token) {
+    // 走统一校验入口：签名 + 有效期 + 会话版本号（被「下线所有设备」作废的一并拒绝）。
+    // 用 `claims_from_token` 而不是 `decode_verified`：节点视图经主控代理过来的是
+    // 节点 API Token，只认面板 JWT 会让实时日志在接管态下直接 401。
+    let claims = match jwt::claims_from_token(&token).await {
         Some(c) => c,
         None => return unauthorized("Invalid token"),
     };

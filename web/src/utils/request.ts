@@ -3,7 +3,7 @@ import axios from 'axios'
 import type { AxiosInstance, AxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import { getToken, getTokenExpire, removeToken, setToken, setTokenExpire } from './auth'
-import { API_BASE, apiBase, nodeContext, withBase } from './base'
+import { API_BASE, apiBase, nodeContext, nodeViewRoute, setNodeContext, withBase } from './base'
 // 非组件环境（拦截器）用全局 t：取调用瞬间的语言，无需响应式
 import { t } from '@/i18n'
 
@@ -38,22 +38,35 @@ const service: AxiosInstance = axios.create({
 
 // ── 节点视图：请求改走主控代理 /api/nodes/{id}/** ──────────────
 //
-// 与后端 `zapd/src/zap/node.rs::PROXY_ALLOW` 一一对应：只有这些只读接口
-// 转发到节点
-const PROXY_ALLOW_PATHS = ['/system/info', '/system/status', '/system/about']
+// 分类口径必须与后端 `zapd/src/zap/node.rs`（PROXY_DENY_ROOTS）对齐：
+// 这里决定请求发到哪，那里决定代理放不放行。两边任一处漂移，
+// 用户看到的就是莫名其妙的 403。
 
-function proxiedInNodeView(url?: string): boolean {
-  if (nodeContext.value == null) return false
-  const u = (url || '').split('?')[0]
-  return PROXY_ALLOW_PATHS.some((p) => u === p || u.startsWith(`${p}/`))
+/**
+ * 这条错误响应**确实由节点应答**，而不是主控在同一条代理 URL 上自己发的。
+ *
+ * 只看 URL 判不开：接管状态下 `/api/nodes/{id}/user/info` 的 401，既可能是节点
+ * 拒绝了它的 API Token，也可能是主控拒绝了这个浏览器会话（代理路由本身挂在主控
+ * 门禁内）——两者的正确处置完全相反：前者只能去「节点管理」换凭据，后者必须照常
+ * 刷新 / 重新登录。把后者误判成前者，用户就会卡在登录页外反复 401 出不来。
+ * 主控代理只给真正由节点回来的响应打 `x-zap-node-proxy` 头，以此为准。
+ */
+function fromNodeProxy(error: any): boolean {
+  return Boolean(error?.response?.headers?.['x-zap-node-proxy'])
 }
 
 // ── 请求拦截器 ──────────────────────────────────────────────
 service.interceptors.request.use(
   async (config) => {
-    // 节点视图：业务请求改走主控的 /api/nodes/{id}/** 代理
-    if (proxiedInNodeView(config.url)) {
+    if (nodeViewRoute(config.url) === 'proxy') {
+      // 除主控自有面外全部转给代理，**写操作与 WebSocket 也一样**。
+      // 「能不能执行」不在前端判：节点按它自己的权限矩阵校验转发过去的
+      // API Token，主控只负责「绝不落到本机」与「记审计」。
+      // 前端不再按方法名猜一遍读写，免得两处口径漂移。
       config.baseURL = apiBase() || import.meta.env.VITE_API_URL
+      // 跨节点多一跳 RTT，远端执行本身也更慢：接管状态下把超时下限放宽到 60s。
+      // 已显式设置更长超时的调用（上传 / 导出 / 镜像构建）保持原值不变。
+      config.timeout = Math.max(config.timeout ?? 0, 60_000)
     }
     const token = getToken()
     if (token && config.headers) {
@@ -117,9 +130,11 @@ service.interceptors.response.use(
 
       switch (status) {
         case 401:
-          // 节点视图下远端拒绝了它的 API Token：与本机会话无关，
-          // 绝不能走本地刷新 / 登出流程，否则会把用户误踢回登录页
-          if (proxiedInNodeView(error.config?.url)) {
+          // 由节点应答的 401 = 那台机器的 API Token 失效（被删 / 过期）：
+          // 与本机会话无关，绝不能走本地刷新 / 登出流程。
+          // 反之主控在这条代理 URL 上发的 401 是**本机会话**过期，必须照常
+          // 刷新——否则受控端一改 Token，用户就会被永久挡在登录页外。
+          if (fromNodeProxy(error)) {
             ElMessage({
               message: terr(data?.key, data?.message) || t('cluster.remoteAuthFailed'),
               type: 'error',
@@ -151,6 +166,34 @@ service.interceptors.response.use(
           break
 
         case 403:
+          // 403 有三种来源，下一步动作完全不同，必须分开说：
+          // ① 主控没代理这个接口（x-zap-node-denied: master_owned）；
+          // ② 主控账号没有 node:edit，压根没资格接管（perm）；
+          // ③ 远端节点拒绝——是那个节点 API Token 的权限不够，与主控角色无关。
+          const denied = error.response?.headers?.['x-zap-node-denied']
+          if (denied) {
+            ElMessage({
+              // 'master_owned' 与旧版主控统一发的 'policy' 都归为「这个接口不经代理」
+              message:
+                denied === 'perm' ? t('cluster.nodeNeedEdit') : t('cluster.nodeBlockedWrite'),
+              type: 'warning',
+              duration: 5000,
+              grouping: true,
+            })
+            break
+          }
+          if (fromNodeProxy(error)) {
+            ElMessage({
+              message: t('cluster.remoteForbiddenFailed', {
+                name: nodeContext.value?.name || '',
+                detail: terr(data?.key, data?.message) || t('error.forbidden'),
+              }),
+              type: 'error',
+              duration: 5000,
+              grouping: true,
+            })
+            break
+          }
           ElMessage({
             message: terr(data?.key, data?.message) || t('error.forbidden'),
             type: 'error',
@@ -160,7 +203,16 @@ service.interceptors.response.use(
           break
 
         case 404:
-          ElMessage({ message: t('error.notFound'), type: 'error', duration: 5000, grouping: true })
+          // 节点视图下的 404 几乎都是「节点版本比面板旧、没有这个接口」，
+          // 说清是哪台机器，否则用户会以为主控坏了。
+          ElMessage({
+            message: fromNodeProxy(error)
+              ? t('cluster.remoteNotFoundFailed', { name: nodeContext.value?.name || '' })
+              : t('error.notFound'),
+            type: 'error',
+            duration: 5000,
+            grouping: true,
+          })
           break
 
         case 500:
@@ -215,6 +267,10 @@ let authExpiredHandled = false
 function handleAuthExpired(message = t('error.sessionExpired')) {
   if (authExpiredHandled) return
   authExpiredHandled = true
+  // 接管态依附于主控会话：会话都没了，「正在操作那台机器」也就无从谈起。
+  // 不清的话，重新登录时 `/user/info`、`/system/menus` 仍会走节点代理，
+  // 受控端一旦换了 Token 就变成「登录成功 → 401 → 踢回登录页」的死循环。
+  setNodeContext(null)
   removeToken()
   ElMessage({ message, type: 'error', duration: 5000, grouping: true })
   setTimeout(() => {

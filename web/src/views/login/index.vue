@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { useLocale } from '@/composables/useLocale'
+import { setNodeContext } from '@/utils/base'
 import type { FormInstance, FormRules, InputOtpInstance } from 'element-plus'
 import type { LoginForm } from '@/types/user'
 import { ElectricBoltOutline, Lock, User } from '@/icons'
@@ -76,6 +77,10 @@ const loading = ref(false)
 // 进入登录页自动聚焦用户名（登录过期跳转/刷新后重新挂载时，方便直接输入）
 const usernameInputRef = ref()
 onMounted(() => {
+  // 登录页永远属于主控。残留的接管上下文（sessionStorage）不清，登录成功后的
+  // /user/info、/system/menus 仍会打向那台机器——受控端一旦删掉 API Token，
+  // 就变成「登录 → 401 → 踢回登录页」的死循环，面板再也进不去。
+  setNodeContext(null)
   nextTick(() => usernameInputRef.value?.focus())
 })
 

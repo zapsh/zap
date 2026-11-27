@@ -29,7 +29,7 @@ use crate::routers::site;
 use crate::zap::ZapError;
 use crate::zap::ZapJsonResult;
 use crate::zap::audit;
-use crate::zap::jwt::{ValidatedClaims, decode_verified, is_admin};
+use crate::zap::jwt::{ValidatedClaims, claims_from_token, is_admin};
 
 /// maximum size limit for uploaded plugin file
 const PLUGIN_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
@@ -618,7 +618,10 @@ pub struct PluginCancelPayload {
 }
 
 pub async fn plugin_cancel(Json(p): Json<PluginCancelPayload>) -> ZapJsonResult {
-    let _claims = decode_verified(&p.token).ok_or_else(|| ZapError::New(-1, "未授权".into()))?;
+    // 兼容 API Token：节点视图经主控代理时带过来的是节点 Token
+    let _claims = claims_from_token(&p.token)
+        .await
+        .ok_or_else(|| ZapError::New(-1, "未授权".into()))?;
     // 校验 task_id，避免路径穿越（复用 plugin_watch 的文件名白名单）
     let task_id =
         safe_log_file_name(&p.task_id).ok_or_else(|| ZapError::New(-1, "非法 task_id".into()))?;
@@ -637,7 +640,7 @@ pub async fn plugin_cancel(Json(p): Json<PluginCancelPayload>) -> ZapJsonResult 
 ///
 /// 前端在 `plugin/run` 拿到 `log_path` 后订阅此端点，逐行收到 `{type:"log",line}`，
 /// 任务收尾（zapexec 写入 `__ZAP_DONE__ <code>`）时收到 `{type:"done",code}` 后由前端关闭。
-/// 因 `EventSource` 不能带自定义请求头，鉴权走 `?token=`（与 WebSocket/下载接口同套 `decode_verified`）。
+/// 因 `EventSource` 不能带自定义请求头，鉴权走 `?token=`（与 WebSocket/下载接口同套 `claims_from_token`）。
 #[derive(Deserialize)]
 pub struct PluginWatchQuery {
     pub token: String,
@@ -695,8 +698,11 @@ async fn resolve_plugin_log_path(log_path: &str) -> Result<PathBuf, ZapError> {
 pub async fn plugin_watch(
     Query(q): Query<PluginWatchQuery>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ZapError> {
-    // 鉴权：复用面板既有的 JWT 校验（含「已下线」检查）
-    let _claims = decode_verified(&q.token).ok_or_else(|| ZapError::New(-1, "未授权".into()))?;
+    // 鉴权：复用面板既有的校验（含「已下线」检查）；EventSource 带不上请求头，
+    // 这里同样要认 API Token，否则节点视图的插件日志跟随必然 401。
+    let _claims = claims_from_token(&q.token)
+        .await
+        .ok_or_else(|| ZapError::New(-1, "未授权".into()))?;
 
     // 路径白名单：只允许订阅 <ZAP_PATH>/data/plugins/logs 下的日志，防止越权读取任意文件
     let path = resolve_plugin_log_path(&q.log_path).await?;
