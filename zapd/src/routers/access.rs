@@ -1082,6 +1082,23 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Required::Admin,
         Some(Perm::action("system.monitor", "view")),
     ),
+    // ── 多节点：监控查询走只读权限，注册/删除才是管理动作 ──────
+    (
+        "/node/overview",
+        Required::Admin,
+        Some(Perm::action("system.monitor", "view")),
+    ),
+    (
+        "/node/status",
+        Required::Admin,
+        Some(Perm::action("system.monitor", "view")),
+    ),
+    (
+        "/node/list",
+        Required::Admin,
+        Some(Perm::action("system.monitor", "view")),
+    ),
+    ("/node", Required::Admin, Some(Perm::action("node", "edit"))),
     (
         "/system/audit",
         Required::Admin,

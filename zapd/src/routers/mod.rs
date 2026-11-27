@@ -48,6 +48,7 @@ pub mod docker;
 pub mod docs;
 pub mod fpm_spec;
 pub mod local_terminal;
+pub mod node;
 pub mod notice;
 pub mod package;
 pub mod plugins;
@@ -299,6 +300,15 @@ fn api_routers() -> Router {
         .route("/system/user/backup-home", post(user::backup_home))
         // 仪表盘统计卡片（按角色可见范围统计用户 / 站点 / 数据库数量）
         .route("/dashboard/counts", get(dashboard::counts))
+        // Multi-node（受管节点注册 + 跨节点监控）
+        .route("/node/list", get(node::list))
+        .route("/node/add", post(node::add))
+        .route("/node/update", post(node::update))
+        .route("/node/delete", post(node::remove))
+        .route("/node/test", post(node::test))
+        .route("/node/refresh", post(node::refresh))
+        .route("/node/overview", get(node::overview))
+        .route("/node/status", get(node::status))
         // 套餐（Packages）：创建客户时选择的资源套餐
         .route("/system/package/list", get(package::package_list))
         .route("/system/package/add", post(package::package_add))

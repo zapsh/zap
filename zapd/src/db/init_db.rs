@@ -44,6 +44,8 @@ pub async fn init_schema() {
     init_system_monitor_table_schema().await;
     init_system_monitor_networks_table_schema().await;
     init_monitor_indexes().await;
+    // 多节点：受管节点注册表 + 节点指标时序（主控侧采集，历史不落在节点上）
+    init_node_tables().await;
 
     // roles
     init_roles_table().await;
@@ -54,6 +56,12 @@ pub async fn init_schema() {
     init_user_menus_table().await;
     // 老库可能残留已移除的 Zap Pro 菜单，清掉避免侧栏出现指向空白页的入口
     remove_legacy_pro_menus().await;
+    // 新版本新增的菜单（如「多节点」）在存量库上补插；只插缺失行，
+    // 不覆盖管理员改过的标题 / 图标 / 隐藏状态。
+    match menu_seed::backfill_missing_menus(get_db_pool().await).await {
+        0 => {}
+        n => info!("菜单补种: 新增 {n} 项"),
+    }
     // 菜单与授权在建表那一步一次性播种完毕（见 menu_seed），加入口只改种子清单。
     // 动作级权限点（请求级鉴权依据；role_menus 仅用于菜单渲染）
     init_role_permissions_table().await;
@@ -579,6 +587,85 @@ async fn init_system_monitor_networks_table_schema() {
     )
     "#;
     let _ = get_db_pool().await.execute(sql_script).await;
+}
+
+// ── multi-node ─────────────────────────────────────────────
+
+/// 受管节点注册表 + 节点指标时序表。
+///
+/// 设计要点：
+/// - `api_token` 存密文（与 `ssh_connections.password` 同一套 `crypto`），
+///   接口永不回传原文，只回传 `has_token` 标记；
+/// - 静态信息（OS/主机名/核数/内存总量/磁盘明细）缓存在 `nodes`，
+///   `node_stats` 只存随时间变化的百分比，时序表保持窄行；
+/// - 历史曲线由**主控**每 15s 采样写入，因此查询不需要访问节点，
+///   也不要求节点开放 `Required::Admin` 的 `/system/status`。
+async fn init_node_tables() {
+    let pool = get_db_pool().await;
+    if !table_exists("nodes").await {
+        let _ = pool
+            .execute(
+                r#"
+    CREATE TABLE nodes (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        api_token TEXT NOT NULL,
+        remark TEXT NOT NULL DEFAULT '',
+        insecure_tls INTEGER NOT NULL DEFAULT 1,
+        status INTEGER NOT NULL DEFAULT 1,
+        online INTEGER NOT NULL DEFAULT 0,
+        last_seen BIGINT NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '',
+        os_name TEXT NOT NULL DEFAULT '',
+        host_name TEXT NOT NULL DEFAULT '',
+        version TEXT NOT NULL DEFAULT '',
+        public_ip TEXT NOT NULL DEFAULT '',
+        uptime TEXT NOT NULL DEFAULT '',
+        cpu_num INTEGER NOT NULL DEFAULT 0,
+        memory_total_b BIGINT NOT NULL DEFAULT 0,
+        disk_total_b BIGINT NOT NULL DEFAULT 0,
+        disk_json TEXT NOT NULL DEFAULT '[]',
+        created_at BIGINT,
+        updated_at BIGINT
+    )
+    "#,
+            )
+            .await;
+    }
+    if !table_exists("node_stats").await {
+        let _ = pool
+            .execute(
+                r#"
+    CREATE TABLE node_stats (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        node_id INTEGER NOT NULL,
+        cpu_usage REAL,
+        memory_usage REAL,
+        swap_usage REAL,
+        disk_usage REAL,
+        loadavg_one REAL,
+        loadavg_five REAL,
+        loadavg_fifteen REAL,
+        created_at BIGINT
+    )
+    "#,
+            )
+            .await;
+    }
+    // 大屏与下钻曲线都按 (node_id, created_at) 过滤 + 分桶，缺索引就是全表扫
+    let _ = pool
+        .execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name)")
+        .await;
+    let _ = pool
+        .execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_url ON nodes(base_url)")
+        .await;
+    let _ = pool
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_node_stats_node_time \
+             ON node_stats(node_id, created_at)",
+        )
+        .await;
 }
 
 // ── roles ──────────────────────────────────────────────────

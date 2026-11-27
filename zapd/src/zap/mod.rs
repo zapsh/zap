@@ -29,6 +29,7 @@ pub mod login_history;
 pub mod logrotate;
 pub mod mail;
 pub mod mirror;
+pub mod node;
 pub mod notify;
 pub mod osrepo;
 pub mod plugin_schedule;

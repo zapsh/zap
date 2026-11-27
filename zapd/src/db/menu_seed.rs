@@ -502,6 +502,35 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server-status")
     .icon("material-symbols:article")
     .affix(),
+    // ── 多节点（目录）：主控面板查看 / 管理其它 ZAP 节点 ────────
+    MenuSeed::new("cluster", "多节点", "dir", "/cluster", "Layout", R_ADMIN, 1)
+        .icon("material-symbols:deployed-code")
+        .redirect("/cluster/monitor")
+        .affix(),
+    MenuSeed::new(
+        "cluster-monitor",
+        "监控大屏",
+        "menu",
+        "monitor",
+        "cluster/monitor/index",
+        R_ADMIN,
+        1,
+    )
+    .parent("cluster")
+    .icon("material-symbols:stacked-bar-chart")
+    .affix(),
+    MenuSeed::new(
+        "cluster-nodes",
+        "节点管理",
+        "menu",
+        "nodes",
+        "cluster/nodes/index",
+        R_ADMIN,
+        2,
+    )
+    .parent("cluster")
+    .icon("material-symbols:dns")
+    .affix(),
     // ── 团队成员：入口已并入「个人中心」，整组隐藏 ──────────────
     MenuSeed::new(
         "team",
@@ -907,6 +936,82 @@ pub async fn seed_role_menus(pool: &SqlitePool, menu_ids: &HashMap<String, i64>)
     }
 }
 
+/// 存量库升级补种：把种子里**库里还没有**的菜单插进去，并按 `roles` 授权。
+///
+/// 只 INSERT 缺失行，绝不 UPDATE 已有行 —— 管理员改过的标题 / 图标 / hidden
+/// 必须原样保留（种子描述的是初始状态，不是每启动覆盖一次）。
+/// 没有这一步，老库升级后新版本新增的菜单（如「多节点」）根本不会出现，
+/// 只能让管理员去「菜单管理」手工重建。
+///
+/// 返回补插的行数；新建库由 [`seed_menus`] 全量写入，这里直接返回 0。
+pub async fn backfill_missing_menus(pool: &SqlitePool) -> usize {
+    let mut known: HashMap<String, i64> =
+        sqlx::query_as::<_, (String, i64)>("SELECT name, id FROM menus")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+    if known.is_empty() {
+        return 0;
+    }
+    let mut inserted = 0usize;
+    // 声明顺序即插入顺序，父菜单在前，本轮刚补的父也能被子解析到
+    for (idx, seed) in all_seeds().enumerate() {
+        if known.contains_key(seed.name) {
+            continue;
+        }
+        let parent_id = match seed.parent {
+            Some(p) => *known.get(p).unwrap_or(&0),
+            None => 0,
+        };
+        let result = sqlx::query(
+            "INSERT INTO menus \
+             (parent_id, name, path, component, redirect, type, title, icon, \
+              hidden, affix, feature, roles, sort_order, status, created_at, updated_at) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,strftime('%s','now'),strftime('%s','now'))",
+        )
+        .bind(parent_id)
+        .bind(seed.name)
+        .bind(seed.path)
+        .bind(seed.component)
+        .bind(seed.redirect)
+        .bind(seed.kind)
+        .bind(seed.title)
+        .bind(seed.icon)
+        .bind(seed.hidden as i32)
+        .bind(seed.affix as i32)
+        .bind(seed.feature)
+        .bind(seed.roles)
+        .bind(idx as i32)
+        .bind(seed.status)
+        .execute(pool)
+        .await;
+        let Ok(res) = result else {
+            continue;
+        };
+        let menu_id = res.last_insert_rowid();
+        known.insert(seed.name.to_string(), menu_id);
+        inserted += 1;
+        for role in seed
+            .roles
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO role_menus (role_id, menu_id) \
+                 SELECT r.id, ? FROM roles r WHERE r.role_key = ?",
+            )
+            .bind(menu_id)
+            .bind(role)
+            .execute(pool)
+            .await;
+        }
+    }
+    inserted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1069,5 +1174,109 @@ mod tests {
             !user.iter().any(|n| n == "automation-scripts"),
             "自动化脚本必须仅 admin 可见"
         );
+    }
+
+    /// 造一个「老库」：完整播种后删掉新版本才有的菜单，模拟升级前的存量数据。
+    async fn legacy_pool(drop_like: &str) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .idle_timeout(None)
+            .connect("sqlite::memory:")
+            .await
+            .expect("内存库连接失败");
+        for ddl in [
+            "CREATE TABLE menus (id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                parent_id INTEGER DEFAULT 0, name VARCHAR(64) NOT NULL UNIQUE,
+                path VARCHAR(128) NOT NULL DEFAULT '', component VARCHAR(256) DEFAULT '',
+                redirect VARCHAR(128) DEFAULT '', type VARCHAR(16) NOT NULL DEFAULT 'menu',
+                title VARCHAR(64) NOT NULL DEFAULT '', icon VARCHAR(64) DEFAULT '',
+                hidden INTEGER DEFAULT 0, affix INTEGER DEFAULT 0, feature TEXT NOT NULL DEFAULT '',
+                roles TEXT DEFAULT '', sort_order INTEGER DEFAULT 0, status INTEGER DEFAULT 1,
+                created_at INTEGER, updated_at INTEGER)",
+            "CREATE TABLE roles (id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, role_key VARCHAR(64) UNIQUE)",
+            "CREATE TABLE role_menus (id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, role_id INTEGER, menu_id INTEGER, UNIQUE(role_id, menu_id))",
+            "INSERT INTO roles (role_key) VALUES ('admin'),('user'),('reseller'),('demo')",
+        ] {
+            sqlx::query(ddl).execute(&pool).await.expect("建表失败");
+        }
+        let ids = seed_menus(&pool).await;
+        seed_role_menus(&pool, &ids).await;
+        // 删掉「新版本才有」的菜单及其授权，剩下的就是老库状态
+        sqlx::query(
+            "DELETE FROM role_menus WHERE menu_id IN (SELECT id FROM menus WHERE name LIKE ?)",
+        )
+        .bind(format!("{drop_like}%"))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM menus WHERE name LIKE ?")
+            .bind(format!("{drop_like}%"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// 升级补种：缺的菜单要出现、授权要跟上、重复跑不再插行，
+    /// 且**绝不覆盖**管理员改过的行。
+    #[tokio::test]
+    async fn backfill_adds_missing_without_touching_existing() {
+        let total = all_seeds().count();
+        let pool = legacy_pool("cluster").await;
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM menus")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let added = backfill_missing_menus(&pool).await;
+        // 目录 + 两个页面
+        assert_eq!(added, 3, "应恰好补出「多节点」相关的 3 条菜单");
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM menus")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(after, before + 3);
+        assert_eq!(after, total as i64, "补种后应与完整种子数量一致");
+
+        // 新菜单挂到 admin
+        let granted: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM role_menus rm JOIN menus m ON m.id = rm.menu_id \
+             JOIN roles r ON r.id = rm.role_id \
+             WHERE r.role_key = 'admin' AND m.name LIKE 'cluster%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(granted > 0, "补出来的菜单没给 admin 授权，侧栏看不见");
+
+        // 子菜单必须挂到本轮刚补出来的父目录上（不能因为父也是新插的就落 0）
+        let (dir_id,): (i64,) = sqlx::query_as("SELECT id FROM menus WHERE name = 'cluster'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let (parent_id,): (i64,) =
+            sqlx::query_as("SELECT parent_id FROM menus WHERE name = 'cluster-monitor'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(parent_id, dir_id, "补种时子菜单没挂上新补的父目录");
+
+        // 幂等：再跑一次不重复插
+        assert_eq!(backfill_missing_menus(&pool).await, 0, "补种必须幂等");
+
+        // 管理员改过的行不能被覆盖
+        sqlx::query("UPDATE menus SET title = '我改过的标题', hidden = 1 WHERE name = 'dashboard'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        backfill_missing_menus(&pool).await;
+        let (title, hidden): (String, i32) =
+            sqlx::query_as("SELECT title, hidden FROM menus WHERE name = 'dashboard'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(title, "我改过的标题", "补种不得覆盖管理员的修改");
+        assert_eq!(hidden, 1);
     }
 }

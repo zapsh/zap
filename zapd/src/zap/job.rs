@@ -208,6 +208,12 @@ async fn cleanup_monitor_data() {
         .bind(cutoff)
         .execute(pool)
         .await;
+    // 节点指标保留期更短（N 台 × 15s 一行，量级放大明显）
+    let node_cutoff = chrono::Local::now().timestamp() - 14 * 24 * 3600;
+    let _ = sqlx::query("DELETE FROM node_stats WHERE created_at < ?")
+        .bind(node_cutoff)
+        .execute(pool)
+        .await;
     match (r1, r2) {
         (Ok(a), Ok(b)) => info!(
             "监控数据清理完成: system_stats {} 行, networks_stats {} 行",
@@ -260,6 +266,13 @@ pub async fn add_jobs(sched: &JobScheduler) {
     })
     .expect("invalid cron: hourly aggregate");
     let _ = sched.add(agg).await;
+
+    // 每 15s：拉取受管节点的只读快照（无节点时函数内部直接返回）
+    let nodes = Job::new_async("3/15 * * * * *", |_uuid, _lock| {
+        Box::pin(crate::zap::node::collect_round())
+    })
+    .expect("invalid cron: node collect");
+    let _ = sched.add(nodes).await;
 
     // 每日 01:00:00：清理超期监控原始数据
     let clean = Job::new_async("0 0 1 * * *", |_uuid, _lock| {
