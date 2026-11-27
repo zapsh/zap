@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! 多节点：受管节点的凭据、只读快照采集与指标保留。
+//! 集群：受管节点的凭据、只读快照采集与指标保留。
 //!
 //! 采集只打节点的 `/api/system/info` —— 该接口在 `access.rs` 里是
 //! `Required::User`，所以**一个普通用户的 API Token 就够**，不需要在节点上

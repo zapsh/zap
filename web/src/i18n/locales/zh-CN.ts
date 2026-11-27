@@ -175,6 +175,8 @@ export default {
     'crontab-index': '定时任务',
     // 备份中心（后端 menus name=backup，见 db/menu_seed.rs）
     backup: '备份',
+    // 集群（后端 menus name=cluster，原名「多节点」）
+    cluster: '集群',
     // 容器管理（后端 menus id=17 / 171，位于「计划任务」之下）
     docker: '容器管理',
     'docker-index': '容器',

@@ -41,7 +41,7 @@ export function withBase(path: string): string {
   return `${BASE}${path.startsWith('/') ? '' : '/'}${path}`
 }
 
-// ── 节点视图上下文（多节点主控代理）─────────────────────────────
+// ── 节点视图上下文（集群主控代理）───────────────────────────────
 //
 // 这里是节点视图的两个 URL 收敛点之一（apiBase / wsUrl）：
 // nodeContext 激活后，HTTP 与 WS 地址统一指向 `/api/nodes/{id}/**`

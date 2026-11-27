@@ -159,6 +159,8 @@ const enUS: Messages = {
     'crontab-index': 'Cron Jobs',
     // Backup center (backend menus name=backup, see db/menu_seed.rs)
     backup: 'Backup',
+    // Cluster (backend menus name=cluster, formerly "多节点")
+    cluster: 'Cluster',
     // Container management (menus id=17 / 171)
     docker: 'Containers',
     'docker-index': 'Container',

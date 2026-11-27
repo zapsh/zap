@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * 多节点监控大屏。
+ * 集群监控大屏。
  *
  * 只打一个接口 `/node/overview`：所有启用节点的最新采样值 + 集群汇总 + 近 30 分钟趋势，
  * 全部读主控自己的库，**不向节点发请求**——所以某台节点卡住 / 掉线，

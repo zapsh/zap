@@ -502,8 +502,8 @@ pub static MENU_SEEDS: &[MenuSeed] = &[
     .parent("server-status")
     .icon("material-symbols:article")
     .affix(),
-    // ── 多节点（目录）：主控面板查看 / 管理其它 ZAP 节点 ────────
-    MenuSeed::new("cluster", "多节点", "dir", "/cluster", "Layout", R_ADMIN, 1)
+    // ── 集群（目录）：主控面板查看 / 管理其它 ZAP 节点 ──────────
+    MenuSeed::new("cluster", "集群", "dir", "/cluster", "Layout", R_ADMIN, 1)
         .icon("material-symbols:deployed-code")
         .redirect("/cluster/monitor")
         .affix(),
@@ -1231,7 +1231,7 @@ mod tests {
 
         let added = backfill_missing_menus(&pool).await;
         // 目录 + 两个页面
-        assert_eq!(added, 3, "应恰好补出「多节点」相关的 3 条菜单");
+        assert_eq!(added, 3, "应恰好补出「集群」相关的 3 条菜单");
         let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM menus")
             .fetch_one(&pool)
             .await

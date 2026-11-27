@@ -44,7 +44,7 @@ pub async fn init_schema() {
     init_system_monitor_table_schema().await;
     init_system_monitor_networks_table_schema().await;
     init_monitor_indexes().await;
-    // 多节点：受管节点注册表 + 节点指标时序（主控侧采集，历史不落在节点上）
+    // 集群：受管节点注册表 + 节点指标时序（主控侧采集，历史不落在节点上）
     init_node_tables().await;
 
     // roles
@@ -56,7 +56,9 @@ pub async fn init_schema() {
     init_user_menus_table().await;
     // 老库可能残留已移除的 Zap Pro 菜单，清掉避免侧栏出现指向空白页的入口
     remove_legacy_pro_menus().await;
-    // 新版本新增的菜单（如「多节点」）在存量库上补插；只插缺失行，
+    // 「多节点」菜单更名为「集群」：只改仍叫旧名的行，管理员自定义过的标题不动
+    rename_cluster_menu().await;
+    // 新版本新增的菜单（如「集群」）在存量库上补插；只插缺失行，
     // 不覆盖管理员改过的标题 / 图标 / 隐藏状态。
     match menu_seed::backfill_missing_menus(get_db_pool().await).await {
         0 => {}
@@ -751,6 +753,21 @@ async fn remove_legacy_pro_menus() {
         if let Err(e) = sqlx::query(sql).execute(pool).await {
             warn!("清理旧版 Pro 菜单失败: {e}");
         }
+    }
+}
+
+/// 菜单更名：「多节点」→「集群」（backfill 只插新行、不碰已有标题，改名要单独补一刀）。
+///
+/// WHERE 里带上 `title = '多节点'`：管理员把标题改成别的名字说明有自己的用意，
+/// 不能被升级悄悄覆盖回去。
+async fn rename_cluster_menu() {
+    let pool = get_db_pool().await;
+    if let Err(e) =
+        sqlx::query("UPDATE menus SET title = '集群' WHERE name = 'cluster' AND title = '多节点'")
+            .execute(pool)
+            .await
+    {
+        warn!("菜单更名「多节点」→「集群」失败: {e}");
     }
 }
 
