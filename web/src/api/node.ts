@@ -106,6 +106,11 @@ export interface NodePayload {
   name: string
   base_url: string
   api_token?: string
+  /** 引导凭据：api_token 留空时用它登录节点并自动签发 Token；后端不落库 */
+  username?: string
+  password?: string
+  /** 节点账号开了两步验证时的 6 位验证码 */
+  totp_code?: string
   remark?: string
   insecure_tls?: boolean
   status?: number
@@ -128,14 +133,20 @@ export function deleteNodes(ids: number[]) {
   return http.post<ApiResponse<{ deleted: number }>>('/node/delete', { ids })
 }
 
-/** 连通性测试；编辑态传 id 且 api_token 留空时复用库里已存的 Token */
+/**
+ * 连通性测试；编辑态传 id 且 api_token 留空时复用库里已存的 Token。
+ * 账号密码模式只验证能否登录、不签发 Token，成功时 data 为 null。
+ */
 export function testNode(data: {
   base_url: string
   api_token?: string
+  username?: string
+  password?: string
+  totp_code?: string
   insecure_tls?: boolean
   id?: number
 }) {
-  return http.post<ApiResponse<NodeSnapshot>>('/node/test', data)
+  return http.post<ApiResponse<NodeSnapshot | null>>('/node/test', data)
 }
 
 /** 立刻采集一轮（新增节点后不必等下个周期） */

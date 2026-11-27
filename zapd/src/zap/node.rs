@@ -195,6 +195,120 @@ async fn api_get(base: &str, token: &str, insecure: bool, path: &str) -> Result<
     Ok(body.get("data").cloned().unwrap_or(Value::Null))
 }
 
+/// POST 节点 `{base}/api{path}`，返回**整个** JSON body。
+///
+/// 与 `api_get` 不同，这里不剥 `data` 也不预检 `code`：登录响应的 `access_token`
+/// 在顶层，且业务失败（HTTP 200 + code!=0）的文案要由调用方按场景重新组织。
+async fn api_post(
+    base: &str,
+    path: &str,
+    bearer: Option<&str>,
+    body: serde_json::Value,
+    insecure: bool,
+) -> Result<serde_json::Value, String> {
+    let url = format!("{}{}{}", base, "/api", path);
+    let mut req = http(insecure).post(&url).json(&body);
+    if let Some(t) = bearer {
+        req = req.bearer_auth(t);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", short_reqwest_err(&e)))?;
+    let status = resp.status();
+    // 面板的业务错误一律 HTTP 200 + code!=0；真到了非 2xx，多半是前缀填错或中间网关拦截
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
+    }
+    resp.json()
+        .await
+        .map_err(|e| format!("响应不是合法 JSON: {}", e))
+}
+
+/// 用账号密码登录节点，拿一次性 JWT——只为引导签发 API Token，用完即弃。
+///
+/// 走的是节点自己的登录入口，限流 / 失败锁定 / TOTP / 登录历史一个不少：
+/// 密码错多了会和真人登录失败一样触发锁定，这是预期行为，不做旁路。
+pub async fn login_for_jwt(
+    base: &str,
+    username: &str,
+    password: &str,
+    totp_code: &str,
+    insecure: bool,
+) -> Result<String, String> {
+    let base = normalize_base(base)?;
+    let body = serde_json::json!({
+        "username": username,
+        "password": password,
+        "totp_code": if totp_code.is_empty() { serde_json::Value::Null } else { serde_json::json!(totp_code) },
+    });
+    let v = api_post(&base, "/auth/login", None, body, insecure).await?;
+    let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+    if code != 0 {
+        let mut msg = str_of(&v, "message");
+        if code == 1002 {
+            // 密码是对的，只差验证码——不点破的话用户会以为密码填错了
+            msg = "该账号启用了两步验证，请填写 6 位验证码".to_string();
+        }
+        return Err(if msg.is_empty() {
+            "节点登录失败".to_string()
+        } else {
+            msg
+        });
+    }
+    let jwt = str_of(&v, "access_token");
+    if jwt.is_empty() {
+        return Err("节点登录响应缺少 access_token".to_string());
+    }
+    Ok(jwt)
+}
+
+/// 账号密码 → 该节点的 API Token（bootstrap 签发）。
+///
+/// 解决两类「拿不到 Token」：面板刚装好还没登录过（无法去个人中心建 Token），
+/// 以及节点侧 Token 被误删后主控要重连。主控用用户临时提供的账号密码登录节点，
+/// 替它签发一个**永不过期**的 API Token 加密落库；账号密码只存在于本次调用，
+/// 不落库、不进日志。签出的 Token 归属登录账号、可在节点「个人中心 → API Token」
+/// 随时吊销，与手工创建完全等价。
+pub async fn bootstrap_api_token(
+    base: &str,
+    username: &str,
+    password: &str,
+    totp_code: &str,
+    insecure: bool,
+) -> Result<String, String> {
+    let base = normalize_base(base)?;
+    let jwt = login_for_jwt(&base, username.trim(), password, totp_code.trim(), insecure).await?;
+    // 名字带上节点地址：在节点的 Token 列表里能认出是哪台主控签的
+    let host = base
+        .split_once("://")
+        .map(|x| x.1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    let body = serde_json::json!({ "name": format!("ZAP 主控接管（{host}）") });
+    let v = api_post(&base, "/dev/api-token/create", Some(&jwt), body, insecure).await?;
+    if v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) != 0 {
+        let msg = str_of(&v, "message");
+        return Err(if msg.is_empty() {
+            "在节点上签发 API Token 失败".to_string()
+        } else {
+            format!("在节点上签发 API Token 失败：{msg}")
+        });
+    }
+    let raw = v
+        .get("data")
+        .and_then(|d| d.get("token"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
+    if raw.is_empty() {
+        return Err("节点返回的 Token 为空，请确认节点版本支持 API Token".to_string());
+    }
+    Ok(raw)
+}
+
 /// reqwest 的错误串带 backtrace 式长句，这里只留最有用的一段。
 fn short_reqwest_err(e: &reqwest::Error) -> String {
     if e.is_timeout() {

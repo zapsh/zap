@@ -2385,7 +2385,7 @@ const enUS: Messages = {
 
   /** Multi-node: managed node registry and monitoring screen */
   cluster: {
-    hint: 'Provide the node panel URL and an API Token created on that node. Tokens come from "Profile → API Token"; a normal user is enough (monitoring is read-only), no admin required.',
+    hint: 'Provide the node panel URL and a credential: either an API Token from "Profile → API Token" on that node, or the node login account and password — the master then creates the token on the node automatically when you save, so a freshly installed panel needs no prior login.',
     addNode: 'Add Node',
     editNode: 'Edit Node',
     deleteTitle: 'Delete Node',
@@ -2434,6 +2434,17 @@ const enUS: Messages = {
     needUrl: 'Node URL is required',
     needToken: 'API Token is required',
     needNameUrl: 'Name and node URL are required',
+    // Credential mode: manual token / bootstrap via account password
+    credMode: 'Credential',
+    credModeToken: 'API Token',
+    credModePassword: 'Account / Password (auto-issue)',
+    nodeUsername: 'Node Account',
+    nodePassword: 'Node Password',
+    nodeTotp: '2FA Code',
+    credModeHint:
+      'On save, the master logs into the node with this account and automatically creates a never-expiring API token, stored encrypted. The password itself is never saved. If the token on the node is deleted or expires, re-enter the account here and a new one is issued automatically.',
+    needCred: 'Node account and password are required',
+    credOk: 'Credentials valid — an API token will be created on the node when you save',
     // Monitoring screen
     statNodes: 'Nodes Online',
     statAvgCpu: 'Avg CPU',

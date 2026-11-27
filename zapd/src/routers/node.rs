@@ -24,8 +24,17 @@ use crate::zap::{ZapError, ZapJsonResult, audit, crypto, jwt::ValidatedClaims, n
 pub struct AddPayload {
     pub name: String,
     pub base_url: String,
-    /// 节点上签发的 API Token（`zap_...`）
+    /// 节点上签发的 API Token（`zap_...`）；留空则用下面的账号密码现场引导签发
+    #[serde(default)]
     pub api_token: String,
+    /// 引导凭据：节点面板的登录账号。只用于本次登录 + 签发，不落库
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    /// 节点账号启用了两步验证时的 6 位验证码
+    #[serde(default)]
+    pub totp_code: Option<String>,
     #[serde(default)]
     pub remark: Option<String>,
     /// 容忍自签证书，默认 true
@@ -40,9 +49,16 @@ pub struct UpdatePayload {
     pub name: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
-    /// 留空 = 不修改已存 Token
+    /// 留空 = 不修改已存 Token（除非同时提供了下面的引导账号密码，则重新签发）
     #[serde(default)]
     pub api_token: Option<String>,
+    /// 引导凭据：用于「节点上 Token 被删/过期后重连」——填了就用账号密码重新签一个 Token
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub totp_code: Option<String>,
     #[serde(default)]
     pub remark: Option<String>,
     #[serde(default)]
@@ -61,11 +77,45 @@ pub struct TestPayload {
     pub base_url: String,
     #[serde(default)]
     pub api_token: Option<String>,
+    /// 引导凭据测试：只验证「能不能登录」，不签发 Token（见 test 的注释）
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub totp_code: Option<String>,
     #[serde(default)]
     pub insecure_tls: Option<bool>,
     /// 编辑态测试：Token 留空时复用库里已存的密文
     #[serde(default)]
     pub id: Option<i64>,
+}
+
+/// 解析接入凭据：优先手工 Token；留空且有账号密码时，登录节点现场引导签发。
+async fn resolve_api_token(
+    api_token: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+    totp_code: Option<&str>,
+    base: &str,
+    insecure: bool,
+) -> Result<String, String> {
+    let manual = api_token.trim();
+    if !manual.is_empty() {
+        return Ok(manual.to_string());
+    }
+    let user = username.unwrap_or("").trim();
+    if user.is_empty() || password.unwrap_or("").is_empty() {
+        return Err("API Token 与账号密码至少填一项".to_string());
+    }
+    node::bootstrap_api_token(
+        base,
+        user,
+        password.unwrap_or(""),
+        totp_code.unwrap_or("").trim(),
+        insecure,
+    )
+    .await
 }
 
 #[derive(sqlx::FromRow)]
@@ -183,13 +233,27 @@ pub async fn add(claims: ValidatedClaims, Json(p): Json<AddPayload>) -> Json<Val
         Err(e) => return Json(json!({"code": -1, "message": e})),
     };
     let insecure = p.insecure_tls.unwrap_or(true);
-    let snap = match node::test_connection(&base, &p.api_token, insecure).await {
+    // 手工 Token 直接用；留空则用账号密码在节点上引导签发（凭据本身不落库）
+    let api_token = match resolve_api_token(
+        &p.api_token,
+        p.username.as_deref(),
+        p.password.as_deref(),
+        p.totp_code.as_deref(),
+        &base,
+        insecure,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return Json(json!({"code": -1, "message": format!("凭据引导失败：{e}")})),
+    };
+    let snap = match node::test_connection(&base, &api_token, insecure).await {
         Ok(s) => s,
         Err(e) => return Json(json!({"code": -1, "message": format!("节点连接失败：{}", e)})),
     };
 
     let pool = db::get_db_pool().await;
-    let enc = match crypto::encrypt_password(p.api_token.trim()) {
+    let enc = match crypto::encrypt_password(&api_token) {
         Ok(v) => v,
         Err(e) => return Json(json!({"code": -1, "message": e})),
     };
@@ -254,14 +318,37 @@ pub async fn update(claims: ValidatedClaims, Json(p): Json<UpdatePayload>) -> Js
         _ => None,
     };
     let new_name = p.name.as_deref().map(str::trim).filter(|v| !v.is_empty());
-    let new_token = p
-        .api_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty());
+    // Token 优先级：手工填写 > 账号密码重新签发 > 保持原值。
+    // 「节点上 Token 被删/过期」正是靠第二条恢复：编辑里填一次账号密码即可。
+    let new_token = match p.api_token.as_deref().map(str::trim) {
+        Some(v) if !v.is_empty() => Some(v.to_string()),
+        _ => {
+            let user = p.username.as_deref().unwrap_or("").trim();
+            let has_cred = !user.is_empty() && !p.password.as_deref().unwrap_or("").is_empty();
+            if has_cred {
+                let base_now = base.clone().unwrap_or_else(|| old_base.clone());
+                match node::bootstrap_api_token(
+                    &base_now,
+                    user,
+                    p.password.as_deref().unwrap_or(""),
+                    p.totp_code.as_deref().unwrap_or("").trim(),
+                    p.insecure_tls.unwrap_or(true),
+                )
+                .await
+                {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        return Json(json!({"code": -1, "message": format!("凭据引导失败：{e}")}));
+                    }
+                }
+            } else {
+                None
+            }
+        }
+    };
 
     let enc_token = match new_token {
-        Some(t) => match crypto::encrypt_password(t) {
+        Some(t) => match crypto::encrypt_password(&t) {
             Ok(enc) => Some(enc),
             Err(e) => return Json(json!({"code": -1, "message": e})),
         },
@@ -348,6 +435,29 @@ pub async fn test(Json(p): Json<TestPayload>) -> Json<Value> {
                 .unwrap_or(None)
                 .map(|enc| crypto::decrypt_password(&enc))
                 .unwrap_or_default();
+        }
+    }
+    // 账号密码模式：**只验证能否登录，不签发 Token**。「测试连接」可能被连点，
+    // 每次都签一个新 Token 会在节点上留下一堆孤儿凭据；签发只在真正保存时发生。
+    if token.is_empty() {
+        let user = p.username.unwrap_or_default().trim().to_string();
+        let pass = p.password.unwrap_or_default();
+        if !user.is_empty() && !pass.is_empty() {
+            return match node::login_for_jwt(
+                &p.base_url,
+                &user,
+                &pass,
+                p.totp_code.unwrap_or_default().trim(),
+                insecure,
+            )
+            .await
+            {
+                Ok(_) => Json(json!({
+                    "code": 0, "message": "账号密码可用，保存时会自动在节点上签发 API Token",
+                    "data": null
+                })),
+                Err(e) => Json(json!({"code": -1, "message": e})),
+            };
         }
     }
     match node::test_connection(&p.base_url, &token, insecure).await {

@@ -2349,9 +2349,9 @@ export default {
     download: '下行',
   },
 
-  /** 多节点：受管节点管理与监控大屏 */
+  /** 集群：受管节点管理与监控大屏 */
   cluster: {
-    hint: '填写节点的面板地址和该节点的 API Token 即可纳管。Token 在节点「个人中心 → API Token」创建，普通用户即可（监控只读），无需管理员。',
+    hint: '填写节点的面板地址和凭据即可纳管。凭据二选一：节点「个人中心 → API Token」创建的 Token，或直接填节点登录账号密码——保存时主控会自动在节点上签发 Token，新装好的面板无需先登录。',
     addNode: '添加节点',
     editNode: '编辑节点',
     deleteTitle: '删除节点',
@@ -2399,6 +2399,17 @@ export default {
     needUrl: '请填写节点地址',
     needToken: '请填写 API Token',
     needNameUrl: '请填写名称和节点地址',
+    // 接入方式：手工 Token / 账号密码引导签发
+    credMode: '接入方式',
+    credModeToken: 'API Token',
+    credModePassword: '账号密码（自动签发）',
+    nodeUsername: '节点账号',
+    nodePassword: '节点密码',
+    nodeTotp: '两步验证码',
+    credModeHint:
+      '保存时主控用该账号登录节点，自动签发一个永不过期的 API Token 并加密存储；账号密码本身不会被保存。节点上的 Token 被删或过期后，在这里重新填一次账号密码即可自动换发。',
+    needCred: '请填写节点账号和密码',
+    credOk: '账号密码可用，保存时会自动在节点上签发 API Token',
     // 大屏
     statNodes: '节点在线',
     statAvgCpu: '平均 CPU',

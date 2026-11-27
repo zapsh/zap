@@ -1,16 +1,25 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * 多节点 → 节点管理：登记受管节点（面板地址 + 该节点的 API Token）。
+ * 集群 → 节点管理：登记受管节点（面板地址 + 该节点的凭据）。
+ *
+ * 凭据二选一：手工填节点上创建的 API Token，或直接填节点登录账号密码——
+ * 保存时后端用账号密码登录节点、自动签发一个 Token（账号密码本身不落库）。
+ * 后者覆盖两个场景：面板刚装好还没登录过、节点上的 Token 被删后重连换发。
  *
  * Token 只写不读：列表接口不回传原文，编辑时留空即保持原值。
  * 添加时后端会先实测连通（打一次节点的 /system/info），连不上就不落库，
  * 避免库里存一堆采集失败、只会在大屏上显示离线的地址。
+ *
+ * 在线节点可直接「接管」：面板改走主控的 /api/nodes/{id}/** 代理，读写、终端、
+ * 下载都落在那台机器上，权限以该节点 API Token 归属的账号为准。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatBytes } from '@/utils/fmt'
+import { nodeContext, nodeViewPath, setNodeContext } from '@/utils/base'
 import {
   addNode,
   deleteNodes,
@@ -19,6 +28,7 @@ import {
   testNode,
   updateNode,
   type NodeItem,
+  type NodePayload,
   type NodeSnapshot,
 } from '@/api/node'
 
@@ -37,10 +47,17 @@ const testError = ref('')
 const form = reactive({
   name: '',
   base_url: '',
+  /** 接入方式：手工填 API Token，或填账号密码由主控在节点上自动签发 */
+  auth_mode: 'token' as 'token' | 'password',
   api_token: '',
+  username: '',
+  password: '',
+  totp_code: '',
   remark: '',
   insecure_tls: true,
 })
+/** 账号密码模式的测试结论（不签发 Token，只验证能否登录，没有快照可展示） */
+const testNote = ref('')
 
 const dialogTitle = computed(() =>
   editId.value === null ? t('cluster.addNode') : t('cluster.editNode'),
@@ -50,6 +67,18 @@ const tokenPlaceholder = computed(() =>
   editId.value === null ? t('cluster.tokenPlaceholderNew') : t('cluster.tokenPlaceholderEdit'),
 )
 const onlineCount = computed(() => rows.value.filter((r) => r.online).length)
+const router = useRouter()
+
+/**
+ * 接管这台机器：设定节点上下文后**整页重载**。
+ *
+ * 重载是必须的——接管后 `/user/info` 与 `/system/menus` 都改由节点回答，
+ * 身份和菜单树只在应用启动时拉一次，SPA 内跳路由拿不到远端结果。
+ */
+function takeover(r: NodeItem) {
+  setNodeContext({ id: r.id, name: r.name, baseUrl: r.base_url })
+  window.location.href = nodeViewPath(router, '/dashboard')
+}
 
 function ago(ts: number): string {
   return ts ? new Date(ts * 1000).toLocaleString() : '-'
@@ -75,13 +104,18 @@ function resetForm(r?: NodeItem) {
   Object.assign(form, {
     name: r?.name ?? '',
     base_url: r?.base_url ?? '',
-    // Token 永不回填，留空即不修改
+    auth_mode: 'token' as const,
+    // Token 与密码永不回填：留空即不修改 / 不引导
     api_token: '',
+    username: '',
+    password: '',
+    totp_code: '',
     remark: r?.remark ?? '',
     insecure_tls: r?.insecure_tls ?? true,
   })
   testResult.value = null
   testError.value = ''
+  testNote.value = ''
 }
 
 function openAdd() {
@@ -100,11 +134,17 @@ function openEdit(r: NodeItem) {
 async function runTest() {
   testResult.value = null
   testError.value = ''
+  testNote.value = ''
   if (!form.base_url.trim()) {
     testError.value = t('cluster.needUrl')
     return
   }
-  if (!form.api_token.trim() && editId.value === null) {
+  if (form.auth_mode === 'password') {
+    if (!form.username.trim() || !form.password) {
+      testError.value = t('cluster.needCred')
+      return
+    }
+  } else if (!form.api_token.trim() && editId.value === null) {
     testError.value = t('cluster.needToken')
     return
   }
@@ -112,11 +152,16 @@ async function runTest() {
   try {
     const res = await testNode({
       base_url: form.base_url.trim(),
-      api_token: form.api_token.trim(),
+      api_token: form.auth_mode === 'token' ? form.api_token.trim() : undefined,
+      username: form.auth_mode === 'password' ? form.username.trim() : undefined,
+      password: form.auth_mode === 'password' ? form.password : undefined,
+      totp_code: form.auth_mode === 'password' ? form.totp_code.trim() : undefined,
       insecure_tls: form.insecure_tls,
       id: editId.value ?? undefined,
     })
-    testResult.value = res.data
+    // 账号密码模式只验证登录、不签 Token：没有快照，用文字结论代替
+    if (res.data) testResult.value = res.data
+    else testNote.value = res.message || t('cluster.credOk')
   } catch (e: any) {
     testError.value = e?.message || t('cluster.testFailed')
   } finally {
@@ -129,9 +174,32 @@ async function save() {
     ElMessage.warning(t('cluster.needNameUrl'))
     return
   }
-  if (editId.value === null && !form.api_token.trim()) {
-    ElMessage.warning(t('cluster.needToken'))
+  // 凭据按接入方式二选一；编辑态什么都不填 = 保持原 Token 不变
+  const cred: Pick<NodePayload, 'api_token' | 'username' | 'password' | 'totp_code'> =
+    form.auth_mode === 'password'
+      ? {
+          api_token: '',
+          username: form.username.trim(),
+          password: form.password,
+          totp_code: form.totp_code.trim(),
+        }
+      : { api_token: form.api_token.trim() }
+  const hasUser = !!cred.username?.trim()
+  const hasPass = !!cred.password
+  // 引导凭据要么不填（编辑 = 保持原 Token），要么填全；只填一半直接拦
+  if (form.auth_mode === 'password' && (hasUser || hasPass) && !(hasUser && hasPass)) {
+    ElMessage.warning(t('cluster.needCred'))
     return
+  }
+  if (editId.value === null) {
+    if (form.auth_mode === 'password' && !hasUser) {
+      ElMessage.warning(t('cluster.needCred'))
+      return
+    }
+    if (form.auth_mode === 'token' && !cred.api_token) {
+      ElMessage.warning(t('cluster.needToken'))
+      return
+    }
   }
   saving.value = true
   try {
@@ -139,9 +207,9 @@ async function save() {
       await addNode({
         name: form.name.trim(),
         base_url: form.base_url.trim(),
-        api_token: form.api_token.trim(),
         remark: form.remark.trim(),
         insecure_tls: form.insecure_tls,
+        ...cred,
       })
       ElMessage.success(t('cluster.added'))
     } else {
@@ -149,9 +217,9 @@ async function save() {
         id: editId.value,
         name: form.name.trim(),
         base_url: form.base_url.trim(),
-        api_token: form.api_token.trim(),
         remark: form.remark.trim(),
         insecure_tls: form.insecure_tls,
+        ...cred,
       })
       ElMessage.success(t('cluster.saved'))
     }
@@ -315,15 +383,40 @@ onMounted(load)
           <el-input v-model="form.base_url" placeholder="https://10.0.0.5:8443" clearable />
           <div class="form-tip">{{ t('cluster.baseUrlHint') }}</div>
         </el-form-item>
-        <el-form-item :label="t('cluster.apiToken')">
-          <el-input
-            v-model="form.api_token"
-            type="password"
-            show-password
-            :placeholder="tokenPlaceholder"
-          />
-          <div class="form-tip">{{ t('cluster.tokenHint') }}</div>
+        <el-form-item :label="t('cluster.credMode')">
+          <el-radio-group v-model="form.auth_mode">
+            <el-radio value="token">{{ t('cluster.credModeToken') }}</el-radio>
+            <el-radio value="password">{{ t('cluster.credModePassword') }}</el-radio>
+          </el-radio-group>
         </el-form-item>
+        <template v-if="form.auth_mode === 'token'">
+          <el-form-item :label="t('cluster.apiToken')">
+            <el-input
+              v-model="form.api_token"
+              type="password"
+              show-password
+              :placeholder="tokenPlaceholder"
+            />
+            <div class="form-tip">{{ t('cluster.tokenHint') }}</div>
+          </el-form-item>
+        </template>
+        <template v-else>
+          <el-form-item :label="t('cluster.nodeUsername')">
+            <el-input v-model="form.username" autocomplete="off" clearable />
+          </el-form-item>
+          <el-form-item :label="t('cluster.nodePassword')">
+            <el-input
+              v-model="form.password"
+              type="password"
+              show-password
+              autocomplete="new-password"
+            />
+          </el-form-item>
+          <el-form-item :label="t('cluster.nodeTotp')">
+            <el-input v-model="form.totp_code" maxlength="8" clearable placeholder="123456" />
+            <div class="form-tip">{{ t('cluster.credModeHint') }}</div>
+          </el-form-item>
+        </template>
         <el-form-item :label="t('cluster.insecureTls')">
           <el-switch v-model="form.insecure_tls" />
           <span class="switch-tip">{{ t('cluster.insecureHint') }}</span>
@@ -353,6 +446,14 @@ onMounted(load)
           :closable="false"
           show-icon
           :title="testError"
+          class="test-err"
+        />
+        <el-alert
+          v-else-if="testNote"
+          type="success"
+          :closable="false"
+          show-icon
+          :title="testNote"
           class="test-err"
         />
       </el-form>
