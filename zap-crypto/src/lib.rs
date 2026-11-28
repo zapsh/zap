@@ -207,15 +207,12 @@ pub fn encrypt(plaintext: &str) -> Result<String, String> {
 }
 
 /// 解密；要求 `v1:` 前缀的密文。
-///
-/// 历史明文（无 `v1:` 前缀）或格式错误一律返回 `Err`，**绝不原样回退明文**：
-/// 明文凭据一旦落库即视为泄露，应当让用户重新录入，而不是被静默当密文读回。
 pub fn decrypt(encrypted: &str) -> Result<String, String> {
     if encrypted.is_empty() {
         return Ok(String::new());
     }
     if !encrypted.starts_with(PREFIX) {
-        return Err("密文格式错误（缺少 v1: 前缀，疑似历史明文或已损坏）".to_string());
+        return Err("密文格式错误".to_string());
     }
     let key = SECRET_KEY.as_ref().map_err(|e| e.clone())?;
     let body = &encrypted[PREFIX.len()..];
