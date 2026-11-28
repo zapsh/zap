@@ -274,6 +274,13 @@ pub async fn add_jobs(sched: &JobScheduler) {
     .expect("invalid cron: node collect");
     let _ = sched.add(nodes).await;
 
+    // 每分钟：集群离线 / 高负载告警（阈值与冷却见 node_alert_* conf）
+    let alerts = Job::new_async("0 * * * * *", |_uuid, _lock| {
+        Box::pin(crate::zap::node::check_alerts())
+    })
+    .expect("invalid cron: node alerts");
+    let _ = sched.add(alerts).await;
+
     // 每日 01:00:00：清理超期监控原始数据
     let clean = Job::new_async("0 0 1 * * *", |_uuid, _lock| {
         Box::pin(cleanup_monitor_data())

@@ -14,7 +14,15 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { formatBytes } from '@/utils/fmt'
 import { nodeContext, nodeViewPath, setNodeContext } from '@/utils/base'
-import { getNodesOverview, type NodeOverviewItem, type NodeSummary } from '@/api/node'
+import {
+  getNodeStatus,
+  getNodesOverview,
+  listNodeGroups,
+  type NodeGroupItem,
+  type NodeOverviewItem,
+  type NodeProcess,
+  type NodeSummary,
+} from '@/api/node'
 import NodeTrend from './NodeTrend.vue'
 
 const { t } = useI18n()
@@ -27,7 +35,10 @@ const interval = ref(15)
 const sort = ref<'id' | 'cpu' | 'load' | 'name'>('cpu')
 const drawer = ref(false)
 const active = ref<NodeOverviewItem | null>(null)
+const topProcesses = ref<NodeProcess[]>([])
 const countdown = ref(15)
+const groupFilter = ref(0)
+const groups = ref<NodeGroupItem[]>([])
 
 let timer: ReturnType<typeof setInterval> | undefined
 let destroyed = false
@@ -92,9 +103,24 @@ function sparkPath(trend: NodeOverviewItem['trend'], key: 'cpu' | 'mem'): string
     .join(' ')
 }
 
-function openNode(n: NodeOverviewItem) {
+async function openNode(n: NodeOverviewItem) {
   active.value = n
+  topProcesses.value = []
   drawer.value = true
+  try {
+    const res = await getNodeStatus(n.id)
+    topProcesses.value = res.data?.top_processes || []
+  } catch {
+    /* 刷新失败时只少一块进程表，不影响主曲线 */
+  }
+}
+
+/** 网络速率：节点侧 10s 采样折算成 B/s */
+function rateText(v: number | null | undefined): string {
+  const b = Number(v ?? 0)
+  if (b < 1024) return `${b.toFixed(0)} B/s`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB/s`
+  return `${(b / 1024 / 1024).toFixed(1)} MB/s`
 }
 
 /**
@@ -109,7 +135,7 @@ function enterNodeView(n: NodeOverviewItem) {
 
 async function load() {
   try {
-    const res = await getNodesOverview()
+    const res = await getNodesOverview(groupFilter.value || undefined)
     if (destroyed) return
     nodes.value = res.data?.nodes || []
     summary.value = res.data?.summary || null
@@ -144,6 +170,11 @@ onMounted(async () => {
     window.location.reload()
     return
   }
+  try {
+    groups.value = (await listNodeGroups()).data || []
+  } catch {
+    /* 拦截器已弹窗 */
+  }
   await load()
   if (destroyed) return
   countdown.value = interval.value
@@ -159,6 +190,10 @@ onUnmounted(() => {
 <template>
   <div class="cluster-screen">
     <div class="screen-toolbar">
+      <el-select v-model="groupFilter" size="small" style="width: 150px" @change="load">
+        <el-option :label="t('cluster.allGroups')" :value="0" />
+        <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+      </el-select>
       <el-select v-model="sort" size="small" style="width: 150px">
         <el-option :label="t('cluster.sortCpu')" value="cpu" />
         <el-option :label="t('cluster.sortLoad')" value="load" />
@@ -253,6 +288,7 @@ onUnmounted(() => {
           <div class="card-title">
             <span class="dot" :class="n.online ? 'on' : 'off'"></span>
             <span class="card-name">{{ n.name }}</span>
+            <el-tag v-if="n.group_name" size="small" type="info">{{ n.group_name }}</el-tag>
           </div>
           <el-tag v-if="n.version" size="small" type="info">{{ n.version }}</el-tag>
         </div>
@@ -357,6 +393,20 @@ onUnmounted(() => {
           </el-button>
         </div>
       </template>
+      <div v-if="active" class="net-line">
+        <span>{{ t('cluster.netRx') }}: {{ rateText(active.net_rx_bps) }}</span>
+        <span>{{ t('cluster.netTx') }}: {{ rateText(active.net_tx_bps) }}</span>
+      </div>
+      <div class="proc-title">{{ t('cluster.topProcesses') }}</div>
+      <el-table :data="topProcesses" size="small" class="proc-table">
+        <el-table-column prop="pid" label="PID" width="90" />
+        <el-table-column prop="name" :label="t('cluster.procName')" min-width="180" />
+        <el-table-column prop="cpu" label="CPU %" width="100" />
+        <el-table-column prop="memory" :label="t('cluster.procMemory')" width="120" />
+        <template #empty>
+          <el-empty :description="t('cluster.noProcessData')" />
+        </template>
+      </el-table>
       <NodeTrend v-if="active" :node-id="active.id" />
     </el-drawer>
   </div>
@@ -612,5 +662,20 @@ onUnmounted(() => {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.net-line {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+.proc-title {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.proc-table {
+  margin-bottom: 16px;
 }
 </style>

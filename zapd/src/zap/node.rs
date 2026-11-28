@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! 集群：受管节点的凭据、只读快照采集与指标保留。
+//! 集群：受管节点的凭据、快照采集与指标保留。
 //!
-//! 采集只打节点的 `/api/system/info` —— 该接口在 `access.rs` 里是
-//! `Required::User`，所以**一个普通用户的 API Token 就够**，不需要在节点上
-//! 开 admin、也不需要节点暴露 `/system/status`（那个是 Admin）。
+//! 基础指标走节点的 `/api/system/info`（User 权限）；网络速率与 Top 进程
+//! 走 `/api/system/status` 和 `/api/system/config/processes`（Admin 权限），
+//! 所以**节点的 API Token 必须属于管理员账号**——添加 / 测试时会先验权限。
 //!
 //! 历史曲线由**主控**每 15s 采样写进自己的 `node_stats` 表：
 //! - 大屏一次 SQL 就能出全部节点，不会被某个慢节点卡住整屏；
@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use once_cell::sync::Lazy;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tracing::warn;
 
@@ -87,6 +87,68 @@ pub fn normalize_base(raw: &str) -> Result<String, String> {
         return Err("节点地址格式不正确，示例：https://10.0.0.5:8443".to_string());
     }
     Ok(s)
+}
+
+/// 节点 Token 必须是节点上的管理员账号签发的：网络统计与进程列表都是 Admin 接口，
+/// 普通用户 Token 虽然能读 `/system/info`，却拿不到这两类数据。添加 / 测试时先验一次，
+/// 避免存一个「监控能用、下钻永远缺数据」的凭据。
+pub async fn check_admin(base: &str, token: &str, insecure: bool) -> Result<(), String> {
+    let base = normalize_base(base)?;
+    let info = api_get(&base, token, insecure, "/user/info").await?;
+    let roles = info.get("roles").and_then(|v| v.as_array());
+    let is_admin = roles.is_some_and(|r| r.iter().any(|v| v.as_str() == Some("admin")))
+        || info.get("role").and_then(|v| v.as_str()) == Some("admin");
+    if is_admin {
+        Ok(())
+    } else {
+        Err("节点 Token 必须属于管理员账号（采集网络 / 磁盘需要 Admin 权限）".to_string())
+    }
+}
+
+/// 从节点的 `/system/status` 取最新一轮网络累计量，折算成 B/s。
+/// 节点自身每 10 秒采样一次，这里取各网卡 `received / transmitted` 求和后除以采样间隔。
+pub async fn fetch_network_rates(
+    base: &str,
+    token: &str,
+    insecure: bool,
+) -> Result<(f64, f64), String> {
+    let data = api_get(base, token, insecure, "/system/status?range=live").await?;
+    let Some(points) = data.get("network_stats").and_then(|v| v.as_array()) else {
+        return Ok((0.0, 0.0));
+    };
+    let (mut rx, mut tx) = (0.0, 0.0);
+    for p in points {
+        rx += p.get("received").and_then(|v| v.as_i64()).unwrap_or(0) as f64;
+        tx += p.get("transmitted").and_then(|v| v.as_i64()).unwrap_or(0) as f64;
+    }
+    Ok((rx / 10.0, tx / 10.0))
+}
+
+/// Top 进程快照（Admin）：只保留前 10 个，字段统一成 pid / name / cpu / memory。
+pub async fn fetch_top_processes(
+    base: &str,
+    token: &str,
+    insecure: bool,
+) -> Result<Vec<Value>, String> {
+    let data = api_get(base, token, insecure, "/system/config/processes").await?;
+    let Some(items) = data.as_array() else {
+        return Ok(Vec::new());
+    };
+    Ok(items
+        .iter()
+        .take(10)
+        .map(|p| {
+            json!({
+                "pid": p.get("pid").cloned().unwrap_or(json!(0)),
+                "name": p.get("name").or_else(|| p.get("comm"))
+                    .or_else(|| p.get("process_name")).cloned().unwrap_or(json!("")),
+                "cpu": p.get("cpu_usage").or_else(|| p.get("cpu"))
+                    .cloned().unwrap_or(json!(0)),
+                "memory": p.get("memory_usage").or_else(|| p.get("memory"))
+                    .or_else(|| p.get("mem")).cloned().unwrap_or(json!(0)),
+            })
+        })
+        .collect())
 }
 
 /// 一次采集得到的节点快照（已折算成百分比，与本机 `system_stats` 同量纲）。
@@ -199,7 +261,7 @@ async fn api_get(base: &str, token: &str, insecure: bool, path: &str) -> Result<
 ///
 /// 与 `api_get` 不同，这里不剥 `data` 也不预检 `code`：登录响应的 `access_token`
 /// 在顶层，且业务失败（HTTP 200 + code!=0）的文案要由调用方按场景重新组织。
-async fn api_post(
+pub async fn api_post(
     base: &str,
     path: &str,
     bearer: Option<&str>,
@@ -267,16 +329,20 @@ pub async fn login_for_jwt(
 ///
 /// 解决两类「拿不到 Token」：面板刚装好还没登录过（无法去个人中心建 Token），
 /// 以及节点侧 Token 被误删后主控要重连。主控用用户临时提供的账号密码登录节点，
-/// 替它签发一个**永不过期**的 API Token 加密落库；账号密码只存在于本次调用，
+/// 替它签发一个 API Token 加密落库；账号密码只存在于本次调用，
 /// 不落库、不进日志。签出的 Token 归属登录账号、可在节点「个人中心 → API Token」
 /// 随时吊销，与手工创建完全等价。
+///
+/// 返回 `(token, expires_at)`：`expire_days <= 0` 时节点按自身策略给默认有效期，
+/// 主控把这时间记进 `nodes.cred_expires_at` 用于到期提醒。
 pub async fn bootstrap_api_token(
     base: &str,
     username: &str,
     password: &str,
     totp_code: &str,
     insecure: bool,
-) -> Result<String, String> {
+    expire_days: i64,
+) -> Result<(String, i64), String> {
     let base = normalize_base(base)?;
     let jwt = login_for_jwt(&base, username.trim(), password, totp_code.trim(), insecure).await?;
     // 名字带上节点地址：在节点的 Token 列表里能认出是哪台主控签的
@@ -287,7 +353,10 @@ pub async fn bootstrap_api_token(
         .split('/')
         .next()
         .unwrap_or("");
-    let body = serde_json::json!({ "name": format!("ZAP 主控接管（{host}）") });
+    let mut body = serde_json::json!({ "name": format!("ZAP 主控接管（{host}）") });
+    if expire_days > 0 {
+        body["expire_days"] = serde_json::json!(expire_days);
+    }
     let v = api_post(&base, "/dev/api-token/create", Some(&jwt), body, insecure).await?;
     if v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) != 0 {
         let msg = str_of(&v, "message");
@@ -306,7 +375,12 @@ pub async fn bootstrap_api_token(
     if raw.is_empty() {
         return Err("节点返回的 Token 为空，请确认节点版本支持 API Token".to_string());
     }
-    Ok(raw)
+    let expires_at = v
+        .get("data")
+        .and_then(|d| d.get("expires_at"))
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    Ok((raw, expires_at))
 }
 
 /// reqwest 的错误串带 backtrace 式长句，这里只留最有用的一段。
@@ -489,19 +563,21 @@ pub struct ProxyTarget {
     pub base: String,
     pub token: String,
     pub insecure: bool,
+    /// 节点归属：0 = 管理员公有，其余为用户 id（代理前要做归属校验）
+    pub owner_id: i64,
 }
 
 /// 按 id 解析代理目标；节点不存在 / 已停用都拒绝（不落任何转发）。
 pub async fn resolve_target(id: i64) -> Result<ProxyTarget, String> {
     let pool = get_db_pool().await;
-    let row: Option<(String, String, String, i64, i64)> = sqlx::query_as(
-        "SELECT name, base_url, api_token, insecure_tls, status FROM nodes WHERE id = ?",
+    let row: Option<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT name, base_url, api_token, insecure_tls, status, owner_id FROM nodes WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
     .await
     .map_err(|e| format!("查询节点失败: {e}"))?;
-    let Some((name, base, enc, insecure, status)) = row else {
+    let Some((name, base, enc, insecure, status, owner_id)) = row else {
         return Err("节点不存在".to_string());
     };
     if status != 1 {
@@ -516,6 +592,7 @@ pub async fn resolve_target(id: i64) -> Result<ProxyTarget, String> {
         base,
         token,
         insecure: insecure != 0,
+        owner_id,
     })
 }
 
@@ -777,14 +854,22 @@ pub async fn collect_round() {
                 .is_some_and(|ts| now - ts < VERSION_TTL_SECS as i64);
         handles.push(tokio::spawn(async move {
             let token = crypto::decrypt_password(&t.api_token);
-            let r = fetch_snapshot(&t.base_url, &token, t.insecure_tls != 0, need_version).await;
-            (t, need_version, r)
+            let insecure = t.insecure_tls != 0;
+            let r = fetch_snapshot(&t.base_url, &token, insecure, need_version).await;
+            // 网络 / 进程是 Admin 接口：凭据验过权限，失败只当作本轮没数据，不影响 CPU 等基础采样
+            let net = fetch_network_rates(&t.base_url, &token, insecure)
+                .await
+                .unwrap_or((0.0, 0.0));
+            let procs = fetch_top_processes(&t.base_url, &token, insecure)
+                .await
+                .unwrap_or_default();
+            (t, need_version, r, net, procs)
         }));
     }
 
     let pool = get_db_pool().await;
     for h in handles {
-        let Ok((node, need_version, result)) = h.await else {
+        let Ok((node, need_version, result, net, procs)) = h.await else {
             continue;
         };
         match result {
@@ -792,8 +877,8 @@ pub async fn collect_round() {
                 let _ = sqlx::query(
                     "INSERT INTO node_stats \
                      (node_id,cpu_usage,memory_usage,swap_usage,disk_usage,\
-                      loadavg_one,loadavg_five,loadavg_fifteen,created_at) \
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                      loadavg_one,loadavg_five,loadavg_fifteen,net_rx_bps,net_tx_bps,created_at) \
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
                 )
                 .bind(node.id)
                 .bind(s.cpu_usage)
@@ -803,15 +888,18 @@ pub async fn collect_round() {
                 .bind(s.loadavg_one)
                 .bind(s.loadavg_five)
                 .bind(s.loadavg_fifteen)
+                .bind(net.0)
+                .bind(net.1)
                 .bind(now)
                 .execute(pool)
                 .await;
 
+                let procs_json = serde_json::to_string(&procs).unwrap_or_else(|_| "[]".into());
                 let upd = sqlx::query(
                     "UPDATE nodes SET online=1, last_seen=$1, last_error='', \
                      os_name=$2, host_name=$3, public_ip=$4, uptime=$5, cpu_num=$6, \
-                     memory_total_b=$7, disk_total_b=$8, disk_json=$9, updated_at=$1 \
-                     WHERE id=$10",
+                     memory_total_b=$7, disk_total_b=$8, disk_json=$9, \
+                     top_processes=$10, updated_at=$1 WHERE id=$11",
                 )
                 .bind(now)
                 .bind(&s.os_name)
@@ -822,6 +910,7 @@ pub async fn collect_round() {
                 .bind(s.memory_total_b)
                 .bind(s.disk_total_b)
                 .bind(&s.disk_json)
+                .bind(&procs_json)
                 .bind(node.id);
                 if need_version && !s.version.is_empty() {
                     let _ = sqlx::query("UPDATE nodes SET version=$1 WHERE id=$2")
@@ -1092,5 +1181,128 @@ mod tests {
         }));
         assert_eq!(snap.disk_total_b, 100);
         assert_eq!(snap.disk_usage, 0.0);
+    }
+}
+
+/// 每分钟巡检一次受管节点：离线 / CPU / 内存 / 磁盘超阈值时写事件 + 站内信，
+/// 可选发管理员邮件。同一节点同一类告警在冷却期内只发一次（由事件表去重）。
+pub async fn check_alerts() {
+    let Some(pool) = crate::db::get_db_pool_opt().await else {
+        return;
+    };
+    let num = |key: &str, default: i64| {
+        crate::zap::server_env::conf_get(key)
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(default)
+    };
+    let cpu_limit = num("node_alert_cpu", 85);
+    let mem_limit = num("node_alert_mem", 90);
+    let disk_limit = num("node_alert_disk", 90);
+    let offline_secs = num("node_alert_offline_secs", 300);
+    let cooldown = num("node_alert_cooldown_secs", 1800).max(60);
+    let email_on = num("node_alert_email", 0) == 1;
+    if cpu_limit == 0 && mem_limit == 0 && disk_limit == 0 && offline_secs == 0 {
+        return;
+    }
+    let now = chrono::Local::now().timestamp();
+    let nodes: Vec<(i64, String, i64, i64, i64)> =
+        sqlx::query_as("SELECT id, name, online, last_seen, owner_id FROM nodes WHERE status = 1")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+    for (node_id, name, online, last_seen, owner_id) in nodes {
+        let mut fired: Vec<(&str, String)> = Vec::new();
+        if offline_secs > 0 && online == 0 && last_seen > 0 && now - last_seen >= offline_secs {
+            fired.push((
+                "offline",
+                format!(
+                    "节点「{name}」已离线超过 {} 秒，请检查面板连通性或 Token 是否有效",
+                    offline_secs
+                ),
+            ));
+        }
+        if cpu_limit > 0 || mem_limit > 0 || disk_limit > 0 {
+            let latest: Option<(Option<f64>, Option<f64>, Option<f64>)> = sqlx::query_as(
+                "SELECT cpu_usage, memory_usage, disk_usage FROM node_stats \
+                 WHERE node_id = ? ORDER BY id DESC LIMIT 1",
+            )
+            .bind(node_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+            if let Some((cpu, mem, disk)) = latest {
+                for (limit, value, label, kind) in [
+                    (cpu_limit, cpu, "CPU", "cpu"),
+                    (mem_limit, mem, "内存", "memory"),
+                    (disk_limit, disk, "磁盘", "disk"),
+                ] {
+                    if limit > 0 && value.is_some_and(|v| v >= limit as f64) {
+                        fired.push((
+                            kind,
+                            format!(
+                                "节点「{name}」{label}使用率达到 {:.1}%（阈值 {limit}%）",
+                                value.unwrap_or(0.0)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        for (kind, message) in fired {
+            let last: Option<i64> = sqlx::query_scalar(
+                "SELECT created_at FROM node_alert_events WHERE node_id = ? AND kind = ? \
+                 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(node_id)
+            .bind(kind)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+            if last.is_some_and(|t| now - t < cooldown) {
+                continue;
+            }
+            let _ = sqlx::query(
+                "INSERT INTO node_alert_events (node_id, node_name, kind, message, created_at) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(node_id)
+            .bind(&name)
+            .bind(kind)
+            .bind(&message)
+            .bind(now)
+            .execute(pool)
+            .await;
+            let title = format!("【ZAP 集群告警】{kind}");
+            let mut targets = vec![owner_id];
+            let admins: Vec<i64> =
+                sqlx::query_scalar("SELECT id FROM user WHERE roles LIKE '%admin%'")
+                    .fetch_all(pool)
+                    .await
+                    .unwrap_or_default();
+            targets.extend(admins);
+            targets.sort_unstable();
+            targets.dedup();
+            for uid in targets {
+                if uid > 0 {
+                    crate::zap::notify::push(uid, "node_alert", &title, &message).await;
+                }
+            }
+            if email_on {
+                let emails: Vec<String> = sqlx::query_scalar(
+                    "SELECT email FROM user WHERE roles LIKE '%admin%' AND email <> ''",
+                )
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+                for address in emails {
+                    let _ =
+                        crate::zap::mail::send(&address, &title, &message, false, None, None, None)
+                            .await;
+                }
+            }
+        }
     }
 }

@@ -2385,7 +2385,7 @@ const enUS: Messages = {
 
   /** Cluster: managed node registry and monitoring screen */
   cluster: {
-    hint: 'Provide the node panel URL and a credential: either an API Token from "Profile → API Token" on that node, or the node login account and password — the master then creates the token on the node automatically when you save, so a freshly installed panel needs no prior login.',
+    hint: 'Provide the node panel URL and a credential: either an API Token from "Profile → API Token" on that node, or the node login account and password — the master then creates the token on the node automatically when you save, so a freshly installed panel needs no prior login. The token must belong to an administrator on that node: network rates and process snapshots require Admin endpoints.',
     addNode: 'Add Node',
     editNode: 'Edit Node',
     deleteTitle: 'Delete Node',
@@ -2483,6 +2483,68 @@ const enUS: Messages = {
       'Node “{name}” rejected this request ({detail}): the node’s API Token lacks this permission — it is unrelated to your role on the master',
     remoteNotFoundFailed:
       'Node “{name}” has no such endpoint (404): that node is usually older than this panel — upgrade it to use this feature',
+
+    // Groups / filters / batch operations
+    group: 'Group',
+    groupName: 'Group name',
+    groupManage: 'Manage groups',
+    addGroup: 'Add group',
+    ungrouped: 'Ungrouped',
+    allGroups: 'All groups',
+    groupNameRequired: 'Enter a group name',
+    groupDeleteConfirm:
+      'Delete group “{name}”? Its nodes will become ungrouped; the nodes themselves are kept.',
+    owner: 'Owner',
+    ownerHint:
+      'Non-admins always own nodes they create; reassigning to someone else requires an administrator. Empty means admin-owned.',
+    filterKeyword: 'Search name / URL / IP / remark',
+    statusAll: 'All statuses',
+    onlineAll: 'Online status',
+    statusEnabled: 'Enabled',
+    sortDefault: 'Default order',
+    sortBySeen: 'Last seen',
+    filter: 'Filter',
+    selectedCount: '{count} selected',
+    batchEnable: 'Enable selected',
+    batchDisable: 'Disable selected',
+    batchSetGroup: 'Change group',
+    batchScript: 'Run script',
+    scriptPath: 'Script path (e.g. appstore/myapp/run.sh)',
+    scriptHint:
+      'Runs an existing App Store script on each node; arbitrary commands are never executed. Results are reported per node.',
+    scriptPathRequired: 'Enter a script path',
+    scriptDone: 'Script dispatched to all selected nodes',
+    scriptPartialFail: '{count} node(s) failed; check their logs',
+    batchDone: 'Updated {count} node(s)',
+    clearSelection: 'Clear selection',
+
+    // Credential lifecycle / alerts
+    credStatus: 'Credential',
+    credValid: 'Valid',
+    credUnknown: 'Unknown',
+    credInvalid: 'Invalid',
+    credExpired: 'Expired',
+    rotateCred: 'Rotate credential',
+    credExpireDays: 'Valid for (days)',
+    credExpireHint: '0 uses the node default; the list flags credentials before expiry.',
+    alertSettings: 'Alert settings',
+    alertRecords: 'Alert history',
+    alertCpu: 'CPU threshold (%)',
+    alertMemory: 'Memory threshold (%)',
+    alertDisk: 'Disk threshold (%)',
+    alertOffline: 'Offline after (seconds)',
+    alertCooldown: 'Cooldown (seconds)',
+    alertEmail: 'Also email administrators',
+    alertHint:
+      'Set a threshold to 0 to disable that check. Checks run once a minute; duplicate alerts are suppressed during the cooldown.',
+    alertSaved: 'Alert settings saved',
+    alertMessage: 'Message',
+    netRx: 'Network in',
+    netTx: 'Network out',
+    topProcesses: 'Top processes',
+    procName: 'Process',
+    procMemory: 'Memory %',
+    noProcessData: 'No process snapshot yet (requires an admin token)',
   },
 
   monitorRange: {

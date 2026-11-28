@@ -309,6 +309,19 @@ fn api_routers() -> Router {
         .route("/node/refresh", post(node::refresh))
         .route("/node/overview", get(node::overview))
         .route("/node/status", get(node::status))
+        // 分组 / 批量 / 归属 / 告警
+        .route("/node/group/list", get(node::group_list))
+        .route("/node/group/add", post(node::group_add))
+        .route("/node/group/update", post(node::group_update))
+        .route("/node/group/delete", post(node::group_delete))
+        .route("/node/batch/update", post(node::batch_update))
+        .route("/node/batch/script", post(node::batch_script))
+        .route("/node/owners", get(node::owners))
+        .route(
+            "/node/alert/config",
+            get(node::alert_config_get).post(node::alert_config_set),
+        )
+        .route("/node/alert/events", get(node::alert_events))
         // 节点视图：完整接管反向代理（读写 / 终端 / 下载，详见 routers::node::proxy）
         .route("/nodes/{id}/{*rest}", any(node::proxy))
         // 套餐（Packages）：创建客户时选择的资源套餐

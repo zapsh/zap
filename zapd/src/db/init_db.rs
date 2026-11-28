@@ -628,8 +628,56 @@ async fn init_node_tables() {
         memory_total_b BIGINT NOT NULL DEFAULT 0,
         disk_total_b BIGINT NOT NULL DEFAULT 0,
         disk_json TEXT NOT NULL DEFAULT '[]',
+        group_id INTEGER NOT NULL DEFAULT 0,
+        owner_id INTEGER NOT NULL DEFAULT 0,
+        cred_issued_at BIGINT NOT NULL DEFAULT 0,
+        cred_expires_at BIGINT NOT NULL DEFAULT 0,
+        cred_issued_by TEXT NOT NULL DEFAULT '',
+        top_processes TEXT NOT NULL DEFAULT '[]',
         created_at BIGINT,
         updated_at BIGINT
+    )
+    "#,
+            )
+            .await;
+    }
+    // 存量库补列：新装库已在 CREATE TABLE 里带齐，这里对老库幂等 ALTER。
+    // 0 / 空串是「未分组 / 管理员公有 / 签发时间未知」的安全默认值。
+    for (column, decl) in [
+        ("group_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("owner_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("cred_issued_at", "BIGINT NOT NULL DEFAULT 0"),
+        ("cred_expires_at", "BIGINT NOT NULL DEFAULT 0"),
+        ("cred_issued_by", "TEXT NOT NULL DEFAULT ''"),
+        ("top_processes", "TEXT NOT NULL DEFAULT '[]'"),
+    ] {
+        ensure_column("nodes", column, decl).await;
+    }
+    if !table_exists("node_groups").await {
+        let _ = pool
+            .execute(
+                r#"
+    CREATE TABLE node_groups (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at BIGINT NOT NULL DEFAULT 0
+    )
+    "#,
+            )
+            .await;
+    }
+    if !table_exists("node_alert_events").await {
+        let _ = pool
+            .execute(
+                r#"
+    CREATE TABLE node_alert_events (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        node_id INTEGER NOT NULL,
+        node_name TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        message TEXT NOT NULL DEFAULT '',
+        created_at BIGINT NOT NULL DEFAULT 0
     )
     "#,
             )
@@ -649,11 +697,19 @@ async fn init_node_tables() {
         loadavg_one REAL,
         loadavg_five REAL,
         loadavg_fifteen REAL,
+        net_rx_bps REAL NOT NULL DEFAULT 0,
+        net_tx_bps REAL NOT NULL DEFAULT 0,
         created_at BIGINT
     )
     "#,
             )
             .await;
+    }
+    for (column, decl) in [
+        ("net_rx_bps", "REAL NOT NULL DEFAULT 0"),
+        ("net_tx_bps", "REAL NOT NULL DEFAULT 0"),
+    ] {
+        ensure_column("node_stats", column, decl).await;
     }
     // 大屏与下钻曲线都按 (node_id, created_at) 过滤 + 分桶，缺索引就是全表扫
     let _ = pool
@@ -666,6 +722,18 @@ async fn init_node_tables() {
         .execute(
             "CREATE INDEX IF NOT EXISTS idx_node_stats_node_time \
              ON node_stats(node_id, created_at)",
+        )
+        .await;
+    let _ = pool
+        .execute("CREATE INDEX IF NOT EXISTS idx_nodes_group ON nodes(group_id)")
+        .await;
+    let _ = pool
+        .execute("CREATE INDEX IF NOT EXISTS idx_nodes_owner ON nodes(owner_id)")
+        .await;
+    let _ = pool
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_node_alert_events_time \
+             ON node_alert_events(created_at)",
         )
         .await;
 }
@@ -1599,9 +1667,8 @@ async fn table_exists(table_name: &str) -> bool {
 
 /// 幂等补列：列已存在则跳过，否则 `ALTER TABLE ... ADD COLUMN`。
 ///
-/// 为「将来系统升级」预留的工具函数——老库升级时按需调用即可（列名探查见 [`column_exists`]）。
-/// 开发阶段所有列都直接写在对应的 `CREATE TABLE` 里、建库即完整，故当前不调用，仅作升级迁移备用。
-#[allow(dead_code)]
+/// 老库升级时按需调用（列名探查见 [`column_exists`]）。
+/// 新装库的列直接写在对应 `CREATE TABLE` 里，建库即完整。
 async fn ensure_column(table: &str, column: &str, decl: &str) {
     if !table_exists(table).await {
         return;

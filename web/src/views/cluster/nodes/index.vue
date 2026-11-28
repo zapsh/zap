@@ -7,12 +7,8 @@
  * 保存时后端用账号密码登录节点、自动签发一个 Token（账号密码本身不落库）。
  * 后者覆盖两个场景：面板刚装好还没登录过、节点上的 Token 被删后重连换发。
  *
- * Token 只写不读：列表接口不回传原文，编辑时留空即保持原值。
- * 添加时后端会先实测连通（打一次节点的 /system/info），连不上就不落库，
- * 避免库里存一堆采集失败、只会在大屏上显示离线的地址。
- *
- * 在线节点可直接「接管」：面板改走主控的 /api/nodes/{id}/** 代理，读写、终端、
- * 下载都落在那台机器上，权限以该节点 API Token 归属的账号为准。
+ * 节点可按分组管理、按归属隔离；支持搜索排序、批量启停 / 改组 / 下发脚本；
+ * 凭据到期与离线 / 高负载告警在列表和告警记录里可见。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -22,12 +18,26 @@ import { formatBytes } from '@/utils/fmt'
 import { nodeContext, nodeViewPath, setNodeContext } from '@/utils/base'
 import {
   addNode,
+  addNodeGroup,
+  batchRunScript,
+  batchUpdateNodes,
+  deleteNodeGroup,
   deleteNodes,
+  getAlertConfig,
+  listAlertEvents,
+  listNodeGroups,
+  listNodeOwners,
   listNodes,
   refreshNodes,
+  setAlertConfig,
   testNode,
   updateNode,
+  updateNodeGroup,
+  type AlertConfig,
+  type NodeAlertEvent,
+  type NodeGroupItem,
   type NodeItem,
+  type NodeListParams,
   type NodePayload,
   type NodeSnapshot,
 } from '@/api/node'
@@ -44,6 +54,20 @@ const editId = ref<number | null>(null)
 const testResult = ref<NodeSnapshot | null>(null)
 const testError = ref('')
 
+const filters = reactive({
+  keyword: '',
+  group_id: 0,
+  /** -1 = 全部，0 = 停用，1 = 启用 */
+  status: -1,
+  /** -1 = 全部，0 = 离线，1 = 在线 */
+  online: -1,
+  sort: 'id' as NonNullable<NodeListParams['sort']>,
+})
+const groups = ref<NodeGroupItem[]>([])
+const owners = ref<{ id: number; username: string }[]>([])
+const selected = ref<NodeItem[]>([])
+const selectedIds = computed(() => selected.value.map((r) => r.id))
+
 const form = reactive({
   name: '',
   base_url: '',
@@ -55,9 +79,30 @@ const form = reactive({
   totp_code: '',
   remark: '',
   insecure_tls: true,
+  group_id: 0,
+  owner_id: 0,
+  cred_expire_days: 0,
 })
 /** 账号密码模式的测试结论（不签发 Token，只验证能否登录，没有快照可展示） */
 const testNote = ref('')
+
+const groupDialog = ref(false)
+const groupForm = reactive({ id: 0, name: '', sort_order: 0 })
+const alertDialog = ref(false)
+const alertForm = reactive<AlertConfig>({
+  cpu: 85,
+  memory: 90,
+  disk: 90,
+  offline_seconds: 300,
+  cooldown_seconds: 1800,
+  email: false,
+})
+const recordsDrawer = ref(false)
+const alertRecords = ref<NodeAlertEvent[]>([])
+const batchGroupDialog = ref(false)
+const batchGroupId = ref(0)
+const scriptDialog = ref(false)
+const scriptPath = ref('')
 
 const dialogTitle = computed(() =>
   editId.value === null ? t('cluster.addNode') : t('cluster.editNode'),
@@ -90,14 +135,37 @@ function sizeText(bytes: number): string {
 
 async function load() {
   loading.value = true
+  const params: NodeListParams = { sort: filters.sort }
+  if (filters.keyword.trim()) params.keyword = filters.keyword.trim()
+  if (filters.group_id) params.group_id = filters.group_id
+  if (filters.status >= 0) params.status = filters.status
+  if (filters.online >= 0) params.online = filters.online
   try {
-    const res = await listNodes()
+    const res = await listNodes(params)
     rows.value = res.data || []
   } catch {
     /* 拦截器已弹窗 */
   } finally {
     loading.value = false
   }
+}
+
+async function loadMeta() {
+  try {
+    groups.value = (await listNodeGroups()).data || []
+  } catch {
+    /* 拦截器已弹窗 */
+  }
+  try {
+    owners.value = (await listNodeOwners()).data || []
+  } catch {
+    /* 无授权时不影响其他功能 */
+  }
+}
+
+function credLabel(status: string): string {
+  const key = `cred${status.charAt(0).toUpperCase()}${status.slice(1)}`
+  return t(`cluster.${key}`)
 }
 
 function resetForm(r?: NodeItem) {
@@ -112,6 +180,9 @@ function resetForm(r?: NodeItem) {
     totp_code: '',
     remark: r?.remark ?? '',
     insecure_tls: r?.insecure_tls ?? true,
+    group_id: r?.group_id ?? 0,
+    owner_id: r?.owner_id ?? 0,
+    cred_expire_days: 0,
   })
   testResult.value = null
   testError.value = ''
@@ -124,9 +195,11 @@ function openAdd() {
   dialog.value = true
 }
 
-function openEdit(r: NodeItem) {
+function openEdit(r: NodeItem, rotate = false) {
   editId.value = r.id
   resetForm(r)
+  // 「轮换凭据」直接落到账号密码页签，避免用户误以为手工 Token 已存在
+  if (rotate) form.auth_mode = 'password'
   dialog.value = true
 }
 
@@ -203,6 +276,11 @@ async function save() {
   }
   saving.value = true
   try {
+    const extra = {
+      group_id: form.group_id,
+      owner_id: form.owner_id || undefined,
+      cred_expire_days: form.cred_expire_days || undefined,
+    }
     if (editId.value === null) {
       await addNode({
         name: form.name.trim(),
@@ -210,6 +288,7 @@ async function save() {
         remark: form.remark.trim(),
         insecure_tls: form.insecure_tls,
         ...cred,
+        ...extra,
       })
       ElMessage.success(t('cluster.added'))
     } else {
@@ -220,6 +299,7 @@ async function save() {
         remark: form.remark.trim(),
         insecure_tls: form.insecure_tls,
         ...cred,
+        ...extra,
       })
       ElMessage.success(t('cluster.saved'))
     }
@@ -278,7 +358,139 @@ async function collect() {
   }
 }
 
-onMounted(load)
+function onSelect(rows: NodeItem[]) {
+  selected.value = rows
+}
+
+async function batchStatus(status: number) {
+  try {
+    const res = await batchUpdateNodes({ ids: selectedIds.value, status })
+    ElMessage.success(t('cluster.batchDone', { count: res.data?.updated ?? 0 }))
+    await load()
+  } catch {
+    /* 拦截器已弹窗 */
+  }
+}
+
+function openBatchGroup() {
+  batchGroupId.value = 0
+  batchGroupDialog.value = true
+}
+
+async function saveBatchGroup() {
+  try {
+    const res = await batchUpdateNodes({ ids: selectedIds.value, group_id: batchGroupId.value })
+    ElMessage.success(t('cluster.batchDone', { count: res.data?.updated ?? 0 }))
+    batchGroupDialog.value = false
+    await load()
+  } catch {
+    /* 拦截器已弹窗 */
+  }
+}
+
+function openScript() {
+  scriptPath.value = ''
+  scriptDialog.value = true
+}
+
+async function runBatchScript() {
+  if (!scriptPath.value.trim()) {
+    ElMessage.warning(t('cluster.scriptPathRequired'))
+    return
+  }
+  try {
+    const res = await batchRunScript(selectedIds.value, scriptPath.value.trim())
+    const failed = res.data?.results?.filter((r) => !r.ok) || []
+    if (failed.length) {
+      ElMessage.warning(t('cluster.scriptPartialFail', { count: failed.length }))
+    } else {
+      ElMessage.success(t('cluster.scriptDone'))
+    }
+    scriptDialog.value = false
+  } catch {
+    /* 拦截器已弹窗 */
+  }
+}
+
+function openGroupDialog() {
+  Object.assign(groupForm, { id: 0, name: '', sort_order: 0 })
+  groupDialog.value = true
+}
+
+function editGroup(g: NodeGroupItem) {
+  Object.assign(groupForm, { id: g.id, name: g.name, sort_order: g.sort_order })
+}
+
+async function saveGroup() {
+  if (!groupForm.name.trim()) {
+    ElMessage.warning(t('cluster.groupNameRequired'))
+    return
+  }
+  try {
+    if (groupForm.id) {
+      await updateNodeGroup(groupForm.id, groupForm.name.trim(), groupForm.sort_order)
+    } else {
+      await addNodeGroup(groupForm.name.trim(), groupForm.sort_order)
+    }
+    Object.assign(groupForm, { id: 0, name: '', sort_order: 0 })
+    await loadMeta()
+  } catch {
+    /* 拦截器已弹窗 */
+  }
+}
+
+async function deleteGroup(g: NodeGroupItem) {
+  try {
+    await ElMessageBox.confirm(
+      t('cluster.groupDeleteConfirm', { name: g.name }),
+      t('cluster.groupManage'),
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteNodeGroup(g.id)
+    await loadMeta()
+    await load()
+  } catch {
+    /* 拦截器已弹窗 */
+  }
+}
+
+async function openAlert() {
+  try {
+    const cfg = (await getAlertConfig()).data
+    if (cfg) Object.assign(alertForm, cfg)
+    alertDialog.value = true
+  } catch {
+    /* 拦截器已弹窗 */
+  }
+}
+
+async function saveAlert() {
+  try {
+    await setAlertConfig({ ...alertForm })
+    ElMessage.success(t('cluster.alertSaved'))
+    alertDialog.value = false
+  } catch {
+    /* 拦截器已弹窗 */
+  }
+}
+
+async function openRecords() {
+  try {
+    alertRecords.value = (await listAlertEvents()).data || []
+    recordsDrawer.value = true
+  } catch {
+    /* 拦截器已弹窗 */
+  }
+}
+
+onMounted(async () => {
+  await loadMeta()
+  await load()
+})
 </script>
 
 <template>
@@ -290,13 +502,68 @@ onMounted(load)
         <el-button type="primary" @click="openAdd">{{ t('cluster.addNode') }}</el-button>
         <el-button :loading="collecting" @click="collect">{{ t('cluster.collectNow') }}</el-button>
         <el-button :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
+        <el-button @click="openGroupDialog">{{ t('cluster.groupManage') }}</el-button>
+        <el-button @click="openAlert">{{ t('cluster.alertSettings') }}</el-button>
+        <el-button @click="openRecords">{{ t('cluster.alertRecords') }}</el-button>
       </div>
       <div class="toolbar-meta">
         {{ t('cluster.counts', { total: rows.length, online: onlineCount }) }}
       </div>
     </div>
 
-    <el-table v-loading="loading" :data="rows" row-key="id" class="node-table">
+    <div class="filter-bar">
+      <el-input
+        v-model="filters.keyword"
+        :placeholder="t('cluster.filterKeyword')"
+        clearable
+        class="filter-input"
+        @keyup.enter="load"
+      />
+      <el-select v-model="filters.group_id" class="filter-select" @change="load">
+        <el-option :label="t('cluster.allGroups')" :value="0" />
+        <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+      </el-select>
+      <el-select v-model="filters.status" class="filter-select" @change="load">
+        <el-option :label="t('cluster.statusAll')" :value="-1" />
+        <el-option :label="t('cluster.enabled')" :value="1" />
+        <el-option :label="t('cluster.disabled')" :value="0" />
+      </el-select>
+      <el-select v-model="filters.online" class="filter-select" @change="load">
+        <el-option :label="t('cluster.onlineAll')" :value="-1" />
+        <el-option :label="t('cluster.online')" :value="1" />
+        <el-option :label="t('cluster.offline')" :value="0" />
+      </el-select>
+      <el-select v-model="filters.sort" class="filter-select" @change="load">
+        <el-option :label="t('cluster.sortDefault')" value="id" />
+        <el-option :label="t('cluster.sortByName')" value="name" />
+        <el-option :label="t('cluster.sortByCpu')" value="cpu" />
+        <el-option :label="t('cluster.sortByMemory')" value="memory" />
+        <el-option :label="t('cluster.sortBySeen')" value="last_seen" />
+      </el-select>
+      <el-button @click="load">{{ t('cluster.filter') }}</el-button>
+    </div>
+
+    <div v-if="selected.length" class="batch-bar">
+      <span class="batch-count">{{ t('cluster.selectedCount', { count: selected.length }) }}</span>
+      <el-button size="small" type="success" @click="batchStatus(1)">
+        {{ t('cluster.batchEnable') }}
+      </el-button>
+      <el-button size="small" @click="batchStatus(0)">{{ t('cluster.batchDisable') }}</el-button>
+      <el-button size="small" @click="openBatchGroup">{{ t('cluster.batchSetGroup') }}</el-button>
+      <el-button size="small" @click="openScript">{{ t('cluster.batchScript') }}</el-button>
+      <el-button size="small" text @click="selected = []">{{
+        t('cluster.clearSelection')
+      }}</el-button>
+    </div>
+
+    <el-table
+      v-loading="loading"
+      :data="rows"
+      row-key="id"
+      class="node-table"
+      @selection-change="onSelect"
+    >
+      <el-table-column type="selection" width="46" />
       <el-table-column :label="t('cluster.colName')" min-width="200">
         <template #default="{ row }">
           <div class="cell-name">
@@ -307,6 +574,12 @@ onMounted(load)
             </el-tag>
           </div>
           <div class="cell-sub">{{ row.base_url }}</div>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('cluster.group')" width="120">
+        <template #default="{ row }">
+          <el-tag v-if="row.group_name" size="small" type="info">{{ row.group_name }}</el-tag>
+          <span v-else class="cell-sub">-</span>
         </template>
       </el-table-column>
       <el-table-column :label="t('cluster.colStatus')" width="110">
@@ -322,6 +595,22 @@ onMounted(load)
             {{ t('cluster.online') }}
           </el-tag>
           <el-tag v-else type="info" size="small">{{ t('cluster.unknown') }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('cluster.credStatus')" width="110">
+        <template #default="{ row }">
+          <el-tag
+            :type="
+              row.cred_status === 'valid'
+                ? 'success'
+                : row.cred_status === 'unknown'
+                  ? 'info'
+                  : 'danger'
+            "
+            size="small"
+          >
+            {{ credLabel(row.cred_status) }}
+          </el-tag>
         </template>
       </el-table-column>
       <el-table-column :label="t('cluster.colVersion')" width="100">
@@ -347,7 +636,7 @@ onMounted(load)
       <el-table-column :label="t('cluster.colLastSeen')" width="180">
         <template #default="{ row }">{{ ago(row.last_seen) }}</template>
       </el-table-column>
-      <el-table-column :label="t('cluster.colActions')" width="250" fixed="right">
+      <el-table-column :label="t('cluster.colActions')" width="280" fixed="right">
         <template #default="{ row }">
           <!-- 接管：整页重载后面板直接操作这台机器 -->
           <el-tooltip v-if="row.online && row.status === 1" :content="t('cluster.nodeViewTip')">
@@ -361,6 +650,14 @@ onMounted(load)
             </el-button>
           </el-tooltip>
           <el-button link type="primary" @click="openEdit(row)">{{ t('common.edit') }}</el-button>
+          <el-button
+            v-if="row.cred_status === 'expired' || row.cred_status === 'invalid'"
+            link
+            type="warning"
+            @click="openEdit(row, true)"
+          >
+            {{ t('cluster.rotateCred') }}
+          </el-button>
           <el-button link type="primary" @click="toggleStatus(row)">
             {{ row.status === 1 ? t('cluster.disable') : t('cluster.enable') }}
           </el-button>
@@ -374,6 +671,7 @@ onMounted(load)
       </template>
     </el-table>
 
+    <!-- 节点表单 -->
     <el-dialog v-model="dialog" :title="dialogTitle" width="580px" destroy-on-close>
       <el-form :model="form" label-width="110px" @submit.prevent>
         <el-form-item :label="t('cluster.name')">
@@ -382,6 +680,18 @@ onMounted(load)
         <el-form-item :label="t('cluster.baseUrl')">
           <el-input v-model="form.base_url" placeholder="https://10.0.0.5:8443" clearable />
           <div class="form-tip">{{ t('cluster.baseUrlHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('cluster.group')">
+          <el-select v-model="form.group_id" clearable class="full">
+            <el-option :label="t('cluster.ungrouped')" :value="0" />
+            <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="owners.length" :label="t('cluster.owner')">
+          <el-select v-model="form.owner_id" clearable class="full">
+            <el-option v-for="o in owners" :key="o.id" :label="o.username" :value="o.id" />
+          </el-select>
+          <div class="form-tip">{{ t('cluster.ownerHint') }}</div>
         </el-form-item>
         <el-form-item :label="t('cluster.credMode')">
           <el-radio-group v-model="form.auth_mode">
@@ -415,6 +725,10 @@ onMounted(load)
           <el-form-item :label="t('cluster.nodeTotp')">
             <el-input v-model="form.totp_code" maxlength="8" clearable placeholder="123456" />
             <div class="form-tip">{{ t('cluster.credModeHint') }}</div>
+          </el-form-item>
+          <el-form-item :label="t('cluster.credExpireDays')">
+            <el-input-number v-model="form.cred_expire_days" :min="0" :max="3650" />
+            <div class="form-tip">{{ t('cluster.credExpireHint') }}</div>
           </el-form-item>
         </template>
         <el-form-item :label="t('cluster.insecureTls')">
@@ -463,6 +777,100 @@ onMounted(load)
         <el-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- 分组管理 -->
+    <el-dialog v-model="groupDialog" :title="t('cluster.groupManage')" width="520px">
+      <el-table :data="groups" size="small" class="dialog-table">
+        <el-table-column :label="t('cluster.groupName')" min-width="160">
+          <template #default="{ row }">{{ row.name }}</template>
+        </el-table-column>
+        <el-table-column :label="t('cluster.colName')" width="100">
+          <template #default="{ row }">{{ row.count }}</template>
+        </el-table-column>
+        <el-table-column width="150">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="editGroup(row)">{{
+              t('common.edit')
+            }}</el-button>
+            <el-button link type="danger" @click="deleteGroup(row)">
+              {{ t('common.delete') }}
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="group-form">
+        <el-input v-model="groupForm.name" :placeholder="t('cluster.groupName')" clearable />
+        <el-input-number v-model="groupForm.sort_order" :min="0" class="group-order" />
+        <el-button type="primary" @click="saveGroup">
+          {{ groupForm.id ? t('common.save') : t('cluster.addGroup') }}
+        </el-button>
+        <el-button
+          v-if="groupForm.id"
+          @click="editGroup({ id: 0, name: '', sort_order: 0, count: 0 })"
+        >
+          {{ t('common.cancel') }}
+        </el-button>
+      </div>
+    </el-dialog>
+
+    <!-- 批量改组 / 批量脚本 -->
+    <el-dialog v-model="batchGroupDialog" :title="t('cluster.batchSetGroup')" width="420px">
+      <el-select v-model="batchGroupId" class="full">
+        <el-option :label="t('cluster.ungrouped')" :value="0" />
+        <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+      </el-select>
+      <template #footer>
+        <el-button @click="batchGroupDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="saveBatchGroup">{{ t('common.save') }}</el-button>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="scriptDialog" :title="t('cluster.batchScript')" width="480px">
+      <el-input v-model="scriptPath" :placeholder="t('cluster.scriptPath')" clearable />
+      <div class="form-tip">{{ t('cluster.scriptHint') }}</div>
+      <template #footer>
+        <el-button @click="scriptDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="runBatchScript">{{ t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 告警设置 / 告警记录 -->
+    <el-dialog v-model="alertDialog" :title="t('cluster.alertSettings')" width="480px">
+      <el-form :model="alertForm" label-width="150px" @submit.prevent>
+        <el-form-item :label="t('cluster.alertCpu')">
+          <el-input-number v-model="alertForm.cpu" :min="0" :max="100" />
+        </el-form-item>
+        <el-form-item :label="t('cluster.alertMemory')">
+          <el-input-number v-model="alertForm.memory" :min="0" :max="100" />
+        </el-form-item>
+        <el-form-item :label="t('cluster.alertDisk')">
+          <el-input-number v-model="alertForm.disk" :min="0" :max="100" />
+        </el-form-item>
+        <el-form-item :label="t('cluster.alertOffline')">
+          <el-input-number v-model="alertForm.offline_seconds" :min="0" :step="60" />
+        </el-form-item>
+        <el-form-item :label="t('cluster.alertCooldown')">
+          <el-input-number v-model="alertForm.cooldown_seconds" :min="60" :step="300" />
+        </el-form-item>
+        <el-form-item :label="t('cluster.alertEmail')">
+          <el-switch v-model="alertForm.email" />
+        </el-form-item>
+      </el-form>
+      <div class="form-tip">{{ t('cluster.alertHint') }}</div>
+      <template #footer>
+        <el-button @click="alertDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="saveAlert">{{ t('common.save') }}</el-button>
+      </template>
+    </el-dialog>
+    <el-drawer v-model="recordsDrawer" :title="t('cluster.alertRecords')" size="60%">
+      <el-table :data="alertRecords" size="small">
+        <el-table-column prop="created_at" :label="t('cluster.colLastSeen')" width="180">
+          <template #default="{ row }">{{ ago(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column prop="node_name" :label="t('cluster.colName')" min-width="140" />
+        <el-table-column prop="kind" label="Kind" width="110" />
+        <el-table-column prop="message" :label="t('cluster.alertMessage')" min-width="260" />
+      </el-table>
+    </el-drawer>
   </div>
 </template>
 
@@ -470,17 +878,37 @@ onMounted(load)
 .hint {
   margin-bottom: 14px;
 }
-.toolbar {
+.toolbar,
+.filter-bar,
+.batch-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 12px;
 }
-.toolbar-meta {
+.toolbar {
+  justify-content: space-between;
+}
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.toolbar-meta,
+.batch-count {
   font-size: 13px;
   color: var(--el-text-color-secondary);
+}
+.filter-input {
+  width: 220px;
+}
+.filter-select {
+  width: 150px;
+}
+.full {
+  width: 100%;
 }
 .node-table {
   width: 100%;
@@ -535,5 +963,16 @@ onMounted(load)
 }
 .test-err {
   margin-top: 4px;
+}
+.dialog-table {
+  margin-bottom: 12px;
+}
+.group-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.group-order {
+  width: 120px;
 }
 </style>

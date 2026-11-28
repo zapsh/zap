@@ -14,11 +14,12 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::{QueryBuilder, Sqlite};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use crate::db;
-use crate::zap::{ZapError, ZapJsonResult, audit, crypto, jwt::ValidatedClaims, node};
+use crate::zap::{ZapError, ZapJsonResult, audit, crypto, jwt, jwt::ValidatedClaims, node};
 
 #[derive(Deserialize)]
 pub struct AddPayload {
@@ -40,6 +41,15 @@ pub struct AddPayload {
     /// 容忍自签证书，默认 true
     #[serde(default)]
     pub insecure_tls: Option<bool>,
+    /// 分组 id（0 = 未分组）
+    #[serde(default)]
+    pub group_id: Option<i64>,
+    /// 归属用户 id（仅管理员可指定；默认归当前用户）
+    #[serde(default)]
+    pub owner_id: Option<i64>,
+    /// 引导签发 Token 的有效天数；<= 0 表示用节点默认策略
+    #[serde(default)]
+    pub cred_expire_days: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +75,12 @@ pub struct UpdatePayload {
     pub insecure_tls: Option<bool>,
     #[serde(default)]
     pub status: Option<i64>,
+    #[serde(default)]
+    pub group_id: Option<i64>,
+    #[serde(default)]
+    pub owner_id: Option<i64>,
+    #[serde(default)]
+    pub cred_expire_days: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +107,13 @@ pub struct TestPayload {
     pub id: Option<i64>,
 }
 
+/// 解析后的凭据以及用于「到期提醒 / 轮换提示」的元数据。
+struct ResolvedCred {
+    token: String,
+    expires_at: i64,
+    issued_by: String,
+}
+
 /// 解析接入凭据：优先手工 Token；留空且有账号密码时，登录节点现场引导签发。
 async fn resolve_api_token(
     api_token: &str,
@@ -99,23 +122,49 @@ async fn resolve_api_token(
     totp_code: Option<&str>,
     base: &str,
     insecure: bool,
-) -> Result<String, String> {
+    expire_days: i64,
+) -> Result<ResolvedCred, String> {
     let manual = api_token.trim();
     if !manual.is_empty() {
-        return Ok(manual.to_string());
+        return Ok(ResolvedCred {
+            token: manual.to_string(),
+            expires_at: 0,
+            issued_by: "manual".to_string(),
+        });
     }
     let user = username.unwrap_or("").trim();
     if user.is_empty() || password.unwrap_or("").is_empty() {
         return Err("API Token 与账号密码至少填一项".to_string());
     }
-    node::bootstrap_api_token(
+    let (token, expires_at) = node::bootstrap_api_token(
         base,
         user,
         password.unwrap_or(""),
         totp_code.unwrap_or("").trim(),
         insecure,
+        expire_days,
     )
-    .await
+    .await?;
+    Ok(ResolvedCred {
+        token,
+        expires_at,
+        issued_by: user.to_string(),
+    })
+}
+
+/// 节点归属校验：管理员看全部，其他人只能操作归自己的节点（owner_id = 0 为管理员公有）。
+fn node_in_scope(claims: &jwt::Claims, owner_id: i64) -> bool {
+    jwt::is_admin(claims) || owner_id == claims.id as i64
+}
+
+/// 取节点归属；节点不存在返回 None。
+async fn node_owner(pool: &sqlx::SqlitePool, id: i64) -> Option<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT owner_id FROM nodes WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
 }
 
 #[derive(sqlx::FromRow)]
@@ -138,6 +187,12 @@ struct NodeRow {
     memory_total_b: i64,
     disk_total_b: i64,
     disk_json: String,
+    group_id: i64,
+    group_name: Option<String>,
+    owner_id: i64,
+    cred_issued_at: i64,
+    cred_expires_at: i64,
+    cred_issued_by: String,
     // 这两列建表时没带 NOT NULL，用 Option 接，避免脏行让整张列表查不出来
     created_at: Option<i64>,
     updated_at: Option<i64>,
@@ -149,6 +204,8 @@ struct OverviewRow {
     name: String,
     base_url: String,
     remark: String,
+    group_id: i64,
+    group_name: Option<String>,
     status: i64,
     online: i64,
     last_seen: i64,
@@ -169,6 +226,8 @@ struct OverviewRow {
     loadavg_one: Option<f64>,
     loadavg_five: Option<f64>,
     loadavg_fifteen: Option<f64>,
+    net_rx_bps: Option<f64>,
+    net_tx_bps: Option<f64>,
     sampled_at: Option<i64>,
 }
 
@@ -182,6 +241,8 @@ struct PointRow {
     loadavg_one: Option<f64>,
     loadavg_five: Option<f64>,
     loadavg_fifteen: Option<f64>,
+    net_rx_bps: Option<f64>,
+    net_tx_bps: Option<f64>,
 }
 
 /// 大屏趋势的一次批量查询行：指标列可空（手工写入 / 半截行都可能留 NULL）。
@@ -203,17 +264,92 @@ fn disks_to_value(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| json!([]))
 }
 
-/// 节点列表（不含 Token）。
-pub async fn list(_: ValidatedClaims) -> ZapJsonResult {
+#[derive(Deserialize)]
+pub struct ListQuery {
+    keyword: Option<String>,
+    group_id: Option<i64>,
+    status: Option<i64>,
+    online: Option<i64>,
+    sort: Option<String>,
+}
+
+/// 凭据状态：用于列表里的「到期 / 失效」提醒，不回传 Token 本身。
+fn cred_status(r: &NodeRow) -> &'static str {
+    let now = chrono::Local::now().timestamp();
+    if r.cred_expires_at > 0 && r.cred_expires_at <= now {
+        return "expired";
+    }
+    let low = r.last_error.to_lowercase();
+    if low.contains("401")
+        || low.contains("unauthorized")
+        || low.contains("token")
+        || low.contains("凭据")
+        || low.contains("过期")
+        || low.contains("失效")
+    {
+        return "invalid";
+    }
+    if r.cred_issued_at == 0 {
+        "unknown"
+    } else {
+        "valid"
+    }
+}
+
+/// 节点列表（不含 Token）：支持搜索 / 分组 / 状态过滤与排序，按归属隔离。
+pub async fn list(claims: ValidatedClaims, Query(q): Query<ListQuery>) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
-    let rows: Vec<NodeRow> = sqlx::query_as(
-        "SELECT id, name, base_url, remark, insecure_tls, status, online, last_seen, \
-         last_error, os_name, host_name, version, public_ip, uptime, cpu_num, \
-         memory_total_b, disk_total_b, disk_json, created_at, updated_at \
-         FROM nodes ORDER BY id ASC",
-    )
-    .fetch_all(pool)
-    .await?;
+    let mut qb = QueryBuilder::<Sqlite>::new(
+        "SELECT n.id, n.name, n.base_url, n.remark, n.insecure_tls, n.status, n.online, \
+         n.last_seen, n.last_error, n.os_name, n.host_name, n.version, n.public_ip, n.uptime, \
+         n.cpu_num, n.memory_total_b, n.disk_total_b, n.disk_json, \
+         n.group_id, g.name AS group_name, n.owner_id, n.cred_issued_at, n.cred_expires_at, \
+         n.cred_issued_by, n.created_at, n.updated_at \
+         FROM nodes n \
+         LEFT JOIN node_groups g ON g.id = n.group_id \
+         LEFT JOIN node_stats s ON s.id = (\
+             SELECT id FROM node_stats WHERE node_id = n.id ORDER BY created_at DESC LIMIT 1) \
+         WHERE 1 = 1",
+    );
+    if !jwt::is_admin(&claims) {
+        qb.push(" AND n.owner_id = ").push_bind(claims.id as i64);
+    }
+    if let Some(kw) = q
+        .keyword
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        qb.push(" AND (n.name LIKE ")
+            .push_bind(format!("%{kw}%"))
+            .push(" OR n.base_url LIKE ")
+            .push_bind(format!("%{kw}%"))
+            .push(" OR n.public_ip LIKE ")
+            .push_bind(format!("%{kw}%"))
+            .push(" OR n.remark LIKE ")
+            .push_bind(format!("%{kw}%"))
+            .push(")");
+    }
+    if let Some(gid) = q.group_id {
+        qb.push(" AND n.group_id = ").push_bind(gid);
+    }
+    if let Some(status) = q.status {
+        qb.push(" AND n.status = ").push_bind(status);
+    }
+    if let Some(online) = q.online {
+        qb.push(" AND n.online = ").push_bind(online);
+    }
+    // 排序字段走白名单，避免把用户输入拼进 SQL
+    let order = match q.sort.as_deref().unwrap_or("id") {
+        "name" => "n.name ASC, n.id ASC",
+        "cpu" => "s.cpu_usage DESC NULLS LAST, n.id ASC",
+        "memory" => "s.memory_usage DESC NULLS LAST, n.id ASC",
+        "online" => "n.online DESC, n.last_seen DESC, n.id ASC",
+        "last_seen" => "n.last_seen DESC, n.id ASC",
+        _ => "n.id ASC",
+    };
+    qb.push(" ORDER BY ").push(order);
+    let rows: Vec<NodeRow> = qb.build_query_as().fetch_all(pool).await?;
     let data: Vec<Value> = rows
         .iter()
         .map(|r| {
@@ -225,6 +361,10 @@ pub async fn list(_: ValidatedClaims) -> ZapJsonResult {
                 "version": r.version, "public_ip": r.public_ip, "uptime": r.uptime,
                 "cpu_num": r.cpu_num, "memory_total_b": r.memory_total_b,
                 "disk_total_b": r.disk_total_b, "disks": disks_to_value(&r.disk_json),
+                "group_id": r.group_id, "group_name": r.group_name,
+                "owner_id": r.owner_id, "cred_issued_at": r.cred_issued_at,
+                "cred_expires_at": r.cred_expires_at, "cred_issued_by": r.cred_issued_by,
+                "cred_status": cred_status(r),
                 "created_at": r.created_at, "updated_at": r.updated_at,
             })
         })
@@ -242,28 +382,50 @@ pub async fn add(claims: ValidatedClaims, Json(p): Json<AddPayload>) -> Json<Val
         Ok(b) => b,
         Err(e) => return Json(json!({"code": -1, "message": e})),
     };
+    let pool = db::get_db_pool().await;
+    let group_id = p.group_id.unwrap_or(0);
+    if group_id != 0
+        && sqlx::query_scalar::<_, i64>("SELECT id FROM node_groups WHERE id = ?")
+            .bind(group_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .is_none()
+    {
+        return Json(json!({"code": -1, "message": "节点分组不存在"}));
+    }
+    // 非管理员不能把节点挂到别人名下；owner_id = 0 是管理员公有池
+    let owner_id = if jwt::is_admin(&claims) {
+        p.owner_id.unwrap_or(0)
+    } else {
+        claims.id as i64
+    };
     let insecure = p.insecure_tls.unwrap_or(true);
     // 手工 Token 直接用；留空则用账号密码在节点上引导签发（凭据本身不落库）
-    let api_token = match resolve_api_token(
+    let cred = match resolve_api_token(
         &p.api_token,
         p.username.as_deref(),
         p.password.as_deref(),
         p.totp_code.as_deref(),
         &base,
         insecure,
+        p.cred_expire_days.unwrap_or(0),
     )
     .await
     {
-        Ok(t) => t,
+        Ok(c) => c,
         Err(e) => return Json(json!({"code": -1, "message": format!("凭据引导失败：{e}")})),
     };
-    let snap = match node::test_connection(&base, &api_token, insecure).await {
+    // 网络 / 磁盘 / 进程采集要打节点的 Admin 接口，普通用户 Token 当场拒掉
+    if let Err(e) = node::check_admin(&base, &cred.token, insecure).await {
+        return Json(json!({"code": -1, "message": format!("节点凭据权限不足：{e}")}));
+    }
+    let snap = match node::test_connection(&base, &cred.token, insecure).await {
         Ok(s) => s,
         Err(e) => return Json(json!({"code": -1, "message": format!("节点连接失败：{}", e)})),
     };
 
-    let pool = db::get_db_pool().await;
-    let enc = match crypto::encrypt_password(&api_token) {
+    let enc = match crypto::encrypt_password(&cred.token) {
         Ok(v) => v,
         Err(e) => return Json(json!({"code": -1, "message": e})),
     };
@@ -271,8 +433,9 @@ pub async fn add(claims: ValidatedClaims, Json(p): Json<AddPayload>) -> Json<Val
     let r = sqlx::query(
         "INSERT INTO nodes (name, base_url, api_token, remark, insecure_tls, status, online, \
          last_seen, last_error, os_name, host_name, version, public_ip, uptime, cpu_num, \
-         memory_total_b, disk_total_b, disk_json, created_at, updated_at) \
-         VALUES ($1,$2,$3,$4,$5,1,1,$6,'',$7,$8,$9,$10,$11,$12,$13,$14,$15,$6,$6)",
+         memory_total_b, disk_total_b, disk_json, group_id, owner_id, \
+         cred_issued_at, cred_expires_at, cred_issued_by, created_at, updated_at) \
+         VALUES ($1,$2,$3,$4,$5,1,1,$6,'',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$6,$6)",
     )
     .bind(name)
     .bind(&base)
@@ -289,6 +452,11 @@ pub async fn add(claims: ValidatedClaims, Json(p): Json<AddPayload>) -> Json<Val
     .bind(snap.memory_total_b)
     .bind(snap.disk_total_b)
     .bind(&snap.disk_json)
+    .bind(group_id)
+    .bind(owner_id)
+    .bind(now)
+    .bind(cred.expires_at)
+    .bind(&cred.issued_by)
     .execute(pool)
     .await;
 
@@ -310,15 +478,18 @@ pub async fn add(claims: ValidatedClaims, Json(p): Json<AddPayload>) -> Json<Val
 
 pub async fn update(claims: ValidatedClaims, Json(p): Json<UpdatePayload>) -> Json<Value> {
     let pool = db::get_db_pool().await;
-    let exist: Option<(String, String)> =
-        sqlx::query_as("SELECT name, base_url FROM nodes WHERE id = ?")
+    let exist: Option<(String, String, i64)> =
+        sqlx::query_as("SELECT name, base_url, owner_id FROM nodes WHERE id = ?")
             .bind(p.id)
             .fetch_optional(pool)
             .await
             .unwrap_or(None);
-    let Some((old_name, old_base)) = exist else {
+    let Some((old_name, old_base, old_owner)) = exist else {
         return Json(json!({"code": -1, "message": "节点不存在"}));
     };
+    if !node_in_scope(&claims, old_owner) {
+        return Json(json!({"code": -1, "message": "只能修改自己名下的节点"}));
+    }
 
     let base = match p.base_url.as_deref().map(str::trim) {
         Some(v) if !v.is_empty() => match node::normalize_base(v) {
@@ -328,10 +499,30 @@ pub async fn update(claims: ValidatedClaims, Json(p): Json<UpdatePayload>) -> Js
         _ => None,
     };
     let new_name = p.name.as_deref().map(str::trim).filter(|v| !v.is_empty());
+    if let Some(gid) = p.group_id
+        && gid != 0
+        && sqlx::query_scalar::<_, i64>("SELECT id FROM node_groups WHERE id = ?")
+            .bind(gid)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .is_none()
+    {
+        return Json(json!({"code": -1, "message": "节点分组不存在"}));
+    }
+    let new_owner = if jwt::is_admin(&claims) {
+        p.owner_id
+    } else {
+        None
+    };
     // Token 优先级：手工填写 > 账号密码重新签发 > 保持原值。
     // 「节点上 Token 被删/过期」正是靠第二条恢复：编辑里填一次账号密码即可。
-    let new_token = match p.api_token.as_deref().map(str::trim) {
-        Some(v) if !v.is_empty() => Some(v.to_string()),
+    let new_cred = match p.api_token.as_deref().map(str::trim) {
+        Some(v) if !v.is_empty() => Some(ResolvedCred {
+            token: v.to_string(),
+            expires_at: 0,
+            issued_by: "manual".to_string(),
+        }),
         _ => {
             let user = p.username.as_deref().unwrap_or("").trim();
             let has_cred = !user.is_empty() && !p.password.as_deref().unwrap_or("").is_empty();
@@ -343,10 +534,15 @@ pub async fn update(claims: ValidatedClaims, Json(p): Json<UpdatePayload>) -> Js
                     p.password.as_deref().unwrap_or(""),
                     p.totp_code.as_deref().unwrap_or("").trim(),
                     p.insecure_tls.unwrap_or(true),
+                    p.cred_expire_days.unwrap_or(0),
                 )
                 .await
                 {
-                    Ok(t) => Some(t),
+                    Ok((token, expires_at)) => Some(ResolvedCred {
+                        token,
+                        expires_at,
+                        issued_by: user.to_string(),
+                    }),
                     Err(e) => {
                         return Json(json!({"code": -1, "message": format!("凭据引导失败：{e}")}));
                     }
@@ -357,12 +553,23 @@ pub async fn update(claims: ValidatedClaims, Json(p): Json<UpdatePayload>) -> Js
         }
     };
 
-    let enc_token = match new_token {
-        Some(t) => match crypto::encrypt_password(&t) {
+    let mut enc_token = None;
+    let mut cred_meta: Option<(i64, i64, String)> = None;
+    if let Some(c) = new_cred {
+        let base_now = base.clone().unwrap_or_else(|| old_base.clone());
+        if let Err(e) = node::check_admin(&base_now, &c.token, p.insecure_tls.unwrap_or(true)).await
+        {
+            return Json(json!({"code": -1, "message": format!("节点凭据权限不足：{e}")}));
+        }
+        enc_token = match crypto::encrypt_password(&c.token) {
             Ok(enc) => Some(enc),
             Err(e) => return Json(json!({"code": -1, "message": e})),
-        },
-        None => None,
+        };
+        cred_meta = Some((chrono::Local::now().timestamp(), c.expires_at, c.issued_by));
+    }
+    let (issued_at, expires_at, issued_by) = match cred_meta {
+        Some((a, b, c)) => (Some(a), Some(b), Some(c)),
+        None => (None, None, None),
     };
     // 全列 COALESCE：没传的字段传 NULL 即保持原值。
     // 不用拼接动态 SET —— sqlx 会拦 dynamic SQL，且字面量更好审。
@@ -370,7 +577,11 @@ pub async fn update(claims: ValidatedClaims, Json(p): Json<UpdatePayload>) -> Js
         "UPDATE nodes SET name = COALESCE($1, name), base_url = COALESCE($2, base_url), \
          remark = COALESCE($3, remark), insecure_tls = COALESCE($4, insecure_tls), \
          status = COALESCE($5, status), api_token = COALESCE($6, api_token), \
-         updated_at = $7 WHERE id = $8",
+         group_id = COALESCE($7, group_id), owner_id = COALESCE($8, owner_id), \
+         cred_issued_at = COALESCE($9, cred_issued_at), \
+         cred_expires_at = COALESCE($10, cred_expires_at), \
+         cred_issued_by = COALESCE($11, cred_issued_by), \
+         updated_at = $12 WHERE id = $13",
     )
     .bind(new_name.map(str::to_string))
     .bind(base.clone())
@@ -378,6 +589,11 @@ pub async fn update(claims: ValidatedClaims, Json(p): Json<UpdatePayload>) -> Js
     .bind(p.insecure_tls.map(|v| v as i64))
     .bind(p.status)
     .bind(enc_token)
+    .bind(p.group_id)
+    .bind(new_owner)
+    .bind(issued_at)
+    .bind(expires_at)
+    .bind(issued_by)
     .bind(chrono::Local::now().timestamp())
     .bind(p.id);
 
@@ -404,6 +620,14 @@ pub async fn remove(claims: ValidatedClaims, Json(p): Json<IdsPayload>) -> Json<
         return Json(json!({"code": -1, "message": "请选择要删除的节点"}));
     }
     let pool = db::get_db_pool().await;
+    for id in &p.ids {
+        match node_owner(pool, *id).await {
+            Some(owner) if node_in_scope(&claims, owner) => {}
+            _ => {
+                return Json(json!({"code": -1, "message": format!("节点 {id} 不存在或无权操作")}));
+            }
+        }
+    }
     let mut n = 0u64;
     for id in &p.ids {
         let _ = sqlx::query("DELETE FROM node_stats WHERE node_id = ?")
@@ -462,13 +686,21 @@ pub async fn test(Json(p): Json<TestPayload>) -> Json<Value> {
             )
             .await
             {
-                Ok(_) => Json(json!({
-                    "code": 0, "message": "账号密码可用，保存时会自动在节点上签发 API Token",
-                    "data": null
-                })),
+                Ok(jwt) => match node::check_admin(&p.base_url, &jwt, insecure).await {
+                    Ok(()) => Json(json!({
+                        "code": 0, "message": "账号密码可用，保存时会自动在节点上签发 API Token",
+                        "data": null
+                    })),
+                    Err(e) => Json(json!({"code": -1, "message": format!("账号权限不足：{e}")})),
+                },
                 Err(e) => Json(json!({"code": -1, "message": e})),
             };
         }
+    }
+    if !token.is_empty()
+        && let Err(e) = node::check_admin(&p.base_url, &token, insecure).await
+    {
+        return Json(json!({"code": -1, "message": format!("节点凭据权限不足：{e}")}));
     }
     match node::test_connection(&p.base_url, &token, insecure).await {
         Ok(s) => Json(json!({
@@ -490,21 +722,29 @@ pub async fn refresh(_: ValidatedClaims) -> Json<Value> {
 }
 
 /// 监控大屏：全部节点最新值 + 集群汇总 + 近 30 分钟趋势。
-pub async fn overview(_: ValidatedClaims) -> ZapJsonResult {
+pub async fn overview(claims: ValidatedClaims, Query(q): Query<ListQuery>) -> ZapJsonResult {
     let pool = db::get_db_pool().await;
-    let rows: Vec<OverviewRow> = sqlx::query_as(
-        "SELECT n.id, n.name, n.base_url, n.remark, n.status, n.online, n.last_seen, \
-         n.last_error, n.os_name, n.host_name, n.version, n.public_ip, n.uptime, n.cpu_num, \
-         n.memory_total_b, n.disk_total_b, n.disk_json, \
+    let mut qb = QueryBuilder::<Sqlite>::new(
+        "SELECT n.id, n.name, n.base_url, n.remark, n.group_id, g.name AS group_name, \
+         n.status, n.online, n.last_seen, n.last_error, n.os_name, n.host_name, n.version, \
+         n.public_ip, n.uptime, n.cpu_num, n.memory_total_b, n.disk_total_b, n.disk_json, \
          s.cpu_usage, s.memory_usage, s.swap_usage, s.disk_usage, \
-         s.loadavg_one, s.loadavg_five, s.loadavg_fifteen, s.created_at AS sampled_at \
+         s.loadavg_one, s.loadavg_five, s.loadavg_fifteen, s.net_rx_bps, s.net_tx_bps, \
+         s.created_at AS sampled_at \
          FROM nodes n \
+         LEFT JOIN node_groups g ON g.id = n.group_id \
          LEFT JOIN node_stats s ON s.id = (\
              SELECT id FROM node_stats WHERE node_id = n.id ORDER BY created_at DESC LIMIT 1) \
-         WHERE n.status = 1 ORDER BY n.id ASC",
-    )
-    .fetch_all(pool)
-    .await?;
+         WHERE n.status = 1",
+    );
+    if !jwt::is_admin(&claims) {
+        qb.push(" AND n.owner_id = ").push_bind(claims.id as i64);
+    }
+    if let Some(gid) = q.group_id {
+        qb.push(" AND n.group_id = ").push_bind(gid);
+    }
+    qb.push(" ORDER BY n.group_id ASC, n.id ASC");
+    let rows: Vec<OverviewRow> = qb.build_query_as().fetch_all(pool).await?;
 
     // 趋势一次取回（每节点约 120 点），避免 N 次查询
     let since = chrono::Local::now().timestamp() - 1800;
@@ -551,6 +791,7 @@ pub async fn overview(_: ValidatedClaims) -> ZapJsonResult {
             }
             json!({
                 "id": r.id, "name": r.name, "base_url": r.base_url, "remark": r.remark,
+                "group_id": r.group_id, "group_name": r.group_name,
                 "status": r.status, "online": is_online, "last_seen": r.last_seen,
                 "last_error": r.last_error, "os_name": r.os_name, "host_name": r.host_name,
                 "version": r.version, "public_ip": r.public_ip, "uptime": r.uptime,
@@ -559,17 +800,43 @@ pub async fn overview(_: ValidatedClaims) -> ZapJsonResult {
                 "cpu_usage": r.cpu_usage, "memory_usage": r.memory_usage,
                 "swap_usage": r.swap_usage, "disk_usage": r.disk_usage,
                 "loadavg_one": r.loadavg_one, "loadavg_five": r.loadavg_five,
-                "loadavg_fifteen": r.loadavg_fifteen, "sampled_at": r.sampled_at,
+                "loadavg_fifteen": r.loadavg_fifteen,
+                "net_rx_bps": r.net_rx_bps, "net_tx_bps": r.net_tx_bps,
+                "sampled_at": r.sampled_at,
                 "trend": trend.remove(&r.id).unwrap_or_default(),
             })
         })
         .collect();
     let total = list.len();
+    // 分组汇总：大屏按组折叠时用，数据来自同一批 rows，不额外查库
+    let mut group_acc: HashMap<i64, (String, usize, usize, f64)> = HashMap::new();
+    for r in &rows {
+        let entry = group_acc
+            .entry(r.group_id)
+            .or_insert_with(|| (r.group_name.clone().unwrap_or_default(), 0, 0, 0.0));
+        entry.1 += 1;
+        if r.online == 1 {
+            entry.2 += 1;
+            entry.3 += r.cpu_usage.unwrap_or(0.0);
+        }
+    }
+    let mut group_summary: Vec<Value> = group_acc
+        .into_iter()
+        .map(|(id, (name, count, online, cpu))| {
+            json!({
+                "group_id": id, "name": name, "total": count, "online": online,
+                "offline": count - online,
+                "avg_cpu_usage": if online > 0 { cpu / online as f64 } else { 0.0 },
+            })
+        })
+        .collect();
+    group_summary.sort_by_key(|v| v["group_id"].as_i64().unwrap_or(0));
 
     Ok(Json(json!({
         "code": 0, "message": "OK",
         "data": {
             "nodes": list,
+            "group_summary": group_summary,
             "interval": node::COLLECT_INTERVAL_SECS,
             "summary": {
                 "total": total,
@@ -588,12 +855,16 @@ pub async fn overview(_: ValidatedClaims) -> ZapJsonResult {
 }
 
 /// 单节点历史曲线（数据全部来自主控采样，不访问节点）。
-pub async fn status(_: ValidatedClaims, q: Query<HashMap<String, String>>) -> ZapJsonResult {
+pub async fn status(claims: ValidatedClaims, q: Query<HashMap<String, String>>) -> ZapJsonResult {
     let id: i64 = q
         .get("id")
         .and_then(|v| v.parse().ok())
         .ok_or_else(|| err("缺少节点 id"))?;
     let pool = db::get_db_pool().await;
+    match node_owner(pool, id).await {
+        Some(owner) if node_in_scope(&claims, owner) => {}
+        _ => return Err(err("节点不存在或无权查看")),
+    }
     let name: Option<(String,)> = sqlx::query_as("SELECT name FROM nodes WHERE id = ?")
         .bind(id)
         .fetch_optional(pool)
@@ -618,7 +889,8 @@ pub async fn status(_: ValidatedClaims, q: Query<HashMap<String, String>>) -> Za
              avg(cpu_usage) AS cpu_usage, avg(memory_usage) AS memory_usage, \
              avg(swap_usage) AS swap_usage, avg(disk_usage) AS disk_usage, \
              avg(loadavg_one) AS loadavg_one, avg(loadavg_five) AS loadavg_five, \
-             avg(loadavg_fifteen) AS loadavg_fifteen \
+             avg(loadavg_fifteen) AS loadavg_fifteen, avg(net_rx_bps) AS net_rx_bps, \
+             avg(net_tx_bps) AS net_tx_bps \
              FROM node_stats WHERE node_id = $1 AND created_at >= $3 \
              GROUP BY created_at / $2 ORDER BY created_at / $2",
         )
@@ -630,7 +902,7 @@ pub async fn status(_: ValidatedClaims, q: Query<HashMap<String, String>>) -> Za
     } else {
         sqlx::query_as(
             "SELECT created_at, cpu_usage, memory_usage, swap_usage, disk_usage, \
-             loadavg_one, loadavg_five, loadavg_fifteen \
+             loadavg_one, loadavg_five, loadavg_fifteen, net_rx_bps, net_tx_bps \
              FROM node_stats WHERE node_id = $1 AND created_at >= $2 ORDER BY created_at",
         )
         .bind(id)
@@ -647,15 +919,24 @@ pub async fn status(_: ValidatedClaims, q: Query<HashMap<String, String>>) -> Za
                 "created_at": p.created_at, "cpu_usage": p.cpu_usage,
                 "memory_usage": p.memory_usage, "swap_usage": p.swap_usage,
                 "disk_usage": p.disk_usage, "loadavg_one": p.loadavg_one,
-                "loadavg_five": p.loadavg_five, "loadavg_fifteen": p.loadavg_fifteen
+                "loadavg_five": p.loadavg_five, "loadavg_fifteen": p.loadavg_fifteen,
+                "net_rx_bps": p.net_rx_bps, "net_tx_bps": p.net_tx_bps
             })
         })
         .collect();
 
+    let top_processes: String = sqlx::query_scalar("SELECT top_processes FROM nodes WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "[]".to_string());
+    let top_processes: Value = serde_json::from_str(&top_processes).unwrap_or_else(|_| json!([]));
     Ok(Json(json!({
         "code": 0, "message": "OK",
         "data": {"node_id": id, "name": name, "range": if bucket > 0 { "history" } else { "live" },
-                 "points": data}
+                 "points": data, "top_processes": top_processes}
     })))
 }
 
@@ -721,6 +1002,15 @@ pub async fn proxy(req: axum::extract::Request) -> Response {
         ip,
         ua,
     };
+    // 归属校验：管理员可接管全部，其它人只能接管自己名下的节点。
+    // 必须先于任何转发（含只读 GET），否则「看监控」也会越过归属隔离。
+    if !caller
+        .claims
+        .as_ref()
+        .is_some_and(|c| node_in_scope(c, target.owner_id))
+    {
+        return proxy_denied("perm", "这台节点不属于你，无法接管");
+    }
     // WS 用的也是 GET，但它是「直接操作那台机器」，与写操作同级对待
     let is_read = upgrade.is_none() && (method == Method::GET || method == Method::HEAD);
 
@@ -924,4 +1214,460 @@ fn proxy_denied(code: &str, msg: &str) -> Response {
         Json(json!({ "code": -1, "message": msg })),
     )
         .into_response()
+}
+
+// ── 分组管理 ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct GroupPayload {
+    name: String,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+#[derive(Deserialize)]
+pub struct GroupUpdatePayload {
+    id: i64,
+    name: String,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+#[derive(Deserialize)]
+pub struct IdPayload {
+    id: i64,
+}
+
+/// 分组列表（带节点数），侧栏筛选与弹窗共用。
+pub async fn group_list(_: ValidatedClaims) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
+        "SELECT g.id, g.name, g.sort_order, COUNT(n.id) \
+         FROM node_groups g LEFT JOIN nodes n ON n.group_id = g.id \
+         GROUP BY g.id ORDER BY g.sort_order ASC, g.id ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+    let data: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, name, sort_order, count)| {
+            json!({"id": id, "name": name, "sort_order": sort_order, "count": count})
+        })
+        .collect();
+    Ok(Json(json!({"code": 0, "message": "OK", "data": data})))
+}
+
+pub async fn group_add(claims: ValidatedClaims, Json(p): Json<GroupPayload>) -> Json<Value> {
+    if !jwt::is_admin(&claims) {
+        return Json(json!({"code": -1, "message": "只有管理员能管理分组"}));
+    }
+    let name = p.name.trim();
+    if name.is_empty() {
+        return Json(json!({"code": -1, "message": "分组名不能为空"}));
+    }
+    let pool = db::get_db_pool().await;
+    let r = sqlx::query("INSERT INTO node_groups (name, sort_order, created_at) VALUES (?, ?, ?)")
+        .bind(name)
+        .bind(p.sort_order)
+        .bind(chrono::Local::now().timestamp())
+        .execute(pool)
+        .await;
+    match r {
+        Ok(a) => {
+            audit::log(Some(&claims), None, "node_group_add", name, "").await;
+            Json(json!({"code": 0, "message": "OK", "data": {"id": a.last_insert_rowid()}}))
+        }
+        Err(e) => {
+            let msg = if format!("{e}").contains("UNIQUE") {
+                "分组名已存在".to_string()
+            } else {
+                format!("保存失败: {e}")
+            };
+            Json(json!({"code": -1, "message": msg}))
+        }
+    }
+}
+
+pub async fn group_update(
+    claims: ValidatedClaims,
+    Json(p): Json<GroupUpdatePayload>,
+) -> Json<Value> {
+    if !jwt::is_admin(&claims) {
+        return Json(json!({"code": -1, "message": "只有管理员能管理分组"}));
+    }
+    let name = p.name.trim();
+    if name.is_empty() {
+        return Json(json!({"code": -1, "message": "分组名不能为空"}));
+    }
+    let pool = db::get_db_pool().await;
+    match sqlx::query("UPDATE node_groups SET name = ?, sort_order = ? WHERE id = ?")
+        .bind(name)
+        .bind(p.sort_order)
+        .bind(p.id)
+        .execute(pool)
+        .await
+    {
+        Ok(_) => {
+            audit::log(
+                Some(&claims),
+                None,
+                "node_group_update",
+                name,
+                &format!("id={}", p.id),
+            )
+            .await;
+            Json(json!({"code": 0, "message": "OK"}))
+        }
+        Err(e) => Json(json!({"code": -1, "message": format!("保存失败: {e}")})),
+    }
+}
+
+/// 删除分组：节点保留，group_id 归零（等价于「未分组」）。
+pub async fn group_delete(claims: ValidatedClaims, Json(p): Json<IdPayload>) -> Json<Value> {
+    if !jwt::is_admin(&claims) {
+        return Json(json!({"code": -1, "message": "只有管理员能管理分组"}));
+    }
+    let pool = db::get_db_pool().await;
+    let _ = sqlx::query("UPDATE nodes SET group_id = 0 WHERE group_id = ?")
+        .bind(p.id)
+        .execute(pool)
+        .await;
+    match sqlx::query("DELETE FROM node_groups WHERE id = ?")
+        .bind(p.id)
+        .execute(pool)
+        .await
+    {
+        Ok(_) => {
+            audit::log(
+                Some(&claims),
+                None,
+                "node_group_delete",
+                "",
+                &format!("id={}", p.id),
+            )
+            .await;
+            Json(json!({"code": 0, "message": "OK"}))
+        }
+        Err(e) => Json(json!({"code": -1, "message": format!("删除失败: {e}")})),
+    }
+}
+
+// ── 批量操作 / 归属 / 告警 ──────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct BatchUpdatePayload {
+    ids: Vec<i64>,
+    status: Option<i64>,
+    group_id: Option<i64>,
+}
+
+/// 批量启停 / 改分组：逐个校验归属，任何一台越权就整批拒绝。
+pub async fn batch_update(
+    claims: ValidatedClaims,
+    Json(p): Json<BatchUpdatePayload>,
+) -> Json<Value> {
+    if p.ids.is_empty() {
+        return Json(json!({"code": -1, "message": "请先选择节点"}));
+    }
+    if p.status.is_some_and(|v| v != 0 && v != 1) {
+        return Json(json!({"code": -1, "message": "状态只能是 0 或 1"}));
+    }
+    let pool = db::get_db_pool().await;
+    for id in &p.ids {
+        match node_owner(pool, *id).await {
+            Some(owner) if node_in_scope(&claims, owner) => {}
+            _ => {
+                return Json(json!({"code": -1, "message": format!("节点 {id} 不存在或无权操作")}));
+            }
+        }
+    }
+    if let Some(gid) = p.group_id {
+        if gid != 0
+            && sqlx::query_scalar::<_, i64>("SELECT id FROM node_groups WHERE id = ?")
+                .bind(gid)
+                .fetch_optional(pool)
+                .await
+                .unwrap_or(None)
+                .is_none()
+        {
+            return Json(json!({"code": -1, "message": "节点分组不存在"}));
+        }
+        for id in &p.ids {
+            let _ = sqlx::query("UPDATE nodes SET group_id = ?, updated_at = ? WHERE id = ?")
+                .bind(gid)
+                .bind(chrono::Local::now().timestamp())
+                .bind(id)
+                .execute(pool)
+                .await;
+        }
+    }
+    if let Some(status) = p.status {
+        for id in &p.ids {
+            let _ = sqlx::query("UPDATE nodes SET status = ?, updated_at = ? WHERE id = ?")
+                .bind(status)
+                .bind(chrono::Local::now().timestamp())
+                .bind(id)
+                .execute(pool)
+                .await;
+            node::reset_node_state(*id).await;
+        }
+    }
+    audit::log(
+        Some(&claims),
+        None,
+        "node_batch_update",
+        &format!("{:?}", p.ids),
+        &format!("status={:?}, group_id={:?}", p.status, p.group_id),
+    )
+    .await;
+    Json(json!({"code": 0, "message": "OK", "data": {"updated": p.ids.len()}}))
+}
+
+/// 可归属的用户列表：管理员看全部，经销商看自己及自己的成员。
+pub async fn owners(claims: ValidatedClaims) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let rows: Vec<(i64, String)> = if jwt::is_admin(&claims) {
+        sqlx::query_as("SELECT id, username FROM user ORDER BY id ASC")
+            .fetch_all(pool)
+            .await?
+    } else {
+        sqlx::query_as(
+            "SELECT id, username FROM user WHERE id = ? OR (owner_id = ? AND user_kind = 1) \
+             ORDER BY id ASC",
+        )
+        .bind(claims.id as i64)
+        .bind(claims.id as i64)
+        .fetch_all(pool)
+        .await?
+    };
+    let data: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, name)| json!({"id": id, "username": name}))
+        .collect();
+    Ok(Json(json!({"code": 0, "message": "OK", "data": data})))
+}
+
+const ALERT_KEYS: [(&str, &str); 5] = [
+    ("node_alert_cpu", "CPU 阈值（%），0 = 关闭"),
+    ("node_alert_mem", "内存阈值（%），0 = 关闭"),
+    ("node_alert_disk", "磁盘阈值（%），0 = 关闭"),
+    ("node_alert_offline_secs", "离线多少秒后告警，0 = 关闭"),
+    ("node_alert_cooldown_secs", "同一节点同一类告警的冷却秒数"),
+];
+
+fn alert_num(key: &str, default: i64) -> i64 {
+    crate::zap::server_env::conf_get(key)
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(default)
+}
+
+/// 告警阈值配置（存在 server_env.conf，随配置一起备份）。
+pub async fn alert_config_get(_: ValidatedClaims) -> ZapJsonResult {
+    Ok(Json(json!({
+        "code": 0, "message": "OK",
+        "data": {
+            "cpu": alert_num("node_alert_cpu", 85),
+            "memory": alert_num("node_alert_mem", 90),
+            "disk": alert_num("node_alert_disk", 90),
+            "offline_seconds": alert_num("node_alert_offline_secs", 300),
+            "cooldown_seconds": alert_num("node_alert_cooldown_secs", 1800),
+            "email": alert_num("node_alert_email", 0) == 1,
+        }
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct AlertConfigPayload {
+    cpu: i64,
+    memory: i64,
+    disk: i64,
+    offline_seconds: i64,
+    cooldown_seconds: i64,
+    email: bool,
+}
+
+pub async fn alert_config_set(
+    claims: ValidatedClaims,
+    Json(p): Json<AlertConfigPayload>,
+) -> Json<Value> {
+    if !jwt::is_admin(&claims) {
+        return Json(json!({"code": -1, "message": "只有管理员能修改告警配置"}));
+    }
+    let values = [
+        p.cpu.max(0),
+        p.memory.max(0),
+        p.disk.max(0),
+        p.offline_seconds.max(0),
+        p.cooldown_seconds.max(60),
+    ];
+    let items: Vec<(String, String)> = ALERT_KEYS
+        .iter()
+        .zip(values)
+        .map(|((k, _remark), v)| (k.to_string(), v.to_string()))
+        .collect();
+    crate::zap::server_env::conf_set_many(&items, "cluster alert thresholds");
+    crate::zap::server_env::conf_set(
+        "node_alert_email",
+        if p.email { "1" } else { "0" },
+        "cluster alert email",
+    );
+    audit::log(Some(&claims), None, "node_alert_config", "", "").await;
+    Json(json!({"code": 0, "message": "OK"}))
+}
+
+/// 最近的告警事件（按节点归属隔离）。
+pub async fn alert_events(claims: ValidatedClaims) -> ZapJsonResult {
+    let pool = db::get_db_pool().await;
+    let mut qb = QueryBuilder::<Sqlite>::new(
+        "SELECT e.id, e.node_id, e.node_name, e.kind, e.message, e.created_at \
+         FROM node_alert_events e JOIN nodes n ON n.id = e.node_id WHERE 1 = 1",
+    );
+    if !jwt::is_admin(&claims) {
+        qb.push(" AND n.owner_id = ").push_bind(claims.id as i64);
+    }
+    qb.push(" ORDER BY e.id DESC LIMIT 200");
+    let rows: Vec<(i64, i64, String, String, String, i64)> =
+        qb.build_query_as().fetch_all(pool).await?;
+    let data: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, node_id, node_name, kind, message, created_at)| {
+            json!({
+                "id": id, "node_id": node_id, "node_name": node_name,
+                "kind": kind, "message": message, "created_at": created_at,
+            })
+        })
+        .collect();
+    Ok(Json(json!({"code": 0, "message": "OK", "data": data})))
+}
+
+#[derive(Deserialize)]
+pub struct BatchScriptPayload {
+    ids: Vec<i64>,
+    path: String,
+}
+
+/// 批量下发脚本（节点上已有的「应用商店脚本」，不执行任意命令）。
+/// 每台节点独立返回结果，部分失败不影响其它节点。
+pub async fn batch_script(
+    claims: ValidatedClaims,
+    Json(p): Json<BatchScriptPayload>,
+) -> Json<Value> {
+    let path = p.path.trim();
+    if path.is_empty() {
+        return Json(json!({"code": -1, "message": "脚本路径不能为空"}));
+    }
+    let pool = db::get_db_pool().await;
+    let mut results = Vec::new();
+    for id in &p.ids {
+        let owner = node_owner(pool, *id).await;
+        if !owner.is_some_and(|o| node_in_scope(&claims, o)) {
+            results.push(json!({"id": id, "ok": false, "message": "节点不存在或无权操作"}));
+            continue;
+        }
+        let target = match node::resolve_target(*id).await {
+            Ok(t) => t,
+            Err(e) => {
+                results.push(json!({"id": id, "ok": false, "message": e}));
+                continue;
+            }
+        };
+        let v = node::api_post(
+            &target.base,
+            "/appstore/script/run",
+            Some(&target.token),
+            json!({"path": path}),
+            target.insecure,
+        )
+        .await;
+        match v {
+            Ok(v) if v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) == 0 => {
+                results.push(json!({"id": id, "ok": true, "message": "已下发"}));
+            }
+            Ok(v) => results.push(json!({
+                "id": id, "ok": false,
+                "message": v.get("message").and_then(|m| m.as_str()).unwrap_or("节点拒绝执行"),
+            })),
+            Err(e) => results.push(json!({"id": id, "ok": false, "message": e})),
+        }
+    }
+    audit::log(
+        Some(&claims),
+        None,
+        "node_batch_script",
+        path,
+        &format!("{:?}", p.ids),
+    )
+    .await;
+    Json(json!({"code": 0, "message": "OK", "data": {"results": results}}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claims(id: u64, roles: &str) -> jwt::Claims {
+        jwt::Claims {
+            id,
+            iat: 0,
+            sub: "tester".to_string(),
+            iss: "zap".to_string(),
+            exp: 0,
+            roles: roles.to_string(),
+            token_version: 0,
+            scope: String::new(),
+        }
+    }
+
+    fn row() -> NodeRow {
+        NodeRow {
+            id: 1,
+            name: "n1".to_string(),
+            base_url: "https://n1".to_string(),
+            remark: String::new(),
+            insecure_tls: 1,
+            status: 1,
+            online: 1,
+            last_seen: 0,
+            last_error: String::new(),
+            os_name: String::new(),
+            host_name: String::new(),
+            version: String::new(),
+            public_ip: String::new(),
+            uptime: String::new(),
+            cpu_num: 1,
+            memory_total_b: 0,
+            disk_total_b: 0,
+            disk_json: "[]".to_string(),
+            group_id: 0,
+            group_name: None,
+            owner_id: 7,
+            cred_issued_at: 100,
+            cred_expires_at: 0,
+            cred_issued_by: "manual".to_string(),
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn node_scope_separates_admin_and_owner() {
+        assert!(node_in_scope(&claims(1, "admin"), 99));
+        assert!(node_in_scope(&claims(7, "user"), 7));
+        assert!(!node_in_scope(&claims(7, "user"), 8));
+        assert!(!node_in_scope(&claims(7, "user"), 0));
+    }
+
+    #[test]
+    fn credential_status_flags_expiry_and_token_errors() {
+        let mut r = row();
+        assert_eq!(cred_status(&r), "valid");
+        r.cred_expires_at = 1;
+        assert_eq!(cred_status(&r), "expired");
+        r.cred_expires_at = 0;
+        r.last_error = "节点 Token 无效".to_string();
+        assert_eq!(cred_status(&r), "invalid");
+        r.last_error.clear();
+        r.cred_issued_at = 0;
+        assert_eq!(cred_status(&r), "unknown");
+    }
 }

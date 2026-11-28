@@ -1083,28 +1083,29 @@ const RULES: &[(&str, Required, Option<Perm>)] = &[
         Some(Perm::action("system.monitor", "view")),
     ),
     // ── 集群：监控查询走只读权限，注册/删除才是管理动作 ────────
+    // 归属隔离在 handler / 代理里做：非管理员只能看、管自己名下的节点。
     (
         "/node/overview",
-        Required::Admin,
+        Required::User,
         Some(Perm::action("system.monitor", "view")),
     ),
     (
         "/node/status",
-        Required::Admin,
+        Required::User,
         Some(Perm::action("system.monitor", "view")),
     ),
     (
         "/node/list",
-        Required::Admin,
+        Required::User,
         Some(Perm::action("system.monitor", "view")),
     ),
-    ("/node", Required::Admin, Some(Perm::action("node", "edit"))),
+    ("/node", Required::User, Some(Perm::action("node", "edit"))),
     // 节点视图代理：规则本身只到「看监控」，因为 `/nodes/{id}/history` 属于大屏曲线。
     // 代理内的写与终端在 handler 里另校验 `node:edit`（见 routers::node::proxy），
     // 主控自有面（auth / node / dev）由 `zap::node::proxy_deny_reason` 直接拒。
     (
         "/nodes",
-        Required::Admin,
+        Required::User,
         Some(Perm::action("system.monitor", "view")),
     ),
     (
