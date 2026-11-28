@@ -178,6 +178,59 @@
       ]
     },
     {
+      "name": "集群管理",
+      "name_en": "Cluster Management",
+      "description": "主控纳管其它 ZAP 面板：凭据加密存储、监控数据由主控采样落库；节点视图经 /nodes/{id}/** 反向代理，读写与终端都发生在受管节点上",
+      "description_en": "Register other ZAP panels under the master. Credentials are stored encrypted; metrics are sampled by the master. The node view proxies /nodes/{id}/** so reads, writes and terminal sessions happen on the managed node",
+      "endpoints": [
+        { "method": "GET", "path": "/node/list", "summary": "受管节点列表（在线状态 / 最新版本采样 / 最近错误）", "summary_en": "List managed nodes with online status, latest sample and last error" },
+        { "method": "POST", "path": "/node/add", "summary": "新增受管节点：API Token 与账号密码二选一；传账号密码时主控登录节点并自动签发长效 Token（不保存密码）", "summary_en": "Add a managed node: supply either an API token or account credentials. With credentials, the master logs in and issues a long-lived token (the password is never stored)", "params": [
+          { "name": "name", "type": "string", "required": true, "desc": "节点显示名称", "desc_en": "Display name" },
+          { "name": "base_url", "type": "string", "required": true, "desc": "节点面板地址，含协议与端口，如 https://10.0.0.5:8443", "desc_en": "Panel URL including scheme and port, e.g. https://10.0.0.5:8443" },
+          { "name": "api_token", "type": "string", "required": false, "desc": "节点上签发的 API Token（zap_ 开头）；与账号密码二选一", "desc_en": "API token issued on the node (starts with zap_); alternative to credentials" },
+          { "name": "username", "type": "string", "required": false, "desc": "节点登录账号；api_token 留空时必填", "desc_en": "Node login username; required when api_token is empty" },
+          { "name": "password", "type": "string", "required": false, "desc": "节点登录密码；只用于本次签发，不落库", "desc_en": "Node login password; used only for token issuance, never stored" },
+          { "name": "totp_code", "type": "string", "required": false, "desc": "节点账号开启两步验证时的 6 位验证码", "desc_en": "6-digit code when two-factor authentication is enabled on the node" },
+          { "name": "remark", "type": "string", "required": false, "desc": "备注", "desc_en": "Remark" },
+          { "name": "insecure_tls", "type": "bool", "required": false, "desc": "是否容忍自签证书，默认 true", "desc_en": "Allow self-signed certificates, defaults to true" }
+        ] },
+        { "method": "POST", "path": "/node/update", "summary": "修改节点：改名 / 地址 / 启停 / 换凭据；填账号密码会在节点上重新签发 Token（用于 Token 被删或过期后重连）", "summary_en": "Update a node: rename, change URL, enable/disable or replace credentials; supplying credentials reissues the token (e.g. after deletion or expiry)", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "节点 ID", "desc_en": "Node ID" },
+          { "name": "name", "type": "string", "required": false, "desc": "新名称", "desc_en": "New name" },
+          { "name": "base_url", "type": "string", "required": false, "desc": "新面板地址", "desc_en": "New panel URL" },
+          { "name": "api_token", "type": "string", "required": false, "desc": "新 Token，留空表示不修改", "desc_en": "New token; empty means keep the stored one" },
+          { "name": "username", "type": "string", "required": false, "desc": "节点登录账号，与 password 一起传入时重新签发 Token", "desc_en": "Node login username; with password triggers token reissue" },
+          { "name": "password", "type": "string", "required": false, "desc": "节点登录密码", "desc_en": "Node login password" },
+          { "name": "totp_code", "type": "string", "required": false, "desc": "两步验证码", "desc_en": "Two-factor code" },
+          { "name": "status", "type": "int", "required": false, "desc": "1 启用 / 0 停用", "desc_en": "1 enabled / 0 disabled" },
+          { "name": "remark", "type": "string", "required": false, "desc": "备注", "desc_en": "Remark" },
+          { "name": "insecure_tls", "type": "bool", "required": false, "desc": "是否容忍自签证书", "desc_en": "Allow self-signed certificates" }
+        ] },
+        { "method": "POST", "path": "/node/delete", "summary": "批量删除受管节点及其采样数据", "summary_en": "Delete managed nodes and their metrics", "params": [
+          { "name": "ids", "type": "int[]", "required": true, "desc": "节点 ID 数组", "desc_en": "Array of node IDs" }
+        ] },
+        { "method": "POST", "path": "/node/test", "summary": "连通性测试：Token 模式读取节点系统信息；账号密码模式只验证能否登录，不签发 Token", "summary_en": "Test connectivity: token mode reads system info; credentials mode only verifies login and issues no token", "params": [
+          { "name": "base_url", "type": "string", "required": true, "desc": "节点面板地址", "desc_en": "Node panel URL" },
+          { "name": "api_token", "type": "string", "required": false, "desc": "API Token；编辑态留空则复用库里已存的密文", "desc_en": "API token; when editing, empty reuses the stored token" },
+          { "name": "username", "type": "string", "required": false, "desc": "节点登录账号（账号密码模式）", "desc_en": "Node login username (credential mode)" },
+          { "name": "password", "type": "string", "required": false, "desc": "节点登录密码（credential 模式）", "desc_en": "Node login password (credential mode)" },
+          { "name": "totp_code", "type": "string", "required": false, "desc": "两步验证码", "desc_en": "Two-factor code" },
+          { "name": "insecure_tls", "type": "bool", "required": false, "desc": "是否容忍自签证书", "desc_en": "Allow self-signed certificates" },
+          { "name": "id", "type": "int", "required": false, "desc": "编辑中的节点 ID（用于复用已存 Token）", "desc_en": "Node ID being edited, used to reuse its stored token" }
+        ] },
+        { "method": "POST", "path": "/node/refresh", "summary": "立即对所有启用节点采集一轮指标（定时任务也会周期性采集）", "summary_en": "Immediately sample all enabled nodes once (a scheduled task also samples periodically)" },
+        { "method": "GET", "path": "/node/overview", "summary": "监控大屏数据：各节点最新采样 + 集群汇总 + 近 30 分钟趋势；只读主控自己的库", "summary_en": "Monitor dashboard data: latest samples, cluster summary and 30-minute trend; reads only the master database" },
+        { "method": "GET", "path": "/node/status", "summary": "单节点历史曲线（从主控采样库读取，不访问节点）", "summary_en": "Historical metrics for one node, read from the master sample database without contacting the node", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "节点 ID", "desc_en": "Node ID" },
+          { "name": "range", "type": "string", "required": false, "desc": "时间范围：live（默认，近 30 分钟）/ 1h / 6h / 24h / 7d / 30d", "desc_en": "Time window: live (default, last 30 minutes), 1h, 6h, 24h, 7d or 30d" }
+        ] },
+        { "method": "ANY", "path": "/nodes/{id}/{*rest}", "summary": "节点视图反向代理：任意方法与路径转发到受管节点；GET/HEAD 只需 system.monitor:view，写操作与 WebSocket 另需 node:edit；主控自有接口（auth / node / dev）拒绝转发", "summary_en": "Node-view reverse proxy: forwards any method and path to the managed node. GET/HEAD require system.monitor:view; writes and WebSocket also require node:edit. Master-owned paths (auth / node / dev) are denied", "params": [
+          { "name": "id", "type": "int", "required": true, "desc": "节点 ID（路径参数）", "desc_en": "Node ID (path parameter)" },
+          { "name": "rest", "type": "string", "required": true, "desc": "节点侧接口路径（路径参数），如 system/status", "desc_en": "Path on the node (path parameter), e.g. system/status" }
+        ] }
+      ]
+    },
+    {
       "name": "文件管理",
       "description": "浏览服务器文件系统",
       "endpoints": [

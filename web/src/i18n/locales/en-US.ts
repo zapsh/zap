@@ -2383,7 +2383,7 @@ const enUS: Messages = {
     download: 'Download',
   },
 
-  /** Multi-node: managed node registry and monitoring screen */
+  /** Cluster: managed node registry and monitoring screen */
   cluster: {
     hint: 'Provide the node panel URL and a credential: either an API Token from "Profile → API Token" on that node, or the node login account and password — the master then creates the token on the node automatically when you save, so a freshly installed panel needs no prior login.',
     addNode: 'Add Node',

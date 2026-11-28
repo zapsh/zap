@@ -9,7 +9,7 @@ Some endpoint descriptions have no English text yet and fall back to the Chinese
 Add `summary_en` / `desc_en` fields in `zapd/src/routers/api_docs.json` and re-run `npm run gen:api`.
 :::
 
-> 158 endpoints in total, base path `/api`. The sidebar groups them by feature.
+> 167 endpoints in total, base path `/api`. The sidebar groups them by feature.
 
 ## Authentication
 
@@ -42,6 +42,7 @@ Any `code` other than 0 means failure; `message` carries a human-readable error 
 | [SSH Service & Keys](/en/api/ssh) | 12 |
 | [SSH Terminal (Connections)](/en/api/ssh-terminal) | 18 |
 | [System Status & Audit](/en/api/audit) | 6 |
+| [Cluster Management](/en/api/cluster) | 9 |
 | [File Management](/en/api/file) | 10 |
 | [App Store](/en/api/appstore) | 16 |
 | [Plugins](/en/api/plugin) | 8 |
