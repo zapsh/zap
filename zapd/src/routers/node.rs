@@ -184,6 +184,16 @@ struct PointRow {
     loadavg_fifteen: Option<f64>,
 }
 
+/// 大屏趋势的一次批量查询行：指标列可空（手工写入 / 半截行都可能留 NULL）。
+#[derive(sqlx::FromRow)]
+struct TrendRow {
+    node_id: i64,
+    created_at: Option<i64>,
+    cpu_usage: Option<f64>,
+    memory_usage: Option<f64>,
+    loadavg_one: Option<f64>,
+}
+
 fn err(msg: impl Into<String>) -> ZapError {
     ZapError::New(-1, msg.into())
 }
@@ -425,17 +435,17 @@ pub async fn remove(claims: ValidatedClaims, Json(p): Json<IdsPayload>) -> Json<
 pub async fn test(Json(p): Json<TestPayload>) -> Json<Value> {
     let insecure = p.insecure_tls.unwrap_or(true);
     let mut token = p.api_token.unwrap_or_default().trim().to_string();
-    if token.is_empty() {
-        if let Some(id) = p.id {
-            let pool = db::get_db_pool().await;
-            token = sqlx::query_scalar::<_, String>("SELECT api_token FROM nodes WHERE id = ?")
-                .bind(id)
-                .fetch_optional(pool)
-                .await
-                .unwrap_or(None)
-                .map(|enc| crypto::decrypt_password(&enc))
-                .unwrap_or_default();
-        }
+    if token.is_empty()
+        && let Some(id) = p.id
+    {
+        let pool = db::get_db_pool().await;
+        token = sqlx::query_scalar::<_, String>("SELECT api_token FROM nodes WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .map(|enc| crypto::decrypt_password(&enc))
+            .unwrap_or_default();
     }
     // 账号密码模式：**只验证能否登录，不签发 Token**。「测试连接」可能被连点，
     // 每次都签一个新 Token 会在节点上留下一堆孤儿凭据；签发只在真正保存时发生。
@@ -498,24 +508,24 @@ pub async fn overview(_: ValidatedClaims) -> ZapJsonResult {
 
     // 趋势一次取回（每节点约 120 点），避免 N 次查询
     let since = chrono::Local::now().timestamp() - 1800;
-    // 指标列可空（手工写入 / 半截行都可能留 NULL），用 Option 接，
-    // 否则单行 NULL 会让整次查询解码失败、所有节点趋势一起变空
-    let trend_rows: Vec<(i64, Option<i64>, Option<f64>, Option<f64>, Option<f64>)> =
-        sqlx::query_as(
-            "SELECT node_id, created_at, cpu_usage, memory_usage, loadavg_one \
-             FROM node_stats WHERE created_at >= ? ORDER BY node_id ASC, created_at ASC",
-        )
-        .bind(since)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+    // 单行 NULL 会让整次查询解码失败、所有节点趋势一起变空，故 TrendRow 各指标用 Option 接
+    let trend_rows: Vec<TrendRow> = sqlx::query_as(
+        "SELECT node_id, created_at, cpu_usage, memory_usage, loadavg_one \
+         FROM node_stats WHERE created_at >= ? ORDER BY node_id ASC, created_at ASC",
+    )
+    .bind(since)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
     let mut trend: HashMap<i64, Vec<Value>> = HashMap::new();
-    for (nid, ts, cpu, mem, load) in trend_rows {
-        let Some(ts) = ts else { continue };
-        trend
-            .entry(nid)
-            .or_default()
-            .push(json!({"t": ts, "cpu": cpu, "mem": mem, "load": load}));
+    for row in trend_rows {
+        let Some(ts) = row.created_at else { continue };
+        trend.entry(row.node_id).or_default().push(json!({
+            "t": ts,
+            "cpu": row.cpu_usage,
+            "mem": row.memory_usage,
+            "load": row.loadavg_one,
+        }));
     }
 
     let mut online = 0usize;

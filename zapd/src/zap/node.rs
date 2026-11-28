@@ -325,10 +325,10 @@ fn short_reqwest_err(e: &reqwest::Error) -> String {
 
 /// 把节点 `/system/info` 的 `data` 折算成 `Snapshot`（纯函数，便于单测）。
 pub fn parse_info(data: &Value) -> Snapshot {
-    let total = i64_of(&data, "memory_total_b");
-    let avail = i64_of(&data, "available_memory_b");
-    let swap_total = i64_of(&data, "swap_total");
-    let swap_used = i64_of(&data, "swap_used");
+    let total = i64_of(data, "memory_total_b");
+    let avail = i64_of(data, "available_memory_b");
+    let swap_total = i64_of(data, "swap_total");
+    let swap_used = i64_of(data, "swap_used");
 
     let mut disk_total: i64 = 0;
     let mut disk_avail: i64 = 0;
@@ -355,16 +355,16 @@ pub fn parse_info(data: &Value) -> Snapshot {
     }
 
     let mut snap = Snapshot {
-        os_name: str_of(&data, "os_name_version"),
-        host_name: str_of(&data, "host_name"),
-        public_ip: str_of(&data, "public_ip"),
-        uptime: str_of(&data, "uptime"),
-        cpu_num: i64_of(&data, "cpu_num"),
+        os_name: str_of(data, "os_name_version"),
+        host_name: str_of(data, "host_name"),
+        public_ip: str_of(data, "public_ip"),
+        uptime: str_of(data, "uptime"),
+        cpu_num: i64_of(data, "cpu_num"),
         memory_total_b: total,
-        cpu_usage: f64_of(&data, "cpu_usage"),
-        loadavg_one: f64_of(&data, "loadavg_one"),
-        loadavg_five: f64_of(&data, "loadavg_five"),
-        loadavg_fifteen: f64_of(&data, "loadavg_fifteen"),
+        cpu_usage: f64_of(data, "cpu_usage"),
+        loadavg_one: f64_of(data, "loadavg_one"),
+        loadavg_five: f64_of(data, "loadavg_five"),
+        loadavg_fifteen: f64_of(data, "loadavg_fifteen"),
         disk_total_b: disk_total,
         disk_json: serde_json::to_string(&disks).unwrap_or_else(|_| "[]".to_string()),
         ..Default::default()
@@ -397,10 +397,8 @@ pub async fn fetch_snapshot(
 ) -> Result<Snapshot, String> {
     let data = api_get(base, token, insecure, "/system/info").await?;
     let mut snap = parse_info(&data);
-    if need_version {
-        if let Ok(about) = api_get(base, token, insecure, "/system/about").await {
-            snap.version = str_of(&about, "version");
-        }
+    if need_version && let Ok(about) = api_get(base, token, insecure, "/system/about").await {
+        snap.version = str_of(&about, "version");
     }
     Ok(snap)
 }
