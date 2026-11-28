@@ -32,10 +32,11 @@ Entry points: **Cluster → Nodes** (registration) and **Cluster → Monitor** (
 
 | Mode | What to fill in | When to use |
 |---|---|---|
-| API token (manual) | Create a `zap_` token under "Personal Center → API Tokens" on the node, then paste it into the master | A token already exists; a regular user's token is enough for monitoring only |
+| API token (manual) | Create a `zap_` token under "Personal Center → API Tokens" on the node, then paste it into the master | A token already exists, issued by an **administrator** on that node |
 | Username / password (automatic) | Node login username and password (plus a 6-digit code if two-factor auth is enabled) | A freshly installed panel with no token yet. On save, the master logs in and issues a long-lived token; the password is never stored |
 
-- The **Test** button reads node system info in token mode, but in credential mode only verifies that the login works — **no token is issued**, so it is safe to click repeatedly.
+- The node token must belong to an **administrator**: roles are checked via `/user/info` when adding or testing. Network rates and the Top 10 process snapshot come from Admin endpoints on the node and a regular user's token is rejected immediately.
+- The **Test** button reads node system info and checks admin permission in token mode; in credential mode it only verifies that the login works — **no token is issued**, so it is safe to click repeatedly.
 - Tokens are stored encrypted and never shown again. If a token is deleted or expires on the node, edit the node and enter the credentials again to issue a new one.
 - Permissions in the node view follow **the account owning the token on that node**: a regular user's token suffices for monitoring; to change sites / files / processes through the node view, use a token issued by an administrator on that node.
 
@@ -46,6 +47,23 @@ Click **Take over** in the node list or monitor dashboard: after a full page rel
 - Read-only browsing requires `system.monitor:view` on the master; writes, terminal and WebSocket sessions additionally require `node:edit`.
 - Master-owned paths (login, node registry, API tokens, etc.) are never forwarded; use **Back to master** in the header to leave the node view at any time.
 - An invalid node token only affects node-side requests: update the credentials under "Cluster → Nodes" to reconnect. It will not send the master back to its login page.
+
+### Groups, filters and batch operations
+
+- "Manage groups" creates, renames and deletes groups. Deleting a group only makes its nodes ungrouped; it never deletes nodes. Both the node list and the monitor screen can filter by group.
+- The list supports search by name / URL / IP / remark, filters by status, online state and group, and sorting by name / CPU / memory / last seen.
+- Select multiple nodes to enable, disable or regroup them in bulk, or dispatch an **existing App Store script** (arbitrary commands are never run). Results are reported per node.
+
+### Credential expiry and alerts
+
+- Optionally set a token lifetime (days) when adding a node. The list shows Valid / Unknown / Invalid / Expired; use **Rotate credential** to reissue via username and password when a token is invalid or expired.
+- "Alert settings" configures CPU / memory / disk thresholds, offline delay and cooldown, with optional email to administrators. Checks run once a minute; see "Alert history" for events. Duplicate alerts for the same node and kind are suppressed during the cooldown.
+- Metrics are retained for 14 days by a daily cleanup job.
+
+### Ownership and permissions
+
+- Every node has an owner: administrators see all nodes and can reassign them; other roles only see and operate nodes they own. The takeover proxy applies the same ownership check.
+- Read-only browsing requires `system.monitor:view`; writes and terminal sessions also require `node:edit`.
 
 ## Download mirror (including offline environments)
 
